@@ -6,8 +6,8 @@
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qaml-ai/camelAI.git",
-    "directory": "services/agent-runtime/sdk"
+    "url": "git+https://github.com/qaml-ai/agent-runtime.git",
+    "directory": "sdk"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"

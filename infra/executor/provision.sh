@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Create (or confirm) the AWS resources for code executor hosts: their token and
 # security groups. Hosts themselves are launched by deploy.sh, which replaces them.
-# Safe to re-run. Run infra/agent-runtime/provision.sh first.
-# Usage: infra/agent-runtime/executor/provision.sh
+# Safe to re-run. Run infra/provision.sh first.
+# Usage: infra/executor/provision.sh
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/../config.sh"
@@ -21,7 +21,7 @@ fi
 vpc=$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
 group() { aws ec2 describe-security-groups --filters Name=group-name,Values="$1" Name=vpc-id,Values="$vpc" --query 'SecurityGroups[0].GroupId' --output text; }
 runtime_sg=$(group "$NAME")
-[[ "$runtime_sg" != "None" ]] || { echo "No $NAME security group; run infra/agent-runtime/provision.sh first" >&2; exit 1; }
+[[ "$runtime_sg" != "None" ]] || { echo "No $NAME security group; run infra/provision.sh first" >&2; exit 1; }
 
 # Adds a rule unless an identical one exists (EC2 reports duplicates as an error).
 allow() {
@@ -65,4 +65,4 @@ allow authorize-security-group-egress --group-id "$bootstrap_sg" \
   --ip-permissions 'IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=0.0.0.0/0}]'
 
 echo "executor group: $executor_sg; bootstrap group: $bootstrap_sg; runtime group: $runtime_sg"
-log "Done. Next: infra/agent-runtime/deploy.sh (runtime image + callback port), then infra/agent-runtime/executor/deploy.sh"
+log "Done. Next: infra/deploy.sh (runtime image + callback port), then infra/executor/deploy.sh"

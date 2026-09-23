@@ -11,10 +11,10 @@ or customer data are connected.
 From the repository root:
 
 ```sh
-bun install --frozen-lockfile
+npm ci
 python3 -m venv .agent-runtime/python
-.agent-runtime/python/bin/pip install -r services/agent-runtime/clients/python/requirements.txt
-bun run agent:studio
+.agent-runtime/python/bin/pip install -r clients/python/requirements.txt
+npm run studio
 ```
 
 The launcher detects `.agent-runtime/python/bin/python`; `PYTHON` can override it.
@@ -58,7 +58,7 @@ The optional examples live in `../examples/studio-release.ts` and
 `../examples/studio-inventory.py`. They register `September release` (type
 `release-reviewer`) and `Downtown cafe` (type `inventory-planner`) through the same
 SDK as any other application. Their tools/data are not owned by the dashboard.
-Use `STUDIO_EXAMPLES=0 bun run agent:studio` to start without launching sample applications; existing agents remain listed.
+Use `STUDIO_EXAMPLES=0 npm run studio` to start without launching sample applications; existing agents remain listed.
 The runtime URL is printed at startup and saved as `runtimeUrl` in `studio.json`;
 the local `secrets.json` holds the server-side operator key for SDK provisioning.
 See [SDK identity examples](../clients/README.md#agent-identity-and-studio).
@@ -110,14 +110,14 @@ omits trace payloads above 100,000 characters. It is a local debugging surface,
 not the service's production telemetry architecture. `STUDIO_DATA_DIR` selects a
 separate demo workspace; `STUDIO_PORT` defaults to 8789. Runtime ports are chosen
 automatically. Ctrl-C shuts down the tool workers, supervisor and agent processes.
-The existing CLI demos remain available through `bun run agent:demo:clients`.
+The existing CLI demos remain available through `npm run demo:clients`.
 
 ## Verification
 
 ```sh
-PYTHON="$PWD/.agent-runtime/python/bin/python" bun run test:agent-studio
-bun x tsc -p services/agent-runtime/studio/tsconfig.json
-bun run test:agent-runtime
+PYTHON="$PWD/.agent-runtime/python/bin/python" npm run test:studio
+npx tsc -p studio/tsconfig.json
+npm test
 ```
 
 The studio smoke test uses a temporary workspace and no model credentials. It

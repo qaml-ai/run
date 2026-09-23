@@ -85,7 +85,7 @@ curl "https://agents.camelai.dev/v1/models?available=true" -H "Authorization: Be
 
 The routes are `/v1/me`, `/v1/providers` (+ `/:provider/key`), `/v1/models`,
 `/v1/agents` (+ `/:id`, `/:id/history`, `/:id/prompt`, `/:id/abort`),
-`/v1/tokens` and `/v1/usage`; see `services/agent-runtime/src/api.ts`.
+`/v1/tokens` and `/v1/usage`; see `src/api.ts`.
 
 Save `agent.session` (it contains a scoped credential) to reconnect later with
 `runtime.connectAgent(session, { tools })`. Pass the same `idempotencyKey` to
@@ -94,5 +94,5 @@ Save `agent.session` (it contains a scoped credential) to reconnect later with
 `@qaml-ai/agent-runtime` (without `/node`) is the portable build for Workers and
 other runtimes without a filesystem; supply your own `journalStore`.
 
-See `services/agent-runtime/clients/README.md` in the repository for delivery
+See `clients/README.md` in the repository for delivery
 guarantees, tool-call semantics, and the full API.

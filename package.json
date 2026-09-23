@@ -1,22 +1,23 @@
 {
-  "name": "@camelai/agent-runtime-prototype",
+  "name": "agent-runtime",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun src/server.ts",
-    "demo": "bun src/demo.ts",
-    "demo:clients": "bun examples/run.ts",
-    "demo:typescript": "bun examples/release-board.ts",
+    "start": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/server.ts",
+    "demo": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/demo.ts",
+    "demo:clients": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/run.ts",
+    "demo:typescript": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/release-board.ts",
     "demo:python": "python3 examples/inventory.py",
     "test": "node --experimental-strip-types --test --test-timeout=30000 tests/*.test.ts",
     "test:python": "python3 tests/python_sdk.py",
     "typecheck": "tsc -p tsconfig.json && tsc -p studio/tsconfig.json && tsc -p console/tsconfig.json",
-    "studio": "bun studio/server.ts",
+    "studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/server.ts",
     "build": "vite build --config studio/vite.config.ts",
-    "build:console": "vite build --config console/vite.config.ts"
+    "build:console": "vite build --config console/vite.config.ts",
+    "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts"
   },
   "version": "0.1.0",
-  "description": "Standalone agent process supervisor, QuickJS codemode, SDKs and local Studio",
+  "description": "Hosted agent runtime: supervisor, durable agent state, QuickJS codemode sandbox, SDKs, console and Studio",
   "engines": {
     "node": ">=22.21.0"
   },
@@ -26,32 +27,33 @@
     "./supervisor": "./src/supervisor.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.700.0",
     "@earendil-works/pi-agent-core": "0.80.6",
     "@earendil-works/pi-ai": "0.80.6",
+    "@tailwindcss/postcss": "^4",
+    "@vitejs/plugin-react": "^6.0.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.562.0",
+    "pg": "^8.13.1",
     "quickjs-emscripten": "0.32.0",
-    "sucrase": "^3.35.1",
-    "typebox": "1.1.38",
+    "radix-ui": "^1.4.3",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "lucide-react": "^0.562.0",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
+    "sucrase": "^3.35.1",
     "tailwind-merge": "^3.4.0",
-    "radix-ui": "^1.4.3",
-    "vite": "8.0.16",
-    "@vitejs/plugin-react": "^6.0.2",
-    "@tailwindcss/postcss": "^4",
     "tailwindcss": "^4",
-    "@aws-sdk/client-s3": "^3.700.0",
-    "pg": "^8.13.1"
+    "tw-animate-css": "^1.4.0",
+    "typebox": "1.1.38",
+    "vite": "8.0.16"
   },
   "devDependencies": {
-    "typescript": "^7.0.2",
     "@types/node": "^20.19.27",
+    "@types/pg": "^8.11.10",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/pg": "^8.11.10"
+    "typescript": "^7.0.2"
   }
 }

@@ -1,4 +1,4 @@
-"""Run with: python3 services/agent-runtime/tests/python_sdk.py (requires httpx)."""
+"""Run with: python3 tests/python_sdk.py (requires httpx)."""
 import asyncio
 import json
 import os
@@ -17,7 +17,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.directory = tempfile.TemporaryDirectory(prefix="camelai-python-sdk-")
         self.token = "fixture-only-python-sdk-operator-token"
         self.host = await asyncio.create_subprocess_exec(
-            "bun", str(ROOT / "src" / "server.ts"), stdout=asyncio.subprocess.PIPE,
+            "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", str(ROOT / "src" / "server.ts"), stdout=asyncio.subprocess.PIPE,
             env={"PATH": os.environ["PATH"], "HOME": self.directory.name,
                  "AGENT_DATA_DIR": self.directory.name, "AGENT_RUNTIME_TOKEN": self.token, "PORT": "0",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},

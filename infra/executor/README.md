@@ -68,10 +68,10 @@ Settings live in `../config.sh`:
 ## Deploying
 
 ```sh
-infra/agent-runtime/provision.sh            # adds the executor-token secret to the runtime role
-infra/agent-runtime/executor/provision.sh   # token + security groups (idempotent)
-infra/agent-runtime/deploy.sh               # runtime image with src/executor + the :8791 publish
-infra/agent-runtime/executor/deploy.sh      # new executor hosts, then switch the runtime to them
+infra/provision.sh            # adds the executor-token secret to the runtime role
+infra/executor/provision.sh   # token + security groups (idempotent)
+infra/deploy.sh               # runtime image with src/executor + the :8791 publish
+infra/executor/deploy.sh      # new executor hosts, then switch the runtime to them
 ```
 
 Executor hosts are immutable. Each `executor/deploy.sh` run does the following:

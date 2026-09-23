@@ -1,100 +1,56 @@
-# VM agent prototype
+# Agent runtime
 
-Run multiple agents on a Unix VM, one long-lived Pi process per agent, with a
-fresh QuickJS/WebAssembly sandbox in a disposable process for each `js_exec` invocation. Node or Bun hosts the process; guest code never executes in their JavaScript context. This is an opt-in
-prototype; on this branch the application uses this service for all agent execution.
+A hosted runtime for long-lived agents. Applications define tools in their own
+code with the TypeScript or Python SDK; the runtime runs the model loop, keeps
+each agent's durable history (with compaction), and executes model-written code
+in a QuickJS/WebAssembly sandbox. Most agents are asleep at any time: an agent's
+state lives in shared storage (S3 in production) and any node can load it.
 
-```text
-HTTP client / TypeScript or Python SSE client
-  -> VM supervisor (auth, capacity, process lifecycle, tool bridge)
-      -> agent A process (Pi loop, model key, native Pi transcript)
-          -> disposable codemode process
-              -> QuickJS/WASM (JavaScript/TypeScript, fixed memory)
-                  -> JSON tool calls -> IPC -> supervisor's scoped ToolBridge
-      -> agent B process ...
-```
-
-The process runtime has no Cloudflare runtime imports. It uses the same pinned
-Pi packages as the application. Code preparation was extracted from the existing
-Worker runner into `packages/agent-core/code-mode-source.ts`; both runners share
-TypeScript stripping and trailing-expression behavior. The prototype uses a
-small standalone prompt, rather than the platform prompt advertising unavailable
-capabilities. Application authorization, tools, and UI projection remain in the app.
-
-## Interactive local demos
-
-Run `bun run agent:studio` from the repository root for agent chat URLs, live
-TypeScript/Python application state, code/tool traces, run reviews and browser
-voice controls. See [Local Agent Studio](studio/README.md) for Python setup,
-model configuration and the distinction between live and scripted runs.
-
-## Run the real application as an SDK client
-
-From the camelAI repository root, run `bun run dev:external-agent`, then open
-`http://localhost:3001/chat`. This starts local auth, the app, and a loopback
-runtime. The launcher uses `SELFHOST_AI_*` or an existing `OPENROUTER_API_KEY`
-with Sonnet 4.6. The runtime host receives the provider credential; agent
-configuration and SDK journals never store it. Stop with Ctrl-C.
+Live at <https://agents.camelai.dev> (REST API under `/v1`, console at `/console`).
 
 ```text
-camelAI browser -> ChatThreadDO (UI projection and application policy)
-                    -> general TypeScript SDK / HTTP + SSE
-                        -> service: model requests, Pi loop, history, context limits
-                            -> QuickJS/WASM -> scoped SDK tool callbacks -> camelAI
+app (TypeScript / Python SDK, HTTP + SSE)
+  -> any runtime node --forwarded to--> the node holding the agent's lease
+      -> agent host (Pi loop, working-set transcript, compaction, retries)
+          -> QuickJS/WASM sandbox (local process, or a gVisor executor host)
+              -> JSON tool calls -> back to the app's SDK callbacks
+  shared storage: S3 documents + append logs; leases in S3 or Postgres
 ```
 
-`workers/main/src/chat-thread/service-agent.ts` is a camelAI-owned UI compatibility
-adapter. It uses the same public SDK as other applications. The service contains
-no camelAI/Cloudflare callbacks or workspace concepts. Agent/Explore and capability
-subagents also use the service when this local flag is enabled.
+## Layout
 
-On first attachment, the local app imports its loaded native history into an
-empty service agent. It stores the returned scoped credential and SDK delivery
-journal in the DO. Subsequent turns read service history; they never replace it
-with the DO's copy. The existing DO transcript is retained as a render/usage
-projection so the current UI works. Large legacy chats still use the app's bounded
-initial import, not a complete historical migration.
+- `src/` server, supervisor, agent host, sessions, scheduler, REST API, executor
+- `shared/` storage backends (file, S3), leases, wire protocol
+- `clients/` TypeScript and Python SDKs; `sdk/` publishes `@qaml-ai/agent-runtime`
+- `console/` tenant console (React); `studio/` local chat/trace UI
+- `infra/` AWS provisioning and deploy scripts; `deploy/smoke.ts` live smoke test
+- `tests/` Node test suites (no paid model calls)
 
-The service owns model requests and `js_exec` now. Application tools retain their
-existing authorization and policy checks. QuickJS exposes registered JSON tools,
-not the old Worker `env` bindings or generic fetch; the local prompt reflects
-that difference. Native tool results retain text/image content. SDK receipts and
-native model tool-call IDs are separate identifiers.
+## Develop
 
-This is still a local integration: model/provider selection is fixed at agent
-creation and uses the runtime's configured credential. Mid-conversation provider
-switching, production billing parity, long-running build/deploy tools, and full
-DO-eviction recovery have not been certified. A tool call whose outcome is lost
-settles as "unknown" and the model decides what to do next; the service never
-replays side effects and never waits for an operator. Context limits currently
-drop old complete turns from provider input while retaining full durable
-history; this is not semantic summarization.
-
-`LOCAL_AGENT_RUNTIME_URL` and `LOCAL_AGENT_RUNTIME_TOKEN` opt the loopback app in;
-there is no in-DO execution fallback on this branch. Both settings are required. Local state lives under
-`.agent-runtime/application/`. Containers are disabled for chat/file-tool trials;
-`LOCAL_AGENT_CONTAINERS=1` enables the existing container setup. Optional local
-Cloudflare AI features such as automatic titles may lack required bindings.
-
-For the independent project layout and installation, see [STANDALONE.md](STANDALONE.md).
-
-## Run locally or on a VM
-
-Requires Linux/macOS, Node 22.21+ and Bun. Install from the repository root:
+Requires Node 22.21+ and npm.
 
 ```sh
-bun install --frozen-lockfile
-bun run agent:demo
-AGENT_RUNTIME=node bun run agent:demo
-bun run test:agent-runtime
-AGENT_RUNTIME=bun bun run test:agent-runtime
-bun run --cwd services/agent-runtime typecheck
+npm ci
+npm run typecheck
+npm test                         # agents in their own processes
+AGENT_HOSTING=inline npm test    # agents inline in the server process
+npm run test:python              # needs clients/python/requirements.txt
+npm run demo                     # sandbox demo, no model credentials
 ```
 
-The demo needs no model credentials. It starts two real agent processes, writes
-and reads separate files through codemode tool RPC, and kills an infinite loop.
-The integration tests also exercise the real Pi provider loop against a local
-OpenAI-compatible SSE fixture. No paid model API is called by these tests.
+Optional backends in the storage tests: `AGENT_TEST_S3_BUCKET=<bucket>` and
+`AGENT_TEST_POSTGRES_URL=postgres://...`.
+
+## Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `AGENT_STORAGE` | `file` (default), `shared-file`, or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
+| `AGENT_LEASES` | `none`, `storage`, or `postgres` (`AGENT_LEASES_POSTGRES_URL`) |
+| `AGENT_NODE_URL` | this node's address for forwarding between nodes |
+| `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
+| `AGENT_EXECUTOR_URL` | run `js_exec` on executor hosts (see `infra/executor/README.md`) |
 
 Start the HTTP supervisor on a VM using a trusted terminal:
 
@@ -104,8 +60,8 @@ export AGENT_API_KEY="your-provider-key"
 export AGENT_PROVIDER=anthropic
 export AGENT_MODEL=claude-sonnet-4-5
 export AGENT_DATA_DIR=/absolute/path/to/agent-data
-export AGENT_RUNTIME=node  # or bun; defaults to supervisor's runtime
-bun run agent:serve
+export AGENT_RUNTIME=node
+npm start
 ```
 
 This starts on `127.0.0.1:8790`. `HOST`/`PORT` are configurable. Use a private
@@ -309,7 +265,7 @@ checks streamed output against the same limits. When the runtime aborts or
 times out, it disconnects, and the executor kills the child.
 
 Without these variables, execution stays local and unchanged. Deployment is
-covered in [`infra/agent-runtime/executor`](../../infra/agent-runtime/executor/README.md),
+covered in [`infra/executor`](infra/executor/README.md),
 and the tests are in `tests/executor.test.ts`.
 
 ## Integration seam and next extraction
@@ -319,7 +275,7 @@ boundary: it contains discoverable JSON schemas and `call(name,args,signal)`.
 The [client adapters and runnable demos](clients/README.md) implement this bridge
 over SSE plus HTTP POST, with replay, execution claims, and recorded outcomes. The TypeScript release board and Python
 SQLite inventory app each expose their own functions while the hosted agent
-owns the model loop, sandbox and history. Run both with `bun run agent:demo:clients`
+owns the model loop, sandbox and history. Run both with `npm run demo:clients`
 (install the documented Python dependency first).
 The agent and its scripts never import DO classes. A production adapter should
 implement the bridge with a short-lived, thread-scoped RPC capability back to

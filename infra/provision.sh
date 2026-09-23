@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create (or confirm) every AWS resource for the hosted agent runtime.
 # Safe to re-run: each step looks for its resource before creating it.
-# Usage: infra/agent-runtime/provision.sh
+# Usage: infra/provision.sh
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
@@ -28,7 +28,7 @@ if ! aws secretsmanager describe-secret --secret-id "$SECRET_PREFIX/secrets-key"
 fi
 if ! aws secretsmanager describe-secret --secret-id "$SECRET_PREFIX/tenants" >/dev/null 2>&1; then
   aws secretsmanager create-secret --name "$SECRET_PREFIX/tenants" \
-    --description "Agent runtime tenants: operator token hashes and provider API keys. Edit with infra/agent-runtime/tenant.sh." \
+    --description "Agent runtime tenants: operator token hashes and provider API keys. Edit with infra/tenant.sh." \
     --secret-string '{"tenants":{}}' >/dev/null
 fi
 
@@ -157,4 +157,4 @@ else
   echo "CLOUDFLARE_API_TOKEN is not set: create a DNS-only A record $HOSTNAME -> $ip yourself."
 fi
 
-log "Done. Next: infra/agent-runtime/tenant.sh add <tenant>, then infra/agent-runtime/deploy.sh"
+log "Done. Next: infra/tenant.sh add <tenant>, then infra/deploy.sh"

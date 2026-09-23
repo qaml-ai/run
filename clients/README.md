@@ -10,7 +10,7 @@ published. Remote connections require HTTPS. The model key stays on the host.
 ## TypeScript
 
 ```ts
-import { AgentRuntime, schema, tool } from "./services/agent-runtime/clients/node.ts";
+import { AgentRuntime, schema, tool } from "./clients/node.ts";
 
 const runtime = new AgentRuntime({
   url: "http://127.0.0.1:8790",
@@ -122,17 +122,17 @@ Studio observes the runtime journal; your application's SSE connection continues
 to own its tool callbacks. Get the runtime URL from the terminal or local
 `.agent-runtime/studio/studio.json` (`runtimeUrl`), and its operator credential
 from `.agent-runtime/studio/secrets.json` (`operator`). Keep credentials server-side.
-Use `STUDIO_EXAMPLES=0 bun run agent:studio` to skip launching demos (existing agents remain listed).
+Use `STUDIO_EXAMPLES=0 npm run studio` to skip launching demos (existing agents remain listed).
 
 ## Run the demos
 
 From the repository root:
 
 ```sh
-bun install --frozen-lockfile
+npm ci
 python3 -m venv /tmp/camelai-client-demo
-/tmp/camelai-client-demo/bin/pip install -r services/agent-runtime/clients/python/requirements.txt
-PYTHON=/tmp/camelai-client-demo/bin/python bun run agent:demo:clients
+/tmp/camelai-client-demo/bin/pip install -r clients/python/requirements.txt
+PYTHON=/tmp/camelai-client-demo/bin/python npm run demo:clients
 ```
 
 One temporary host runs two independent agent processes concurrently:
@@ -146,15 +146,15 @@ The default run is deterministic: supplied scripts exercise real QuickJS and
 SSE/HTTP callbacks without calling a paid model. It cleans up its host, agents,
 and temporary journals. `AGENT_RUNTIME=node` or `bun` selects the child runtime.
 
-For a model-driven run, start `bun run agent:serve` with the provider configuration
+For a model-driven run, start `npm start` with the provider configuration
 in the [host README](../README.md#run-locally-or-on-a-vm), then run:
 
 ```sh
 export AGENT_URL=http://127.0.0.1:8790
 export AGENT_RUNTIME_TOKEN=your-host-operator-token
-bun services/agent-runtime/examples/release-board.ts --prompt \
+bun examples/release-board.ts --prompt \
   "Review release readiness and save a note naming blockers and owners."
-/tmp/camelai-client-demo/bin/python services/agent-runtime/examples/inventory.py --prompt \
+/tmp/camelai-client-demo/bin/python examples/inventory.py --prompt \
   "Plan restocks for everything below target and explain the quantities."
 ```
 
@@ -248,8 +248,8 @@ The wire transport is ordinary HTTP: `GET /clients/:id/events` streams SSE;
 `outcome` endpoints manage execution. Application code should
 use the SDK rather than implement this protocol itself.
 
-Validation: `bun run test:agent-runtime` covers the host and TypeScript SDK;
-`python3 services/agent-runtime/tests/python_sdk.py` covers Python schema
+Validation: `npm test` covers the host and TypeScript SDK;
+`python3 tests/python_sdk.py` covers Python schema
 inference, reconnects and lost request/result acknowledgements. Both suites
 accept `AGENT_RUNTIME=node` or `AGENT_RUNTIME=bun` for the hosted agent processes.
 

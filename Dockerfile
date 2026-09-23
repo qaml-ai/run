@@ -1,9 +1,9 @@
 # Hosted agent runtime: the HTTP/SSE service, agent processes and the QuickJS sandbox.
-# Build from services/agent-runtime: docker build -t agent-runtime .
+# Build from the repository root: docker build -t agent-runtime .
 # The same image runs a code executor host (no credentials, no agent state) with:
 #   docker run --runtime=runsc -e AGENT_EXECUTOR_TOKEN=... agent-runtime \
 #     node --experimental-strip-types --disable-warning=ExperimentalWarning src/executor/server.ts
-# See infra/agent-runtime/executor/README.md.
+# See infra/executor/README.md.
 FROM node:22-bookworm-slim
 
 WORKDIR /app
@@ -11,7 +11,7 @@ WORKDIR /app
 COPY package.json ./package.source.json
 RUN node -e '\
   const source = require("./package.source.json"); \
-  const keep = ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "quickjs-emscripten", "typebox", "sucrase"]; \
+  const keep = ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "quickjs-emscripten", "typebox", "sucrase", "@aws-sdk/client-s3", "pg"]; \
   const dependencies = Object.fromEntries(keep.map(name => { \
     if (!source.dependencies[name]) throw new Error(`missing dependency ${name}`); \
     return [name, source.dependencies[name]]; \

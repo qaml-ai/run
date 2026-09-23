@@ -1,6 +1,6 @@
 # Hosted agent runtime
 
-Runs `services/agent-runtime` for teammates' own agents at
+Runs this service for teammates' own agents at
 `https://agents.camelai.dev`. This is the single-host deployment. It will be
 replaced by the distributed runtime (S3 storage, leases, many workers) described
 in `plans/agent-runtime-service.md`.
@@ -38,14 +38,14 @@ proxies to the runtime container (`agent-runtime.service`). Agent state lives in
 ## First-time setup
 
 ```sh
-infra/agent-runtime/provision.sh          # idempotent; needs CLOUDFLARE_API_TOKEN for DNS
-infra/agent-runtime/tenant.sh add miguel
-infra/agent-runtime/tenant.sh set-key miguel anthropic   # paste the key, then Ctrl-D
-infra/agent-runtime/deploy.sh
+infra/provision.sh          # idempotent; needs CLOUDFLARE_API_TOKEN for DNS
+infra/tenant.sh add miguel
+infra/tenant.sh set-key miguel anthropic   # paste the key, then Ctrl-D
+infra/deploy.sh
 AGENT_URL=https://agents.camelai.dev \
 AGENT_RUNTIME_TOKEN=$(aws secretsmanager get-secret-value --region us-west-2 \
   --secret-id camelai/agent-runtime/operator-token/miguel --query SecretString --output text) \
-  node --experimental-strip-types services/agent-runtime/deploy/smoke.ts
+  node --experimental-strip-types deploy/smoke.ts
 ```
 
 ## Console and self-service
@@ -71,7 +71,7 @@ https://github.com/organizations/qaml-ai/settings/applications/new with:
 - homepage `https://agents.camelai.dev`
 - callback URL `https://agents.camelai.dev/console/auth/callback`
 
-Then run `infra/agent-runtime/github-oauth.sh <client-id>` and paste the client
+Then run `infra/github-oauth.sh <client-id>` and paste the client
 secret when prompted.
 
 ## Tenants (admin)
@@ -82,11 +82,11 @@ own key. The script never prints secrets. Keys are read from stdin, and tokens
 go to Secrets Manager.
 
 ```sh
-infra/agent-runtime/tenant.sh list
-infra/agent-runtime/tenant.sh add <tenant>
-infra/agent-runtime/tenant.sh set-key <tenant> anthropic      # key on stdin
-infra/agent-runtime/tenant.sh rotate-token <tenant>
-infra/agent-runtime/tenant.sh remove <tenant>
+infra/tenant.sh list
+infra/tenant.sh add <tenant>
+infra/tenant.sh set-key <tenant> anthropic      # key on stdin
+infra/tenant.sh rotate-token <tenant>
+infra/tenant.sh remove <tenant>
 ```
 
 Changes take effect through `systemctl reload`, which sends SIGHUP to the
@@ -111,11 +111,11 @@ and redeploy.
 
 ## SDKs
 
-- TypeScript: `services/agent-runtime/sdk`, published as `@qaml-ai/agent-runtime`
+- TypeScript: `sdk`, published as `@qaml-ai/agent-runtime`
   to GitHub Packages. Bump `version` in `sdk/package.json`, then run
   `npm publish` from that directory. Installation instructions are in
   `sdk/README.md`.
-- Python: `services/agent-runtime/clients/python` (`pip install <path or git URL>`).
+- Python: `clients/python` (`pip install <path or git URL>`).
 
 ## Operations
 

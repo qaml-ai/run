@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Replace the code executor hosts with $EXECUTOR_COUNT fresh ones running the
-# runtime image already in ECR (build it with infra/agent-runtime/deploy.sh),
+# runtime image already in ECR (build it with infra/deploy.sh),
 # point the runtime at them, and terminate the old hosts.
-# Usage: infra/agent-runtime/executor/deploy.sh [image-tag]   (default: the runtime's current image)
+# Usage: infra/executor/deploy.sh [image-tag]   (default: the runtime's current image)
 #
 # Executor hosts have no IAM role, no SSH and no SSM. They are never updated in
 # place: every deploy launches new ones. Health checks run from the runtime host,
@@ -19,7 +19,7 @@ vpc=$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[
 group() { aws ec2 describe-security-groups --filters Name=group-name,Values="$1" Name=vpc-id,Values="$vpc" --query 'SecurityGroups[0].GroupId' --output text; }
 executor_sg=$(group "$EXECUTOR_NAME")
 bootstrap_sg=$(group "$EXECUTOR_NAME-bootstrap")
-[[ "$executor_sg" != "None" && "$bootstrap_sg" != "None" ]] || { echo "Run infra/agent-runtime/executor/provision.sh first" >&2; exit 1; }
+[[ "$executor_sg" != "None" && "$bootstrap_sg" != "None" ]] || { echo "Run infra/executor/provision.sh first" >&2; exit 1; }
 
 read -r runtime runtime_ip runtime_subnet < <(aws ec2 describe-instances --filters Name=tag:Name,Values="$NAME" Name=instance-state-name,Values=running \
   --query 'Reservations[0].Instances[0].[InstanceId,PrivateIpAddress,SubnetId]' --output text)
@@ -46,7 +46,7 @@ else
 fi
 [[ "$image" == "$registry/$ECR_REPOSITORY:"* ]] || { echo "Unexpected image: $image" >&2; exit 1; }
 aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="${image##*:}" >/dev/null \
-  || { echo "$image is not in ECR; run infra/agent-runtime/deploy.sh first" >&2; exit 1; }
+  || { echo "$image is not in ECR; run infra/deploy.sh first" >&2; exit 1; }
 echo "image: $image"
 
 old=$(aws ec2 describe-instances --filters Name=tag:Name,Values="$EXECUTOR_NAME" Name=instance-state-name,Values=pending,running,stopping,stopped \

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.agent-runtime/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+.DS_Store
+# Local working notes
+plans/
+examples/team-demo/

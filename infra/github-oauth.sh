@@ -7,7 +7,7 @@
 #   Homepage URL:                https://agents.camelai.dev
 #   Authorization callback URL:  https://agents.camelai.dev/console/auth/callback
 #
-# Usage: infra/agent-runtime/github-oauth.sh <client-id>   (the client secret is read from stdin)
+# Usage: infra/github-oauth.sh <client-id>   (the client secret is read from stdin)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"

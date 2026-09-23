@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
 # Build the runtime image from this checkout, push it to ECR, install the
-# instance configuration from infra/agent-runtime/instance, and restart.
-# Usage: infra/agent-runtime/deploy.sh
+# instance configuration from infra/instance, and restart.
+# Usage: infra/deploy.sh
 #
 # Restarting interrupts running turns: their requests complete as uncertain and
 # the agents close those turns with "outcome unknown" results when they next run.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-repo=$(cd "$here/../.." && pwd)
+repo=$(cd "$here/.." && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
 
 registry="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 tag=$(git -C "$repo" rev-parse --short=12 HEAD)
-if [[ -n "$(git -C "$repo" status --porcelain -- services/agent-runtime/src services/agent-runtime/shared services/agent-runtime/console services/agent-runtime/package.json services/agent-runtime/Dockerfile)" ]]; then
+if [[ -n "$(git -C "$repo" status --porcelain -- src shared console package.json Dockerfile)" ]]; then
   tag="$tag-dirty-$(date +%Y%m%d%H%M%S)"
 fi
 image="$registry/$ECR_REPOSITORY:$tag"
 
 echo "==> Building the console"
-(cd "$repo/services/agent-runtime" && npx --no-install vite build --config console/vite.config.ts >/dev/null)
+(cd "$repo" && npx --no-install vite build --config console/vite.config.ts >/dev/null)
 
 echo "==> Building $image"
 aws ecr get-login-password | docker login --username AWS --password-stdin "$registry" >/dev/null
 if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$tag" >/dev/null 2>&1; then
   echo "image already pushed"
 else
-  docker buildx build --platform linux/arm64 --provenance=false -t "$image" --push "$repo/services/agent-runtime"
+  docker buildx build --platform linux/arm64 --provenance=false -t "$image" --push "$repo"
 fi
 
 instance=$(aws ec2 describe-instances --filters Name=tag:Name,Values="$NAME" Name=instance-state-name,Values=running \

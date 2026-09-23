@@ -25,7 +25,7 @@ chmod 600 "$DIR/tenants.json"
   if github=$(secret github-oauth 2>/dev/null); then
     python3 -c 'import json, sys; g = json.loads(sys.argv[1]); print("GITHUB_CLIENT_ID=" + g["clientId"]); print("GITHUB_CLIENT_SECRET=" + g["clientSecret"])' "$github"
   fi
-  # Code executor hosts are optional until infra/agent-runtime/executor/deploy.sh has run.
+  # Code executor hosts are optional until infra/executor/deploy.sh has run.
   if [[ -f "$DIR/executor.env" ]]; then
     echo "AGENT_EXECUTOR_TOKEN=$(secret executor-token)"
     cat "$DIR/executor.env"
