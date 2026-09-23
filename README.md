@@ -95,7 +95,7 @@ reads the old documents from the configured Storage and inserts them, skipping
 rows that exist, so it can be re-run:
 
 ```sh
-docker run --rm -e AGENT_DATABASE_URL -e AGENT_DATABASE_CA -e AGENT_STORAGE=s3 \
+docker run --rm -e AGENT_DATABASE_HOST -e AGENT_DATABASE_SECRET_ARN -e AGENT_DATABASE_CA -e AGENT_STORAGE=s3 \
   -e AGENT_S3_BUCKET -e AGENT_S3_PREFIX -e AWS_REGION <image> \
   node --experimental-strip-types --disable-warning=ExperimentalWarning src/migrate-coordination.ts
 ```
@@ -104,8 +104,9 @@ docker run --rm -e AGENT_DATABASE_URL -e AGENT_DATABASE_CA -e AGENT_STORAGE=s3 \
 
 | Variable | Meaning |
 | --- | --- |
-| `AGENT_DATABASE_URL` | Postgres, required; `sslmode` and `sslrootcert` in the URL are honoured |
-| `AGENT_DATABASE_CA` | PEM bundle to verify the server with (e.g. `/etc/ssl/rds-global-bundle.pem`); implies `sslmode=verify-full` unless the URL sets one |
+| `AGENT_DATABASE_URL` | Postgres for development and tests (`sslmode` and `sslrootcert` in the URL are honoured) |
+| `AGENT_DATABASE_HOST`, `AGENT_DATABASE_SECRET_ARN` | production instead of a URL: the login is read from the Secrets Manager secret (`{username, password}`, rotated by RDS), cached, and re-read every 10 minutes and whenever a connection fails authentication; `AGENT_DATABASE_NAME` (default `agent_runtime`), `AGENT_DATABASE_PORT` (default 5432), `AWS_REGION` |
+| `AGENT_DATABASE_CA` | PEM bundle the server's certificate must chain to (e.g. `/etc/ssl/rds-global-bundle.pem`); TLS settings in a URL are then ignored |
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_STORAGE` | `file` (default), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes |

@@ -40,7 +40,7 @@ const maxProcessesPerTenant = Number(process.env.AGENT_MAX_PROCESSES_PER_TENANT 
 if (!Number.isInteger(maxProcessesPerTenant) || maxProcessesPerTenant < 1) throw new Error("AGENT_MAX_PROCESSES_PER_TENANT must be a positive integer");
 const port = Number(process.env.PORT ?? 8790);
 // Control plane: coordination and small mutable state in Postgres.
-const db = databaseFromEnvironment();
+const db = await databaseFromEnvironment();
 await migrate(db);
 // Data plane: logs and blobs in local files by default, or shared storage (S3) so any node can serve any agent.
 const storageDescriptor = storageFromEnvironment(root);

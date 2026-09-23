@@ -155,7 +155,7 @@ export async function migrateCoordination(documents: Documents, db: Db, storage:
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const descriptor = storageFromEnvironment(resolve(process.env.AGENT_DATA_DIR ?? ".agent-runtime"));
-  const db = databaseFromEnvironment();
+  const db = await databaseFromEnvironment();
   try {
     await migrate(db);
     const documents = await readLegacyDocuments(descriptor);
