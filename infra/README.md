@@ -35,6 +35,12 @@ proxies to the runtime container (`agent-runtime.service`). Agent state lives in
 `/opt/agent-runtime/data`. Before every start and reload,
 `refresh-config.sh` pulls the secrets into `runtime.env` and `tenants.json`.
 
+## Terraform
+
+The resources above are described in [`terraform/`](terraform/README.md). Once
+its imports have been applied, `provision.sh` and `executor/provision.sh` are
+superseded; the deploy, tenant and GitHub OAuth scripts below stay.
+
 ## First-time setup
 
 ```sh
