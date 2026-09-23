@@ -1,0 +1,1622 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Agent runtime API",
+    "version": "1.0.0"
+  },
+  "security": [
+    {
+      "bearer": []
+    },
+    {
+      "console": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Operator or API token"
+      },
+      "console": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "ar_session",
+        "description": "Console session; mutations also need X-Agent-Runtime-Console: 1"
+      }
+    },
+    "schemas": {
+      "Me": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "string"
+          },
+          "via": {
+            "type": "string",
+            "enum": [
+              "operator",
+              "token",
+              "console"
+            ]
+          },
+          "login": {
+            "type": "string",
+            "description": "GitHub login, for console sessions"
+          },
+          "canStoreKeys": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tenant",
+          "via",
+          "canStoreKeys"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "Provider": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "models": {
+            "type": "integer"
+          },
+          "apiKey": {
+            "type": "boolean",
+            "description": "Whether one API key is enough to use this provider"
+          },
+          "requires": {
+            "type": "string",
+            "description": "What the provider needs instead of an API key"
+          },
+          "key": {
+            "$ref": "#/components/schemas/KeyStatus"
+          }
+        },
+        "required": [
+          "id",
+          "models",
+          "apiKey",
+          "key"
+        ]
+      },
+      "KeyStatus": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "tenant",
+              "admin"
+            ]
+          },
+          "last4": {
+            "type": "string"
+          },
+          "setAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "provider",
+          "source"
+        ]
+      },
+      "KeySet": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "last4": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "valid",
+                  "unverified",
+                  "invalid"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "last4",
+          "verification"
+        ]
+      },
+      "KeyInput": {
+        "type": "object",
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^\\S+$"
+          },
+          "verify": {
+            "type": "boolean",
+            "description": "false stores the key without checking it with the provider"
+          }
+        },
+        "required": [
+          "apiKey"
+        ]
+      },
+      "Model": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Pass this as `model` when creating or configuring an agent",
+            "example": "anthropic/claude-sonnet-5"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "modelId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "api": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "contextWindow": {
+            "type": "number"
+          },
+          "maxTokens": {
+            "type": "number"
+          },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite"
+            ],
+            "description": "USD per million tokens"
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Whether this tenant has a key for the provider"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "modelId",
+          "name",
+          "api",
+          "reasoning",
+          "input",
+          "contextWindow",
+          "maxTokens",
+          "cost",
+          "available"
+        ]
+      },
+      "AgentSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "expiresAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type",
+          "model",
+          "connected",
+          "running",
+          "expiresAt"
+        ]
+      },
+      "AgentCreated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string",
+            "description": "The agent's scoped credential for /clients routes"
+          },
+          "expiresAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "token",
+          "expiresAt"
+        ],
+        "additionalProperties": {}
+      },
+      "AgentInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "description": "A model id from GET /v1/models; the runtime default when omitted"
+          },
+          "systemPrompt": {
+            "type": "string"
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinition"
+            },
+            "description": "Client tools; REST-created agents usually have none"
+          },
+          "initialMessages": {
+            "type": "array",
+            "items": {}
+          }
+        }
+      },
+      "ToolDefinition": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "JSON Schema of the arguments"
+          },
+          "resultFormat": {
+            "type": "string",
+            "enum": [
+              "json",
+              "content"
+            ]
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "codemode",
+              "both"
+            ]
+          },
+          "executionMode": {
+            "type": "string",
+            "enum": [
+              "sequential",
+              "parallel"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "parameters"
+        ]
+      },
+      "AgentDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AgentSummary"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "tools": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ToolDefinition"
+                }
+              },
+              "systemPrompt": {
+                "type": "string"
+              },
+              "cursor": {
+                "type": "number"
+              },
+              "events": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "number"
+                    },
+                    "data": {}
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "requests": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RequestRecord"
+                }
+              },
+              "calls": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CallRecord"
+                }
+              }
+            },
+            "required": [
+              "tools",
+              "systemPrompt",
+              "cursor",
+              "events",
+              "requests",
+              "calls"
+            ]
+          }
+        ]
+      },
+      "RequestRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "prompt",
+              "execute",
+              "status",
+              "abort",
+              "history",
+              "continue",
+              "steer",
+              "followUp",
+              "configure"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "began": {
+            "type": "number"
+          },
+          "endedAt": {
+            "type": "number"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          }
+        },
+        "required": [
+          "id",
+          "method",
+          "state",
+          "fingerprint"
+        ]
+      },
+      "Outcome": {
+        "type": "object",
+        "properties": {
+          "result": {},
+          "error": {
+            "type": "string"
+          },
+          "uncertain": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CallRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "toolCallId": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "deadline": {
+            "type": "number"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "offered",
+              "started",
+              "completed",
+              "cancelled",
+              "uncertain"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "lateOutcome": {
+            "$ref": "#/components/schemas/Outcome"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "args",
+          "deadline",
+          "state"
+        ]
+      },
+      "History": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {}
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "additionalProperties": {}
+      },
+      "PromptInput": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "Idempotency: retrying with the same id returns the same request"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "Schedule": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "dueAt": {
+            "type": "number"
+          },
+          "everySeconds": {
+            "type": "number"
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "tenant",
+          "dueAt",
+          "createdAt"
+        ]
+      },
+      "ScheduleInput": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Prompt to deliver; give exactly one of text or code"
+          },
+          "code": {
+            "type": "string",
+            "description": "Code to run in the sandbox with the agent's tools"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "ISO time or epoch milliseconds"
+          },
+          "inSeconds": {
+            "type": "number"
+          },
+          "everySeconds": {
+            "type": "integer",
+            "minimum": 60
+          }
+        }
+      },
+      "Token": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "createdAt"
+        ]
+      },
+      "TokenCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Token"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "token": {
+                "type": "string",
+                "description": "The secret; shown only once"
+              }
+            },
+            "required": [
+              "token"
+            ]
+          }
+        ]
+      },
+      "TokenInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1–80 characters"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "Usage": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "number"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "responses": {
+                "type": "number"
+              },
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "cost": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "responses",
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite",
+              "cost"
+            ]
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "responses": {
+                  "type": "number"
+                },
+                "input": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "cacheRead": {
+                  "type": "number"
+                },
+                "cacheWrite": {
+                  "type": "number"
+                },
+                "cost": {
+                  "type": "number"
+                },
+                "day": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "responses",
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "cost",
+                "day",
+                "model"
+              ]
+            }
+          }
+        },
+        "required": [
+          "since",
+          "totals",
+          "days"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/v1/me": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Key status per provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Provider"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/{provider}/key": {
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The key is stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeySet"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The key is deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "provider",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ],
+              "description": "Only models this tenant has a key for"
+            },
+            "required": false,
+            "description": "Only models this tenant has a key for",
+            "name": "available",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Models in the catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Model"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The tenant's agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentSummary"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Provisioning with the same key returns the same agent"
+            },
+            "required": false,
+            "description": "Provisioning with the same key returns the same agent",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The agent and its scoped token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDetail"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent is revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/history": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The transcript",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/History"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/abort": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The running turn is aborted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "aborted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "aborted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/prompt": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The accepted request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRecord"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/requests/{requestId}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "requestId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request and, once settled, its outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRecord"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/schedules": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent's schedules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Schedule"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The schedule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Schedule"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/schedules/{scheduleId}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scheduleId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The schedule is deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tokens": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The tenant's API tokens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Token"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The token, with its secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tokens/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The token is revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/usage": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "1–365, default 30"
+            },
+            "required": false,
+            "description": "1–365, default 30",
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Token usage per UTC day and model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}

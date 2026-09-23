@@ -6,7 +6,8 @@ each agent's durable history (with compaction), and executes model-written code
 in a QuickJS/WebAssembly sandbox. Most agents are asleep at any time: an agent's
 state lives in shared storage (S3 in production) and any node can load it.
 
-Live at <https://agents.camelai.dev> (REST API under `/v1`, console at `/console`).
+Live at <https://agents.camelai.dev> (REST API under `/v1`, described by
+`/v1/openapi.json` and the committed `openapi.json`; console at `/console`).
 
 ```text
 app (TypeScript / Python SDK, HTTP + SSE)
@@ -37,6 +38,7 @@ npm test                         # agents in their own processes
 AGENT_HOSTING=inline npm test    # agents inline in the server process
 npm run test:python              # needs clients/python/requirements.txt
 npm run demo                     # sandbox demo, no model credentials
+npm run openapi                  # regenerate openapi.json after changing /v1 routes
 ```
 
 Optional backends in the storage tests: `AGENT_TEST_S3_BUCKET=<bucket>` and

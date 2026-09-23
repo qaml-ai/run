@@ -257,6 +257,13 @@ test("console routes serve the app shell as HTML, never as a download", async t 
   // An encoded traversal reaches the server intact; it must never serve files outside the build.
   for (const path of ["/console/%2e%2e/src/server.ts", "/console/..%2f..%2fsrc%2fserver.ts"]) {
     const escaped = await call(path);
-    assert.equal(String(escaped.json).includes("createServer"), false, path);
+    assert.equal(String(escaped.json).includes("AGENT_SESSION_SECRET"), false, path);
   }
+});
+
+test("the OpenAPI document is served without credentials", async t => {
+  const { call } = await runtime(t);
+  const served = await call("/v1/openapi.json");
+  assert.equal(served.status, 200);
+  assert.deepEqual(served.json, JSON.parse(await readFile(new URL("../openapi.json", import.meta.url), "utf8")));
 });
