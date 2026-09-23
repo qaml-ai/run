@@ -434,6 +434,12 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   await assert.rejects(b.setMounts(agent.session.id, []), (error: AgentError) => error.status === 404, "nor change Alice's agents' mounts");
   await assert.rejects(b.mounts(agent.session.id), (error: AgentError) => error.status === 404);
 
+  // Deleting an agent deletes its own workspace, not the volumes it merely mounted.
+  await plain.destroy();
+  assert.equal((await a.listVolumes()).some(entry => entry.id === workspace.volumeId), false);
+  await assert.rejects(a.volume(workspace.volumeId).info(), (error: AgentError) => error.status === 404);
+  assert.ok((await volume.info()).id === created.id);
+
   await volume.delete();
   await assert.rejects(volume.info(), (error: AgentError) => error.status === 404);
   await assert.rejects(agent.execute('return await tools.ls({ path: "/reports" })'), /Unknown volume/);

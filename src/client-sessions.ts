@@ -19,7 +19,7 @@ import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { HttpError, readJson } from "./http.ts";
-import type { Mount, VolumeService } from "./volumes.ts";
+import { VolumeService, type Mount } from "./volumes.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -849,6 +849,22 @@ export class ClientSessions {
     await this.writeHeader(session);
     await this.interrupt(session, "Session revoked");
     session.response?.end();
+    await this.releaseVolumes(session);
+  }
+
+  /** A deleted agent stops watching its mounts, and its own workspace goes with it; shared volumes stay. */
+  private async releaseVolumes(session: Session) {
+    const volumes = this.options.volumes;
+    const mounts = session.header.mounts ?? [];
+    if (!volumes || !mounts.length) return;
+    const id = session.header.id, tenant = session.header.tenant ?? DEFAULT_TENANT;
+    try {
+      await volumes.watch(id, tenant, mounts, []);
+      const workspace = VolumeService.workspaceOf(id);
+      if (mounts.some(mount => mount.volumeId === workspace)) await volumes.call(workspace, tenant, "delete");
+    } catch (error) {
+      if ((error as { status?: number }).status !== 404) console.error(JSON.stringify({ type: "agent_volumes_release_failed", agent: id, error: errorText(error) }));
+    }
   }
 
   /** Settle in-flight work. With `keepQueued`, runs that never began stay queued for the next owner. */
