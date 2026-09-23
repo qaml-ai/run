@@ -13,6 +13,7 @@ import { HttpError, readJson } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import * as schema from "./api-schemas.ts";
+import { normalizePath, type VolumeService } from "./volumes.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -28,6 +29,7 @@ export interface ApiContext {
   verifyKeys?: boolean;
   scheduler?: Scheduler;
   channels?: Channels;
+  volumes?: VolumeService;
 }
 type Env = { Variables: { principal: Principal & { login?: string } } };
 
@@ -41,6 +43,7 @@ const content = (value: z.ZodType) => ({ content: { "application/json": { schema
 const reply = (description: string, value: z.ZodType) => ({ description, ...content(value) });
 const failure = { default: reply("Error", schema.ApiError) };
 const agentId = z.object({ id: z.string() });
+const binary = (description: string) => ({ description, content: { "application/octet-stream": { schema: z.string().openapi({ format: "binary" }) } } });
 
 function parse<T extends z.ZodType>(type: T, value: unknown): z.infer<T> {
   const result = type.safeParse(value);
@@ -53,9 +56,10 @@ export function api(context: ApiContext) {
   const { accounts, clients } = context;
   // Bodies are read in handlers, after authentication and ownership checks and within
   // a size limit, so routes are documented here rather than validated by middleware.
-  const route = (config: RouteConfig, handler: (c: Context<Env>) => Promise<Response> | Response) => {
+  // `path` overrides the handler's path, for parameters that span segments.
+  const route = (config: RouteConfig, handler: (c: Context<Env>) => Promise<Response> | Response, path = config.path.replaceAll(/{(\w+)}/g, ":$1")) => {
     app.openAPIRegistry.registerPath({ ...config, responses: { ...config.responses, ...failure } });
-    app.on(config.method.toUpperCase(), config.path.replaceAll(/{(\w+)}/g, ":$1"), handler);
+    app.on(config.method.toUpperCase(), path, handler);
   };
   app.openAPIRegistry.registerComponent("securitySchemes", "bearer", { type: "http", scheme: "bearer", description: "Operator or API token" });
   app.openAPIRegistry.registerComponent("securitySchemes", "console", { type: "apiKey", in: "cookie", name: "ar_session", description: "Console session; mutations also need X-Agent-Runtime-Console: 1" });
@@ -193,6 +197,121 @@ export function api(context: ApiContext) {
   });
 
   channelRoutes(route, () => context.channels);
+
+  const volumes = () => {
+    if (!context.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
+    return context.volumes;
+  };
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/mounts", request: { params: agentId }, responses: { 200: reply("The agent's mounts", z.array(schema.Mount)) } }),
+    async c => json(c, 200, (await clients.inspect(c.req.param("id")!, c.var.principal.tenant)).mounts));
+  route(createRoute({ method: "put", path: "/v1/agents/{id}/mounts", request: { params: agentId, body: content(schema.MountsInput) }, responses: { 200: reply("The agent's new mounts", z.array(schema.Mount)) } }), async c => {
+    const body = await readJson(c.req.raw.body, 64 * 1024, {});
+    return json(c, 200, await clients.setMounts(c.req.param("id")!, c.var.principal.tenant, body.mounts));
+  });
+
+  // Every /v1/volumes/<id> request is forwarded to the node that owns the volume before it gets here.
+  const volumeId = z.object({ id: z.string() });
+  const volume = async (c: Context<Env>) => {
+    const id = c.req.param("id")!;
+    if (!await volumes().owns(id, c.var.principal.tenant)) throw new HttpError(404, "Unknown volume");
+    return { id, tenant: c.var.principal.tenant, call: (op: string, args: Record<string, unknown> = {}) => volumes().call(id, c.var.principal.tenant, op, args) };
+  };
+  route(createRoute({ method: "get", path: "/v1/volumes", responses: { 200: reply("The tenant's volumes", z.array(schema.VolumeSummary)) } }),
+    async c => json(c, 200, await volumes().list(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/volumes", request: { body: content(schema.VolumeInput) }, responses: { 201: reply("The volume", schema.Volume) } }), async c => {
+    const body = await readJson(c.req.raw.body, 4096, {});
+    return json(c, 201, await volumes().create(c.var.principal.tenant, body));
+  });
+  route(createRoute({ method: "get", path: "/v1/volumes/{id}", request: { params: volumeId }, responses: { 200: reply("The volume", schema.Volume) } }),
+    async c => json(c, 200, await (await volume(c)).call("info")));
+  route(createRoute({ method: "delete", path: "/v1/volumes/{id}", request: { params: volumeId }, responses: { 200: reply("The volume is deleted; agents mounting it can no longer reach it", schema.Deleted) } }),
+    async c => json(c, 200, await (await volume(c)).call("delete")));
+  route(createRoute({ method: "get", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId }, responses: { 200: reply("The volume's snapshots", z.array(schema.Snapshot)) } }),
+    async c => json(c, 200, await (await volume(c)).call("snapshots")));
+  route(createRoute({ method: "post", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId, body: content(schema.VolumeInput) }, responses: { 201: reply("The snapshot: a copy of the file metadata, sharing contents", schema.Snapshot) } }), async c => {
+    const target = await volume(c);
+    return json(c, 201, await target.call("snapshot", await readJson(c.req.raw.body, 4096, {})));
+  });
+  route(createRoute({ method: "delete", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }) }, responses: { 200: reply("The snapshot is deleted", schema.Deleted) } }),
+    async c => json(c, 200, await (await volume(c)).call("deleteSnapshot", { snapshot: c.req.param("snapshotId") })));
+  route(createRoute({ method: "post", path: "/v1/volumes/{id}/fork", request: { params: volumeId, body: content(schema.ForkInput) }, responses: { 201: reply("A new, independent volume with the same files", schema.Volume) } }), async c => {
+    const target = await volume(c);
+    const { name, snapshot } = await readJson(c.req.raw.body, 4096, {});
+    return json(c, 201, await target.call("fork", { name, snapshot }));
+  });
+  route(createRoute({
+    method: "get", path: "/v1/volumes/{id}/changes", request: { params: volumeId, query: z.object({ since: z.string().optional().openapi({ description: "Changes after this seq" }) }) },
+    responses: { 200: reply("Recent changes, oldest first", schema.Changes) },
+  }), async c => json(c, 200, await (await volume(c)).call("changes", { since: Number(c.req.query("since") ?? 0) || 0 })));
+  route(createRoute({
+    method: "get", path: "/v1/volumes/{id}/files", request: { params: volumeId, query: z.object({ prefix: z.string().optional(), glob: z.string().optional(), after: z.string().optional(), limit: z.string().optional() }) },
+    responses: { 200: reply("Files under prefix, in path order, a page at a time", schema.FileList) },
+  }), async c => {
+    const { prefix, glob, after, limit } = c.req.query();
+    const listing = await (await volume(c)).call("list", { path: prefix ?? "/", ...(glob ? { glob } : {}), ...(after ? { after } : {}), ...(limit ? { limit: Number(limit) } : {}) });
+    return json(c, 200, { files: listing.files.map(({ chunks: _chunks, ...file }: { chunks: string[] }) => file), ...(listing.next ? { next: listing.next } : {}) });
+  });
+  const filePath = (c: Context) => {
+    const encoded = new URL(c.req.url).pathname.split("/files/").slice(1).join("/files/");
+    try { return normalizePath(`/${encoded.split("/").map(decodeURIComponent).join("/")}`); }
+    catch { throw new HttpError(400, "Invalid file path"); }
+  };
+  const version = (value: string | undefined) => {
+    if (value === undefined) return undefined;
+    const parsed = Number(value.replace(/^W\//, "").replaceAll('"', ""));
+    if (!Number.isSafeInteger(parsed) || parsed < 0) throw new HttpError(400, "If-Match must be a file version");
+    return parsed;
+  };
+  const file = { params: volumeId.extend({ path: z.string().openapi({ description: "Path inside the volume; may contain /" }) }) };
+  const files = "/v1/volumes/:id/files/*";
+  route(createRoute({
+    method: "put", path: "/v1/volumes/{id}/files/{path}",
+    request: { ...file, headers: z.object({ "if-match": z.string().optional().openapi({ description: "Only replace this version" }), "if-none-match": z.string().optional().openapi({ description: "* to create only" }) }), body: binary("The file's bytes") },
+    responses: { 201: reply("The file's new version", schema.VolumeFile) },
+  }), async c => {
+    const target = await volume(c);
+    const path = filePath(c);
+    const ifMatch = c.req.header("if-none-match") === "*" ? 0 : version(c.req.header("if-match"));
+    const stored = await volumes().store(target.tenant, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>);
+    const { chunks: _chunks, ...entry } = await target.call("commit", { path, ...stored, ...(ifMatch !== undefined ? { ifMatch } : {}) });
+    return json(c, 201, entry);
+  }, files);
+  route(createRoute({
+    method: "get", path: "/v1/volumes/{id}/files/{path}", request: { ...file, headers: z.object({ range: z.string().optional().openapi({ description: "bytes=start-end" }) }) },
+    responses: { 200: binary("The file, streamed a chunk at a time; ETag is its version"), 206: binary("The requested range") },
+  }), async c => {
+    const target = await volume(c);
+    const entry = await target.call("stat", { path: filePath(c) });
+    if (entry.type !== "file") throw new HttpError(404, `${entry.path} is a directory`);
+    let start = 0, end = entry.size;
+    const range = c.req.header("range");
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (match && match[1]) { start = Number(match[1]); if (match[2]) end = Math.min(entry.size, Number(match[2]) + 1); }
+      else if (match && match[2]) start = Math.max(0, entry.size - Number(match[2]));
+      if (!match || (!match[1] && !match[2]) || start >= end) return c.body(null, 416, { "Content-Range": `bytes */${entry.size}` });
+    }
+    const chunks = volumes().stream(target.tenant, entry, start, end);
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const next = await chunks.next();
+        if (next.done) controller.close(); else controller.enqueue(new Uint8Array(next.value));
+      },
+      async cancel() { await chunks.return(undefined); },
+    });
+    return new Response(body, { status: range ? 206 : 200, headers: {
+      "Content-Type": "application/octet-stream", "Content-Length": String(end - start), ETag: `"${entry.version}"`, "Cache-Control": "no-store",
+      ...(range ? { "Content-Range": `bytes ${start}-${end - 1}/${entry.size}` } : {}),
+    } });
+  }, files);
+  route(createRoute({
+    method: "delete", path: "/v1/volumes/{id}/files/{path}", request: { ...file, headers: z.object({ "if-match": z.string().optional() }) },
+    responses: { 200: reply("The file is deleted", z.object({ path: z.string(), deleted: z.literal(true), seq: z.number() })) },
+  }), async c => {
+    const target = await volume(c);
+    const ifMatch = version(c.req.header("if-match"));
+    return json(c, 200, await target.call("remove", { path: filePath(c), ...(ifMatch !== undefined ? { ifMatch } : {}) }));
+  }, files);
 
   app.all("/v1/agents/:id/schedules/*", () => { scheduler(); throw new HttpError(404, "Unknown schedule route"); });
   app.all("/v1/agents/:id/*", () => { throw new HttpError(404, "Unknown agent route"); });

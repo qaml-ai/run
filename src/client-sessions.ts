@@ -19,6 +19,7 @@ import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { HttpError, readJson } from "./http.ts";
+import type { Mount, VolumeService } from "./volumes.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -35,6 +36,8 @@ interface SessionHeader {
   /** Owning tenant; absent on sessions created before tenants existed (the default tenant). */
   tenant?: string;
   metadata?: AgentMetadata; definitions: ToolDefinition[]; provisionHash: string; config: SessionConfig;
+  /** Volumes the agent's file tools can reach; absent on sessions created before volumes existed. */
+  mounts?: Mount[];
 }
 /** Upserts of request and tool-call records, appended as their state changes. */
 type JournalRecord = { t: "request"; record: RequestRecord } | { t: "call"; record: CallRecord };
@@ -111,6 +114,8 @@ export interface ClientSessionOptions {
   /** Called with each finished assistant message that reports token usage. */
   onUsage?: (tenant: string, agentId: string, message: { provider?: string; model?: string; usage: any; timestamp?: number }) => void;
   hooks?: SessionHooks;
+  /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
+  volumes?: VolumeService;
 }
 export type AgentRef = { id: string; tenant: string };
 /** Runtime features layered on agents (channels): they observe runs and may answer tools themselves. */
@@ -383,8 +388,11 @@ export class ClientSessions {
       await this.makeRoom(session);
       const apiKey = await this.apiKey(session, session.header.config.model.provider);
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}) }, {
-        definitions: session.header.definitions,
-        call: (name, args, signal, context) => this.call(session, name, args, signal, context),
+        definitions: [...this.fileTools(session, session.header.definitions), ...session.header.definitions],
+        // File tools run here against the agent's current mounts; every other tool goes to the application.
+        call: (name, args, signal, context) => this.fileTools(session, session.header.definitions).some(tool => tool.name === name)
+          ? this.options.volumes!.tool({ tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, mounts: session.header.mounts ?? [] }, name, args, signal)
+          : this.call(session, name, args, signal, context),
       });
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
@@ -398,7 +406,12 @@ export class ClientSessions {
     })().finally(() => { session.starting = undefined; });
   }
 
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  /** The runtime's file tools for a session with mounts; application tools of the same name take precedence. */
+  private fileTools(session: Session, definitions: ToolDefinition[]) {
+    return this.options.volumes && session.header.mounts?.length ? this.options.volumes.definitions(session.header.mounts, definitions) : [];
+  }
+
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -407,7 +420,7 @@ export class ClientSessions {
     const id = `client_${hash(scoped).slice(0, 40)}`;
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
-    const provisionHash = hash(canonical({ definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}) }));
+    const provisionHash = hash(canonical({ definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }));
     // Re-provisioning an agent another node serves only needs its header: nothing to start here.
     if (await this.ownerElsewhere(id)) {
       const stored = await this.readHeader(id);
@@ -424,6 +437,7 @@ export class ClientSessions {
       if (session.header.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
       if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
     } else {
+      const granted = this.options.volumes ? await this.options.volumes.mountsFor(tenant, id, mounts) : undefined;
       let lease: Lease | undefined;
       if (this.options.leases) {
         const acquired = await this.options.leases.acquire(id, this.node, this.leaseTtl);
@@ -431,7 +445,7 @@ export class ClientSessions {
         lease = acquired.lease;
       }
       session = {
-        header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash },
+        header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
         lease, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id)),
         cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), lastActive: Date.now(),
       };
@@ -439,10 +453,11 @@ export class ClientSessions {
       try { await this.writeHeader(session); }
       catch (error) {
         if (lease) await this.options.leases!.release(lease).catch(() => {});
-        if (session.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant);
+        if (session.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts);
         throw error;
       }
       this.sessions.set(id, session);
+      if (granted) await this.options.volumes!.watch(id, tenant, [], granted);
     }
     await this.ensureStarted(session);
     const status = await this.supervisor.request(id, "status");
@@ -473,7 +488,7 @@ export class ClientSessions {
     const metadata = (await this.owns(id, tenant)) ? (await this.list(tenant)).find(agent => agent.id === id) : undefined;
     const session = metadata && await this.load(id);
     if (!metadata || !session) throw new HttpError(404, "Agent not found");
-    return { ...metadata, tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
+    return { ...metadata, tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "", mounts: session.header.mounts ?? [],
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible), calls: [...session.calls.values()] };
   }
 
@@ -500,6 +515,22 @@ export class ClientSessions {
       if ((session.header.tenant ?? DEFAULT_TENANT) !== tenant || session.header.config.model.provider !== provider) continue;
       if (this.supervisor.agents.has(session.header.id) && !this.busy(session)) await this.supervisor.stop(session.header.id);
     }
+  }
+
+  /**
+   * Replace a tenant's agent's mounts. Access checks use them at once; an idle agent
+   * restarts so its file tools describe them (a busy one picks them up next start).
+   */
+  async setMounts(id: string, tenant: string, requested: unknown) {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Unknown agent");
+    if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
+    const mounts = await this.options.volumes.mountsFor(tenant, id, requested ?? []);
+    await this.options.volumes.watch(id, tenant, session.header.mounts ?? [], mounts);
+    session.header.mounts = mounts;
+    await this.writeHeader(session);
+    if (this.supervisor.agents.has(id) && !this.busy(session)) await this.supervisor.stop(id);
+    return mounts;
   }
 
   /** Revoke a tenant's agent and stop its process. Its files stay on disk. */
@@ -692,7 +723,9 @@ export class ClientSessions {
       // A new model may belong to another provider: the agent needs that provider's key.
       const apiKey = update.model ? await this.apiKey(session, update.model.provider) : undefined;
       if (update.model && this.options.apiKeyFor && !apiKey) throw new Error(`No ${update.model.provider} API key is configured for this tenant; set one with PUT /v1/providers/${update.model.provider}/key`);
-      const result = await this.supervisor.request(id, "configure", { ...update, ...(apiKey ? { apiKey } : {}) });
+      // Replacing the application's tools keeps the runtime's file tools.
+      const withFiles = update.tools && [...this.fileTools(session, update.tools), ...update.tools];
+      const result = await this.supervisor.request(id, "configure", { ...update, ...(withFiles ? { tools: withFiles } : {}), ...(apiKey ? { apiKey } : {}) });
       const { tools, ...config } = update;
       if (tools !== undefined) session.header.definitions = tools;
       session.header.config = { ...session.header.config, ...config };

@@ -217,6 +217,53 @@ token. Deleting the channel removes the webhook.
 
 `AGENT_TELEGRAM_API_URL` overrides the Bot API endpoint (tests use a local fake).
 
+## Volumes
+
+A volume is a shared file tree that agents mount; there is no POSIX mount. Each
+agent has mounts `{volumeId, path, mode: "ro" | "rw", subpath?, notify?}`, set at
+creation (`mounts` on `POST /v1/agents` or the SDKs' `createAgent`) or with
+`PUT /v1/agents/:id/mounts`. Without `mounts`, an agent gets its own workspace
+volume at `/workspace`. Mounts are capabilities: sharing means mounting the same
+volume in several agents, and only the tenant's own volumes can be mounted.
+
+The agent's tools `read`, `write`, `edit`, `ls`, `glob` and `grep` work on mount
+paths (`/workspace/notes.md`), directly and from `js_exec`. An application tool
+with the same name takes precedence. Every file has a version; `write` and `edit`
+take a `version` (0: the file must not exist), so an edit based on a stale read
+fails with an error telling the model to read the file again. `read` returns at
+most 32 KiB per call (up to 128 KiB) with a `nextOffset`; `grep` returns at most
+200 lines and skips binary files and files over 4 MiB, and matches in a worker
+that is stopped after 10 seconds; `glob` returns at most 1,000 paths.
+
+A volume is an actor, like an agent: one node at a time holds its lease, and
+requests to `/v1/volumes/:id` are forwarded to that node.
+
+```text
+volumes/<id>                      header: tenant, name, tombstone
+volumes/<id>/tree                 append log of puts and deletes, folded into a base every 1,024 records
+volumes/<id>/snapshots/<snap>     snapshot summary (+ snapshot-files/<snap>, the file map)
+volumes/<id>/watchers/<agent>     mounts with notify
+volumes/index/<tenant>/<id>       the tenant's volumes
+chunks/<tenant>/<aa>/<sha256>     contents, in 1 MiB content-addressed chunks
+```
+
+Writes: any node splits the content into chunks and stores those not already
+present, then asks the owner to commit the path. The owner checks the version,
+appends the record durably and applies it; a node that lost the lease is fenced by
+the log. Reads ask the owner only for the path's chunk list, then fetch the chunks
+needed for the requested range directly from storage. Downloads stream a chunk at
+a time and support `Range`. Snapshots and forks copy metadata only, so a fork and
+its source share chunks and diverge independently. `GET /v1/volumes/:id/changes`
+lists recent changes; a mount with `notify` prompts the agent (about a second
+after changes, coalesced) when others change files under it.
+
+Not yet built: garbage collection of unreferenced chunks (deleting a file,
+volume or snapshot leaves its chunks), quotas per tenant, restoring a snapshot in
+place, empty directories, renames, and durable change notifications (a crash
+during the one-second window drops that notification). Listings and snapshots
+hold a volume's file map in memory and in one document, which suits volumes of
+up to about 100,000 files. Uploads share the server's 30-second request timeout.
+
 ## Tenant isolation contract
 
 This prototype is **single-tenant, with one trusted operator**. Separate agent

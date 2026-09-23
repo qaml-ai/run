@@ -62,6 +62,14 @@ const ToolDefinition = z.object({
   executionMode: z.enum(["sequential", "parallel"]).optional(),
 }).openapi("ToolDefinition");
 
+export const Mount = z.object({
+  volumeId: z.string(),
+  path: z.string().openapi({ description: "Where the agent's file tools see the volume, e.g. /workspace" }),
+  mode: z.enum(["ro", "rw"]),
+  subpath: z.string().optional().openapi({ description: "Mount only this directory of the volume" }),
+  notify: z.boolean().optional().openapi({ description: "Prompt the agent when others change files under this mount" }),
+}).openapi("Mount");
+
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
 export const AgentInput = z.object({
   name: z.string().optional(),
@@ -72,6 +80,7 @@ export const AgentInput = z.object({
   tools: z.array(ToolDefinition).optional().openapi({ description: "Client tools; REST-created agents usually have none" }),
   initialMessages: z.array(z.unknown()).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400." }),
+  mounts: z.array(Mount).optional().openapi({ description: "Volumes for the agent's file tools; default: a new workspace volume at /workspace" }),
 }).openapi("AgentInput");
 
 export const AgentCreated = z.looseObject({
@@ -120,6 +129,7 @@ const CallRecord = z.object({
 
 export const AgentDetail = AgentSummary.extend({
   tools: z.array(ToolDefinition),
+  mounts: z.array(Mount),
   systemPrompt: z.string(),
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
@@ -204,3 +214,23 @@ export const Channel = z.object({
   createdAt: z.number(),
   updatedAt: z.number(),
 }).openapi("Channel");
+
+export const MountsInput = z.object({ mounts: z.array(Mount) }).openapi("MountsInput");
+
+export const VolumeInput = z.object({ name: z.string().optional() }).openapi("VolumeInput");
+export const VolumeSummary = z.object({ id: z.string(), name: z.string(), createdAt: z.number() }).openapi("VolumeSummary");
+export const Volume = VolumeSummary.extend({
+  seq: z.number().openapi({ description: "Increases with every change to the volume" }),
+  files: z.number(),
+  bytes: z.number(),
+  origin: z.object({ volume: z.string(), snapshot: z.string().optional(), seq: z.number() }).optional().openapi({ description: "What a fork was copied from" }),
+}).openapi("Volume");
+export const ForkInput = z.object({ name: z.string().optional(), snapshot: z.string().optional().openapi({ description: "Fork this snapshot instead of the current state" }) }).openapi("ForkInput");
+export const Snapshot = z.object({ id: z.string(), volume: z.string(), name: z.string(), seq: z.number(), createdAt: z.number(), files: z.number(), bytes: z.number() }).openapi("Snapshot");
+export const VolumeFile = z.object({ path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional() }).openapi("VolumeFile");
+export const FileList = z.object({ files: z.array(VolumeFile), next: z.string().optional().openapi({ description: "Pass as `after` for the next page" }) }).openapi("FileList");
+export const Changes = z.object({
+  seq: z.number(),
+  changes: z.array(z.object({ seq: z.number(), path: z.string(), kind: z.enum(["write", "delete"]), version: z.number().optional(), size: z.number().optional(), by: z.string().optional(), at: z.number() })),
+  gap: z.boolean().optional().openapi({ description: "Older changes are no longer kept; list the files instead" }),
+}).openapi("Changes");

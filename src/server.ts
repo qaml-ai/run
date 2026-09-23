@@ -24,7 +24,8 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { readJson, readText } from "./http.ts";
+import { HttpError, readJson, readText } from "./http.ts";
+import { VersionConflict, VolumeService } from "./volumes.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE.
 // Without it, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -98,7 +99,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   }
   const ttl = params.ttlSeconds;
   if (ttl !== undefined && ttl !== null && (!Number.isInteger(ttl) || ttl < 60 || ttl > 366 * 86_400)) throw new Error("ttlSeconds must be null (never expires) or an integer from 60 to 31622400");
-  return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000);
+  return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts);
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
@@ -125,27 +126,61 @@ async function serveConsole(c: Context) {
   });
 }
 
-/** The agent a request addresses, if any: `/clients/<id>`, `/v1/agents/<id>`, `/registry/<id>` or `/internal/agents/<id>`. */
-const agentOf = (url = "") => /^\/(?:clients|v1\/agents|registry|internal\/agents)\/(client_[a-f0-9]{40})(?:[/?]|$)/.exec(url)?.[1];
+/**
+ * The live owner elsewhere of the actor a request addresses, if any. Agents are
+ * `/clients/<id>`, `/v1/agents/<id>`, `/registry/<id>` or `/internal/agents/<id>`;
+ * volumes are `/v1/volumes/<id>` or `/internal/volumes/<id>`.
+ */
+function ownerOf(url = "") {
+  const agent = /^\/(?:clients|v1\/agents|registry|internal\/agents)\/(client_[a-f0-9]{40})(?:[/?]|$)/.exec(url)?.[1];
+  if (agent) return clients.ownerElsewhere(agent);
+  const volume = /^\/(?:v1\/volumes|internal\/volumes)\/(vol_[a-f0-9]{24})(?:[/?]|$)/.exec(url)?.[1];
+  return volume ? volumes.ownerElsewhere(volume) : undefined;
+}
 
 /** Node-to-node requests are signed with the session secret all nodes share. */
 const internalSignature = (timestamp: string, path: string, body: string) =>
   createHmac("sha256", sessionSecret!).update(`internal:${timestamp}:${path}:${createHash("sha256").update(body).digest("hex")}`).digest("hex");
 
+function signedPost(owner: string, path: string, payload: unknown, timeoutMs = 15_000) {
+  const body = JSON.stringify(payload);
+  const timestamp = String(Date.now());
+  return fetch(new URL(path, owner), {
+    method: "POST", body, signal: AbortSignal.timeout(timeoutMs),
+    headers: { "Content-Type": "application/json", "x-agent-runtime-internal": `${timestamp}.${internalSignature(timestamp, path, body)}` },
+  });
+}
+
+/** Read a node-to-node request's body, or undefined when its signature is missing, stale or wrong. */
+async function signedBody(c: Context): Promise<string | undefined> {
+  const body = await readText(c.req.raw.body, 1_100_000);
+  const [timestamp, signature] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
+  const expected = Buffer.from(internalSignature(timestamp ?? "", c.req.path, body));
+  const given = Buffer.from(signature ?? "");
+  if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
+  return body;
+}
+
 /** Submit a request to an agent wherever it is served: here, or on the node that owns it. */
 async function submitAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) {
   const owner = await clients.ownerElsewhere(agent);
   if (!owner) return clients.submit(agent, tenant, request);
-  const path = `/internal/agents/${agent}/requests`;
-  const body = JSON.stringify({ tenant, request });
-  const timestamp = String(Date.now());
-  const response = await fetch(new URL(path, owner), {
-    method: "POST", body, signal: AbortSignal.timeout(15_000),
-    headers: { "Content-Type": "application/json", "x-agent-runtime-internal": `${timestamp}.${internalSignature(timestamp, path, body)}` },
-  });
+  const response = await signedPost(owner, `/internal/agents/${agent}/requests`, { tenant, request });
   if (!response.ok) throw Object.assign(new Error(`Owner rejected the request: HTTP ${response.status}`), { status: response.status });
   return response.json();
 }
+
+const volumes = new VolumeService({
+  storage, leases, node, leaseTtlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000), idleMs,
+  // Volume operations on another node keep their status (and a conflict's current version).
+  peer: async (owner, path, payload) => {
+    const response = await signedPost(owner, path, payload, 30_000);
+    const value = await response.json().catch(() => ({})) as any;
+    if (response.ok) return value;
+    throw Object.assign(new HttpError(response.status, value.error ?? `Volume owner answered HTTP ${response.status}`), value.current !== undefined ? { current: value.current } : {});
+  },
+  deliver: submitAnywhere,
+});
 
 const FORWARDED = "x-agent-runtime-forwarded";
 
@@ -167,7 +202,7 @@ const clients = new ClientSessions(supervisor, {
   secret: sessionSecret, toolTimeoutMs, idleMs, maxProcessesPerTenant,
   apiKeyFor: (tenant, provider) => accounts.apiKey(tenant, provider),
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
-  storage, prefix: "client-sessions/", leases, node, leaseTtlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000),
+  storage, prefix: "client-sessions/", leases, node, leaseTtlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000), volumes,
   get scheduler() { return scheduler; },
   get hooks() { return channels.hooks; },
 });
@@ -194,23 +229,19 @@ channels.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
 app.get("/healthz", c => c.json({ ok: true }));
-// One node serves each agent; anything addressed to an agent another node holds goes there.
+// One node serves each agent and volume; anything addressed to one another node holds goes there.
 // Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
 app.use(async (c, next) => {
-  const agent = leases && !c.req.header(FORWARDED) ? agentOf(c.env.incoming.url) : undefined;
-  const owner = agent && await clients.ownerElsewhere(agent).catch(() => undefined);
+  const owner = leases && !c.req.header(FORWARDED) ? await ownerOf(c.env.incoming.url)?.catch(() => undefined) : undefined;
   if (!owner) return next();
   forward(c.env.incoming, c.env.outgoing, owner);
   return RESPONSE_ALREADY_SENT;
 });
 
 app.post("/internal/agents/:id{client_[a-f0-9]{40}}/requests", async c => {
-  let body: string;
-  try { body = await readText(c.req.raw.body, 1_100_000); } catch { return c.body(null, 413); }
-  const [timestamp, signature] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
-  const expected = Buffer.from(internalSignature(timestamp ?? "", c.req.path, body));
-  const given = Buffer.from(signature ?? "");
-  if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return c.body(null, 401);
+  let body: string | undefined;
+  try { body = await signedBody(c); } catch { return c.body(null, 413); }
+  if (body === undefined) return c.body(null, 401);
   try {
     const { tenant, request } = JSON.parse(body);
     return c.json(await clients.submit(c.req.param("id"), tenant, request), 202);
@@ -218,10 +249,21 @@ app.post("/internal/agents/:id{client_[a-f0-9]{40}}/requests", async c => {
     return c.json({ error: errorText(error) }, ((error as { status?: number }).status ?? 400) as ContentfulStatusCode);
   }
 });
+app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
+  let body: string | undefined;
+  try { body = await signedBody(c); } catch { return c.body(null, 413); }
+  if (body === undefined) return c.body(null, 401);
+  try {
+    const { tenant, op, args } = JSON.parse(body);
+    return c.json(await volumes.handle(c.req.param("id"), tenant, op, args));
+  } catch (error) {
+    return c.json({ error: errorText(error), ...(error instanceof VersionConflict ? { current: error.current } : {}) }, ((error as { status?: number }).status ?? 400) as ContentfulStatusCode);
+  }
+});
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
 app.route("/", channels.app);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" }));
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, volumes, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
 app.get("/", c => c.redirect("/console/", 302));
@@ -303,5 +345,5 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
   callbacks?.close();
   scheduler.stop();
   channels.stop();
-  void clients.close().then(() => supervisor.close()).then(() => accounts.flushUsage()).catch(() => {}).then(() => process.exit(0));
+  void clients.close().then(() => supervisor.close()).then(() => volumes.close()).then(() => accounts.flushUsage()).catch(() => {}).then(() => process.exit(0));
 });
