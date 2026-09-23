@@ -11,8 +11,11 @@ import { databaseFromEnvironment, migrate, transaction, type Db } from "./db.ts"
  * stay where they are. Every insert skips rows that exist, so re-running is safe;
  * run it before starting the new runtime, which then owns the rows.
  *
- *   AGENT_DATABASE_URL=... AGENT_STORAGE=s3 AGENT_S3_BUCKET=... AGENT_S3_PREFIX=... \
- *     node --experimental-strip-types src/migrate-coordination.ts
+ * It reads the runtime's own configuration (AGENT_STORAGE and its S3 settings, and
+ * the database settings). `--dry-run` reads the documents and reports the rows they
+ * would become, writing nothing.
+ *
+ *   node --experimental-strip-types src/migrate-coordination.ts [--dry-run]
  */
 const PREFIXES = ["tenants/", "client-sessions/", "schedules/", "channels/", "channel-conversations/", "channel-agents/", "channel-items/", "channel-seen/", "channel-counts/", "volumes/"];
 type Documents = Map<string, any>;
@@ -53,12 +56,14 @@ export async function readLegacyDocuments(descriptor: StorageDescriptor): Promis
   return documents;
 }
 
-export async function migrateCoordination(documents: Documents, db: Db, storage: Storage) {
-  const counts: Record<string, number> = {};
+type Row = { table: string; sql: string; values: unknown[] };
+
+/** The rows the documents become, and the Storage writes that must precede them; nothing is written. */
+export async function planCoordination(documents: Documents, storage: Storage) {
   const matching = (pattern: RegExp) => [...documents].flatMap(([key, value]) => { const match = pattern.exec(key); return match ? [{ match, value }] : []; });
   // Rewritten first: a converted journal or snapshot file map must exist before a row points at it.
   const staged: (() => Promise<void>)[] = [];
-  const rows: { table: string; sql: string; values: unknown[] }[] = [];
+  const rows: Row[] = [];
   const insert = (table: string, columns: string[], values: unknown[], conflict: string) => rows.push({
     table, values,
     sql: `insert into ${table} (${columns.join(", ")}) values (${columns.map((_, index) => `$${index + 1}`).join(", ")}) on conflict (${conflict}) do nothing`,
@@ -146,6 +151,15 @@ export async function migrateCoordination(documents: Documents, db: Db, storage:
     insert("volume_watchers", ["volume", "agent", "tenant", "mounts"], [match[1], match[2], value.tenant, json(value.mounts)], "volume, agent");
   }
 
+  const counts: Record<string, number> = {};
+  for (const row of rows) counts[row.table] = (counts[row.table] ?? 0) + 1;
+  return { rows, staged, counts };
+}
+
+/** Insert the planned rows, skipping any that exist; returns the rows inserted per table. */
+export async function migrateCoordination(documents: Documents, db: Db, storage: Storage) {
+  const { rows, staged } = await planCoordination(documents, storage);
+  const counts: Record<string, number> = {};
   for (const stage of staged) await stage();
   await transaction(db, async (sql: pg.PoolClient) => {
     for (const row of rows) counts[row.table] = (counts[row.table] ?? 0) + ((await sql.query(row.sql, row.values)).rowCount ?? 0);
@@ -154,12 +168,23 @@ export async function migrateCoordination(documents: Documents, db: Db, storage:
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const flags = process.argv.slice(2);
+  if (flags.some(flag => flag !== "--dry-run")) throw new Error("Usage: migrate-coordination.ts [--dry-run]");
+  const dryRun = flags.includes("--dry-run");
+  // The runtime's own configuration: AGENT_STORAGE and its S3 settings, and the database settings.
   const descriptor = storageFromEnvironment(resolve(process.env.AGENT_DATA_DIR ?? ".agent-runtime"));
   const db = await databaseFromEnvironment();
   try {
-    await migrate(db);
     const documents = await readLegacyDocuments(descriptor);
-    const inserted = await migrateCoordination(documents, db, await openStorage(descriptor));
-    console.log(JSON.stringify({ type: "coordination_migrated", from: descriptor.kind, documents: documents.size, inserted }));
+    const storage = await openStorage(descriptor);
+    if (dryRun) {
+      // Proves the database is reachable with this configuration, without writing to it.
+      await db.query("select 1");
+      console.log(JSON.stringify({ type: "coordination_dry_run", from: descriptor.kind, documents: documents.size, rows: (await planCoordination(documents, storage)).counts }));
+    } else {
+      await migrate(db);
+      const inserted = await migrateCoordination(documents, db, storage);
+      console.log(JSON.stringify({ type: "coordination_migrated", from: descriptor.kind, documents: documents.size, inserted }));
+    }
   } finally { await db.end(); }
 }

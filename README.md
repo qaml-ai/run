@@ -92,12 +92,13 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 A deployment that kept this state in Storage documents (before Postgres) moves
 it once, before starting this version, with `src/migrate-coordination.ts`. It
 reads the old documents from the configured Storage and inserts them, skipping
-rows that exist, so it can be re-run:
+rows that exist, so it can be re-run. It takes the runtime's own configuration;
+`--dry-run` reports the rows the documents would become and writes nothing:
 
 ```sh
 docker run --rm -e AGENT_DATABASE_HOST -e AGENT_DATABASE_SECRET_ARN -e AGENT_DATABASE_CA -e AGENT_STORAGE=s3 \
   -e AGENT_S3_BUCKET -e AGENT_S3_PREFIX -e AWS_REGION <image> \
-  node --experimental-strip-types --disable-warning=ExperimentalWarning src/migrate-coordination.ts
+  node --experimental-strip-types --disable-warning=ExperimentalWarning src/migrate-coordination.ts [--dry-run]
 ```
 
 ## Configuration
