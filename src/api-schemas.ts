@@ -71,12 +71,13 @@ export const AgentInput = z.object({
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
   tools: z.array(ToolDefinition).optional().openapi({ description: "Client tools; REST-created agents usually have none" }),
   initialMessages: z.array(z.unknown()).optional(),
+  ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400." }),
 }).openapi("AgentInput");
 
 export const AgentCreated = z.looseObject({
   id: z.string(),
   token: z.string().openapi({ description: "The agent's scoped credential for /clients routes" }),
-  expiresAt: z.number(),
+  expiresAt: z.number().nullable(),
 }).openapi("AgentCreated");
 
 export const AgentSummary = z.object({
@@ -86,7 +87,7 @@ export const AgentSummary = z.object({
   model: z.string(),
   connected: z.boolean(),
   running: z.boolean(),
-  expiresAt: z.number(),
+  expiresAt: z.number().nullable(),
 }).openapi("AgentSummary");
 
 const Outcome = z.object({ result: z.unknown().optional(), error: z.string().optional(), uncertain: z.boolean().optional() }).openapi("Outcome");

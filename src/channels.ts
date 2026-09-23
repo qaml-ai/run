@@ -462,6 +462,8 @@ export class Channels {
     const params = {
       ...channel.template, tools: [...channel.template.tools ?? [], SEND_MESSAGE],
       name: `${this.provider(channel.type).label}: ${label}`.slice(0, 120), type: "channel",
+      // A conversation outlives any session TTL: its agent lives until deleted (DELETE /v1/agents/:id).
+      ttlSeconds: null,
     };
     const created = await this.options.createAgent(channel.tenant, params, `${channel.type}-${channel.id}-${conversationId}${generation ? `-${generation}` : ""}`);
     const binding: Binding = { channel: channel.id, tenant: channel.tenant, conversationId };

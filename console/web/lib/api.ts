@@ -51,7 +51,7 @@ export interface Model {
   id: string; provider: string; modelId: string; name: string; api: string; reasoning: boolean; input: string[];
   contextWindow: number; maxTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number }; available: boolean;
 }
-export interface AgentSummary { id: string; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number }
+export interface AgentSummary { id: string; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null }
 export interface RequestRecord {
   id: string; method: string; state: "running" | "completed"; startedAt?: number; endedAt?: number; prompt?: string;
   outcome?: { result?: unknown; error?: string; uncertain?: boolean };

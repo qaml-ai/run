@@ -105,6 +105,22 @@ test("tenants set provider keys over REST; keys are encrypted at rest and never 
   assert.equal((await call("/v1/providers/anthropic/key", { method: "DELETE", token: alice })).status, 404);
 });
 
+test("agents can live until deleted, or for a chosen time", async t => {
+  const { call } = await runtime(t);
+  await call("/v1/providers/anthropic/key", { method: "PUT", token: alice, body: { apiKey: "sk-ant-alice" } });
+  const lasting = await call("/v1/agents", { token: alice, body: { name: "Always on", model: "anthropic/claude-sonnet-5", ttlSeconds: null } });
+  assert.equal(lasting.status, 201);
+  assert.equal(lasting.json.expiresAt, null);
+  const hour = await call("/v1/agents", { token: alice, body: { name: "An hour", model: "anthropic/claude-sonnet-5", ttlSeconds: 3600 } });
+  assert.ok(Math.abs(hour.json.expiresAt - (Date.now() + 3_600_000)) < 60_000);
+  for (const ttlSeconds of [0, 59, 1.5, "3600", 400 * 86_400]) {
+    assert.equal((await call("/v1/agents", { token: alice, body: { model: "anthropic/claude-sonnet-5", ttlSeconds } })).status, 400, String(ttlSeconds));
+  }
+  const listed = (await call("/v1/agents", { token: alice })).json as any[];
+  assert.equal(listed.find(agent => agent.id === lasting.json.id).expiresAt, null);
+  assert.equal((await call(`/clients/${lasting.json.id}/state`, { token: lasting.json.token })).status, 200);
+});
+
 test("models are chosen by name over REST, at creation and mid-conversation", async t => {
   const { call } = await runtime(t);
   const all = (await call("/v1/models?provider=anthropic", { token: alice })).json as any[];

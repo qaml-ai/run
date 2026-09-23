@@ -48,7 +48,7 @@ export function AgentsPage() {
                     <TableCell className="text-muted-foreground hidden sm:table-cell">{agent.type}</TableCell>
                     <TableCell className="font-mono text-xs">{agent.model}</TableCell>
                     <TableCell><AgentStatus agent={agent} /></TableCell>
-                    <TableCell className="text-muted-foreground hidden lg:table-cell">{formatTime(agent.expiresAt)}</TableCell>
+                    <TableCell className="text-muted-foreground hidden lg:table-cell">{agent.expiresAt === null ? "Never" : formatTime(agent.expiresAt)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

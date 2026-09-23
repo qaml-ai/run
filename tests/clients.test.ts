@@ -1,3 +1,4 @@
+import { DEFAULT_TENANT } from "../src/tenants.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -16,10 +17,10 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 
 const token = "fixture-operator-secret-32-characters";
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number } = {}) {
+async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number; ttlMs?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), "camelai-sse-test-"));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, maxAgents: options.maxAgents });
-  let sessions = new ClientSessions(supervisor, { root: join(root, "sessions"), secret: token, apiKey: "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxProcessesPerTenant: options.perTenant });
+  let sessions = new ClientSessions(supervisor, { root: join(root, "sessions"), secret: token, apiKey: "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxProcessesPerTenant: options.perTenant, ttlMs: options.ttlMs });
   let model = configuredModel();
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
@@ -294,6 +295,20 @@ test("a request that arrives while its idle agent is being stopped waits and res
   assert.equal((await agent.execute("return 1")).output[0], "1");
   await stopping;
   assert.equal((await agent.execute("return 2")).output[0], "2");
+});
+
+test("expired agents are removed, but an agent without a lifetime stays until deleted", async t => {
+  // Longer than an agent process takes to start, so expiry never races provisioning.
+  const f = await fixture(t, { ttlMs: 1_000, idleMs: 100 });
+  const config = { model: configuredModel() };
+  const brief = await f.sessions.create([], config, "brief");
+  const lasting = await f.sessions.create([], config, "lasting", {}, undefined, null);
+  assert.equal(lasting.expiresAt, null);
+  await sleep(1_500);
+  const state = (session: { id: string; token: string }) => fetch(`${f.url}/clients/${session.id}/state`, { headers: { Authorization: `Bearer ${session.token}` } });
+  assert.equal((await state(brief)).status, 410);
+  assert.equal((await state(lasting)).status, 200);
+  assert.deepEqual((await f.sessions.list(DEFAULT_TENANT)).map(agent => agent.id), [lasting.id]);
 });
 
 test("scoped credentials cannot inject assistant or tool history", async t => {

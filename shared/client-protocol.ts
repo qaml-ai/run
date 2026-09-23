@@ -1,7 +1,8 @@
 export const FRAME_BYTES = 1_100_000;
 /** `uncertain` marks an outcome nobody can confirm (timeout after claim, restart). It is informational, never a gate. */
 export type Outcome = { result: unknown; error?: never; uncertain?: never } | { error: string; uncertain?: boolean; result?: never };
-export interface SessionCredentials { id: string; token: string; expiresAt: number }
+/** `expiresAt` is null for agents that live until deleted. */
+export interface SessionCredentials { id: string; token: string; expiresAt: number | null }
 export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "history" | "continue" | "steer" | "followUp" | "configure";
 export type CallRecord = {
   id: string; toolCallId?: string; requestId?: string; createdAt?: number; name: string; args: Record<string, unknown>; deadline: number;

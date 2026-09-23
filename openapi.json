@@ -275,7 +275,10 @@
             "type": "boolean"
           },
           "expiresAt": {
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           }
         },
         "required": [
@@ -299,7 +302,10 @@
             "description": "The agent's scoped credential for /clients routes"
           },
           "expiresAt": {
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           }
         },
         "required": [
@@ -347,6 +353,13 @@
           "initialMessages": {
             "type": "array",
             "items": {}
+          },
+          "ttlSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400."
           }
         }
       },

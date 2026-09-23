@@ -11,6 +11,9 @@ import uuid
 
 import httpx
 
+# Distinguishes "not given" from None (which means "never expires") in create_agent.
+_DEFAULT = object()
+
 
 class AgentError(RuntimeError):
     def __init__(self, message, status=0, request_id=None):
@@ -114,13 +117,16 @@ class AgentRuntime:
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, idempotency_key=None, on_event=None, on_error=None):
-        """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5"."""
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT):
+        """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
+        `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: one day)."""
         if not self.api_key:
             raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to provision an agent")
         optional = {"name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level}
-        session = await _http(self.http, self.base, "/client-sessions", self.api_key, "POST",
-                              {"tools": [item.definition() for item in tools], **{key: value for key, value in optional.items() if value is not None}},
+        body = {"tools": [item.definition() for item in tools], **{key: value for key, value in optional.items() if value is not None}}
+        if ttl_seconds is not _DEFAULT:
+            body["ttlSeconds"] = ttl_seconds
+        session = await _http(self.http, self.base, "/client-sessions", self.api_key, "POST", body,
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error)
 

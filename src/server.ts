@@ -96,7 +96,9 @@ async function createAgent(tenant: string, params: any, key?: string) {
   if (!tenants.legacy && !await accounts.hasKey(tenant, config.model.provider)) {
     throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}; set one with PUT /v1/providers/${config.model.provider}/key`);
   }
-  return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant);
+  const ttl = params.ttlSeconds;
+  if (ttl !== undefined && ttl !== null && (!Number.isInteger(ttl) || ttl < 60 || ttl > 366 * 86_400)) throw new Error("ttlSeconds must be null (never expires) or an integer from 60 to 31622400");
+  return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000);
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };

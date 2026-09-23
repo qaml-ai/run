@@ -26,11 +26,12 @@ export class NotOwner extends HttpError {
   constructor(owner: string) { super(503, `This agent is served by another node; retry`); this.owner = owner; }
 }
 /** What `list` needs, kept per tenant so listing never scans every agent. */
-interface IndexEntry { id: string; tenant: string; name: string; type: string; model: string; expiresAt: number; revoked: boolean }
+interface IndexEntry { id: string; tenant: string; name: string; type: string; model: string; expiresAt: number | null; revoked: boolean }
 type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">;
 /** Rarely-changing session identity and configuration; rewritten only when it changes. */
 interface SessionHeader {
-  version: 3; id: string; digest: string; expiresAt: number; revoked: boolean;
+  /** `expiresAt` null: the agent lives until it is deleted. */
+  version: 3; id: string; digest: string; expiresAt: number | null; revoked: boolean;
   /** Owning tenant; absent on sessions created before tenants existed (the default tenant). */
   tenant?: string;
   metadata?: AgentMetadata; definitions: ToolDefinition[]; provisionHash: string; config: SessionConfig;
@@ -79,6 +80,8 @@ function outcome(value: any): Outcome {
   }
   throw new HttpError(400, "Supply either result or error");
 }
+/** Never-expiring agents have `expiresAt: null`; a bare `<=` would treat null as 0, long expired. */
+const expired = (expiresAt: number | null, now = Date.now()) => expiresAt !== null && expiresAt <= now;
 const settled = (state: string) => !["running", "offered", "started"].includes(state);
 /** A request as callers see it: queued parameters stay internal. */
 const visible = ({ params: _params, ...record }: RequestRecord): RequestRecord => record;
@@ -395,7 +398,7 @@ export class ClientSessions {
     })().finally(() => { session.starting = undefined; });
   }
 
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT): Promise<{ id: string; token: string; expiresAt: number; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -411,7 +414,7 @@ export class ClientSessions {
       if (stored) {
         if ((stored.value.tenant ?? DEFAULT_TENANT) !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
         if (stored.value.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
-        if (stored.value.revoked || stored.value.expiresAt <= Date.now()) throw new HttpError(410, "Session expired or revoked");
+        if (stored.value.revoked || expired(stored.value.expiresAt)) throw new HttpError(410, "Session expired or revoked");
         return { id, token, expiresAt: stored.value.expiresAt, running: true };
       }
     }
@@ -419,7 +422,7 @@ export class ClientSessions {
     if (session) {
       if ((session.header.tenant ?? DEFAULT_TENANT) !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       if (session.header.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
-      if (session.header.revoked || session.header.expiresAt <= Date.now()) throw new HttpError(410, "Session expired or revoked");
+      if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
     } else {
       let lease: Lease | undefined;
       if (this.options.leases) {
@@ -428,7 +431,7 @@ export class ClientSessions {
         lease = acquired.lease;
       }
       session = {
-        header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: Date.now() + (this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash },
+        header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash },
         lease, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id)),
         cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), lastActive: Date.now(),
       };
@@ -450,7 +453,7 @@ export class ClientSessions {
   async list(tenant: string) {
     const keys = await this.storage.listJson(this.indexKey(tenant));
     const entries = await mapLimit(keys, 16, key => this.storage.readJson<IndexEntry>(key));
-    const live = entries.filter((entry): entry is { value: IndexEntry; version: string } => !!entry && !entry.value.revoked && entry.value.expiresAt > Date.now());
+    const live = entries.filter((entry): entry is { value: IndexEntry; version: string } => !!entry && !entry.value.revoked && !expired(entry.value.expiresAt));
     return mapLimit(live, 16, async ({ value }) => {
       const local = this.sessions.get(value.id);
       const response = local?.response;
@@ -463,7 +466,7 @@ export class ClientSessions {
   async owns(id: string, tenant: string) {
     if (!validSessionId(id)) return false;
     const entry = await this.storage.readJson<IndexEntry>(this.indexKey(tenant, id));
-    return !!entry && !entry.value.revoked && entry.value.expiresAt > Date.now();
+    return !!entry && !entry.value.revoked && !expired(entry.value.expiresAt);
   }
 
   async inspect(id: string, tenant: string) {
@@ -529,7 +532,7 @@ export class ClientSessions {
       const header = this.sessions.get(c.req.param("id")!)?.header ?? (await this.readHeader(c.req.param("id")!))?.value;
       const authorization = c.req.header("authorization") ?? "";
       if (!header || c.req.header("origin") || (operator !== undefined && (header.tenant ?? DEFAULT_TENANT) !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
-      if (header.revoked || header.expiresAt <= Date.now()) throw new HttpError(410, "Session expired or revoked");
+      if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
       const session = await this.load(header.id);
       if (!session) throw new HttpError(401, "Unauthorized");
       if (session.fault) throw session.fault;
@@ -837,7 +840,7 @@ export class ClientSessions {
     const idleMs = this.options.idleMs ?? 5 * 60_000;
     for (const session of this.sessions.values()) {
       const id = session.header.id;
-      if (!session.header.revoked && session.header.expiresAt <= now) {
+      if (!session.header.revoked && expired(session.header.expiresAt, now)) {
         void this.remove(id).then(() => this.supervisor.stop(id)).catch(() => {});
         continue;
       }
