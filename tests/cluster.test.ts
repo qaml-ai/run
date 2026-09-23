@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -50,7 +50,9 @@ async function cluster(t: { after(fn: () => Promise<void>): void }) {
     for (const child of children) if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGKILL"); await closed; }
     await rm(root, { recursive: true, force: true });
   });
-  return { start };
+  /** Which node holds an actor's lease, read straight from shared storage. */
+  const leaseOwner = (id: string) => JSON.parse(readFileSync(join(root, "shared", "leases", `${id}.json`), "utf8")).owner as string;
+  return { start, leaseOwner };
 }
 
 const lookup = (calls: string[]) => ({
@@ -109,4 +111,41 @@ test("any node serves any agent: requests are forwarded to the owner, and a surv
   assert.deepEqual(calls, ["one", "two", "three"]);
   const agents = await (await fetch(`${b.url}/v1/agents`, { headers: { Authorization: `Bearer ${token}` } })).json() as any[];
   assert.deepEqual(agents.map(agent => agent.id), [viaA.session.id]);
+});
+
+test("a volume is served by one node: other nodes forward to it, agents anywhere reach it, and a survivor takes over", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const a = await c.start("a");
+  const b = await c.start("b");
+  const viaA = new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() });
+  const viaB = new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() });
+  const { id } = await viaA.createVolume({ name: "shared" });
+  const first = await viaA.volume(id).write("plan.md", "draft");
+  assert.equal(c.leaseOwner(id), a.url, "the node that first served the volume owns it");
+
+  // Through B, reads and conditional writes are forwarded to A.
+  assert.equal(await viaB.volume(id).readText("plan.md"), "draft");
+  await assert.rejects(viaB.volume(id).write("plan.md", "stale", { version: first.version + 1 }), (error: any) => error.status === 412);
+  assert.equal(c.leaseOwner(id), a.url);
+
+  // An agent served by B mounts the volume; its file tools reach the owner on A.
+  const agent = await viaB.createAgent({ tools: {}, idempotencyKey: "volume-agent", mounts: [{ volumeId: id, path: "/shared", mode: "rw" }] });
+  t.after(() => agent.close());
+  const edited = JSON.parse((await agent.execute(`
+    const read = await tools.read({ path: "/shared/plan.md" });
+    return await tools.edit({ path: "/shared/plan.md", old: "draft", new: "final", version: read.version });`)).output[0]);
+  assert.equal(edited.version, first.version + 1);
+  assert.equal(await viaA.volume(id).readText("plan.md"), "final");
+  assert.equal(c.leaseOwner(id), a.url, "the volume did not move to the agent's node");
+  await assert.rejects(agent.execute(`return await tools.edit({ path: "/shared/plan.md", old: "final", new: "x", version: ${first.version} })`), /changed since you read it/);
+
+  // A dies holding the lease. Once it expires, B serves the volume from storage.
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  await sleep(1500 + 2000 + 500);
+  assert.equal(await viaB.volume(id).readText("plan.md"), "final");
+  assert.equal(c.leaseOwner(id), b.url);
+  assert.equal(JSON.parse((await agent.execute('return await tools.read({ path: "/shared/plan.md" })', { timeoutMs: 20_000 })).output[0]).version, edited.version);
+  await agent.execute('await tools.write({ path: "/shared/after.md", content: "written after takeover" })');
+  assert.deepEqual((await viaB.volume(id).list()).files.map(file => file.path), ["/after.md", "/plan.md"]);
 });
