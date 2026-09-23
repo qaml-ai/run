@@ -2,6 +2,8 @@
 # Build the runtime image from this checkout, push it to ECR, install the
 # instance configuration from infra/instance, and restart.
 # Usage: infra/deploy.sh
+#   PREPARE_ONLY=1 infra/deploy.sh   push the image and install it and its configuration, but do
+#                                    not restart (a migration runs between the two).
 #
 # Restarting interrupts running turns: their requests complete as uncertain and
 # the agents close those turns with "outcome unknown" results when they next run.
@@ -51,6 +53,7 @@ docker pull --quiet '$image'
 echo '$image' > \$dir/image
 systemctl daemon-reload
 systemctl enable agent-runtime.service agent-runtime-caddy.service >/dev/null 2>&1
+if [[ "${PREPARE_ONLY:-}" == 1 ]]; then echo "prepared: $image"; exit 0; fi
 systemctl restart agent-runtime.service
 caddy_changed=1
 if [[ -f \$dir/Caddyfile ]] && cmp -s \$dir/Caddyfile \$dir/Caddyfile.next; then caddy_changed=0; fi
@@ -78,6 +81,7 @@ done
 aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance" --query '[StandardOutputContent,StandardErrorContent]' --output text
 [[ "$status" == Success ]] || { echo "deploy failed: $status" >&2; exit 1; }
 
+[[ "${PREPARE_ONLY:-}" == 1 ]] && exit 0
 echo "==> https://$HOSTNAME/healthz"
 for _ in $(seq 1 30); do
   if curl -fsS "https://$HOSTNAME/healthz"; then echo; exit 0; fi
