@@ -10,6 +10,8 @@ export type CallRecord = {
   outcome?: Outcome;
   /** A result that arrived after the call was already settled as uncertain. */
   lateOutcome?: Outcome;
+  /** Where the turn came from, set by the runtime (e.g. a channel and its sender), so tools can authorize. */
+  origin?: Record<string, unknown>;
 };
 export type RequestRecord = {
   id: string; startedAt?: number; endedAt?: number; prompt?: string; code?: string; fingerprint: string; method: RequestMethod;

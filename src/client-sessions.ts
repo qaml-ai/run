@@ -107,6 +107,18 @@ export interface ClientSessionOptions {
   scheduler?: Scheduler;
   /** Called with each finished assistant message that reports token usage. */
   onUsage?: (tenant: string, agentId: string, message: { provider?: string; model?: string; usage: any; timestamp?: number }) => void;
+  hooks?: SessionHooks;
+}
+export type AgentRef = { id: string; tenant: string };
+/** Runtime features layered on agents (channels): they observe runs and may answer tools themselves. */
+export interface SessionHooks {
+  runStarted?(agent: AgentRef, record: RequestRecord): void;
+  /** After the run's outcome is durable, on the node that ran it. */
+  runEnded?(agent: AgentRef, record: RequestRecord): void;
+  /** Answer a tool call in the runtime; undefined leaves it to the application. */
+  tool?(agent: AgentRef, name: string, args: Record<string, unknown>, requestId?: string): Promise<{ result: unknown } | undefined>;
+  /** Trusted context attached to calls the application answers. */
+  origin?(agent: AgentRef, requestId?: string): Promise<Record<string, unknown> | undefined>;
 }
 
 /**
@@ -709,15 +721,17 @@ export class ClientSessions {
         const { params: _params, ...rest } = session.requests.get(record.id)!;
         record = this.upsertRequest(session, { ...rest, began: Date.now() });
         await this.commit(session, true);
+        this.hook("runStarted", session, record);
       }
       value = { result: await this.execute(session, record, params) };
     }
     catch (error) { value = { error: errorText(error) }; }
     if (this.closed || session.fault || session.requests.get(record.id)?.state !== "running") return;
     const { params: _params, ...finished } = record;
-    this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now() });
+    const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now() });
     try { await this.commit(session, true); }
     catch { return; /* The fault is reported to every later request. */ }
+    if (RUN_METHODS.includes(record.method)) this.hook("runEnded", session, completed);
     session.lastActive = Date.now();
     this.publish(session, { type: "response", id: record.id, outcome: value });
     await this.fold(session);
@@ -744,12 +758,26 @@ export class ClientSessions {
     session.pending.get(call.id)?.(value);
   }
 
-  private call(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown> {
+  private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
+    try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT }, record); }
+    catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: errorText(error) })); }
+  }
+
+  private async call(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown> {
+    const request = [...session.requests.values()].find(r => r.state === "running" && RUN_METHODS.includes(r.method) && r.began);
+    const hooks = this.options.hooks;
+    const agent = { id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT };
+    const handled = await hooks?.tool?.(agent, name, args, request?.id);
+    if (handled) return handled.result;
+    const origin = await hooks?.origin?.(agent, request?.id);
+    return this.offer(session, name, args, signal, context, request, origin);
+  }
+
+  private offer(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }, request?: RequestRecord, origin?: Record<string, unknown>): Promise<unknown> {
     signal.throwIfAborted();
     if (this.closed || session.fault || session.header.revoked) return Promise.reject(new Error("Client session unavailable"));
     if (session.pending.size >= 32) return Promise.reject(new Error("Too many pending client tools"));
-    const request = [...session.requests.values()].find(r => r.state === "running" && RUN_METHODS.includes(r.method) && r.began);
-    const call = this.upsertCall(session, { ...(context ? { toolCallId: context.toolCallId } : {}), ...(request ? { requestId: request.id } : {}), createdAt: Date.now(), id: randomUUID(), name, args, state: "offered", deadline: Date.now() + (this.options.toolTimeoutMs ?? 15_000) });
+    const call = this.upsertCall(session, { ...(context ? { toolCallId: context.toolCallId } : {}), ...(request ? { requestId: request.id } : {}), ...(origin ? { origin } : {}), createdAt: Date.now(), id: randomUUID(), name, args, state: "offered", deadline: Date.now() + (this.options.toolTimeoutMs ?? 15_000) });
     // An offer needs no durable commit: after a restart, unclaimed offers are cancelled.
     this.commitLater(session);
     return new Promise((resolve, reject) => {

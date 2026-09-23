@@ -7,7 +7,11 @@ import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type Requ
 export { Type as schema };
 export type { SessionCredentials, SessionState };
 
-export interface ToolContext { signal: AbortSignal; callId: string; toolCallId?: string }
+export interface ToolContext {
+  signal: AbortSignal; callId: string; toolCallId?: string;
+  /** Set by the runtime, e.g. `{ channel, conversationId, sender }` for a turn a channel message started. */
+  origin?: Record<string, unknown>;
+}
 export interface Tool<T = any> {
   description: string;
   resultFormat?: "json" | "content";
@@ -315,7 +319,7 @@ export class AgentClient {
             const definition = this.tools[call.name];
             if (!Object.hasOwn(this.tools, call.name) || !Check(definition.input, call.args)) throw new Error("Tool is missing or arguments failed validation");
             controller.signal.throwIfAborted();
-            const result = await definition.execute(call.args, { callId: call.id, toolCallId: call.toolCallId, signal: controller.signal });
+            const result = await definition.execute(call.args, { callId: call.id, toolCallId: call.toolCallId, signal: controller.signal, ...(call.origin ? { origin: call.origin } : {}) });
             if (result === undefined || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("Tool must return a bounded JSON value");
             value = { result };
           } catch (error) { value = { error: String(error).slice(0, 2048), ...(controller.signal.aborted ? { uncertain: true } : {}) }; }

@@ -21,6 +21,8 @@ class AgentError(RuntimeError):
 @dataclass
 class ToolContext:
     call_id: str
+    # Set by the runtime, e.g. {"channel", "conversationId", "sender"} for a turn a channel message started.
+    origin: dict | None = None
 
 
 @dataclass
@@ -315,7 +317,7 @@ class AgentClient:
                         definition = self.tools[call["name"]]
                         args = dict(call["args"])
                         if definition.with_context:
-                            args["context"] = ToolContext(call_id=call_id)
+                            args["context"] = ToolContext(call_id=call_id, origin=call.get("origin"))
                         import time
                         remaining = max(0.001, call["deadline"] / 1000 - time.time())
                         result = await asyncio.wait_for(definition.function(**args), remaining)

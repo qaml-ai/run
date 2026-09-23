@@ -278,7 +278,10 @@ export function createAgentHost(io: HostIO) {
       await recoverFailedResponses(active.signal);
       if (persistenceError) throw persistenceError;
       await transcript.setActive(false);
-      return { messages: transcript.total, error: agent.state.errorMessage ?? null };
+      const last = agent.state.messages.at(-1) as AssistantMessage | undefined;
+      // The final answer's text, for callers that relay it (channels).
+      const reply = last?.role === "assistant" && last.stopReason !== "error" ? last.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
+      return { messages: transcript.total, error: agent.state.errorMessage ?? null, ...(reply ? { reply } : {}) };
     } finally {
       // Release what compaction folded away: the next run starts from summary + kept messages.
       if (method !== "execute" && !persistenceError) {
