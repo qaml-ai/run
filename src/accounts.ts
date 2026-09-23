@@ -17,7 +17,8 @@ import type { Tenants } from "./tenants.ts";
 export interface Principal { tenant: string; via: "operator" | "token" | "console"; tokenId?: string }
 export interface KeyStatus { provider: string; source: "tenant" | "admin"; last4?: string; setAt?: number }
 export interface ApiToken { id: string; name: string; sha256: string; prefix: string; createdAt: number }
-type StoredKey = { iv: string; tag: string; ciphertext: string; last4: string; setAt: number };
+export type Sealed = { iv: string; tag: string; ciphertext: string };
+type StoredKey = Sealed & { last4: string; setAt: number };
 type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 /** A usage record in the single-host log that preceded per-node daily totals. */
 interface LegacyUsageRecord extends Omit<Totals, "responses"> { at: number; agent: string; provider: string; model: string }
@@ -112,12 +113,7 @@ export class Accounts {
   /** The key an agent uses: the tenant's own key, else one an admin configured. */
   async apiKey(tenant: string, provider: string): Promise<string | undefined> {
     const stored = this.secretsKey && validTenant(tenant) ? (await this.storedKeys(tenant))[provider] : undefined;
-    if (stored) {
-      const decipher = createDecipheriv("aes-256-gcm", this.secretsKey!, Buffer.from(stored.iv, "base64"));
-      decipher.setAAD(Buffer.from(`${tenant}:${provider}`));
-      decipher.setAuthTag(Buffer.from(stored.tag, "base64"));
-      return Buffer.concat([decipher.update(Buffer.from(stored.ciphertext, "base64")), decipher.final()]).toString("utf8");
-    }
+    if (stored) return this.unseal(`${tenant}:${provider}`, stored);
     return this.tenants.apiKey(tenant, provider);
   }
 
@@ -140,14 +136,28 @@ export class Accounts {
 
   async setKey(tenant: string, provider: string, key: string) {
     if (!this.secretsKey) throw new Error("This runtime has no AGENT_SECRETS_KEY, so it cannot store provider keys");
+    const keys = await this.storedKeys(tenant);
+    // Binding tenant and provider stops a stored ciphertext being replayed under another name.
+    keys[provider] = { ...this.seal(`${tenant}:${provider}`, key), last4: key.slice(-4), setAt: Date.now() };
+    await this.storage.writeJson(this.key(tenant, "keys"), keys);
+  }
+
+  /** Encrypt a secret with AGENT_SECRETS_KEY; `aad` names what it belongs to, so it cannot be moved. */
+  seal(aad: string, plaintext: string): Sealed {
+    if (!this.secretsKey) throw new Error("This runtime has no AGENT_SECRETS_KEY, so it cannot store secrets");
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.secretsKey, iv);
-    // Binding tenant and provider stops a stored ciphertext being replayed under another name.
-    cipher.setAAD(Buffer.from(`${tenant}:${provider}`));
-    const ciphertext = Buffer.concat([cipher.update(key, "utf8"), cipher.final()]);
-    const keys = await this.storedKeys(tenant);
-    keys[provider] = { iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64"), last4: key.slice(-4), setAt: Date.now() };
-    await this.storage.writeJson(this.key(tenant, "keys"), keys);
+    cipher.setAAD(Buffer.from(aad));
+    const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    return { iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") };
+  }
+
+  unseal(aad: string, sealed: Sealed): string {
+    if (!this.secretsKey) throw new Error("This runtime has no AGENT_SECRETS_KEY, so it cannot read stored secrets");
+    const decipher = createDecipheriv("aes-256-gcm", this.secretsKey, Buffer.from(sealed.iv, "base64"));
+    decipher.setAAD(Buffer.from(aad));
+    decipher.setAuthTag(Buffer.from(sealed.tag, "base64"));
+    return Buffer.concat([decipher.update(Buffer.from(sealed.ciphertext, "base64")), decipher.final()]).toString("utf8");
   }
 
   async deleteKey(tenant: string, provider: string) {
