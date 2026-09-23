@@ -1,12 +1,13 @@
 import {
-  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, S3ServiceException,
+  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, S3ServiceException,
 } from "@aws-sdk/client-s3";
 import { PreconditionFailed, segmentLog, type SegmentStore, type Storage } from "./storage.ts";
 
 /**
  * Storage on S3. Documents are `<prefix>/<key>.json` with ETag versions and
  * If-Match / If-None-Match conditional writes. Logs are `<prefix>/<key>.log/`
- * holding immutable segment objects (see `segmentLog`). Credentials come from
+ * holding immutable segment objects (see `segmentLog`). Blobs are `<prefix>/<key>`,
+ * created with If-None-Match. Credentials come from
  * the default AWS chain (the instance role on EC2).
  */
 export function s3Storage(options: { bucket: string; prefix?: string; region?: string; client?: S3Client }): Storage {
@@ -84,6 +85,19 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
     async hasLog(key) {
       const page = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: `${objectKey(key)}.log/`, MaxKeys: 1 }));
       return (page.KeyCount ?? 0) > 0;
+    },
+    async readBlob(key) {
+      try {
+        const object = await client.send(new GetObjectCommand({ Bucket: bucket, Key: objectKey(key) }));
+        return await object.Body!.transformToByteArray();
+      } catch (error) { if (missing(error)) return undefined; throw error; }
+    },
+    async writeBlob(key, data) {
+      // A HEAD is cheaper than re-uploading a chunk that is already stored.
+      try { await client.send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey(key) })); return; }
+      catch (error) { if (!missing(error)) throw error; }
+      try { await client.send(new PutObjectCommand({ Bucket: bucket, Key: objectKey(key), Body: data, ContentType: "application/octet-stream", IfNoneMatch: "*" })); }
+      catch (error) { if (!conditionFailed(error)) throw error; }
     },
   };
 }

@@ -36,6 +36,15 @@ for (const [name, open] of backends) {
     await assert.rejects(storage.writeJson("../escape", {}), /Invalid storage key/);
   });
 
+  test(`${name} storage: blobs are immutable: writing an existing key keeps the first bytes`, async t => {
+    const storage = await open(t);
+    assert.equal(await storage.readBlob("chunks/t/ab/abc"), undefined);
+    await storage.writeBlob("chunks/t/ab/abc", new Uint8Array([1, 2, 3]));
+    await storage.writeBlob("chunks/t/ab/abc", new Uint8Array([9]));
+    assert.deepEqual([...await storage.readBlob("chunks/t/ab/abc") ?? []], [1, 2, 3]);
+    await assert.rejects(storage.writeBlob("../escape", new Uint8Array()), /Invalid storage key/);
+  });
+
   test(`${name} storage: logs append, fold into snapshots, and survive reopening`, async t => {
     const storage = await open(t);
     assert.equal(await storage.hasLog("agents/x/log"), false);

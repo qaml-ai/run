@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, open, readdir, readFile, rm, unlink } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, open, readdir, readFile, rename, rm, stat, unlink } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { join, relative, sep } from "node:path";
 import { fileAppendLog, type AppendLog } from "./append-log.ts";
@@ -29,6 +29,9 @@ export interface Storage {
   log<T>(key: string): AppendLog<T>;
   /** True if a log has any records (without reading it). */
   hasLog(key: string): Promise<boolean>;
+  /** Immutable binary objects, e.g. content-addressed chunks: writing a key that exists is a no-op. */
+  readBlob(key: string): Promise<Uint8Array | undefined>;
+  writeBlob(key: string, data: Uint8Array): Promise<void>;
 }
 
 export class PreconditionFailed extends Error {
@@ -111,6 +114,20 @@ export function fileStorage(root: string, options: { shared?: boolean } = {}): S
       const { segments, snapshots } = await fileSegments(path(key, ".log")).list();
       return segments.length + snapshots.length > 0;
     },
+    async readBlob(key) {
+      try { return await readFile(path(key, ".bin")); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+    },
+    async writeBlob(key, data) {
+      const file = path(key, ".bin");
+      if (await stat(file).then(() => true, () => false)) return;
+      await mkdir(join(file, ".."), { recursive: true, mode: 0o700 });
+      const temporary = `${file}.${randomUUID()}.tmp`;
+      const handle = await open(temporary, "wx", 0o600);
+      try { await handle.writeFile(data); await handle.datasync(); } finally { await handle.close(); }
+      // Same key, same bytes: a concurrent writer's rename is harmless.
+      await rename(temporary, file);
+    },
   };
 }
 
@@ -150,11 +167,12 @@ function fileSegments(directory: string): SegmentStore {
 }
 
 /** In-process storage for tests. */
-export function memoryStorage(): Storage & { documents: Map<string, string>; logs: Map<string, Map<string, string>> } {
+export function memoryStorage(): Storage & { documents: Map<string, string>; logs: Map<string, Map<string, string>>; blobs: Map<string, Uint8Array> } {
   const documents = new Map<string, string>();
   const logs = new Map<string, Map<string, string>>();
+  const blobs = new Map<string, Uint8Array>();
   return {
-    documents, logs,
+    documents, logs, blobs,
     async readJson(key) {
       const text = documents.get(validKey(key));
       return text === undefined ? undefined : { value: JSON.parse(text), version: versionOf(text) };
@@ -170,6 +188,8 @@ export function memoryStorage(): Storage & { documents: Map<string, string>; log
     async listJson(prefix) { return [...documents.keys()].filter(key => key.startsWith(prefix)).sort(); },
     log<T>(key: string) { return segmentLog<T>(memorySegments(logs, validKey(key)), key); },
     async hasLog(key) { return (logs.get(key)?.size ?? 0) > 0; },
+    async readBlob(key) { const data = blobs.get(validKey(key)); return data && Uint8Array.from(data); },
+    async writeBlob(key, data) { if (!blobs.has(validKey(key))) blobs.set(key, Uint8Array.from(data)); },
   };
 }
 
