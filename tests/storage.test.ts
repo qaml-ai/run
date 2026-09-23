@@ -121,3 +121,18 @@ test("shared file storage fences a stale log writer across instances", async t =
   assert.equal(results.filter(result => result.status === "fulfilled").length, 1, "exactly one conditional create wins");
   assert.ok(results.some(result => result.status === "rejected" && result.reason instanceof PreconditionFailed));
 });
+
+test("a single-host data directory copies into another backend, and copying again is harmless", async t => {
+  const { copyStorage } = await import("../src/migrate-storage.ts");
+  const root = await mkdtemp(join(tmpdir(), "agent-migrate-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = fileStorage(root);
+  await source.writeJson("tenants/alice/keys", { anthropic: "sealed" });
+  const transcript = source.log<{ t: string; n: number }>("sessions/client_a/transcript");
+  for (let n = 0; n < 3; n++) transcript.append({ t: "message", n });
+  await transcript.flush(true);
+  const target = memoryStorage();
+  for (let run = 0; run < 2; run++) assert.deepEqual(await copyStorage(root, target), { documents: 1, logs: 1, records: 3 });
+  assert.deepEqual((await target.readJson("tenants/alice/keys"))?.value, { anthropic: "sealed" });
+  assert.deepEqual((await target.log("sessions/client_a/transcript").read()).map((record: any) => record.n), [0, 1, 2]);
+});
