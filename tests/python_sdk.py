@@ -89,6 +89,33 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(call["state"] == "completed" for call in (await agent.outcomes())["calls"]))
         await agent.destroy()
 
+    async def test_volumes_files_snapshots_and_mounts(self):
+        created = await self.runtime.create_volume(name="shared docs")
+        volume = self.runtime.volume(created["id"])
+        written = await volume.write("/docs/readme.md", "hello volumes", version=0)
+        with self.assertRaises(Exception) as stale:
+            await volume.write("docs/readme.md", "stale", version=written["version"] + 1)
+        self.assertEqual(stale.exception.status, 412)
+        self.assertEqual(await volume.read_text("docs/readme.md"), "hello volumes")
+        self.assertEqual((await volume.read("docs/readme.md", range=(6, 13)))[0], b"volumes")
+        self.assertEqual([entry["path"] for entry in (await volume.list(prefix="/docs"))["files"]], ["/docs/readme.md"])
+        snapshot = await volume.snapshot(name="first")
+        await volume.write("docs/readme.md", "changed", version=written["version"])
+        fork = self.runtime.volume((await volume.fork(snapshot=snapshot["id"]))["id"])
+        self.assertEqual(await fork.read_text("docs/readme.md"), "hello volumes")
+        self.assertEqual([change["kind"] for change in (await volume.changes())["changes"]], ["write", "write"])
+
+        agent = await self.runtime.create_agent(tools=[], mounts=[{"volumeId": volume.id, "path": "/docs", "mode": "ro", "subpath": "/docs"}])
+        result = await agent.execute('return (await tools.read({ path: "/docs/readme.md" })).content')
+        self.assertEqual(result["output"], ["changed"])
+        self.assertEqual((await self.runtime.mounts(agent.session["id"]))[0]["mode"], "ro")
+        await self.runtime.set_mounts(agent.session["id"], [{"volumeId": fork.id, "path": "/workspace", "mode": "rw"}])
+        await agent.execute('await tools.write({ path: "/workspace/new.md", content: "from the agent" })')
+        self.assertEqual(await fork.read_text("new.md"), "from the agent")
+        await fork.remove("new.md")
+        await volume.delete()
+        self.assertNotIn(volume.id, [entry["id"] for entry in await self.runtime.list_volumes()])
+
 
 if __name__ == "__main__":
     unittest.main()

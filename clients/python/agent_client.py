@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 from typing import get_type_hints
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 import uuid
 
 import httpx
@@ -117,12 +117,14 @@ class AgentRuntime:
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
-        `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: one day)."""
+        `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: one day).
+        `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
+        file tools see; by default it gets its own workspace volume at /workspace."""
         if not self.api_key:
             raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to provision an agent")
-        optional = {"name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level}
+        optional = {"name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level, "mounts": mounts}
         body = {"tools": [item.definition() for item in tools], **{key: value for key, value in optional.items() if value is not None}}
         if ttl_seconds is not _DEFAULT:
             body["ttlSeconds"] = ttl_seconds
@@ -140,6 +142,28 @@ class AgentRuntime:
             await agent.close()
             raise
 
+    def _operator(self):
+        if not self.api_key:
+            raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to manage volumes and mounts")
+        return self.api_key
+
+    async def create_volume(self, *, name=None):
+        return await _http(self.http, self.base, "/v1/volumes", self._operator(), "POST", {} if name is None else {"name": name}, retry=False)
+
+    async def list_volumes(self):
+        return await _http(self.http, self.base, "/v1/volumes", self._operator())
+
+    def volume(self, volume_id):
+        """A handle on one volume's files, snapshots and forks."""
+        return Volume(self, volume_id)
+
+    async def mounts(self, agent_id):
+        return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator())
+
+    async def set_mounts(self, agent_id, mounts):
+        """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
+        return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator(), "PUT", {"mounts": mounts}, retry=False)
+
     async def close(self):
         await asyncio.gather(*(agent.close() for agent in self.agents))
         await self.http.aclose()
@@ -149,6 +173,80 @@ class AgentRuntime:
 
     async def __aexit__(self, *_):
         await self.close()
+
+
+class Volume:
+    """Files are versioned: pass `version` to write or remove only if nobody changed the file since (0: must not exist)."""
+
+    def __init__(self, runtime, volume_id):
+        if not isinstance(volume_id, str) or not volume_id.startswith("vol_") or len(volume_id) != 28:
+            raise AgentError("Invalid volume id")
+        self.runtime, self.id = runtime, volume_id
+
+    def _json(self, suffix="", method="GET", body=None):
+        runtime = self.runtime
+        return _http(runtime.http, runtime.base, f"/v1/volumes/{self.id}{suffix}", runtime._operator(), method, body, retry=method == "GET")
+
+    def _file(self, path):
+        return f"{self.runtime.base}/v1/volumes/{self.id}/files/" + "/".join(quote(part, safe="") for part in path.split("/") if part)
+
+    async def _raw(self, method, path, content=None, headers=None):
+        response = await self.runtime.http.request(method, self._file(path), content=content, headers={
+            "Authorization": f"Bearer {self.runtime._operator()}", **(headers or {})})
+        if not response.is_success:
+            try:
+                error = response.json().get("error")
+            except ValueError:
+                error = None
+            raise AgentError(error or f"HTTP {response.status_code}", response.status_code)
+        return response
+
+    async def info(self):
+        return await self._json()
+
+    async def delete(self):
+        return await self._json(method="DELETE")
+
+    async def snapshot(self, *, name=None):
+        return await self._json("/snapshots", "POST", {} if name is None else {"name": name})
+
+    async def snapshots(self):
+        return await self._json("/snapshots")
+
+    async def delete_snapshot(self, snapshot_id):
+        return await self._json(f"/snapshots/{quote(snapshot_id)}", "DELETE")
+
+    async def fork(self, *, name=None, snapshot=None):
+        """A new volume with this one's files (or a snapshot's); only metadata is copied."""
+        return await self._json("/fork", "POST", {key: value for key, value in {"name": name, "snapshot": snapshot}.items() if value is not None})
+
+    async def changes(self, since=0):
+        return await self._json(f"/changes?since={int(since)}")
+
+    async def list(self, *, prefix=None, glob=None, after=None, limit=None):
+        query = urlencode({key: value for key, value in {"prefix": prefix, "glob": glob, "after": after, "limit": limit}.items() if value is not None})
+        return await self._json(f"/files{'?' + query if query else ''}")
+
+    async def write(self, path, data, *, version=None):
+        headers = {"Content-Type": "application/octet-stream"}
+        if version == 0:
+            headers["If-None-Match"] = "*"
+        elif version is not None:
+            headers["If-Match"] = f'"{version}"'
+        response = await self._raw("PUT", path, data.encode() if isinstance(data, str) else data, headers)
+        return response.json()
+
+    async def read(self, path, *, range=None):
+        """Returns (bytes, version); `range` is (start, end) in bytes, end exclusive."""
+        headers = {"Range": f"bytes={range[0]}-{'' if len(range) < 2 or range[1] is None else range[1] - 1}"} if range else None
+        response = await self._raw("GET", path, headers=headers)
+        return response.content, int(response.headers["etag"].strip('"'))
+
+    async def read_text(self, path):
+        return (await self.read(path))[0].decode()
+
+    async def remove(self, path, *, version=None):
+        return (await self._raw("DELETE", path, headers=None if version is None else {"If-Match": f'"{version}"'})).json()
 
 
 class AgentClient:

@@ -55,7 +55,15 @@ export interface CreateAgentOptions extends AgentOptions {
   model?: string | Model<Api>;
   thinkingLevel?: ThinkingLevel;
   initialMessages?: AgentMessage[];
+  /** Volumes for the agent's file tools (read, write, edit, ls, glob, grep). Default: its own workspace volume at /workspace. */
+  mounts?: Mount[];
 }
+/** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
+export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
+export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
+export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string }
+export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
+export interface VolumeChanges { seq: number; changes: { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }[]; gap?: boolean }
 export interface AgentHistory { messages: AgentMessage[] }
 export interface Schedule { id: string; agent: string; text?: string; code?: string; dueAt: number; everySeconds?: number; createdAt: number }
 export interface RequestOptions { idempotencyKey?: string; timeoutMs?: number }
@@ -105,6 +113,16 @@ class Transport {
       }
     }
   }
+  /** A request with a raw body or response (volume file contents). */
+  async raw(path: string, token: string, init: { method?: string; body?: Uint8Array; headers?: Record<string, string> } = {}): Promise<Response> {
+    const response = await this.fetcher(this.base + path, { method: init.method ?? "GET", body: init.body as BodyInit | undefined, headers: { Authorization: `Bearer ${token}`, ...init.headers }, redirect: "manual" });
+    await rejectRedirect(response);
+    if (!response.ok) {
+      const value = await response.json().catch(() => ({})) as any;
+      throw new AgentError(value.error ?? `HTTP ${response.status}`, response.status);
+    }
+    return response;
+  }
 }
 
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
@@ -115,7 +133,7 @@ export class AgentRuntime {
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
     const key = this.options.apiKey;
     if (!key) throw new AgentError("Set apiKey to provision an agent");
-    const session = await this.transport.json("/client-sessions", key, "POST", { tools: definitions(options.tools), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
+    const session = await this.transport.json("/client-sessions", key, "POST", { tools: definitions(options.tools), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }
@@ -123,6 +141,57 @@ export class AgentRuntime {
     const client = new AgentClient(this.options, session, options);
     try { await client.connect(); return client; }
     catch (error) { await client.close(); throw error; }
+  }
+  private operator() {
+    if (!this.options.apiKey) throw new AgentError("Set apiKey to manage volumes and mounts");
+    return this.options.apiKey;
+  }
+  createVolume(options: { name?: string } = {}): Promise<Volume> { return this.transport.json("/v1/volumes", this.operator(), "POST", options, false); }
+  listVolumes(): Promise<Volume[]> { return this.transport.json("/v1/volumes", this.operator()); }
+  /** A handle on one volume's files, snapshots and forks. */
+  volume(id: string): VolumeHandle {
+    if (!/^vol_[a-f0-9]{24}$/.test(id)) throw new AgentError("Invalid volume id");
+    return new VolumeHandle(this.transport, this.operator(), id);
+  }
+  mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
+  /** Replace an agent's mounts; an idle agent restarts so its tools describe them. */
+  setMounts(agentId: string, mounts: Mount[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
+}
+
+/** Files are versioned: pass `version` to write or remove only if nobody changed the file since (0: must not exist). */
+export class VolumeHandle {
+  readonly id: string;
+  private readonly transport: Transport;
+  private readonly token: string;
+  constructor(transport: Transport, token: string, id: string) { this.transport = transport; this.token = token; this.id = id; }
+  private path(suffix = "") { return `/v1/volumes/${this.id}${suffix}`; }
+  private file(path: string) { return this.path(`/files/${path.split("/").filter(Boolean).map(encodeURIComponent).join("/")}`); }
+  info(): Promise<Volume> { return this.transport.json(this.path(), this.token); }
+  delete() { return this.transport.json(this.path(), this.token, "DELETE", undefined, false); }
+  snapshot(options: { name?: string } = {}): Promise<VolumeSnapshot> { return this.transport.json(this.path("/snapshots"), this.token, "POST", options, false); }
+  snapshots(): Promise<VolumeSnapshot[]> { return this.transport.json(this.path("/snapshots"), this.token); }
+  deleteSnapshot(id: string) { return this.transport.json(this.path(`/snapshots/${encodeURIComponent(id)}`), this.token, "DELETE", undefined, false); }
+  /** A new volume with this one's files (or a snapshot's); only metadata is copied. */
+  fork(options: { name?: string; snapshot?: string } = {}): Promise<Volume> { return this.transport.json(this.path("/fork"), this.token, "POST", options, false); }
+  changes(since = 0): Promise<VolumeChanges> { return this.transport.json(this.path(`/changes?since=${since}`), this.token); }
+  list(options: { prefix?: string; glob?: string; after?: string; limit?: number } = {}): Promise<{ files: VolumeFile[]; next?: string }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(this.path(`/files${query.size ? `?${query}` : ""}`), this.token);
+  }
+  async write(path: string, data: string | Uint8Array, options: { version?: number } = {}): Promise<VolumeFile> {
+    const body = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    const headers: Record<string, string> = { "Content-Type": "application/octet-stream", ...(options.version === 0 ? { "If-None-Match": "*" } : options.version !== undefined ? { "If-Match": `"${options.version}"` } : {}) };
+    return (await this.transport.raw(this.file(path), this.token, { method: "PUT", body, headers })).json();
+  }
+  /** A file's bytes, or `range` of them ([start, end) in bytes). */
+  async read(path: string, options: { range?: [number, number?] } = {}): Promise<{ data: Uint8Array; version: number }> {
+    const [start, end] = options.range ?? [];
+    const response = await this.transport.raw(this.file(path), this.token, start !== undefined ? { headers: { Range: `bytes=${start}-${end !== undefined ? end - 1 : ""}` } } : {});
+    return { data: new Uint8Array(await response.arrayBuffer()), version: Number(response.headers.get("etag")?.replaceAll('"', "")) };
+  }
+  async readText(path: string) { return new TextDecoder().decode((await this.read(path)).data); }
+  async remove(path: string, options: { version?: number } = {}) {
+    return (await this.transport.raw(this.file(path), this.token, { method: "DELETE", headers: options.version !== undefined ? { "If-Match": `"${options.version}"` } : {} })).json();
   }
 }
 
