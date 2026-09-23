@@ -4,24 +4,27 @@ A hosted runtime for long-lived agents. Applications define tools in their own
 code with the TypeScript or Python SDK; the runtime runs the model loop, keeps
 each agent's durable history (with compaction), and executes model-written code
 in a QuickJS/WebAssembly sandbox. Most agents are asleep at any time: an agent's
-state lives in shared storage (S3 in production) and any node can load it.
+state lives in Postgres and shared storage (S3 in production), and any node can
+load it.
 
 Live at <https://agents.camelai.dev> (REST API under `/v1`, described by
 `/v1/openapi.json` and the committed `openapi.json`; console at `/console`).
 
 ```text
 app (TypeScript / Python SDK, HTTP + SSE)
-  -> any runtime node --forwarded to--> the node holding the agent's lease
+  -> any runtime node --forwarded to--> the node that owns the agent
       -> agent host (Pi loop, working-set transcript, compaction, retries)
           -> QuickJS/WASM sandbox (local process, or a gVisor executor host)
               -> JSON tool calls -> back to the app's SDK callbacks
-  shared storage: S3 documents + append logs; leases in S3 or Postgres
+  control plane: Postgres (ownership, headers, accounts, schedules, channels, volume metadata)
+  data plane: Storage (append logs and blobs, S3 in production)
 ```
 
 ## Layout
 
 - `src/` server, supervisor, agent host, sessions, scheduler, REST API, executor
-- `shared/` storage backends (file, S3), leases, wire protocol
+- `migrations/` Postgres schema, applied at startup
+- `shared/` storage backends (file, S3), wire protocol
 - `clients/` TypeScript and Python SDKs; `sdk/` publishes `@qaml-ai/agent-runtime`
 - `console/` tenant console (React); `studio/` local chat/trace UI
 - `infra/` AWS provisioning and deploy scripts; `deploy/smoke.ts` live smoke test
@@ -29,7 +32,13 @@ app (TypeScript / Python SDK, HTTP + SSE)
 
 ## Develop
 
-Requires Node 22.21+ and npm.
+Requires Node 22.21+, npm and Postgres 14+. The tests expect a disposable
+database at `postgres://postgres:test@127.0.0.1:55432/postgres` (override with
+`AGENT_TEST_DATABASE_URL`); each test gets its own schema, dropped afterwards:
+
+```sh
+docker run -d --name agent-runtime-pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:16-alpine
+```
 
 ```sh
 npm ci
@@ -41,16 +50,66 @@ npm run demo                     # sandbox demo, no model credentials
 npm run openapi                  # regenerate openapi.json after changing /v1 routes
 ```
 
-Optional backends in the storage tests: `AGENT_TEST_S3_BUCKET=<bucket>` and
-`AGENT_TEST_POSTGRES_URL=postgres://...`.
+The storage tests also run against S3 with `AGENT_TEST_S3_BUCKET=<bucket>`.
+`npm run studio` and `npm run demo:clients` need `AGENT_DATABASE_URL`.
+
+## Architecture
+
+Postgres is the control plane: every piece of small mutable state and all
+coordination. Storage is the data plane: bulk data that is appended or written
+once. The runtime does not start without a database.
+
+| Postgres (`migrations/`) | Storage (`AGENT_STORAGE`) |
+| --- | --- |
+| node heartbeats and actor ownership | agent transcripts and request journals (append logs) |
+| agent headers: identity, configuration, mounts; the tenant index | volume trees (append logs) |
+| console tenants, sealed provider keys, API tokens, usage | volume chunks and snapshot file maps (blobs, written once) |
+| schedules and their claims | |
+| channels, conversations, the outbox, dedupe markers, rate counters | |
+| volume headers, snapshots, watchers | |
+
+Migrations are plain SQL files, applied at startup in one transaction under an
+advisory lock and recorded in `schema_migrations`, so nodes may start together.
+Application times (`createdAt`, `dueAt`, `expiresAt`) are bigint milliseconds;
+heartbeats and claims use `timestamptz` on the database clock.
+
+**Ownership.** An agent or volume is an actor, served by one node at a time.
+Each node keeps one heartbeat row (`runtime_nodes`: node, session, expiry) and
+renews it every third of `AGENT_LEASE_TTL_MS` with `now()`: one write per node,
+however many actors it serves. Each actor has one `actor_owners` row naming a
+node's session and an epoch. A node takes an actor in one statement that
+succeeds only when the row is released, already names this session, or names a
+session whose heartbeat has expired; every acquire advances the epoch. Header
+writes are conditional on the writer's session and epoch, and log segments are
+exclusive creates, so a node that lost an actor cannot write for it. A node
+that cannot renew fences itself before its published expiry: it stops every
+agent and volume it owns and rejoins under a new session. Requests for an actor
+are forwarded to the node that `actor_owners` joined to live heartbeats names.
+
+Schedules and channel work items are claimed with `FOR UPDATE SKIP LOCKED` and a
+claim deadline, so one node delivers each; a crashed node's claims lapse.
+
+A deployment that kept this state in Storage documents (before Postgres) moves
+it once, before starting this version, with `src/migrate-coordination.ts`. It
+reads the old documents from the configured Storage and inserts them, skipping
+rows that exist, so it can be re-run:
+
+```sh
+docker run --rm -e AGENT_DATABASE_URL -e AGENT_DATABASE_CA -e AGENT_STORAGE=s3 \
+  -e AGENT_S3_BUCKET -e AGENT_S3_PREFIX -e AWS_REGION <image> \
+  node --experimental-strip-types --disable-warning=ExperimentalWarning src/migrate-coordination.ts
+```
 
 ## Configuration
 
 | Variable | Meaning |
 | --- | --- |
-| `AGENT_STORAGE` | `file` (default), `shared-file`, or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
-| `AGENT_LEASES` | `none`, `storage`, or `postgres` (`AGENT_LEASES_POSTGRES_URL`) |
+| `AGENT_DATABASE_URL` | Postgres, required; `sslmode` and `sslrootcert` in the URL are honoured |
+| `AGENT_DATABASE_CA` | PEM bundle to verify the server with (e.g. `/etc/ssl/rds-global-bundle.pem`); implies `sslmode=verify-full` unless the URL sets one |
+| `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
+| `AGENT_STORAGE` | `file` (default), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes |
+| `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 30000) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
 | `AGENT_EXECUTOR_URL` | run `js_exec` on executor hosts (see `infra/executor/README.md`) |
 
@@ -153,7 +212,7 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
 Streamed events (token deltas, tool progress) are kept in a bounded in-memory
 buffer for SSE replay. After a host restart a client's cursor falls outside the
 buffer, it receives `REPLAY_GAP`, and it recovers durable state from `/state`
-and `/history`. The session header (`<session>.json`) is rewritten only when
+and `/history`. The session header (a row in `agents`) is rewritten only when
 configuration or metadata changes.
 
 If the runtime dies mid-turn, the next start closes the turn automatically:
@@ -210,10 +269,10 @@ token. Deleting the channel removes the webhook.
   character messages), with a typing indicator meanwhile. Channel agents also
   get a `send_message` tool for updates mid-turn. `/start` gets the channel's
   `greeting` without a model call.
-- A webhook is recorded in shared storage before it is acknowledged, and
-  duplicates (Telegram retries) are dropped by message id. Replies go through a
-  durable queue: a failed send is retried with backoff by any node, and a
-  conditional-write claim means one node sends each message.
+- A webhook is recorded in Postgres before it is acknowledged, and duplicates
+  (Telegram retries) are dropped by message id for seven days. Replies go
+  through a durable outbox: a failed send is retried with backoff by any node,
+  and a claim means one node sends each message.
 
 `AGENT_TELEGRAM_API_URL` overrides the Bot API endpoint (tests use a local fake).
 
@@ -235,33 +294,31 @@ most 32 KiB per call (up to 128 KiB) with a `nextOffset`; `grep` returns at most
 200 lines and skips binary files and files over 4 MiB, and matches in a worker
 that is stopped after 10 seconds; `glob` returns at most 1,000 paths.
 
-A volume is an actor, like an agent: one node at a time holds its lease, and
-requests to `/v1/volumes/:id` are forwarded to that node.
+A volume is an actor, like an agent: one node at a time owns it, and requests
+to `/v1/volumes/:id` are forwarded to that node. Headers, snapshot summaries and
+watchers are rows in Postgres; the rest is in Storage:
 
 ```text
-volumes/<id>                      header: tenant, name, tombstone
 volumes/<id>/tree                 append log of puts and deletes, folded into a base every 1,024 records
-volumes/<id>/snapshots/<snap>     snapshot summary (+ snapshot-files/<snap>, the file map)
-volumes/<id>/watchers/<agent>     mounts with notify
-volumes/index/<tenant>/<id>       the tenant's volumes
+volumes/<id>/snapshots/<snap>     a snapshot's file map (a blob)
 chunks/<tenant>/<aa>/<sha256>     contents, in 1 MiB content-addressed chunks
 ```
 
 Writes: any node splits the content into chunks and stores those not already
 present, then asks the owner to commit the path. The owner checks the version,
-appends the record durably and applies it; a node that lost the lease is fenced by
-the log. Reads ask the owner only for the path's chunk list, then fetch the chunks
+appends the record durably and applies it; a node that lost ownership is fenced
+by the log. Reads ask the owner only for the path's chunk list, then fetch the chunks
 needed for the requested range directly from storage. Downloads stream a chunk at
 a time and support `Range`. Snapshots and forks copy metadata only, so a fork and
 its source share chunks and diverge independently. `GET /v1/volumes/:id/changes`
 lists recent changes; a mount with `notify` prompts the agent (about a second
 after changes, coalesced) when others change files under it.
 
-Not yet built: garbage collection of unreferenced chunks (deleting a file,
-volume or snapshot leaves its chunks), quotas per tenant, restoring a snapshot in
+Not yet built: garbage collection of unreferenced chunks and snapshot file maps
+(deleting a file, volume or snapshot leaves them), quotas per tenant, restoring a snapshot in
 place, empty directories, renames, and durable change notifications (a crash
 during the one-second window drops that notification). Listings and snapshots
-hold a volume's file map in memory and in one document, which suits volumes of
+hold a volume's file map in memory and in one blob, which suits volumes of
 up to about 100,000 files. Uploads share the server's 30-second request timeout.
 
 ## Tenant isolation contract
