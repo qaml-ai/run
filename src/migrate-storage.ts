@@ -5,8 +5,9 @@ import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts
 
 /**
  * Copy a single-host data directory (file storage) into another backend, such as
- * S3. Documents are overwritten and logs are replaced whole, so re-running after a
- * partial copy is safe. Stop the runtime first: this is a cold copy.
+ * S3. Documents are overwritten, logs are replaced whole and blobs (volume chunks)
+ * are immutable, so re-running after a partial copy is safe. Stop the runtime
+ * first: this is a cold copy.
  *
  *   AGENT_STORAGE=s3 AGENT_S3_BUCKET=... node src/migrate-storage.ts /data
  */
@@ -20,7 +21,7 @@ export async function copyStorage(root: string, target: Storage) {
     }
   };
   await walk(root);
-  let documents = 0, logs = 0, records = 0;
+  let documents = 0, logs = 0, records = 0, blobs = 0;
   for (const file of files.sort()) {
     if (file.endsWith(".json")) {
       const key = file.slice(0, -".json".length);
@@ -33,9 +34,13 @@ export async function copyStorage(root: string, target: Storage) {
       const entries = await source.log(key).read();
       await target.log(key).rewrite(() => entries);
       logs++; records += entries.length;
+    } else if (file.endsWith(".bin")) {
+      const key = file.slice(0, -".bin".length);
+      await target.writeBlob(key, (await source.readBlob(key))!);
+      blobs++;
     }
   }
-  return { documents, logs, records };
+  return { documents, logs, records, blobs };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

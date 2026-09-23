@@ -140,8 +140,10 @@ test("a single-host data directory copies into another backend, and copying agai
   const transcript = source.log<{ t: string; n: number }>("sessions/client_a/transcript");
   for (let n = 0; n < 3; n++) transcript.append({ t: "message", n });
   await transcript.flush(true);
+  await source.writeBlob("chunks/alice/ab/abc", new Uint8Array([7, 8]));
   const target = memoryStorage();
-  for (let run = 0; run < 2; run++) assert.deepEqual(await copyStorage(root, target), { documents: 1, logs: 1, records: 3 });
+  for (let run = 0; run < 2; run++) assert.deepEqual(await copyStorage(root, target), { documents: 1, logs: 1, records: 3, blobs: 1 });
+  assert.deepEqual([...await target.readBlob("chunks/alice/ab/abc") ?? []], [7, 8]);
   assert.deepEqual((await target.readJson("tenants/alice/keys"))?.value, { anthropic: "sealed" });
   assert.deepEqual((await target.log("sessions/client_a/transcript").read()).map((record: any) => record.n), [0, 1, 2]);
 });
