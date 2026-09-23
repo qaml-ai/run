@@ -39,7 +39,7 @@ export class PreconditionFailed extends Error {
 }
 
 const versionOf = (text: string) => createHash("sha256").update(text).digest("hex");
-const validKey = (key: string) => {
+export const validKey = (key: string) => {
   if (!/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/.test(key) || key.split("/").some(part => part === "." || part === "..")) throw new Error(`Invalid storage key: ${key}`);
   return key;
 };
