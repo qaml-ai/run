@@ -7,19 +7,9 @@
 FROM node:22-bookworm-slim
 
 WORKDIR /app
-# Install only what the service imports; the SDK clients and Studio are not part of the image.
-COPY package.json ./package.source.json
-RUN node -e '\
-  const source = require("./package.source.json"); \
-  const keep = ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "quickjs-emscripten", "typebox", "sucrase", "@aws-sdk/client-s3", "pg"]; \
-  const dependencies = Object.fromEntries(keep.map(name => { \
-    if (!source.dependencies[name]) throw new Error(`missing dependency ${name}`); \
-    return [name, source.dependencies[name]]; \
-  })); \
-  require("fs").writeFileSync("package.json", JSON.stringify({ name: "agent-runtime", private: true, type: "module", dependencies }, null, 2));' \
-  && npm install --omit=dev --no-audit --no-fund \
-  && rm package.source.json \
-  && npm cache clean --force
+# Runtime dependencies only, exactly as locked; UI build tooling is in devDependencies.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY src ./src
 COPY shared ./shared

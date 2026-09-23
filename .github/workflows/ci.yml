@@ -26,3 +26,16 @@ jobs:
       - run: AGENT_HOSTING=inline npm test
       - run: npm run test:python
       - run: npm run build:console && npm run build
+  image:
+    # The deployed image installs only runtime dependencies; prove it starts and serves.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci && npm run build:console
+      - run: docker build -t agent-runtime:ci .
+      - run: |
+          docker run -d --name runtime -p 8790:8790 -e AGENT_RUNTIME_TOKEN=ci-boot-token-at-least-24-chars agent-runtime:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8790/healthz && exit 0; sleep 1; done
+          docker logs runtime; exit 1
