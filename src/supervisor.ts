@@ -38,6 +38,8 @@ function killGroup(handle: ProcessHandle) {
 export class AgentSupervisor {
   readonly agents = new Map<string, Handle>();
   readonly starting = new Set<string>();
+  /** Agents being stopped. They are already out of `agents`, so no new work reaches a dying agent. */
+  private readonly stopping = new Map<string, Promise<void>>();
   readonly root: string;
   readonly options: SupervisorOptions;
   private storage?: Promise<Storage>;
@@ -90,6 +92,7 @@ export class AgentSupervisor {
 
   async start(id: string, config: Omit<AgentConfig, "id" | "directory" | "tools">, bridge: ToolBridge) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    await this.stopping.get(id);
     validateDefinitions(bridge.definitions);
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent already exists");
     if (this.full) throw new Error("Agent capacity reached");
@@ -181,9 +184,16 @@ export class AgentSupervisor {
     finally { if (onEvent) handle.listeners.delete(onEvent); }
   }
 
-  async stop(id: string) {
+  stop(id: string): Promise<void> {
     const handle = this.agents.get(id);
-    if (!handle) return;
+    if (!handle) return this.stopping.get(id) ?? Promise.resolve();
+    this.agents.delete(id);
+    const stopped = this.halt(handle).finally(() => { if (this.stopping.get(id) === stopped) this.stopping.delete(id); });
+    this.stopping.set(id, stopped);
+    return stopped;
+  }
+
+  private async halt(handle: Handle) {
     this.cancelTools(handle);
     if (handle.kind === "process") {
       handle.rpc.close("Agent stopped");
@@ -196,8 +206,7 @@ export class AgentSupervisor {
       this.options.executor?.executions.releaseOwner(handle);
       await handle.host.dispose();
     }
-    if (this.agents.get(id) === handle) this.agents.delete(id);
   }
 
-  async close() { await Promise.all([...this.agents.keys()].map(id => this.stop(id))); }
+  async close() { await Promise.all([...[...this.agents.keys()].map(id => this.stop(id)), ...this.stopping.values()]); }
 }

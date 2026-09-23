@@ -283,6 +283,16 @@ test("idle agents release their process and memory, and capacity is reclaimed fr
   assert.equal((await again.execute("return 3")).output[0], "3");
 });
 
+test("a request that arrives while its idle agent is being stopped waits and restarts the agent", async t => {
+  const f = await fixture(t);
+  const agent = await f.start();
+  const stopping = f.supervisor.stop(agent.session.id);
+  assert.equal(f.supervisor.agents.has(agent.session.id), false, "a stopping agent takes no new work");
+  assert.equal((await agent.execute("return 1")).output[0], "1");
+  await stopping;
+  assert.equal((await agent.execute("return 2")).output[0], "2");
+});
+
 test("scoped credentials cannot inject assistant or tool history", async t => {
   const f = await fixture(t);
   const agent = await f.start();

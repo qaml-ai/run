@@ -388,6 +388,8 @@ export class ClientSessions {
         await this.writeHeader(session);
       }
       if (result.recovered) this.publish(session, { type: "event", requestId: "", event: { type: "turn_recovered", reason: "The runtime restarted during a turn; unresolved tool calls were marked unknown" } });
+      // Starting can take longer than the idle timeout; the agent is fresh, not idle.
+      session.lastActive = Date.now();
       return result;
     })().finally(() => { session.starting = undefined; });
   }
