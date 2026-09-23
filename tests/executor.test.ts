@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
+import { getRequestListener } from "@hono/node-server";
 import { once } from "node:events";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -45,9 +46,10 @@ async function startExecutor(t: T) {
 async function startCallbacks(t: T) {
   let executions!: Executions;
   const requests: string[] = [];
-  const server = createServer(async (req, res) => {
+  const listener = getRequestListener(request => executions.app.fetch(request));
+  const server = createServer((req, res) => {
     requests.push(req.url ?? "");
-    if (!await executions.handle(req, res)) res.writeHead(404).end();
+    void listener(req, res);
   });
   executions = new Executions(await listen(t, server));
   return { executions, requests };

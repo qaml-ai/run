@@ -6,7 +6,10 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
-import { ClientSessions, readJson } from "../src/client-sessions.ts";
+import { getRequestListener } from "@hono/node-server";
+import { ClientSessions } from "../src/client-sessions.ts";
+import { readJson } from "../src/http.ts";
+import { FRAME_BYTES } from "../shared/client-protocol.ts";
 import { configuredModel } from "../src/model.ts";
 import { AgentClient, AgentRuntime, tool, schema, type AgentOptions, type RuntimeOptions, type Tool } from "../clients/node.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -18,15 +21,15 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, maxAgents: options.maxAgents });
   let sessions = new ClientSessions(supervisor, { root: join(root, "sessions"), secret: token, apiKey: "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxProcessesPerTenant: options.perTenant });
   let model = configuredModel();
-  const server = createServer(async (req, res) => {
-    if (await sessions.handle(req, res)) return;
-    if (req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401).end(); return; }
+  const server = createServer(getRequestListener(async (req, env) => {
+    if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
+    if (req.headers.get("authorization") !== `Bearer ${token}`) return new Response(null, { status: 401 });
     try {
-      const body = await readJson(req);
-      const result = await sessions.create(body.tools, { model, ...(body.systemPrompt !== undefined ? { systemPrompt: body.systemPrompt } : {}) }, req.headers["idempotency-key"] as string | undefined, { name: body.name, type: body.type });
-      res.writeHead(201, { "Content-Type": "application/json" }).end(JSON.stringify(result));
-    } catch (error) { res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: String(error) })); }
-  });
+      const body = await readJson(req.body, FRAME_BYTES);
+      const result = await sessions.create(body.tools, { model, ...(body.systemPrompt !== undefined ? { systemPrompt: body.systemPrompt } : {}) }, req.headers.get("idempotency-key") ?? undefined, { name: body.name, type: body.type });
+      return Response.json(result, { status: 201 });
+    } catch (error) { return Response.json({ error: String(error) }, { status: 400 }); }
+  }));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;

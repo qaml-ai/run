@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { Hono, type Context } from "hono";
 import type { Accounts, Principal } from "./accounts.ts";
+import { readText } from "./http.ts";
 
 /**
  * Console sign-in. Sessions are HMAC-signed cookies (HttpOnly, Secure, SameSite=Lax).
@@ -20,9 +21,9 @@ const SESSION_COOKIE = "ar_session";
 const STATE_COOKIE = "ar_oauth_state";
 
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url");
-function cookies(req: IncomingMessage) {
+function cookies(req: Request) {
   const result: Record<string, string> = {};
-  for (const part of (req.headers.cookie ?? "").split(";")) {
+  for (const part of (req.headers.get("cookie") ?? "").split(";")) {
     const index = part.indexOf("=");
     if (index > 0) result[part.slice(0, index).trim()] = part.slice(index + 1).trim();
   }
@@ -40,7 +41,7 @@ export class ConsoleAuth {
   }
 
   /** The signed-in principal from the session cookie, if valid and unexpired. */
-  async principal(req: IncomingMessage): Promise<(Principal & { login?: string }) | undefined> {
+  async principal(req: Request): Promise<(Principal & { login?: string }) | undefined> {
     const raw = cookies(req)[SESSION_COOKIE];
     if (!raw) return undefined;
     const [payload, signature] = raw.split(".");
@@ -55,12 +56,12 @@ export class ConsoleAuth {
   }
 
   /** Browser requests that change state must carry the console header and come from our origin. */
-  allowsMutation(req: IncomingMessage) {
-    if (req.headers[CONSOLE_HEADER] !== "1") return false;
-    const origin = req.headers.origin;
-    if (origin === undefined || origin === new URL(this.options.publicUrl).origin) return true;
+  allowsMutation(req: Request) {
+    if (req.headers.get(CONSOLE_HEADER) !== "1") return false;
+    const origin = req.headers.get("origin");
+    if (origin === null || origin === new URL(this.options.publicUrl).origin) return true;
     // Same-origin also means the Origin names the host this request was sent to.
-    try { return new URL(origin).host === req.headers.host; } catch { return false; }
+    try { return new URL(origin).host === req.headers.get("host"); } catch { return false; }
   }
 
   private startSession(tenant: string, login?: string) {
@@ -69,20 +70,21 @@ export class ConsoleAuth {
     return this.cookie(SESSION_COOKIE, `${payload}.${this.sign(payload)}`, hours * 3600);
   }
 
-  /** Handle /console/auth/* routes. Returns false for any other path. */
-  async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-    const url = new URL(req.url ?? "/", this.options.publicUrl);
-    if (!url.pathname.startsWith("/console/auth/")) return false;
-    const redirect = (location: string, setCookies: string[] = []) => res.writeHead(302, { Location: location, "Set-Cookie": setCookies, "Cache-Control": "no-store" }).end();
-    const json = (status: number, value: unknown, setCookies: string[] = []) => res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "Set-Cookie": setCookies }).end(JSON.stringify(value));
-    const fail = (message: string) => redirect(`/console/?error=${encodeURIComponent(message)}`);
-    const route = url.pathname.slice("/console/auth/".length);
+  /** The /console/auth/* routes. */
+  readonly app = this.routes();
 
-    if (route === "methods" && req.method === "GET") {
-      json(200, { github: !!this.options.github, token: true, org: this.options.github?.org });
-    } else if (route === "github" && req.method === "GET") {
+  private routes() {
+    const app = new Hono();
+    const withCookies = (c: Context, setCookies: string[]) => { for (const cookie of setCookies) c.header("Set-Cookie", cookie, { append: true }); return c; };
+    const redirect = (c: Context, location: string, setCookies: string[] = []) => withCookies(c, setCookies).redirect(location, 302);
+    const json = (c: Context, status: 200 | 400 | 401 | 403 | 404, value: unknown, setCookies: string[] = []) => withCookies(c, setCookies).json(value, status);
+    const fail = (c: Context, message: string, setCookies: string[] = []) => redirect(c, `/console/?error=${encodeURIComponent(message)}`, setCookies);
+    app.use("/console/auth/*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
+
+    app.get("/console/auth/methods", c => json(c, 200, { github: !!this.options.github, token: true, org: this.options.github?.org }));
+    app.get("/console/auth/github", c => {
       const github = this.options.github;
-      if (!github) { fail("GitHub sign-in is not configured"); return true; }
+      if (!github) return fail(c, "GitHub sign-in is not configured");
       const state = randomBytes(24).toString("base64url");
       const authorize = new URL("/login/oauth/authorize", github.webUrl ?? "https://github.com");
       authorize.searchParams.set("client_id", github.clientId);
@@ -90,15 +92,16 @@ export class ConsoleAuth {
       authorize.searchParams.set("scope", "read:org");
       authorize.searchParams.set("state", state);
       authorize.searchParams.set("allow_signup", "false");
-      redirect(authorize.href, [this.cookie(STATE_COOKIE, state, 600, "/console/auth")]);
-    } else if (route === "callback" && req.method === "GET") {
+      return redirect(c, authorize.href, [this.cookie(STATE_COOKIE, state, 600, "/console/auth")]);
+    });
+    app.get("/console/auth/callback", async c => {
       const github = this.options.github;
-      const state = url.searchParams.get("state");
-      const code = url.searchParams.get("code");
-      const expected = cookies(req)[STATE_COOKIE];
+      const state = c.req.query("state");
+      const code = c.req.query("code");
+      const expected = cookies(c.req.raw)[STATE_COOKIE];
       const clearState = this.cookie(STATE_COOKIE, "", 0, "/console/auth");
       if (!github || !state || !code || !expected || state.length !== expected.length || !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) {
-        redirect(`/console/?error=${encodeURIComponent("Sign-in expired or was tampered with; try again")}`, [clearState]); return true;
+        return fail(c, "Sign-in expired or was tampered with; try again", [clearState]);
       }
       try {
         const exchange = await fetch(new URL("/login/oauth/access_token", github.webUrl ?? "https://github.com"), {
@@ -116,28 +119,26 @@ export class ConsoleAuth {
         const member = membership.ok && (await membership.json() as { state?: string }).state === "active";
         if (!member) throw new Error(`Only members of the ${github.org} GitHub organization can sign in`);
         const tenant = await this.options.accounts.tenantForGithub(user.login);
-        redirect("/console/", [clearState, this.startSession(tenant, user.login)]);
+        return redirect(c, "/console/", [clearState, this.startSession(tenant, user.login)]);
       } catch (error) {
-        redirect(`/console/?error=${encodeURIComponent((error as Error).message)}`, [clearState]);
+        return fail(c, (error as Error).message, [clearState]);
       }
-    } else if (route === "token" && req.method === "POST") {
-      // Operator or API token sign-in, for tenants an admin created without GitHub.
-      if (!this.allowsMutation(req)) { json(403, { error: "Forbidden" }); return true; }
+    });
+    // Operator or API token sign-in, for tenants an admin created without GitHub.
+    app.post("/console/auth/token", async c => {
+      if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
       let token = "";
-      try {
-        let body = "";
-        for await (const chunk of req) { body += chunk; if (body.length > 4096) throw new Error("too large"); }
-        token = JSON.parse(body).token;
-      } catch { json(400, { error: "Send {\"token\": \"...\"}" }); return true; }
+      try { token = JSON.parse(await readText(c.req.raw.body, 4096)).token; }
+      catch { return json(c, 400, { error: "Send {\"token\": \"...\"}" }); }
       const principal = typeof token === "string" ? await this.options.accounts.authenticate(`Bearer ${token}`) : undefined;
-      if (!principal) { json(401, { error: "Unknown token" }); return true; }
-      json(200, { tenant: principal.tenant }, [this.startSession(principal.tenant)]);
-    } else if (route === "logout" && req.method === "POST") {
-      if (!this.allowsMutation(req)) { json(403, { error: "Forbidden" }); return true; }
-      json(200, { signedOut: true }, [this.cookie(SESSION_COOKIE, "", 0)]);
-    } else {
-      json(404, { error: "Unknown sign-in route" });
-    }
-    return true;
+      if (!principal) return json(c, 401, { error: "Unknown token" });
+      return json(c, 200, { tenant: principal.tenant }, [this.startSession(principal.tenant)]);
+    });
+    app.post("/console/auth/logout", c => {
+      if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
+      return json(c, 200, { signedOut: true }, [this.cookie(SESSION_COOKIE, "", 0)]);
+    });
+    app.all("/console/auth/*", c => json(c, 404, { error: "Unknown sign-in route" }));
+    return app;
   }
 }

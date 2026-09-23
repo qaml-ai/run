@@ -1,4 +1,4 @@
-import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import { request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, join, extname, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,10 +14,15 @@ import type { Storage } from "../shared/storage.ts";
 import { DEFAULT_TENANT, Tenants } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
 import { ConsoleAuth } from "./console-auth.ts";
-import { handleApi } from "./api.ts";
+import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Executions, executorEndpoint } from "./executions.ts";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { Hono, type Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
+import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
+import { readJson, readText } from "./http.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE.
 // Without it, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -94,10 +99,8 @@ async function createAgent(tenant: string, params: any, key?: string) {
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
 /** Serve the console's static build; unknown paths get index.html for client-side routing. */
-async function serveConsole(req: IncomingMessage, res: ServerResponse) {
-  const path = new URL(req.url ?? "/", publicUrl).pathname;
-  if (path === "/console") { res.writeHead(302, { Location: "/console/" }).end(); return; }
-  const relative = normalize(decodeURIComponent(path.slice("/console/".length))).replace(/^(\.\.(\/|\\|$))+/, "");
+async function serveConsole(c: Context) {
+  const relative = normalize(decodeURIComponent(new URL(c.req.url).pathname.slice("/console/".length))).replace(/^(\.\.(\/|\\|$))+/, "");
   const file = join(consoleDir, relative);
   let asset = !!relative && !relative.endsWith("/") && file.startsWith(consoleDir + sep);
   let body: Buffer | undefined;
@@ -107,24 +110,15 @@ async function serveConsole(req: IncomingMessage, res: ServerResponse) {
   // Anything that is not a built file is a client-side route: serve the app shell.
   if (!body) {
     try { body = await readFile(join(consoleDir, "index.html")); }
-    catch { res.writeHead(404, { "Content-Type": "text/plain" }).end("The console is not built on this host"); return; }
+    catch { return c.body("The console is not built on this host", 404, { "Content-Type": "text/plain" }); }
   }
   const type = asset ? CONTENT_TYPES[extname(file)] ?? "application/octet-stream" : CONTENT_TYPES[".html"];
-  res.writeHead(200, {
+  return c.body(new Uint8Array(body), 200, {
     "Content-Type": type,
     "Cache-Control": asset && relative.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store",
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin",
-  }).end(body);
-}
-
-async function body(req: import("node:http").IncomingMessage, limit: number) {
-  let text = "";
-  for await (const chunk of req) {
-    text += chunk;
-    if (Buffer.byteLength(text) > limit) throw new Error("Request too large");
-  }
-  return text ? JSON.parse(text) : {};
+  });
 }
 
 /** The agent a request addresses, if any: `/clients/<id>`, `/v1/agents/<id>`, `/registry/<id>` or `/internal/agents/<id>`. */
@@ -149,22 +143,6 @@ async function submitAnywhere(agent: string, tenant: string, request: { id: stri
   return response.json();
 }
 
-async function handleInternal(req: IncomingMessage, res: ServerResponse) {
-  const match = /^\/internal\/agents\/(client_[a-f0-9]{40})\/requests$/.exec(req.url ?? "");
-  if (!match || req.method !== "POST") { res.writeHead(404).end(); return; }
-  let body = "";
-  for await (const chunk of req) { body += chunk; if (body.length > 1_100_000) { res.writeHead(413).end(); return; } }
-  const [timestamp, signature] = String(req.headers["x-agent-runtime-internal"] ?? "").split(".");
-  const expected = Buffer.from(internalSignature(timestamp ?? "", req.url!, body));
-  const given = Buffer.from(signature ?? "");
-  if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) { res.writeHead(401).end(); return; }
-  try {
-    const { tenant, request } = JSON.parse(body);
-    res.writeHead(202, { "Content-Type": "application/json" }).end(JSON.stringify(await clients.submit(match[1], tenant, request)));
-  } catch (error) {
-    res.writeHead((error as { status?: number }).status ?? 400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: errorText(error) }));
-  }
-}
 const FORWARDED = "x-agent-runtime-forwarded";
 
 /** Stream a request to the node that owns its agent, and stream the answer back (SSE included). */
@@ -181,81 +159,6 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string) {
   req.pipe(upstream);
 }
 
-const server = createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/healthz") {
-    res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}'); return;
-  }
-  // One node serves each agent; anything addressed to an agent another node holds goes there.
-  const agent = leases && !req.headers[FORWARDED] ? agentOf(req.url) : undefined;
-  if (agent) {
-    const owner = await clients.ownerElsewhere(agent).catch(() => undefined);
-    if (owner) { forward(req, res, owner); return; }
-  }
-  if (req.url?.startsWith("/internal/")) { await handleInternal(req, res); return; }
-  if (await consoleAuth.handle(req, res)) return;
-  if (await handleApi(req, res, { accounts, clients, consoleAuth, createAgent, scheduler, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" })) return;
-  if (req.method === "GET" && (req.url === "/console" || req.url?.startsWith("/console/"))) { await serveConsole(req, res); return; }
-  if (req.method === "GET" && req.url === "/") { res.writeHead(302, { Location: "/console/" }).end(); return; }
-  if (await clients.handle(req, res)) return;
-  const principal = await accounts.authenticate(req.headers.authorization);
-  const tenant = principal && { id: principal.tenant };
-  if (!tenant) { res.writeHead(401).end(); return; }
-  let streaming = false;
-  try {
-    if (req.headers.origin) { res.writeHead(403).end(); return; }
-    if (req.method === "GET" && req.url === "/registry") {
-      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(await clients.list(tenant.id))); return;
-    }
-    const registered = /^\/registry\/(client_[a-f0-9]{40})(\/requests)?$/.exec(req.url ?? "");
-    if (registered) {
-      if (req.method === "GET" && !registered[2]) {
-        const agent = await clients.inspect(registered[1], tenant.id);
-        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(agent)); return;
-      }
-      if (req.method === "POST" && registered[2]) {
-        req.url = `/clients/${registered[1]}/requests`; await clients.handle(req, res, tenant.id); return;
-      }
-      res.writeHead(405).end(); return;
-    }
-    if (req.method === "POST" && req.url === "/client-sessions") {
-      const params = await body(req, 18 * 1024 * 1024);
-      const key = req.headers["idempotency-key"];
-      if (key !== undefined && typeof key !== "string") throw new Error("Invalid idempotency key");
-      const result = await createAgent(tenant.id, params, key);
-      res.writeHead(201, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(result));
-      return;
-    }
-    // Local diagnostic agents with a host workspace: single-tenant development hosts only.
-    const match = tenants.legacy && /^\/agents\/([a-zA-Z0-9_-]{1,80})(?:\/(prompt|execute|abort))?$/.exec(req.url ?? "");
-    if (!match) { res.writeHead(404).end(); return; }
-    const [, id, action] = match;
-    const params = await body(req, 256_000);
-    let result: unknown;
-    if (req.method === "POST" && !action) {
-      result = await supervisor.start(id, { model, apiKey: tenants.apiKey(DEFAULT_TENANT, model.provider), ...(process.env.AGENT_SYSTEM_PROMPT ? { systemPrompt: process.env.AGENT_SYSTEM_PROMPT } : {}) }, await localTools(join(root, "workspaces", id)));
-    } else if (req.method === "GET" && !action) result = await supervisor.request(id, "status");
-    else if (req.method === "DELETE" && !action) { await clients.remove(id); await supervisor.stop(id); result = { stopped: true }; }
-    else if (req.method === "POST" && action === "abort") result = await supervisor.request(id, "abort");
-    else if (req.method === "POST" && (action === "prompt" || action === "execute")) {
-      streaming = true;
-      res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
-      const emit = (event: unknown) => {
-        if (!res.destroyed && !res.write(`${JSON.stringify(event)}\n`)) {
-          // This prototype has no replay queue. Disconnect slow consumers
-          // instead of buffering an unbounded transcript in the supervisor.
-          res.destroy();
-        }
-      };
-      result = await supervisor.request(id, action, params, event => emit({ type: "event", event }));
-      emit({ type: "result", result });
-      res.end(); return;
-    } else { res.writeHead(405).end(); return; }
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
-  } catch (error) {
-    if (!streaming) res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ type: "error", error: errorText(error) }) + "\n");
-  }
-});
 const clients = new ClientSessions(supervisor, {
   secret: sessionSecret, toolTimeoutMs, idleMs, maxProcessesPerTenant,
   apiKeyFor: (tenant, provider) => accounts.apiKey(tenant, provider),
@@ -272,16 +175,103 @@ const scheduler = new Scheduler({
   },
 });
 scheduler.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
+
+type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
+const app = new Hono<Env>();
+app.get("/healthz", c => c.json({ ok: true }));
+// One node serves each agent; anything addressed to an agent another node holds goes there.
+// Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
+app.use(async (c, next) => {
+  const agent = leases && !c.req.header(FORWARDED) ? agentOf(c.env.incoming.url) : undefined;
+  const owner = agent && await clients.ownerElsewhere(agent).catch(() => undefined);
+  if (!owner) return next();
+  forward(c.env.incoming, c.env.outgoing, owner);
+  return RESPONSE_ALREADY_SENT;
+});
+
+app.post("/internal/agents/:id{client_[a-f0-9]{40}}/requests", async c => {
+  let body: string;
+  try { body = await readText(c.req.raw.body, 1_100_000); } catch { return c.body(null, 413); }
+  const [timestamp, signature] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
+  const expected = Buffer.from(internalSignature(timestamp ?? "", c.req.path, body));
+  const given = Buffer.from(signature ?? "");
+  if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return c.body(null, 401);
+  try {
+    const { tenant, request } = JSON.parse(body);
+    return c.json(await clients.submit(c.req.param("id"), tenant, request), 202);
+  } catch (error) {
+    return c.json({ error: errorText(error) }, ((error as { status?: number }).status ?? 400) as ContentfulStatusCode);
+  }
+});
+app.all("/internal/*", c => c.body(null, 404));
+app.route("/", consoleAuth.app);
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" }));
+app.get("/console", c => c.redirect("/console/", 302));
+app.get("/console/*", serveConsole);
+app.get("/", c => c.redirect("/console/", 302));
+app.route("/", clients.app);
+
+// Everything below is for operator tokens, and never for browsers.
+app.use(async (c, next) => {
+  const principal = await accounts.authenticate(c.req.header("authorization"));
+  if (!principal) return c.body(null, 401);
+  if (c.req.header("origin")) return c.body(null, 403);
+  c.set("tenant", principal.tenant);
+  await next();
+});
+app.get("/registry", async c => c.json(await clients.list(c.var.tenant)));
+const registered = "/registry/:id{client_[a-f0-9]{40}}";
+app.get(registered, async c => c.json(await clients.inspect(c.req.param("id"), c.var.tenant)));
+// The operator bridge: the client routes accept requests to the operator's own agents without their token.
+app.post(`${registered}/requests`, c => clients.app.request(`/clients/${c.req.param("id")}/requests`,
+  { method: "POST", headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit, { ...c.env, operatorTenant: c.var.tenant }));
+for (const path of [registered, `${registered}/requests`]) app.all(path, c => c.body(null, 405));
+app.post("/client-sessions", async c => {
+  const params = await readJson(c.req.raw.body, 18 * 1024 * 1024, {});
+  const result = await createAgent(c.var.tenant, params, c.req.header("idempotency-key"));
+  return c.json(result, 201, { "Cache-Control": "no-store" });
+});
+// Local diagnostic agents with a host workspace: single-tenant development hosts only.
+app.all("/agents/:id{[a-zA-Z0-9_-]{1,80}}/:action{prompt|execute|abort}?", async (c, next) => {
+  if (!tenants.legacy) return next();
+  const { id, action } = c.req.param();
+  const params = await readJson(c.req.raw.body, 256_000, {});
+  const method = c.req.method;
+  let result: unknown;
+  if (method === "POST" && !action) {
+    result = await supervisor.start(id, { model, apiKey: tenants.apiKey(DEFAULT_TENANT, model.provider), ...(process.env.AGENT_SYSTEM_PROMPT ? { systemPrompt: process.env.AGENT_SYSTEM_PROMPT } : {}) }, await localTools(join(root, "workspaces", id)));
+  } else if (method === "GET" && !action) result = await supervisor.request(id, "status");
+  else if (method === "DELETE" && !action) { await clients.remove(id); await supervisor.stop(id); result = { stopped: true }; }
+  else if (method === "POST" && action === "abort") result = await supervisor.request(id, "abort");
+  else if (method === "POST" && (action === "prompt" || action === "execute")) {
+    const res = c.env.outgoing;
+    res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
+    const emit = (event: unknown) => {
+      if (!res.destroyed && !res.write(`${JSON.stringify(event)}\n`)) {
+        // This prototype has no replay queue. Disconnect slow consumers
+        // instead of buffering an unbounded transcript in the supervisor.
+        res.destroy();
+      }
+    };
+    try { emit({ type: "result", result: await supervisor.request(id, action, params, event => emit({ type: "event", event })) }); }
+    catch (error) { emit({ type: "error", error: errorText(error) }); }
+    res.end();
+    return RESPONSE_ALREADY_SENT;
+  } else return c.body(null, 405);
+  return c.json(result);
+});
+app.notFound(c => c.body(null, 404));
+app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", 400, { "Content-Type": "application/json" }));
+
 // One-time migrations of single-host data (both are no-ops once done).
 await clients.init();
 await accounts.init();
+const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   console.log(JSON.stringify({ type: "listening", address: server.address(), tenants: tenants.legacy ? "single" : "file", hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys }));
 });
-const callbacks = executor && createServer(async (req, res) => {
-  if (!await executor.executions.handle(req, res)) res.writeHead(404).end();
-});
+const callbacks = executor && createAdaptorServer({ fetch: executor.executions.app.fetch }) as Server;
 if (callbacks) {
   callbacks.requestTimeout = 10_000;
   callbacks.listen(callbackPort, process.env.HOST ?? "127.0.0.1", () => {

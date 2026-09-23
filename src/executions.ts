@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { Hono, type Context } from "hono";
 import { errorText } from "./protocol.ts";
 import { SANDBOX_LIMITS } from "./limits.ts";
+import { readText } from "./http.ts";
 
 /** One guest tool call relayed from an executor; the receiver applies codemode's validation and quotas. */
 export type ToolDispatch = (call: { name: unknown; args: unknown }) => Promise<unknown>;
@@ -13,7 +14,6 @@ export type ExecutorEndpoint = { urls: string[]; token: string };
 
 type Entry = { hash: Buffer; expiresAt: number; dispatch: ToolDispatch; owner: unknown; timer: NodeJS.Timeout };
 const hash = (token: string) => createHash("sha256").update(token).digest();
-const PATH = /^\/internal\/executions\/([0-9a-f-]{36})\/tools$/;
 
 /** Parses AGENT_EXECUTOR_URL (comma-separated http(s) URLs) and AGENT_EXECUTOR_TOKEN. */
 export function executorEndpoint(urls: string | undefined, token: string | undefined): ExecutorEndpoint {
@@ -64,24 +64,24 @@ export class Executions {
 
   get size() { return this.#entries.size; }
 
-  /** `POST /internal/executions/:id/tools`. Returns false for any other route. */
-  async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-    const match = PATH.exec(req.url ?? "");
-    if (!match) return false;
-    if (req.method !== "POST") { res.writeHead(405).end(); return true; }
-    const entry = this.#entries.get(match[1]);
-    if (!entry || Date.now() >= entry.expiresAt) { this.release(match[1]); res.writeHead(404).end(); return true; }
-    const presented = /^Bearer (\S{1,512})$/.exec(req.headers.authorization ?? "")?.[1];
-    if (!presented || !timingSafeEqual(hash(presented), entry.hash)) { res.writeHead(401).end(); return true; }
-    let call: { name: unknown; args: unknown };
-    try {
-      call = JSON.parse(await bounded(req, SANDBOX_LIMITS.argumentBytes + 4096));
-      if (!call || typeof call !== "object") throw new Error("Expected {name, args}");
-    } catch (error) { json(res, 400, { error: errorText(error) }); return true; }
-    try { json(res, 200, { result: await entry.dispatch({ name: call.name, args: call.args }) }); }
-    catch (error) { json(res, 422, { error: errorText(error) }); }
-    return true;
-  }
+  /** `POST /internal/executions/:id/tools`, served on the private callback listener. */
+  readonly app = new Hono()
+    .post("/internal/executions/:id{[0-9a-f-]{36}}/tools", async c => {
+      const id = c.req.param("id");
+      const entry = this.#entries.get(id);
+      if (!entry || Date.now() >= entry.expiresAt) { this.release(id); return c.body(null, 404); }
+      const presented = /^Bearer (\S{1,512})$/.exec(c.req.header("authorization") ?? "")?.[1];
+      if (!presented || !timingSafeEqual(hash(presented), entry.hash)) return c.body(null, 401);
+      let call: { name: unknown; args: unknown };
+      try {
+        call = JSON.parse(await readText(c.req.raw.body, SANDBOX_LIMITS.argumentBytes + 4096));
+        if (!call || typeof call !== "object") throw new Error("Expected {name, args}");
+      } catch (error) { return json(c, 400, { error: errorText(error) }); }
+      try { return json(c, 200, { result: await entry.dispatch({ name: call.name, args: call.args }) }); }
+      catch (error) { return json(c, 422, { error: errorText(error) }); }
+    })
+    .all("/internal/executions/:id{[0-9a-f-]{36}}/tools", c => c.body(null, 405))
+    .all("*", c => c.body(null, 404));
 }
 
 /** A RemoteExecutor over an in-process registry: the runtime host when it is not relaying for an agent child. */
@@ -91,17 +91,4 @@ export function remoteExecutor(executions: Executions, endpoint: ExecutorEndpoin
   };
 }
 
-async function bounded(req: IncomingMessage, limit: number) {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > limit) throw new Error("Tool call too large");
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function json(res: ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(body));
-}
+const json = (c: Context, status: 200 | 400 | 422, body: unknown) => c.json(body, status, { "Cache-Control": "no-store" });

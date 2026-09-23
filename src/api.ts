@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi";
+import type { Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Accounts, Principal } from "./accounts.ts";
 import type { ClientSessions } from "./client-sessions.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
@@ -7,25 +9,13 @@ import { listModels, listProviders, providerInfo } from "./catalog.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
+import { HttpError, readJson } from "./http.ts";
+import * as schema from "./api-schemas.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
- * so anything the console can do, a script can do with an API token:
- *
- *   GET    /v1/me
- *   GET    /v1/providers                       key status per provider
- *   PUT    /v1/providers/:provider/key         { apiKey, verify? }
- *   DELETE /v1/providers/:provider/key
- *   GET    /v1/models?provider=&available=true
- *   GET    /v1/agents                          POST /v1/agents creates one
- *   GET    /v1/agents/:id                      DELETE revokes it
- *   GET    /v1/agents/:id/history
- *   POST   /v1/agents/:id/prompt               { text } → accepted request
- *   GET    /v1/agents/:id/requests/:requestId
- *   POST   /v1/agents/:id/abort
- *   GET    /v1/agents/:id/schedules            POST { text, at | inSeconds, everySeconds? }; DELETE …/schedules/:id
- *   GET    /v1/tokens                          POST { name } mints one; DELETE /v1/tokens/:id
- *   GET    /v1/usage?days=30
+ * so anything the console can do, a script can do with an API token. The routes
+ * below are the OpenAPI document served at /v1/openapi.json.
  */
 export interface ApiContext {
   accounts: Accounts;
@@ -36,141 +26,188 @@ export interface ApiContext {
   verifyKeys?: boolean;
   scheduler?: Scheduler;
 }
+type Env = { Variables: { principal: Principal & { login?: string } } };
 
-class ApiError extends Error {
-  status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
-}
-async function readBody(req: IncomingMessage, limit = 1024 * 1024) {
-  let text = "";
-  for await (const chunk of req) {
-    text += chunk;
-    if (Buffer.byteLength(text) > limit) throw new ApiError(413, "Request too large");
-  }
-  if (!text) return {};
-  try { return JSON.parse(text); } catch { throw new ApiError(400, "Invalid JSON"); }
-}
-const send = (res: ServerResponse, status: number, value: unknown) =>
-  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(value));
+const DOCUMENT = {
+  openapi: "3.1.0",
+  info: { title: "Agent runtime API", version: "1.0.0" },
+  security: [{ bearer: [] }, { console: [] }] as Record<string, string[]>[],
+};
+const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });
+const content = (value: z.ZodType) => ({ content: { "application/json": { schema: value } } });
+const reply = (description: string, value: z.ZodType) => ({ description, ...content(value) });
+const failure = { default: reply("Error", schema.ApiError) };
+const agentId = z.object({ id: z.string() });
 
-export async function handleApi(req: IncomingMessage, res: ServerResponse, context: ApiContext): Promise<boolean> {
-  const url = new URL(req.url ?? "/", "http://runtime");
-  if (url.pathname !== "/v1" && !url.pathname.startsWith("/v1/")) return false;
-  try {
-    const principal = await authenticate(req, context);
-    const parts = url.pathname.split("/").slice(2).map(decodeURIComponent);
-    const method = req.method ?? "GET";
-    const { accounts, clients } = context;
-    const tenant = principal.tenant;
-    const route = `${method} ${parts[0] ?? ""}`;
-
-    if (route === "GET me") {
-      send(res, 200, { tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys });
-    } else if (route === "GET providers" && parts.length === 1) {
-      const keys = new Map((await accounts.keyStatus(tenant)).map(status => [status.provider, status]));
-      const wildcard = keys.get("*");
-      send(res, 200, listProviders().map(provider => ({ ...provider, key: keys.get(provider.id) ?? (wildcard && provider.apiKey ? wildcard : null) })));
-    } else if (parts[0] === "providers" && parts[2] === "key" && parts.length === 3 && (method === "PUT" || method === "DELETE")) {
-      const provider = providerInfo(parts[1]);
-      if (!provider) throw new ApiError(404, `Unknown provider ${parts[1]}; see GET /v1/providers`);
-      if (method === "DELETE") {
-        if (!await accounts.deleteKey(tenant, provider.id)) throw new ApiError(404, `No ${provider.id} key set by this tenant`);
-        await clients.providerKeyChanged(tenant, provider.id);
-        send(res, 200, { deleted: true });
-        return true;
-      }
-      if (!provider.apiKey) throw new ApiError(400, `${provider.id} needs ${provider.requires}, not just an API key; it is not supported yet`);
-      if (!accounts.canStoreKeys) throw new ApiError(503, "This runtime is not configured to store provider keys");
-      const body = await readBody(req, 16 * 1024);
-      const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
-      if (!apiKey || apiKey.length > 4096 || /\s/.test(apiKey)) throw new ApiError(400, "Send {\"apiKey\": \"...\"} with the provider's API key");
-      const check = body.verify === false || context.verifyKeys === false ? { status: "unverified" as const, detail: "Verification skipped" } : await checkProviderKey(provider.id, apiKey);
-      if (check.status === "invalid") throw new ApiError(422, check.detail);
-      await accounts.setKey(tenant, provider.id, apiKey);
-      await clients.providerKeyChanged(tenant, provider.id);
-      send(res, 200, { provider: provider.id, last4: apiKey.slice(-4), verification: check });
-    } else if (route === "GET models") {
-      const provider = url.searchParams.get("provider") ?? undefined;
-      const available = url.searchParams.get("available") === "true";
-      const supported = new Set(listProviders().filter(entry => entry.apiKey).map(entry => entry.id));
-      const keyed = await accounts.keyedProviders(tenant);
-      const models = listModels(provider).map(model => ({ ...model, available: supported.has(model.provider) && keyed(model.provider) }));
-      send(res, 200, available ? models.filter(model => model.available) : models);
-    } else if (route === "GET agents" && parts.length === 1) {
-      send(res, 200, await clients.list(tenant));
-    } else if (route === "POST agents" && parts.length === 1) {
-      const key = req.headers["idempotency-key"];
-      if (key !== undefined && typeof key !== "string") throw new ApiError(400, "Invalid Idempotency-Key");
-      send(res, 201, await context.createAgent(tenant, await readBody(req, 18 * 1024 * 1024), key));
-    } else if (parts[0] === "agents" && parts[1]) {
-      await agentRoute(req, res, context, tenant, parts.slice(1), method);
-    } else if (route === "GET tokens") {
-      send(res, 200, await accounts.listTokens(tenant));
-    } else if (route === "POST tokens" && parts.length === 1) {
-      const body = await readBody(req, 4096);
-      send(res, 201, await accounts.createToken(tenant, body.name));
-    } else if (route === "DELETE tokens" && parts[1]) {
-      if (principal.tokenId === parts[1]) throw new ApiError(400, "A token cannot revoke itself; use another token or the console");
-      if (!await accounts.revokeToken(tenant, parts[1])) throw new ApiError(404, "Unknown token");
-      send(res, 200, { revoked: true });
-    } else if (route === "GET usage") {
-      const days = Math.min(365, Math.max(1, Number(url.searchParams.get("days") ?? 30) || 30));
-      send(res, 200, await accounts.usage(tenant, Date.now() - days * 86_400_000));
-    } else {
-      throw new ApiError(404, "Unknown API route");
-    }
-  } catch (error) {
-    if (res.headersSent) res.destroy();
-    else send(res, error instanceof ApiError ? error.status : (error as { status?: number }).status ?? 400, { error: errorText(error) });
-  }
-  return true;
+function parse<T extends z.ZodType>(type: T, value: unknown): z.infer<T> {
+  const result = type.safeParse(value);
+  if (!result.success) throw new HttpError(400, result.error.issues[0].message);
+  return result.data;
 }
 
-async function authenticate(req: IncomingMessage, context: ApiContext): Promise<Principal & { login?: string }> {
-  if (req.headers.authorization) {
-    const principal = await context.accounts.authenticate(req.headers.authorization);
-    if (!principal) throw new ApiError(401, "Invalid token");
+export function api(context: ApiContext) {
+  const app = new OpenAPIHono<Env>();
+  const { accounts, clients } = context;
+  // Bodies are read in handlers, after authentication and ownership checks and within
+  // a size limit, so routes are documented here rather than validated by middleware.
+  const route = (config: RouteConfig, handler: (c: Context<Env>) => Promise<Response> | Response) => {
+    app.openAPIRegistry.registerPath({ ...config, responses: { ...config.responses, ...failure } });
+    app.on(config.method.toUpperCase(), config.path.replaceAll(/{(\w+)}/g, ":$1"), handler);
+  };
+  app.openAPIRegistry.registerComponent("securitySchemes", "bearer", { type: "http", scheme: "bearer", description: "Operator or API token" });
+  app.openAPIRegistry.registerComponent("securitySchemes", "console", { type: "apiKey", in: "cookie", name: "ar_session", description: "Console session; mutations also need X-Agent-Runtime-Console: 1" });
+  app.doc31("/v1/openapi.json", DOCUMENT);
+
+  app.use("/v1/*", async (c, next) => {
+    c.set("principal", await authenticate(c, context));
+    await next();
+  });
+  app.use("/v1/agents/:id/*", async (c, next) => {
+    if (!await clients.owns(c.req.param("id")!, c.var.principal.tenant)) throw new HttpError(404, "Unknown agent");
+    await next();
+  });
+
+  route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), c => {
+    const principal = c.var.principal;
+    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys });
+  });
+
+  route(createRoute({ method: "get", path: "/v1/providers", responses: { 200: reply("Key status per provider", z.array(schema.Provider)) } }), async c => {
+    const keys = new Map((await accounts.keyStatus(c.var.principal.tenant)).map(status => [status.provider, status]));
+    const wildcard = keys.get("*");
+    return json(c, 200, listProviders().map(provider => ({ ...provider, key: keys.get(provider.id) ?? (wildcard && provider.apiKey ? wildcard : null) })));
+  });
+
+  const provider = (c: Context) => {
+    const info = providerInfo(c.req.param("provider")!);
+    if (!info) throw new HttpError(404, `Unknown provider ${c.req.param("provider")}; see GET /v1/providers`);
+    return info;
+  };
+  const providerKey = { method: "put", path: "/v1/providers/{provider}/key", request: { params: z.object({ provider: z.string() }) } } as const;
+  route(createRoute({ ...providerKey, request: { ...providerKey.request, body: content(schema.KeyInput) }, responses: { 200: reply("The key is stored", schema.KeySet) } }), async c => {
+    const info = provider(c), id = info.id;
+    const tenant = c.var.principal.tenant;
+    if (!info.apiKey) throw new HttpError(400, `${id} needs ${info.requires}, not just an API key; it is not supported yet`);
+    if (!accounts.canStoreKeys) throw new HttpError(503, "This runtime is not configured to store provider keys");
+    const { apiKey, verify } = parse(schema.KeyInput, await readJson(c.req.raw.body, 16 * 1024, {}));
+    const check = verify === false || context.verifyKeys === false ? { status: "unverified" as const, detail: "Verification skipped" } : await checkProviderKey(id, apiKey);
+    if (check.status === "invalid") throw new HttpError(422, check.detail);
+    await accounts.setKey(tenant, id, apiKey);
+    await clients.providerKeyChanged(tenant, id);
+    return json(c, 200, { provider: id, last4: apiKey.slice(-4), verification: check });
+  });
+  route(createRoute({ ...providerKey, method: "delete", responses: { 200: reply("The key is deleted", schema.Deleted) } }), async c => {
+    const { id } = provider(c);
+    const tenant = c.var.principal.tenant;
+    if (!await accounts.deleteKey(tenant, id)) throw new HttpError(404, `No ${id} key set by this tenant`);
+    await clients.providerKeyChanged(tenant, id);
+    return json(c, 200, { deleted: true });
+  });
+
+  route(createRoute({
+    method: "get", path: "/v1/models",
+    request: { query: z.object({ provider: z.string().optional(), available: z.enum(["true"]).optional().openapi({ description: "Only models this tenant has a key for" }) }) },
+    responses: { 200: reply("Models in the catalog", z.array(schema.Model)) },
+  }), async c => {
+    const available = c.req.query("available") === "true";
+    const supported = new Set(listProviders().filter(entry => entry.apiKey).map(entry => entry.id));
+    const keyed = await accounts.keyedProviders(c.var.principal.tenant);
+    const models = listModels(c.req.query("provider")).map(model => ({ ...model, available: supported.has(model.provider) && keyed(model.provider) }));
+    return json(c, 200, available ? models.filter(model => model.available) : models);
+  });
+
+  route(createRoute({ method: "get", path: "/v1/agents", responses: { 200: reply("The tenant's agents", z.array(schema.AgentSummary)) } }),
+    async c => json(c, 200, await clients.list(c.var.principal.tenant)));
+  route(createRoute({
+    method: "post", path: "/v1/agents",
+    request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "Provisioning with the same key returns the same agent" }) }), body: content(schema.AgentInput) },
+    responses: { 201: reply("The agent and its scoped token", schema.AgentCreated) },
+  }), async c => {
+    const key = c.req.header("idempotency-key");
+    return json(c, 201, await context.createAgent(c.var.principal.tenant, await readJson(c.req.raw.body, 18 * 1024 * 1024, {}), key));
+  });
+  route(createRoute({ method: "get", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent", schema.AgentDetail) } }),
+    async c => json(c, 200, await clients.inspect(c.req.param("id")!, c.var.principal.tenant)));
+  route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is revoked", schema.Deleted) } }), async c => {
+    await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
+    return json(c, 200, { deleted: true });
+  });
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/history", request: { params: agentId }, responses: { 200: reply("The transcript", schema.History) } }),
+    async c => json(c, 200, await clients.agentHistory(c.req.param("id")!, c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId }, responses: { 200: reply("The running turn is aborted", z.object({ aborted: z.literal(true) })) } }), async c => {
+    await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant);
+    return json(c, 200, { aborted: true });
+  });
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
+    const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 1024 * 1024, {}));
+    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, { id: body.requestId ?? randomUUID(), method: "prompt", params: { text: body.text } }));
+  });
+  route(createRoute({
+    method: "get", path: "/v1/agents/{id}/requests/{requestId}", request: { params: agentId.extend({ requestId: z.string() }) },
+    responses: { 200: reply("The request and, once settled, its outcome", schema.RequestRecord) },
+  }), async c => {
+    const request = (await clients.inspect(c.req.param("id")!, c.var.principal.tenant)).requests.find(record => record.id === c.req.param("requestId"));
+    if (!request) throw new HttpError(404, "Unknown request");
+    return json(c, 200, request);
+  });
+
+  const scheduler = () => {
+    if (!context.scheduler) throw new HttpError(404, "Unknown agent route");
+    return context.scheduler;
+  };
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/schedules", request: { params: agentId }, responses: { 200: reply("The agent's schedules", z.array(schema.Schedule)) } }),
+    async c => json(c, 200, await scheduler().list(c.req.param("id")!)));
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/schedules", request: { params: agentId, body: content(schema.ScheduleInput) }, responses: { 201: reply("The schedule", schema.Schedule) } }), async c => {
+    const schedules = scheduler();
+    let input;
+    try { input = scheduleInput(await readJson(c.req.raw.body, 64 * 1024, {})); } catch (error) { throw new HttpError(400, errorText(error)); }
+    return json(c, 201, await schedules.create({ agent: c.req.param("id")!, tenant: c.var.principal.tenant, ...input }));
+  });
+  route(createRoute({ method: "delete", path: "/v1/agents/{id}/schedules/{scheduleId}", request: { params: agentId.extend({ scheduleId: z.string() }) }, responses: { 200: reply("The schedule is deleted", schema.Deleted) } }), async c => {
+    if (!await scheduler().remove(c.req.param("id")!, c.req.param("scheduleId")!)) throw new HttpError(404, "Unknown schedule");
+    return json(c, 200, { deleted: true });
+  });
+
+  route(createRoute({ method: "get", path: "/v1/tokens", responses: { 200: reply("The tenant's API tokens", z.array(schema.Token)) } }),
+    async c => json(c, 200, await accounts.listTokens(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/tokens", request: { body: content(schema.TokenInput) }, responses: { 201: reply("The token, with its secret", schema.TokenCreated) } }), async c => {
+    const body = await readJson(c.req.raw.body, 4096, {});
+    return json(c, 201, await accounts.createToken(c.var.principal.tenant, body.name));
+  });
+  route(createRoute({ method: "delete", path: "/v1/tokens/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The token is revoked", z.object({ revoked: z.literal(true) })) } }), async c => {
+    const id = c.req.param("id")!;
+    if (c.var.principal.tokenId === id) throw new HttpError(400, "A token cannot revoke itself; use another token or the console");
+    if (!await accounts.revokeToken(c.var.principal.tenant, id)) throw new HttpError(404, "Unknown token");
+    return json(c, 200, { revoked: true });
+  });
+
+  route(createRoute({
+    method: "get", path: "/v1/usage", request: { query: z.object({ days: z.string().optional().openapi({ description: "1–365, default 30" }) }) },
+    responses: { 200: reply("Token usage per UTC day and model", schema.Usage) },
+  }), async c => {
+    const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
+    return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000));
+  });
+
+  app.all("/v1/agents/:id/schedules/*", () => { scheduler(); throw new HttpError(404, "Unknown schedule route"); });
+  app.all("/v1/agents/:id/*", () => { throw new HttpError(404, "Unknown agent route"); });
+  app.all("/v1/*", () => { throw new HttpError(404, "Unknown API route"); });
+  app.onError((error, c) => json(c, (error as { status?: number }).status ?? 400, { error: errorText(error) }));
+  return app;
+}
+
+/** The OpenAPI document, without a running server (npm run openapi). */
+export const openapiDocument = () => api({} as ApiContext).getOpenAPI31Document(DOCUMENT);
+
+async function authenticate(c: Context, context: ApiContext): Promise<Principal & { login?: string }> {
+  const authorization = c.req.header("authorization");
+  if (authorization) {
+    const principal = await context.accounts.authenticate(authorization);
+    if (!principal) throw new HttpError(401, "Invalid token");
     return principal;
   }
-  const principal = await context.consoleAuth.principal(req);
-  if (!principal) throw new ApiError(401, "Sign in, or send Authorization: Bearer <token>");
-  if (!["GET", "HEAD"].includes(req.method ?? "GET") && !context.consoleAuth.allowsMutation(req)) throw new ApiError(403, "Console requests must be same-origin");
+  const principal = await context.consoleAuth.principal(c.req.raw);
+  if (!principal) throw new HttpError(401, "Sign in, or send Authorization: Bearer <token>");
+  if (!["GET", "HEAD"].includes(c.req.method) && !context.consoleAuth.allowsMutation(c.req.raw)) throw new HttpError(403, "Console requests must be same-origin");
   return principal;
-}
-
-async function agentRoute(req: IncomingMessage, res: ServerResponse, context: ApiContext, tenant: string, parts: string[], method: string) {
-  const { clients } = context;
-  const [id, resource, resourceId] = parts;
-  if (!await clients.owns(id, tenant)) throw new ApiError(404, "Unknown agent");
-  if (method === "GET" && !resource) {
-    send(res, 200, await clients.inspect(id, tenant));
-  } else if (method === "DELETE" && !resource) {
-    await clients.destroyAgent(id, tenant);
-    send(res, 200, { deleted: true });
-  } else if (method === "GET" && resource === "history") {
-    send(res, 200, await clients.agentHistory(id, tenant));
-  } else if (method === "POST" && resource === "abort") {
-    await clients.abortAgent(id, tenant);
-    send(res, 200, { aborted: true });
-  } else if (method === "POST" && resource === "prompt") {
-    const body = await readBody(req, 1024 * 1024);
-    if (typeof body.text !== "string" || !body.text.trim()) throw new ApiError(400, "Send {\"text\": \"...\"}");
-    send(res, 202, await clients.submit(id, tenant, { id: body.requestId ?? randomUUID(), method: "prompt", params: { text: body.text } }));
-  } else if (resource === "schedules" && context.scheduler) {
-    if (method === "GET" && !resourceId) send(res, 200, await context.scheduler.list(id));
-    else if (method === "POST" && !resourceId) {
-      let input;
-      try { input = scheduleInput(await readBody(req, 64 * 1024)); } catch (error) { throw new ApiError(400, errorText(error)); }
-      send(res, 201, await context.scheduler.create({ agent: id, tenant, ...input }));
-    } else if (method === "DELETE" && resourceId) {
-      if (!await context.scheduler.remove(id, resourceId)) throw new ApiError(404, "Unknown schedule");
-      send(res, 200, { deleted: true });
-    } else throw new ApiError(404, "Unknown schedule route");
-  } else if (method === "GET" && resource === "requests" && resourceId) {
-    const request = (await clients.inspect(id, tenant)).requests.find(record => record.id === resourceId);
-    if (!request) throw new ApiError(404, "Unknown request");
-    send(res, 200, request);
-  } else {
-    throw new ApiError(404, "Unknown agent route");
-  }
 }

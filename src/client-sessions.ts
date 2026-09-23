@@ -1,5 +1,9 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { ServerResponse } from "node:http";
+import { Hono, type Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { HttpBindings } from "@hono/node-server";
+import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import type { AgentSupervisor } from "./supervisor.ts";
@@ -14,11 +18,8 @@ import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type Requ
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
+import { HttpError, readJson } from "./http.ts";
 
-class HttpError extends Error {
-  status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
-}
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
   owner: string;
@@ -36,6 +37,7 @@ interface SessionHeader {
 }
 /** Upserts of request and tool-call records, appended as their state changes. */
 type JournalRecord = { t: "request"; record: RequestRecord } | { t: "call"; record: CallRecord };
+type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; Variables: { session: Session } };
 type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
 type Session = {
   header: SessionHeader;
@@ -67,20 +69,7 @@ const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
 const MAX_BUFFERED_EVENTS = 512;
 
-export async function readJson(req: IncomingMessage, maximum = FRAME_BYTES) {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    bytes += chunk.length;
-    if (bytes > maximum) throw new HttpError(413, "Request too large");
-    chunks.push(Buffer.from(chunk));
-  }
-  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
-  catch { throw new HttpError(400, "Invalid JSON"); }
-}
-function json(res: ServerResponse, status: number, value: unknown) {
-  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(value));
-}
+const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });
 function outcome(value: any): Outcome {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "Invalid outcome");
   if (typeof value.error === "string" && !has(value, "result")) return { error: value.error.slice(0, 2048), ...(value.uncertain ? { uncertain: true } : {}) };
@@ -513,97 +502,121 @@ export class ClientSessions {
   }
 
   /**
-   * Called before operator authentication; this route requires a scoped credential.
-   * `operatorTenant` is set only for the authenticated operator bridge, which may
-   * submit requests to that tenant's own agents without their session token.
+   * `/clients/:id/...`, mounted before operator authentication: every route needs the
+   * agent's scoped token. `operatorTenant` is set only by the authenticated operator
+   * bridge, which may submit requests to that tenant's own agents without the token.
    */
-  async handle(req: IncomingMessage, res: ServerResponse, operatorTenant?: string): Promise<boolean> {
-    const operator = operatorTenant !== undefined;
-    if (!(req.url ?? "").startsWith("/clients/")) return false;
-    try {
-      const match = /^\/clients\/(client_[a-f0-9]{40})(?:\/(events|state|metadata|history|requests|calls|schedules)(?:\/([A-Za-z0-9_-]{1,80})(?:\/(claim|outcome))?)?)?$/.exec(req.url ?? "");
+  readonly app = this.routes();
+
+  private routes() {
+    const app = new Hono<ClientEnv>();
+    const agent = "/clients/:id{client_[a-f0-9]{40}}";
+    app.use(`${agent}/*`, async (c, next) => {
+      const operator = c.env.operatorTenant;
       // Authenticate against the small header before loading the journal.
-      const header = match ? this.sessions.get(match[1])?.header ?? (await this.readHeader(match[1]))?.value : undefined;
-      const authorization = req.headers.authorization ?? "";
-      if (!header || req.headers.origin || (operator && (header.tenant ?? DEFAULT_TENANT) !== operatorTenant) || (!operator && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
+      const header = this.sessions.get(c.req.param("id")!)?.header ?? (await this.readHeader(c.req.param("id")!))?.value;
+      const authorization = c.req.header("authorization") ?? "";
+      if (!header || c.req.header("origin") || (operator !== undefined && (header.tenant ?? DEFAULT_TENANT) !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
       if (header.revoked || header.expiresAt <= Date.now()) throw new HttpError(410, "Session expired or revoked");
       const session = await this.load(header.id);
       if (!session) throw new HttpError(401, "Unauthorized");
       if (session.fault) throw session.fault;
       session.lastActive = Date.now();
-      const [, id, resource, resourceId, action] = match!;
-      if (operator && !(resource === "requests" && req.method === "POST" && !resourceId)) throw new HttpError(403, "Operator bridge only accepts requests");
-      if (req.method === "POST" && resource === "metadata" && !resourceId) {
-        session.header.metadata = agentMetadata(await readJson(req, 4096));
-        await this.writeHeader(session);
-        json(res, 200, session.header.metadata);
-      } else if (req.method === "DELETE" && !resource) {
-        await this.remove(id);
-        await this.supervisor.stop(id);
-        json(res, 200, { stopped: true });
-      } else if (req.method === "GET" && resource === "events" && !resourceId) {
-        const rawCursor = req.headers["last-event-id"] ?? "0";
-        if (typeof rawCursor !== "string" || !/^\d+$/.test(rawCursor)) throw new HttpError(400, "Invalid event cursor");
-        const cursor = Number(rawCursor);
-        if (!Number.isSafeInteger(cursor)) throw new HttpError(400, "Invalid event cursor");
-        // Cursor 0 means a new client: it takes whatever is buffered. Anything else must be contiguous.
-        const first = session.events[0]?.id ?? session.cursor + 1;
-        if (cursor !== 0 && (cursor > session.cursor || cursor < first - 1)) throw new HttpError(409, "REPLAY_GAP: recover from session state");
-        session.response?.end();
-        session.response = res;
-        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
-        res.write(`event: ready\ndata: ${JSON.stringify({ version: 3, agentId: id })}\n\n`);
-        for (const event of session.events) if (event.id > cursor) {
-          const frame = `id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`;
-          if (res.writableLength + Buffer.byteLength(frame) > 2 * FRAME_BYTES) { res.destroy(); break; }
-          res.write(frame);
-        }
-        res.on("close", () => { if (session.response === res) session.response = undefined; });
-      } else if (resource === "schedules" && this.options.scheduler) {
-        const scheduler = this.options.scheduler;
-        const tenant = session.header.tenant ?? DEFAULT_TENANT;
-        if (req.method === "GET" && !resourceId) json(res, 200, await scheduler.list(id));
-        else if (req.method === "POST" && !resourceId) {
-          let input;
-          try { input = scheduleInput(await readJson(req, 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
-          try { json(res, 201, await scheduler.create({ agent: id, tenant, ...input })); } catch (error) { throw new HttpError(400, errorText(error)); }
-        } else if (req.method === "DELETE" && resourceId) {
-          if (!await scheduler.remove(id, resourceId)) throw new HttpError(404, "Unknown schedule");
-          json(res, 200, { deleted: true });
-        } else throw new HttpError(404, "Unknown schedule route");
-      } else if (req.method === "GET" && resource === "history" && !resourceId) {
-        json(res, 200, await this.history(session));
-      } else if (req.method === "GET" && resource === "state" && !resourceId) {
-        json(res, 200, { cursor: session.cursor, calls: [...session.calls.values()], requests: [...session.requests.values()].map(visible) });
-      } else if (req.method === "POST" && resource === "requests" && !resourceId) {
-        const { status, record } = await this.accept(session, await readJson(req, FRAME_BYTES));
-        json(res, status, record);
-      } else if (req.method === "GET" && resource === "requests" && resourceId && !action) {
-        const record = session.requests.get(resourceId);
-        if (!record) throw new HttpError(404, "Unknown request");
-        json(res, 200, visible(record));
-      } else if (req.method === "POST" && resourceId && resource === "calls") {
-        const call = session.calls.get(resourceId);
-        if (!call) throw new HttpError(404, "Unknown tool call");
-        if (action === "claim") {
-          await readJson(req);
-          if (call.state !== "offered" || call.deadline <= Date.now()) json(res, 200, { execute: false, call });
-          else {
-            this.upsertCall(session, { ...call, state: "started" });
-            // The claim must be durable before the client performs the side effect.
-            await this.commit(session, true);
-            json(res, 200, { execute: true });
-          }
-        } else if (action === "outcome") {
-          await this.recordOutcome(session, call, outcome(await readJson(req)));
-          json(res, 200, { recorded: true, state: session.calls.get(call.id)!.state });
-        } else throw new HttpError(404, "Unknown call operation");
-      } else throw new HttpError(404, "Unknown client route");
-    } catch (error) {
-      if (res.headersSent) res.destroy();
-      else json(res, error instanceof HttpError ? error.status : 500, { error: errorText(error) });
-    }
-    return true;
+      if (operator !== undefined && !(c.req.method === "POST" && c.req.path === `/clients/${header.id}/requests`)) throw new HttpError(403, "Operator bridge only accepts requests");
+      c.set("session", session);
+      await next();
+    });
+    app.post(`${agent}/metadata`, async c => {
+      const session = c.var.session;
+      session.header.metadata = agentMetadata(await readJson(c.req.raw.body, 4096));
+      await this.writeHeader(session);
+      return json(c, 200, session.header.metadata);
+    });
+    app.delete(agent, async c => {
+      await this.remove(c.var.session.header.id);
+      await this.supervisor.stop(c.var.session.header.id);
+      return json(c, 200, { stopped: true });
+    });
+    // SSE is written straight to the socket: backpressure and replacement need the raw response.
+    app.get(`${agent}/events`, c => {
+      const session = c.var.session;
+      const rawCursor = c.req.header("last-event-id") ?? "0";
+      if (!/^\d+$/.test(rawCursor)) throw new HttpError(400, "Invalid event cursor");
+      const cursor = Number(rawCursor);
+      if (!Number.isSafeInteger(cursor)) throw new HttpError(400, "Invalid event cursor");
+      // Cursor 0 means a new client: it takes whatever is buffered. Anything else must be contiguous.
+      const first = session.events[0]?.id ?? session.cursor + 1;
+      if (cursor !== 0 && (cursor > session.cursor || cursor < first - 1)) throw new HttpError(409, "REPLAY_GAP: recover from session state");
+      const res = c.env.outgoing;
+      session.response?.end();
+      session.response = res;
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+      res.write(`event: ready\ndata: ${JSON.stringify({ version: 3, agentId: session.header.id })}\n\n`);
+      for (const event of session.events) if (event.id > cursor) {
+        const frame = `id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`;
+        if (res.writableLength + Buffer.byteLength(frame) > 2 * FRAME_BYTES) { res.destroy(); break; }
+        res.write(frame);
+      }
+      res.on("close", () => { if (session.response === res) session.response = undefined; });
+      return RESPONSE_ALREADY_SENT;
+    });
+    app.get(`${agent}/schedules`, async c => json(c, 200, await this.scheduler().list(c.var.session.header.id)));
+    app.post(`${agent}/schedules`, async c => {
+      const scheduler = this.scheduler();
+      const tenant = c.var.session.header.tenant ?? DEFAULT_TENANT;
+      let input;
+      try { input = scheduleInput(await readJson(c.req.raw.body, 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
+      try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input })); } catch (error) { throw new HttpError(400, errorText(error)); }
+    });
+    app.delete(`${agent}/schedules/:schedule`, async c => {
+      if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"))) throw new HttpError(404, "Unknown schedule");
+      return json(c, 200, { deleted: true });
+    });
+    app.get(`${agent}/history`, async c => json(c, 200, await this.history(c.var.session)));
+    app.get(`${agent}/state`, c => {
+      const session = c.var.session;
+      return json(c, 200, { cursor: session.cursor, calls: [...session.calls.values()], requests: [...session.requests.values()].map(visible) });
+    });
+    app.post(`${agent}/requests`, async c => {
+      const { status, record } = await this.accept(c.var.session, await readJson(c.req.raw.body, FRAME_BYTES));
+      return json(c, status, record);
+    });
+    app.get(`${agent}/requests/:request`, c => {
+      const record = c.var.session.requests.get(c.req.param("request"));
+      if (!record) throw new HttpError(404, "Unknown request");
+      return json(c, 200, visible(record));
+    });
+    app.post(`${agent}/calls/:call/claim`, async c => {
+      const session = c.var.session;
+      const call = this.toolCall(session, c.req.param("call"));
+      await readJson(c.req.raw.body, FRAME_BYTES);
+      if (call.state !== "offered" || call.deadline <= Date.now()) return json(c, 200, { execute: false, call });
+      this.upsertCall(session, { ...call, state: "started" });
+      // The claim must be durable before the client performs the side effect.
+      await this.commit(session, true);
+      return json(c, 200, { execute: true });
+    });
+    app.post(`${agent}/calls/:call/outcome`, async c => {
+      const session = c.var.session;
+      const call = this.toolCall(session, c.req.param("call"));
+      await this.recordOutcome(session, call, outcome(await readJson(c.req.raw.body, FRAME_BYTES)));
+      return json(c, 200, { recorded: true, state: session.calls.get(call.id)!.state });
+    });
+    app.all(`${agent}/*`, () => { throw new HttpError(404, "Unknown client route"); });
+    app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
+    app.onError((error, c) => json(c, error instanceof HttpError ? error.status : 500, { error: errorText(error) }));
+    return app;
+  }
+
+  private scheduler() {
+    if (!this.options.scheduler) throw new HttpError(404, "Unknown client route");
+    return this.options.scheduler;
+  }
+
+  private toolCall(session: Session, id: string) {
+    const call = session.calls.get(id);
+    if (!call) throw new HttpError(404, "Unknown tool call");
+    return call;
   }
 
   /**
