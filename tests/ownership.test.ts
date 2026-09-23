@@ -1,0 +1,117 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import pg from "pg";
+import type { Db } from "../src/db.ts";
+import { Ownership } from "../src/ownership.ts";
+import { testDatabase } from "./database.ts";
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** A node's own connection pool, which a test can partition from the database and whose statements it counts. */
+async function node(url: string, name: string, ttlMs = 30_000) {
+  const pool = new pg.Pool({ connectionString: url, max: 2 });
+  const link = { partitioned: false, statements: [] as string[] };
+  const db = {
+    query: (text: string, values?: unknown[]) => {
+      link.statements.push(text.trim().split(/\s+/)[0]);
+      return link.partitioned ? Promise.reject(new Error("connection refused")) : pool.query(text, values);
+    },
+  } as unknown as Db;
+  const ownership = new Ownership(db, { node: name, ttlMs });
+  const fences: string[] = [];
+  ownership.onFence(reason => fences.push(reason));
+  await ownership.start();
+  return { ownership, link, fences, stop: async () => { await ownership.close().catch(() => {}); await pool.end(); } };
+}
+
+test("one node owns an actor at a time, even when nodes race for many actors", async t => {
+  const { url } = await testDatabase();
+  const a = await node(url, "http://a"), b = await node(url, "http://b");
+  t.after(async () => { await a.stop(); await b.stop(); });
+  const first = await a.ownership.acquire("client_x");
+  assert.ok("claim" in first && first.claim.epoch === 1);
+  assert.deepEqual(await b.ownership.acquire("client_x"), { owner: "http://a" });
+  assert.equal(await b.ownership.owner("client_x"), "http://a");
+
+  const actors = Array.from({ length: 40 }, (_, index) => `vol_${index}`);
+  const results = await Promise.all(actors.flatMap(actor => [a, b].map(async n => ({ actor, node: n.ownership.node, result: await n.ownership.acquire(actor) }))));
+  for (const actor of actors) {
+    const won = results.filter(entry => entry.actor === actor && "claim" in entry.result);
+    assert.equal(won.length, 1, `${actor} has one owner`);
+    const lost = results.find(entry => entry.actor === actor && "owner" in entry.result)!;
+    assert.equal((lost.result as { owner: string }).owner, won[0].node);
+  }
+});
+
+test("a released actor moves at once with a higher epoch; a stale release changes nothing", async t => {
+  const { url } = await testDatabase();
+  const a = await node(url, "http://a"), b = await node(url, "http://b");
+  t.after(async () => { await a.stop(); await b.stop(); });
+  const first = await a.ownership.acquire("client_y");
+  assert.ok("claim" in first);
+  await a.ownership.release(first.claim);
+  assert.equal(await b.ownership.owner("client_y"), undefined);
+  const second = await b.ownership.acquire("client_y");
+  assert.ok("claim" in second && second.claim.epoch === 2);
+  await a.ownership.release(first.claim);
+  assert.equal(await a.ownership.owner("client_y"), "http://b");
+  const again = await b.ownership.acquire("client_y");
+  assert.ok("claim" in again && again.claim.epoch === 3, "every acquire advances the epoch, even the owner's own");
+});
+
+test("renewal is one write per node, however many actors it owns", async t => {
+  const { url } = await testDatabase();
+  const a = await node(url, "http://a");
+  t.after(() => a.stop());
+  for (let index = 0; index < 50; index++) assert.ok("claim" in await a.ownership.acquire(`client_${index}`));
+  a.link.statements.length = 0;
+  await a.ownership.renew();
+  assert.deepEqual(a.link.statements, ["update"]);
+});
+
+test("a node that cannot renew fences itself before its published expiry, and a peer then takes over with a new epoch", async t => {
+  const { db, url } = await testDatabase();
+  const a = await node(url, "http://a", 900), b = await node(url, "http://b", 900);
+  t.after(async () => { await a.stop(); await b.stop(); });
+  const held = await a.ownership.acquire("client_z");
+  assert.ok("claim" in held);
+
+  let liveAtFence: boolean | undefined;
+  a.ownership.onFence(() => { void db.query("select expires_at > now() as live from runtime_nodes where node = 'http://a'").then(({ rows }) => { liveAtFence = rows[0].live; }); });
+  a.link.partitioned = true;
+  for (let waited = 0; !a.fences.length; waited += 25) { assert.ok(waited < 2_000, "the node fenced"); await sleep(25); }
+  assert.deepEqual(a.fences, ["heartbeat_expired"]);
+  assert.equal(a.ownership.holds(held.claim), false);
+  await sleep(50);
+  assert.equal(liveAtFence, true, "the node stopped serving while its heartbeat still looked live to peers");
+  assert.deepEqual(await b.ownership.acquire("client_z"), { owner: "http://a" }, "peers wait for the published expiry");
+
+  for (let waited = 0; ; waited += 50) {
+    const taken = await b.ownership.acquire("client_z");
+    if ("claim" in taken) { assert.equal(taken.claim.epoch, held.claim.epoch + 1); break; }
+    assert.ok(waited < 3_000, "a peer took over once the heartbeat expired");
+    await sleep(50);
+  }
+
+  // Reconnected, the fenced node rejoins under a new session; the actor stays where it moved.
+  a.link.partitioned = false;
+  assert.deepEqual(await a.ownership.acquire("client_z"), { owner: "http://b" });
+  const fresh = await a.ownership.acquire("client_new");
+  assert.ok("claim" in fresh && fresh.claim.session !== held.claim.session);
+});
+
+test("a node whose heartbeat row was replaced fences at once", async t => {
+  const { url } = await testDatabase();
+  const a = await node(url, "http://a");
+  t.after(() => a.stop());
+  const held = await a.ownership.acquire("client_q");
+  assert.ok("claim" in held);
+  // Another process started with the same address and took over the heartbeat.
+  const impostor = await node(url, "http://a");
+  t.after(() => impostor.stop());
+  await a.ownership.renew();
+  assert.deepEqual(a.fences, ["heartbeat_replaced"]);
+  assert.equal(a.ownership.holds(held.claim), false);
+  const taken = await impostor.ownership.acquire("client_q");
+  assert.ok("claim" in taken && taken.claim.epoch === 2, "the old session's claims are dead at once");
+});
