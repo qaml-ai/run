@@ -16,7 +16,7 @@ the provisioning shell scripts; the operational scripts stay.
 
 ## Prerequisites
 
-- Terraform >= 1.5 (the provider lock file is committed; run `terraform init`).
+- OpenTofu >= 1.10 (`brew install opentofu`; the provider lock file is committed; run `tofu init`). Terraform >= 1.10 also works.
 - AWS credentials for account `904534089871`. The providers refuse any other account.
 - `CLOUDFLARE_API_TOKEN` in the environment with DNS edit access to `camelai.dev`.
   Without it, planning the DNS record fails.
@@ -25,9 +25,9 @@ the provisioning shell scripts; the operational scripts stay.
 
 ```sh
 cd infra/terraform
-terraform init
-terraform plan -out=tfplan
-terraform apply tfplan
+tofu init
+tofu plan -out=tfplan
+tofu apply tfplan
 ```
 
 Always apply a saved plan you have read. The instance, Elastic IP, state bucket
@@ -37,7 +37,7 @@ and the session-secret/secrets-key/tenants/github-oauth secrets have
 ## The import step
 
 `imports.tf` maps each existing resource to its address in this configuration
-(IDs were found with read-only describe/list calls). `terraform plan` reads the
+(IDs were found with read-only describe/list calls). `tofu plan` reads the
 live resources and compares them to the configuration. The first plan shows:
 
 - `26 to import`: the existing resources, with no changes to them;
@@ -47,7 +47,7 @@ live resources and compares them to the configuration. The first plan shows:
   writes them to state and makes no AWS API call;
 - `7 to add`: the new state bucket and its IAM policy (`state-bucket.tf`).
 
-`terraform apply` records the imported resources in state. After that the
+`tofu apply` records the imported resources in state. After that the
 import blocks do nothing, and you can delete them. If you want to adopt the
 existing infrastructure without creating the bucket yet, apply with
 `-target` on the imported addresses, or move `state-bucket.tf` aside for that apply.
@@ -121,15 +121,11 @@ These are operational and stay:
 
 ## Remote state
 
-State is local (`terraform.tfstate`, git-ignored) until a state bucket exists.
-State holds resource IDs and ARNs but no secret values. To move it to S3:
-
-1. Create the bucket once by hand, outside this configuration, with versioning
-   on and public access blocked. For example: `camelai-terraform-state-904534089871`
-   in us-west-2.
-2. Uncomment the `backend "s3"` block in `versions.tf`. It uses S3-native locking
-   (`use_lockfile`), so no DynamoDB table is needed.
-3. Run `terraform init -migrate-state`.
+State lives in `s3://camelai-terraform-state-904534089871/agent-runtime/terraform.tfstate`
+(us-west-2; versioned, encrypted, public access blocked). The bucket was created
+once by hand, outside this configuration. OpenTofu locks the state with a lock
+object next to it (`use_lockfile`), so no DynamoDB table is needed. State holds
+resource IDs and ARNs but no secret values.
 
 ## Known gaps
 

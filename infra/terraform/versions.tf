@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.10.0"
 
   required_providers {
     aws = {
@@ -12,17 +12,15 @@ terraform {
     }
   }
 
-  # State is local for now (terraform.tfstate, git-ignored). To move it to S3,
-  # create the bucket once by hand (see README.md, "Remote state"), uncomment
-  # this block, and run `terraform init -migrate-state`.
-  #
-  # backend "s3" {
-  #   bucket       = "camelai-terraform-state-904534089871"
-  #   key          = "agent-runtime/terraform.tfstate"
-  #   region       = "us-west-2"
-  #   encrypt      = true
-  #   use_lockfile = true
-  # }
+  # Shared state; OpenTofu locks it with a lock object next to the state (no DynamoDB).
+  # The bucket was created once by hand; see README.md, "Remote state".
+  backend "s3" {
+    bucket       = "camelai-terraform-state-904534089871"
+    key          = "agent-runtime/terraform.tfstate"
+    region       = "us-west-2"
+    encrypt      = true
+    use_lockfile = true
+  }
 }
 
 provider "aws" {
