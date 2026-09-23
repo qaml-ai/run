@@ -205,7 +205,8 @@ test("tool call count, concurrency and result transfer quotas hold in remote mod
       calls++;
       peak = Math.max(peak, ++inflight);
       try {
-        if (args.delay) await sleep(50);
+        // Long enough that all 40 callbacks arrive while the first 32 are in flight, even on a slow host.
+        if (args.delay) await sleep(500);
         if (args.big) return "x".repeat(SANDBOX_LIMITS.resultBytes + 1);
         return args;
       } finally { inflight--; }
@@ -226,12 +227,13 @@ test("a compromised executor still cannot exceed the runtime's validation, quota
   let calls = 0;
   let inflight = 0;
   let peak = 0;
+  let hold: Promise<void> | undefined;
   const bridge: ToolBridge = {
     definitions: [{ name: "echo", description: "Test capability", parameters: { type: "object", properties: { n: { type: "number" } } } }],
     async call(_name, args) {
       calls++;
       peak = Math.max(peak, ++inflight);
-      try { await sleep(20); return args; } finally { inflight--; }
+      try { await (hold ?? sleep(20)); return args; } finally { inflight--; }
     },
   };
   // Stands in for an executor whose sandbox was escaped: it calls back directly, as fast and as
@@ -248,7 +250,15 @@ test("a compromised executor still cannot exceed the runtime's validation, quota
     res.writeHead(200, { "Content-Type": "application/x-ndjson" });
     const answers: unknown[] = [];
     if (code === "flood") for (let i = 0; i < 300; i++) answers.push(await call("echo", { n: i }));
-    if (code === "concurrent") answers.push(...await Promise.all(Array.from({ length: 40 }, () => call("echo", {}))));
+    if (code === "concurrent") {
+      // Accepted calls stay in flight until every excess call has been refused, however slowly they arrive.
+      const gate = Promise.withResolvers<void>();
+      hold = gate.promise;
+      let settled = 0;
+      const pending = Array.from({ length: 40 }, () => call("echo", {}).finally(() => { if (++settled === 40 - SANDBOX_LIMITS.concurrentTools) gate.resolve(); }));
+      answers.push(...await Promise.all(pending));
+      hold = undefined;
+    }
     if (code === "invalid") answers.push(await call("js_exec", { code: "1" }), await call("echo", { n: "x" }), await call("echo", []), await call("secret", {}));
     if (code === "output") {
       for (let i = 0; i < 10; i++) res.write(`${JSON.stringify({ type: "event", event: { type: "output", text: "x".repeat(100) } })}\n`);
