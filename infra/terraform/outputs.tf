@@ -44,3 +44,13 @@ output "executor" {
     count                    = var.executor_count
   } : null
 }
+
+output "database" {
+  description = "Control-plane Postgres: set AGENT_DATABASE_HOST and AGENT_DATABASE_SECRET_ARN in instance/runtime.defaults.env from these."
+  value = {
+    host       = aws_db_instance.control.address
+    port       = aws_db_instance.control.port
+    name       = aws_db_instance.control.db_name
+    secret_arn = aws_db_instance.control.master_user_secret[0].secret_arn
+  }
+}

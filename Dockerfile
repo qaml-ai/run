@@ -16,6 +16,8 @@ COPY shared ./shared
 # Built on the host first (npm run build:console); served at /console/.
 COPY console/dist ./console/dist
 
+# CA bundle for verifying the RDS control-plane database over TLS (AGENT_DATABASE_CA).
+ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /etc/ssl/rds-global-bundle.pem
 RUN mkdir -p /data && chown node:node /data
 USER node
 ENV NODE_ENV=production \

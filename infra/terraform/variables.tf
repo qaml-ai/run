@@ -109,3 +109,15 @@ variable "executor_callback_port" {
   type        = number
   default     = 8791
 }
+
+variable "database_instance_class" {
+  description = "RDS instance class for the control-plane Postgres."
+  type        = string
+  default     = "db.t4g.small"
+}
+
+variable "database_engine_version" {
+  description = "Postgres major version; minor versions upgrade automatically."
+  type        = string
+  default     = "17"
+}
