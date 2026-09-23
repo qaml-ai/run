@@ -16,6 +16,8 @@ import { Accounts } from "./accounts.ts";
 import { ConsoleAuth } from "./console-auth.ts";
 import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
+import { Channels } from "./channels.ts";
+import { telegram } from "./channels-telegram.ts";
 import { Executions, executorEndpoint } from "./executions.ts";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
@@ -165,6 +167,7 @@ const clients = new ClientSessions(supervisor, {
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
   storage, prefix: "client-sessions/", leases, node, leaseTtlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000),
   get scheduler() { return scheduler; },
+  get hooks() { return channels.hooks; },
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({
@@ -175,6 +178,16 @@ const scheduler = new Scheduler({
   },
 });
 scheduler.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
+// Messaging channels: webhooks in, replies out through a durable queue any node can drain.
+const channels = new Channels({
+  storage, accounts, node, publicUrl,
+  providers: { telegram: telegram({ apiUrl: process.env.AGENT_TELEGRAM_API_URL }) },
+  createAgent: (tenant, params, key) => createAgent(tenant, params, key) as Promise<{ id: string }>,
+  live: (agent, tenant) => clients.owns(agent, tenant),
+  submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
+  ...(process.env.AGENT_CHANNEL_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_CHANNEL_RETRY_MS) } : {}),
+});
+channels.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
@@ -205,7 +218,8 @@ app.post("/internal/agents/:id{client_[a-f0-9]{40}}/requests", async c => {
 });
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" }));
+app.route("/", channels.app);
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
 app.get("/", c => c.redirect("/console/", 302));
@@ -286,5 +300,6 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
   server.close();
   callbacks?.close();
   scheduler.stop();
+  channels.stop();
   void clients.close().then(() => supervisor.close()).then(() => accounts.flushUsage()).catch(() => {}).then(() => process.exit(0));
 });

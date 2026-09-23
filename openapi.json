@@ -804,6 +804,282 @@
           "totals",
           "days"
         ]
+      },
+      "Channel": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "webhookUrl": {
+            "type": "string"
+          },
+          "template": {
+            "$ref": "#/components/schemas/ChannelTemplate"
+          },
+          "access": {
+            "type": "object",
+            "properties": {
+              "public": {
+                "type": "boolean"
+              },
+              "allow": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "public",
+              "allow"
+            ]
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "perSenderPerMinute": {
+                "type": "number"
+              },
+              "turnsPerDay": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "perSenderPerMinute",
+              "turnsPerDay"
+            ]
+          },
+          "greeting": {
+            "type": "string"
+          },
+          "account": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The bot's identity at the provider"
+          },
+          "credentials": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Masked credentials"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "tenant",
+          "type",
+          "name",
+          "webhookUrl",
+          "template",
+          "access",
+          "limits",
+          "account",
+          "credentials",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "ChannelTemplate": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "A model id from GET /v1/models; the runtime default when omitted"
+          },
+          "systemPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinition"
+            },
+            "maxItems": 64,
+            "description": "Client tools, answered by an application connected to each agent"
+          }
+        }
+      },
+      "ChannelInput": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "telegram"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "credentials": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "template": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChannelTemplate"
+              },
+              {
+                "description": "How each conversation's agent is created"
+              }
+            ]
+          },
+          "access": {
+            "type": "object",
+            "properties": {
+              "public": {
+                "type": "boolean",
+                "description": "Let anyone message the channel; off by default"
+              },
+              "allow": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "maxItems": 1000,
+                "description": "Senders allowed in: user ids or @usernames"
+              }
+            }
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "perSenderPerMinute": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600,
+                "description": "Messages per sender per minute; default 10"
+              },
+              "turnsPerDay": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000,
+                "description": "Agent turns per UTC day across the channel; default 1000"
+              }
+            }
+          },
+          "greeting": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Reply to /start"
+          }
+        },
+        "required": [
+          "type",
+          "credentials"
+        ]
+      },
+      "ChannelUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "credentials": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "description": "Telegram: { botToken }. Stored encrypted and never returned"
+          },
+          "template": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChannelTemplate"
+              },
+              {
+                "description": "How each conversation's agent is created"
+              }
+            ]
+          },
+          "access": {
+            "type": "object",
+            "properties": {
+              "public": {
+                "type": "boolean",
+                "description": "Let anyone message the channel; off by default"
+              },
+              "allow": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "maxItems": 1000,
+                "description": "Senders allowed in: user ids or @usernames"
+              }
+            }
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "perSenderPerMinute": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600,
+                "description": "Messages per sender per minute; default 10"
+              },
+              "turnsPerDay": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000,
+                "description": "Agent turns per UTC day across the channel; default 1000"
+              }
+            }
+          },
+          "greeting": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Reply to /start"
+          }
+        }
       }
     },
     "parameters": {}
@@ -1600,6 +1876,192 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Usage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/channels": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The tenant's channels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Channel"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The channel, its webhook registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/channels/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel is deleted and its webhook removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
                 }
               }
             }

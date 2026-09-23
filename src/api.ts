@@ -10,6 +10,8 @@ import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { HttpError, readJson } from "./http.ts";
+import type { Channels } from "./channels.ts";
+import { channelRoutes } from "./channels-api.ts";
 import * as schema from "./api-schemas.ts";
 
 /**
@@ -25,6 +27,7 @@ export interface ApiContext {
   createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
   verifyKeys?: boolean;
   scheduler?: Scheduler;
+  channels?: Channels;
 }
 type Env = { Variables: { principal: Principal & { login?: string } } };
 
@@ -188,6 +191,8 @@ export function api(context: ApiContext) {
     const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
     return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000));
   });
+
+  channelRoutes(route, () => context.channels);
 
   app.all("/v1/agents/:id/schedules/*", () => { scheduler(); throw new HttpError(404, "Unknown schedule route"); });
   app.all("/v1/agents/:id/*", () => { throw new HttpError(404, "Unknown agent route"); });

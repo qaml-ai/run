@@ -163,3 +163,43 @@ export const Usage = z.object({
   totals: Totals,
   days: z.array(Totals.extend({ day: z.string(), model: z.string() })),
 }).openapi("Usage");
+
+const ChannelTemplate = z.object({
+  model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
+  systemPrompt: z.string().trim().min(1).max(32_000).optional(),
+  thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+  tools: z.array(ToolDefinition).max(64).optional().openapi({ description: "Client tools, answered by an application connected to each agent" }),
+}).openapi("ChannelTemplate");
+const ChannelAccess = z.object({
+  public: z.boolean().optional().openapi({ description: "Let anyone message the channel; off by default" }),
+  allow: z.array(z.string().trim().min(1).max(64)).max(1000).optional().openapi({ description: "Senders allowed in: user ids or @usernames" }),
+});
+const ChannelLimits = z.object({
+  perSenderPerMinute: z.number().int().min(1).max(600).optional().openapi({ description: "Messages per sender per minute; default 10" }),
+  turnsPerDay: z.number().int().min(1).max(1_000_000).optional().openapi({ description: "Agent turns per UTC day across the channel; default 1000" }),
+});
+const channelFields = {
+  name: z.string().trim().min(1).max(120).optional(),
+  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Stored encrypted and never returned" }),
+  template: ChannelTemplate.optional().openapi({ description: "How each conversation's agent is created" }),
+  access: ChannelAccess.optional(),
+  limits: ChannelLimits.optional(),
+  greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start" }),
+};
+export const ChannelInput = z.object({ type: z.enum(["telegram"]), ...channelFields, credentials: channelFields.credentials.unwrap() }).openapi("ChannelInput");
+export const ChannelUpdate = z.object(channelFields).openapi("ChannelUpdate");
+export const Channel = z.object({
+  id: z.string(),
+  tenant: z.string(),
+  type: z.string(),
+  name: z.string(),
+  webhookUrl: z.string(),
+  template: ChannelTemplate,
+  access: z.object({ public: z.boolean(), allow: z.array(z.string()) }),
+  limits: z.object({ perSenderPerMinute: z.number(), turnsPerDay: z.number() }),
+  greeting: z.string().optional(),
+  account: z.record(z.string(), z.string()).openapi({ description: "The bot's identity at the provider" }),
+  credentials: z.record(z.string(), z.string()).openapi({ description: "Masked credentials" }),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).openapi("Channel");
