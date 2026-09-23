@@ -3,22 +3,39 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import secrets
+import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
 from agent_client import AgentRuntime, ToolContext, tool
+
+DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
+
+
+def database(statement):
+    """Run one statement against the test database with the runtime's own driver."""
+    script = "import pg from 'pg'; const c = new pg.Client(process.env.URL); await c.connect(); await c.query(process.env.SQL); await c.end();"
+    subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, check=True,
+                   env={"PATH": os.environ["PATH"], "URL": DATABASE_URL, "SQL": statement})
 
 
 class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="camelai-python-sdk-")
         self.token = "fixture-only-python-sdk-operator-token"
+        # A schema of its own, so the runtime's tables start empty.
+        self.schema = f"python_{secrets.token_hex(6)}"
+        database(f"create schema {self.schema}")
+        url = urlsplit(DATABASE_URL)
         self.host = await asyncio.create_subprocess_exec(
             "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", str(ROOT / "src" / "server.ts"), stdout=asyncio.subprocess.PIPE,
             env={"PATH": os.environ["PATH"], "HOME": self.directory.name,
+                 "AGENT_DATABASE_URL": urlunsplit(url._replace(query=urlencode({"options": f"-c search_path={self.schema}"}))),
                  "AGENT_DATA_DIR": self.directory.name, "AGENT_RUNTIME_TOKEN": self.token, "PORT": "0",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
@@ -30,6 +47,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         await self.runtime.close()
         self.host.terminate()
         await asyncio.wait_for(self.host.wait(), 10)
+        database(f"drop schema {self.schema} cascade")
         self.directory.cleanup()
 
     async def test_annotations_reconnect_and_lost_acknowledgements(self):
@@ -48,12 +66,13 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(save.parameters["properties"], {"value": {"type": "string"}})
         self.assertEqual(save.parameters["required"], ["value"])
         agent = await self.runtime.create_agent(tools=[save], system_prompt="You are the inventory planner.", name="Downtown cafe", type="inventory-planner")
-        saved = json.loads((Path(self.directory.name) / "client-sessions" / f"{agent.session['id']}.json").read_text())
-        self.assertEqual(saved["config"]["systemPrompt"], "You are the inventory planner.")
-        self.assertEqual(saved["metadata"], {"name": "Downtown cafe", "type": "inventory-planner"})
+        inspect = lambda: self.runtime.http.get(f"{self.runtime.base}/v1/agents/{agent.session['id']}", headers={"Authorization": f"Bearer {self.token}"})
+        saved = (await inspect()).json()
+        self.assertEqual(saved["systemPrompt"], "You are the inventory planner.")
+        self.assertEqual((saved["name"], saved["type"]), ("Downtown cafe", "inventory-planner"))
         await agent.set_metadata(name="Uptown cafe", type="inventory-planner")
-        saved = json.loads((Path(self.directory.name) / "client-sessions" / f"{agent.session['id']}.json").read_text())
-        self.assertEqual(saved["metadata"]["name"], "Uptown cafe")
+        saved = (await inspect()).json()
+        self.assertEqual(saved["name"], "Uptown cafe")
         original = agent.http.request
         dropped = set()
 

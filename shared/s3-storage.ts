@@ -1,14 +1,12 @@
 import {
-  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, S3ServiceException,
+  DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, S3ServiceException,
 } from "@aws-sdk/client-s3";
 import { PreconditionFailed, segmentLog, validKey, type SegmentStore, type Storage } from "./storage.ts";
 
 /**
- * Storage on S3. Documents are `<prefix>/<key>.json` with ETag versions and
- * If-Match / If-None-Match conditional writes. Logs are `<prefix>/<key>.log/`
- * holding immutable segment objects (see `segmentLog`). Blobs are `<prefix>/<key>`,
- * created with If-None-Match. Credentials come from
- * the default AWS chain (the instance role on EC2).
+ * Storage on S3. Logs are `<prefix>/<key>.log/` holding immutable segment objects
+ * (see `segmentLog`). Blobs are `<prefix>/<key>`, created with If-None-Match.
+ * Credentials come from the default AWS chain (the instance role on EC2).
  */
 export function s3Storage(options: { bucket: string; prefix?: string; region?: string; client?: S3Client }): Storage {
   const client = options.client ?? new S3Client({ region: options.region });
@@ -32,16 +30,12 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
     return keys;
   }
   async function getText(key: string) {
-    try {
-      const object = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-      return { text: await object.Body!.transformToString("utf8"), etag: object.ETag! };
-    } catch (error) { if (missing(error)) return undefined; throw error; }
+    try { return await (await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }))).Body!.transformToString("utf8"); }
+    catch (error) { if (missing(error)) return undefined; throw error; }
   }
-  async function put(key: string, body: string, condition: { IfMatch?: string; IfNoneMatch?: string }, label: string) {
-    try {
-      const result = await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: "application/json", ...condition }));
-      return result.ETag!;
-    } catch (error) { if (conditionFailed(error)) throw new PreconditionFailed(label); throw error; }
+  async function create(key: string, body: string, label: string) {
+    try { await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: "application/json", IfNoneMatch: "*" })); }
+    catch (error) { if (conditionFailed(error)) throw new PreconditionFailed(label); throw error; }
   }
 
   function segments(key: string): SegmentStore {
@@ -55,11 +49,11 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
         };
       },
       async read(name) {
-        const object = await getText(directory + name);
-        if (!object) throw new Error(`Missing log object ${directory}${name}`);
-        return object.text;
+        const text = await getText(directory + name);
+        if (text === undefined) throw new Error(`Missing log object ${directory}${name}`);
+        return text;
       },
-      async create(name, body) { await put(directory + name, body, { IfNoneMatch: "*" }, `${key}/${name}`); },
+      async create(name, body) { await create(directory + name, body, `${key}/${name}`); },
       async remove(names) {
         for (let index = 0; index < names.length; index += 1000) {
           const batch = names.slice(index, index + 1000);
@@ -70,19 +64,6 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
   }
 
   return {
-    async readJson(key) {
-      const object = await getText(`${at(key)}.json`);
-      return object && { value: JSON.parse(object.text), version: object.etag };
-    },
-    async writeJson(key, value, expected) {
-      const condition = expected === null ? { IfNoneMatch: "*" } : expected !== undefined ? { IfMatch: expected } : {};
-      return put(`${at(key)}.json`, JSON.stringify(value), condition, key);
-    },
-    async deleteJson(key) { await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: `${at(key)}.json` })); },
-    async listJson(prefix) {
-      const skip = base ? base.length + 1 : 0;
-      return (await list(prefix)).filter(name => name.endsWith(".json")).map(name => name.slice(skip, -".json".length)).sort();
-    },
     log: key => segmentLog(segments(key), key),
     async hasLog(key) {
       const page = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: `${at(key)}.log/`, MaxKeys: 1 }));

@@ -12,24 +12,23 @@ import { validateDefinitions } from "./tool-policy.ts";
 import { validateUserMessages } from "./history.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog } from "../shared/append-log.ts";
-import { fileStorage, PreconditionFailed, type Storage } from "../shared/storage.ts";
-import type { Lease, LeaseStore } from "../shared/leases.ts";
+import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type RequestRecord } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
+import type { Db } from "./db.ts";
+import type { Claim, Ownership } from "./ownership.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
   owner: string;
   constructor(owner: string) { super(503, `This agent is served by another node; retry`); this.owner = owner; }
 }
-/** What `list` needs, kept per tenant so listing never scans every agent. */
-interface IndexEntry { id: string; tenant: string; name: string; type: string; model: string; expiresAt: number | null; revoked: boolean }
 type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">;
-/** Rarely-changing session identity and configuration; rewritten only when it changes. */
+/** Rarely-changing session identity and configuration (a row in `agents`); rewritten only when it changes. */
 interface SessionHeader {
   /** `expiresAt` null: the agent lives until it is deleted. */
   version: 3; id: string; digest: string; expiresAt: number | null; revoked: boolean;
@@ -45,9 +44,9 @@ type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; Variabl
 type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
 type Session = {
   header: SessionHeader;
-  /** Version of the stored header this node last read or wrote; writes are conditional on it. */
-  headerVersion?: string;
-  lease?: Lease;
+  /** Revision of the stored header this node last read or wrote; writes are conditional on it. */
+  revision?: number;
+  claim?: Claim;
   requests: Map<string, RequestRecord>;
   calls: Map<string, CallRecord>;
   log: AppendLog<JournalRecord>;
@@ -91,15 +90,15 @@ const visible = ({ params: _params, ...record }: RequestRecord): RequestRecord =
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
-  /** Single-host shorthand for `storage: fileStorage(root)`. */
+  /** Headers and the tenant index. */
+  db: Db;
+  /** Single-host shorthand for `storage: fileStorage(root)`, where journals are kept. */
   root?: string;
   storage?: Storage;
-  /** Key prefix for this component's documents and logs within `storage`. */
+  /** Key prefix for journals within `storage`. */
   prefix?: string;
-  /** With leases, each agent is served by one node at a time, identified by `node` (its internal URL). */
-  leases?: LeaseStore;
-  node?: string;
-  leaseTtlMs?: number;
+  /** With ownership, each agent is served by one node at a time. */
+  ownership?: Ownership;
   /** Fallback provider key when `apiKeyFor` is absent (single-tenant hosts and tests). */
   apiKey?: string;
   /** The provider key an agent uses, resolved per tenant at process start; never persisted. */
@@ -139,73 +138,61 @@ export class ClientSessions {
   readonly supervisor: AgentSupervisor;
   readonly options: ClientSessionOptions;
   readonly storage: Storage;
+  readonly db: Db;
   readonly heartbeat: ReturnType<typeof setInterval>;
-  private readonly renewal?: ReturnType<typeof setInterval>;
   private closed = false;
 
   constructor(supervisor: AgentSupervisor, options: ClientSessionOptions) {
     if (!options.storage && !options.root) throw new Error("ClientSessions needs storage or root");
     this.supervisor = supervisor;
     this.options = options;
+    this.db = options.db;
     this.storage = options.storage ?? fileStorage(options.root!);
     this.heartbeat = setInterval(() => this.tick(), Math.min(5000, Math.max(50, Math.floor((options.idleMs ?? 5 * 60_000) / 2))));
     this.heartbeat.unref();
-    if (options.leases) {
-      this.renewal = setInterval(() => void this.renewLeases(), Math.floor(this.leaseTtl / 3));
-      this.renewal.unref();
-    }
+    options.ownership?.onFence(() => { for (const session of [...this.sessions.values()]) void this.lost(session); });
   }
 
-  private get leaseTtl() { return this.options.leaseTtlMs ?? 30_000; }
-  private get node() { return this.options.node ?? "local"; }
-  private headerKey(id: string) { return `${this.options.prefix ?? ""}${id}`; }
   private journalKey(id: string) { return `${this.options.prefix ?? ""}${id}.journal`; }
-  private indexKey(tenant: string, id = "") { return `${this.options.prefix ?? ""}index/${tenant}/${id}`; }
 
-  private async readHeader(id: string): Promise<{ value: SessionHeader; version: string } | undefined> {
+  private async readHeader(id: string): Promise<{ value: SessionHeader; revision: number } | undefined> {
     if (!validSessionId(id)) return undefined;
-    return this.storage.readJson<SessionHeader>(this.headerKey(id));
+    const row = (await this.db.query("select header, revision from agents where id = $1", [id])).rows[0];
+    return row && { value: row.header, revision: row.revision };
   }
 
-  /** Write the header (conditional on the version this node holds) and its index entry. */
+  /**
+   * Write the header with the columns listings use: a create, or an update
+   * conditional on the revision this node holds and on its ownership claim.
+   */
   private async writeHeader(session: Session) {
     if (session.fault) throw session.fault;
     const header = session.header;
+    const columns = [header.id, header.tenant ?? DEFAULT_TENANT, JSON.stringify(header), header.metadata?.name ?? header.id, header.metadata?.type ?? "general",
+      `${header.config.model.provider}/${header.config.model.id}`, header.expiresAt, header.revoked];
     try {
-      session.headerVersion = await this.storage.writeJson(this.headerKey(header.id), header, session.headerVersion ?? null);
-      const entry: IndexEntry = {
-        id: header.id, tenant: header.tenant ?? DEFAULT_TENANT, name: header.metadata?.name ?? header.id, type: header.metadata?.type ?? "general",
-        model: `${header.config.model.provider}/${header.config.model.id}`, expiresAt: header.expiresAt, revoked: header.revoked,
-      };
-      await this.storage.writeJson(this.indexKey(entry.tenant, header.id), entry);
+      const { rows } = session.revision === undefined
+        ? await this.db.query(`
+            insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision) values ($1, $2, $3, $4, $5, $6, $7, $8, 1)
+            on conflict (id) do nothing returning revision`, columns)
+        : await this.db.query(`
+            update agents set tenant = $2, header = $3, name = $4, type = $5, model = $6, expires_at = $7, revoked = $8, revision = revision + 1
+            where id = $1 and revision = $9 and ($10::uuid is null or exists (select 1 from actor_owners where actor = $1 and session = $10 and epoch = $11))
+            returning revision`, [...columns, session.revision, session.claim?.session ?? null, session.claim?.epoch ?? null]);
+      if (!rows[0]) throw new Error("Another node changed this agent; it moved");
+      session.revision = rows[0].revision;
     } catch (error) {
-      this.fail(session, error instanceof PreconditionFailed ? new Error("Another node changed this agent; it moved") : error);
+      this.fail(session, error);
       throw session.fault;
-    }
-  }
-
-  /** Build the per-tenant index for sessions created before it existed. Safe to repeat. */
-  async init() {
-    const prefix = this.options.prefix ?? "";
-    const indexed = new Set((await this.storage.listJson(`${prefix}index/`)).map(key => key.slice(key.lastIndexOf("/") + 1)));
-    for (const key of await this.storage.listJson(prefix)) {
-      const id = key.slice(prefix.length);
-      if (!validSessionId(id) || indexed.has(id)) continue;
-      const stored = await this.readHeader(id);
-      if (!stored) continue;
-      const header = stored.value;
-      await this.storage.writeJson(this.indexKey(header.tenant ?? DEFAULT_TENANT, id), {
-        id, tenant: header.tenant ?? DEFAULT_TENANT, name: header.metadata?.name ?? id, type: header.metadata?.type ?? "general",
-        model: `${header.config.model.provider}/${header.config.model.id}`, expiresAt: header.expiresAt, revoked: header.revoked,
-      } satisfies IndexEntry);
     }
   }
 
   /** The live owner of an agent when it is another node; undefined when this node can serve it. */
   async ownerElsewhere(id: string): Promise<string | undefined> {
-    if (!this.options.leases || this.sessions.has(id)) return undefined;
-    const lease = await this.options.leases.get(id);
-    return lease?.live && lease.owner !== this.node ? lease.owner : undefined;
+    const ownership = this.options.ownership;
+    if (!ownership || this.sessions.has(id)) return undefined;
+    const owner = await ownership.owner(id);
+    return owner !== ownership.node ? owner : undefined;
   }
 
   private load(id: string): Promise<Session | undefined> {
@@ -223,38 +210,29 @@ export class ClientSessions {
     const stored = await this.readHeader(id);
     if (!stored) return undefined;
     // Take ownership before reading the journal, so no other node appends meanwhile.
-    let lease: Lease | undefined;
-    if (this.options.leases) {
-      const acquired = await this.options.leases.acquire(id, this.node, this.leaseTtl);
-      if ("heldBy" in acquired) throw new NotOwner(acquired.heldBy.owner);
-      lease = acquired.lease;
+    const ownership = this.options.ownership;
+    let claim: Claim | undefined;
+    if (ownership) {
+      const acquired = await ownership.acquire(id);
+      if ("owner" in acquired) throw new NotOwner(acquired.owner);
+      claim = acquired.claim;
     }
-    try { return await this.loadOwned(id, lease); }
-    catch (error) { if (lease) await this.options.leases!.release(lease).catch(() => {}); throw error; }
+    try { return await this.loadOwned(id, claim); }
+    catch (error) { if (claim) await ownership!.release(claim).catch(() => {}); throw error; }
   }
 
-  private async loadOwned(id: string, lease?: Lease): Promise<Session | undefined> {
+  private async loadOwned(id: string, claim?: Claim): Promise<Session | undefined> {
     // Re-read after acquiring: the previous owner may have written since.
     const stored = await this.readHeader(id);
     if (!stored) return undefined;
-    let header = stored.value as any;
+    const header = stored.value;
     const log = this.storage.log<JournalRecord>(this.journalKey(id));
     const session: Session = {
-      header, headerVersion: stored.version, lease, requests: new Map(), calls: new Map(), log,
+      header, revision: stored.revision, claim, requests: new Map(), calls: new Map(), log,
       // Cursors restart above any cursor from an earlier process, so clients see a gap, never a repeat.
       cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), lastActive: Date.now(),
     };
-    if (header.version === 2) {
-      // Version 2 rewrote requests, calls and buffered events into this header on every event.
-      for (const record of Object.values(header.requests ?? {}) as RequestRecord[]) session.requests.set(record.id, record);
-      for (const record of Object.values(header.calls ?? {}) as CallRecord[]) session.calls.set(record.id, record);
-      const { requests: _requests, calls: _calls, events: _events, cursor: _cursor, ...rest } = header;
-      session.header = header = { ...rest, version: 3 };
-      await log.rewrite(() => this.snapshot(session));
-      await this.writeHeader(session);
-    } else {
-      for (const record of await log.read()) this.apply(session, record);
-    }
+    for (const record of await log.read()) this.apply(session, record);
     if (header.version !== 3 || header.id !== id) throw new Error("Invalid client session header");
     // Loading means no process anywhere owns the session, so nothing it recorded is still running.
     // Queued runs that never began are safe to run now; anything that began has an unknown outcome.
@@ -268,6 +246,7 @@ export class ClientSessions {
       else if (call.state === "offered") this.upsertCall(session, { ...call, state: "cancelled", outcome: { error: "The runtime restarted before this tool call was claimed" } });
     }
     await log.flush(true);
+    if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
     this.sessions.set(id, session);
     for (const record of queued.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) this.enqueue(session, record, record.params);
     return session;
@@ -438,21 +417,22 @@ export class ClientSessions {
       if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
     } else {
       const granted = this.options.volumes ? await this.options.volumes.mountsFor(tenant, id, mounts) : undefined;
-      let lease: Lease | undefined;
-      if (this.options.leases) {
-        const acquired = await this.options.leases.acquire(id, this.node, this.leaseTtl);
-        if ("heldBy" in acquired) throw new NotOwner(acquired.heldBy.owner);
-        lease = acquired.lease;
+      const ownership = this.options.ownership;
+      let claim: Claim | undefined;
+      if (ownership) {
+        const acquired = await ownership.acquire(id);
+        if ("owner" in acquired) throw new NotOwner(acquired.owner);
+        claim = acquired.claim;
       }
       session = {
         header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
-        lease, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id)),
+        claim, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id)),
         cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), lastActive: Date.now(),
       };
       // A conditional create: if a concurrent request made this agent first, retry as a load.
       try { await this.writeHeader(session); }
       catch (error) {
-        if (lease) await this.options.leases!.release(lease).catch(() => {});
+        if (claim) await ownership!.release(claim).catch(() => {});
         if (session.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts);
         throw error;
       }
@@ -464,24 +444,26 @@ export class ClientSessions {
     return { id, token, expiresAt: session.header.expiresAt, ...status };
   }
 
-  /** A tenant's agents, from its index. `running` covers agents served by any node. */
+  /** A tenant's live agents. `running` covers agents served by any node. */
   async list(tenant: string) {
-    const keys = await this.storage.listJson(this.indexKey(tenant));
-    const entries = await mapLimit(keys, 16, key => this.storage.readJson<IndexEntry>(key));
-    const live = entries.filter((entry): entry is { value: IndexEntry; version: string } => !!entry && !entry.value.revoked && !expired(entry.value.expiresAt));
-    return mapLimit(live, 16, async ({ value }) => {
-      const local = this.sessions.get(value.id);
+    const { rows } = await this.db.query(`
+      select a.id, a.name, a.type, a.model, a.expires_at, n.node is not null as served from agents a
+      left join actor_owners o on o.actor = a.id
+      left join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
+      where a.tenant = $1 and not a.revoked and (a.expires_at is null or a.expires_at > $2) order by a.id`, [tenant, Date.now()]);
+    return rows.map(row => {
+      const local = this.sessions.get(row.id);
       const response = local?.response;
-      const running = this.supervisor.agents.has(value.id) || (!local && !!this.options.leases && !!(await this.options.leases.get(value.id))?.live);
-      return { id: value.id, name: value.name, type: value.type, model: value.model, connected: !!response && !response.destroyed, running, expiresAt: value.expiresAt };
+      const running = this.supervisor.agents.has(row.id) || (!local && row.served);
+      return { id: row.id as string, name: row.name as string, type: row.type as string, model: row.model as string, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null };
     });
   }
 
   /** Whether `id` is one of `tenant`'s live agents (one read, not a listing). */
   async owns(id: string, tenant: string) {
     if (!validSessionId(id)) return false;
-    const entry = await this.storage.readJson<IndexEntry>(this.indexKey(tenant, id));
-    return !!entry && !entry.value.revoked && !expired(entry.value.expiresAt);
+    const { rowCount } = await this.db.query("select 1 from agents where id = $1 and tenant = $2 and not revoked and (expires_at is null or expires_at > $3)", [id, tenant, Date.now()]);
+    return !!rowCount;
   }
 
   async inspect(id: string, tenant: string) {
@@ -903,31 +885,24 @@ export class ClientSessions {
     }
   }
 
-  /** Drop a session from memory and give up its lease so any node can serve it next. */
+  /** Drop a session from memory and give up ownership so any node can serve it next. */
   private async unload(session: Session) {
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     await session.log.close().catch(() => {});
-    if (session.lease) await this.options.leases!.release(session.lease).catch(() => {});
+    if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
   }
 
-  /** Keep ownership of loaded agents; an agent whose lease was lost is fenced immediately. */
-  private async renewLeases() {
-    for (const session of [...this.sessions.values()]) {
-      if (!session.lease || this.closed) continue;
-      const renewed = await this.options.leases!.renew(session.lease, this.leaseTtl).catch(() => undefined);
-      if (renewed) { session.lease = renewed; continue; }
-      // Another node may already be serving it: stop writing, stop the agent, forget it.
-      this.fail(session, new Error("This node lost ownership of the agent"));
-      session.response?.destroy();
-      if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
-      await this.supervisor.stop(session.header.id).catch(() => {});
-    }
+  /** This node fenced itself: another node may already be serving the agent, so stop writing, stop the agent, forget it. */
+  private async lost(session: Session) {
+    this.fail(session, new Error("This node lost ownership of the agent"));
+    session.response?.destroy();
+    if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
+    await this.supervisor.stop(session.header.id).catch(() => {});
   }
 
   async close() {
     this.closed = true;
     clearInterval(this.heartbeat);
-    if (this.renewal) clearInterval(this.renewal);
     for (const session of [...this.sessions.values()]) {
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
@@ -935,13 +910,4 @@ export class ClientSessions {
       await this.unload(session);
     }
   }
-}
-
-async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) { const index = next++; results[index] = await work(items[index]); }
-  }));
-  return results;
 }

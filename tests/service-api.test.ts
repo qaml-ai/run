@@ -10,12 +10,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configuredModel } from '../src/model.ts';
 import { assertTrustedEndpoint } from '../src/session-config.ts';
+import { testDatabase } from './database.ts';
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: string) => Record<string, string> = () => ({})) {
   const root = await mkdtemp(join(tmpdir(), 'agent-service-api-'));
   const operator = 'operator-fixture-secret-at-least-24-chars';
+  const { db, url } = await testDatabase();
   const child = spawn(process.execPath, ['--experimental-strip-types', fileURLToPath(new URL('../src/server.ts', import.meta.url))], {
-    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_RUNTIME_TOKEN: operator, AGENT_API_KEY: 'host-fixture-key', PORT: '0', HOST: '127.0.0.1', ...env(root) } as NodeJS.ProcessEnv,
+    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: url, AGENT_RUNTIME_TOKEN: operator, AGENT_API_KEY: 'host-fixture-key', PORT: '0', HOST: '127.0.0.1', ...env(root) } as NodeJS.ProcessEnv,
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   t.after(async () => {
@@ -31,7 +33,8 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: 
   const headers = (token: string) => ({ Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' });
   const post = (path: string, body: unknown, token = operator) => fetch(base + path, { method: 'POST', headers: headers(token), body: JSON.stringify(body) });
   const get = (path: string, token = operator) => fetch(base + path, { headers: headers(token) });
-  return { root, post, get, child };
+  const header = async (id: string) => (await db.query('select header from agents where id = $1', [id])).rows[0].header;
+  return { root, post, get, child, header };
 }
 
 test('operator provisioning imports native history once; scoped reads do not journal transcript copies', async t => {
@@ -45,7 +48,7 @@ test('operator provisioning imports native history once; scoped reads do not jou
   assert.equal((await f.get(path + '/history', 'wrong-scoped-token')).status, 401);
   const history = await (await f.get(path + '/history', session.token)).json() as any;
   assert.deepEqual(history.messages, initialMessages);
-  const saved = JSON.parse(await readFile(join(f.root, 'client-sessions', session.id + '.json'), 'utf8'));
+  const saved = await f.header(session.id);
   assert.equal(saved.config.initialMessages, undefined);
   assert.equal('requests' in saved, false);
   // Reads are served from the transcript log; they add nothing to the session journal.
@@ -70,7 +73,7 @@ test('scoped configuration persists allowed fields and rejects provider credenti
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.equal(record.outcome.error, undefined);
-  const saved = JSON.parse(await readFile(join(f.root, 'client-sessions', session.id + '.json'), 'utf8'));
+  const saved = await f.header(session.id);
   assert.equal(saved.config.systemPrompt, params.systemPrompt);
   assert.equal(saved.config.thinkingLevel, 'high');
   assert.deepEqual(saved.definitions, params.tools);
@@ -135,7 +138,7 @@ test('tenants provision and see only their own agents, billed to their own provi
   assert.equal(carolAgent!.status, 201);
   const aliceShared = await sameKey(alice);
   assert.notEqual((await aliceShared.json() as any).id, (await carolAgent!.json() as any).id);
-  const header = JSON.parse(await readFile(join(f.root, 'client-sessions', `${agent.id}.json`), 'utf8'));
+  const header = await f.header(agent.id);
   assert.equal(header.tenant, 'alice');
   assert.equal(JSON.stringify(header).includes('alice-provider-key'), false);
 });

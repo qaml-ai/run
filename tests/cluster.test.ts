@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { testDatabase } from "./database.ts";
 
 const token = "cluster-operator-token-at-least-24-chars";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -23,9 +24,10 @@ async function freePort() {
   return port;
 }
 
-/** Runtime nodes sharing storage (shared files here, S3 in production) with short leases. */
+/** Runtime nodes sharing a database and storage (shared files here, S3 in production) with short heartbeats. */
 async function cluster(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(join(tmpdir(), "agent-cluster-"));
+  const { db, url: databaseUrl } = await testDatabase();
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { "*": "fixture-key" } } } }));
   const children: ChildProcess[] = [];
   const start = async (name: string) => {
@@ -33,7 +35,7 @@ async function cluster(t: { after(fn: () => Promise<void>): void }) {
     const url = `http://127.0.0.1:${port}`;
     const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
       env: {
-        PATH: process.env.PATH, HOME: root, PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: url,
+        PATH: process.env.PATH, HOME: root, PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: url, AGENT_DATABASE_URL: databaseUrl,
         AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
         AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "cluster-session-secret-with-32-characters!",
       } as NodeJS.ProcessEnv,
@@ -50,9 +52,9 @@ async function cluster(t: { after(fn: () => Promise<void>): void }) {
     for (const child of children) if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGKILL"); await closed; }
     await rm(root, { recursive: true, force: true });
   });
-  /** Which node holds an actor's lease, read straight from shared storage. */
-  const leaseOwner = (id: string) => JSON.parse(readFileSync(join(root, "shared", "leases", `${id}.json`), "utf8")).owner as string;
-  return { start, leaseOwner };
+  /** Which node owns an actor, read straight from the database. */
+  const owner = async (id: string) => (await db.query("select node from actor_owners where actor = $1", [id])).rows[0]?.node as string | undefined;
+  return { start, owner };
 }
 
 const lookup = (calls: string[]) => ({
@@ -101,10 +103,10 @@ test("any node serves any agent: requests are forwarded to the owner, and a surv
   assert.equal(again.status, 201, await again.clone().text());
   assert.equal((await again.json() as any).id, viaA.session.id);
 
-  // A dies without releasing anything. Once its lease expires, B serves the agent from storage.
+  // A dies without releasing anything. Once its heartbeat expires, B serves the agent from storage.
   a.child.kill("SIGKILL");
   await once(a.child, "close");
-  await sleep(1500 + 2000 + 500);
+  await sleep(1500 + 500);
   const result = await viaB.execute('return await tools.lookup({ key: "three" })', { timeoutMs: 20_000 });
   assert.equal(result.output[0], "value-of-three");
   assert.ok((await state()).requests.length >= 4, "the journal A wrote is intact under B");
@@ -121,12 +123,12 @@ test("a volume is served by one node: other nodes forward to it, agents anywhere
   const viaB = new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() });
   const { id } = await viaA.createVolume({ name: "shared" });
   const first = await viaA.volume(id).write("plan.md", "draft");
-  assert.equal(c.leaseOwner(id), a.url, "the node that first served the volume owns it");
+  assert.equal(await c.owner(id), a.url, "the node that first served the volume owns it");
 
   // Through B, reads and conditional writes are forwarded to A.
   assert.equal(await viaB.volume(id).readText("plan.md"), "draft");
   await assert.rejects(viaB.volume(id).write("plan.md", "stale", { version: first.version + 1 }), (error: any) => error.status === 412);
-  assert.equal(c.leaseOwner(id), a.url);
+  assert.equal(await c.owner(id), a.url);
 
   // An agent served by B mounts the volume; its file tools reach the owner on A.
   const agent = await viaB.createAgent({ tools: {}, idempotencyKey: "volume-agent", mounts: [{ volumeId: id, path: "/shared", mode: "rw" }] });
@@ -136,15 +138,15 @@ test("a volume is served by one node: other nodes forward to it, agents anywhere
     return await tools.edit({ path: "/shared/plan.md", old: "draft", new: "final", version: read.version });`)).output[0]);
   assert.equal(edited.version, first.version + 1);
   assert.equal(await viaA.volume(id).readText("plan.md"), "final");
-  assert.equal(c.leaseOwner(id), a.url, "the volume did not move to the agent's node");
+  assert.equal(await c.owner(id), a.url, "the volume did not move to the agent's node");
   await assert.rejects(agent.execute(`return await tools.edit({ path: "/shared/plan.md", old: "final", new: "x", version: ${first.version} })`), /changed since you read it/);
 
-  // A dies holding the lease. Once it expires, B serves the volume from storage.
+  // A dies owning the volume. Once its heartbeat expires, B serves it from storage.
   a.child.kill("SIGKILL");
   await once(a.child, "close");
-  await sleep(1500 + 2000 + 500);
+  await sleep(1500 + 500);
   assert.equal(await viaB.volume(id).readText("plan.md"), "final");
-  assert.equal(c.leaseOwner(id), b.url);
+  assert.equal(await c.owner(id), b.url);
   assert.equal(JSON.parse((await agent.execute('return await tools.read({ path: "/shared/plan.md" })', { timeoutMs: 20_000 })).output[0]).version, edited.version);
   await agent.execute('await tools.write({ path: "/shared/after.md", content: "written after takeover" })');
   assert.deepEqual((await viaB.volume(id).list()).files.map(file => file.path), ["/after.md", "/plan.md"]);

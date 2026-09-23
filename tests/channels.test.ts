@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,8 @@ import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Channels, chunks } from "../src/channels.ts";
 import { telegram } from "../src/channels-telegram.ts";
-import { memoryStorage } from "../shared/storage.ts";
+import pg from "pg";
+import { testDatabase } from "./database.ts";
 
 type T = { after(fn: () => Promise<void> | void): void };
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -101,9 +102,10 @@ async function runtime(t: T, respond: (body: any, index: number) => object, env:
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(operator), apiKeys: { "*": "fixture-model-key" } } } }));
   const model = await fakeModel(t, respond);
   const tg = await fakeTelegram(t);
+  const { db, url: databaseUrl } = await testDatabase();
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: {
-      PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, PORT: "0", HOST: "127.0.0.1",
+      PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, PORT: "0", HOST: "127.0.0.1",
       ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "channels-test-session-secret-32-characters",
       AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), AGENT_PUBLIC_URL: "https://agents.example.test",
@@ -145,7 +147,7 @@ async function runtime(t: T, respond: (body: any, index: number) => object, env:
     method: "POST", headers: { "Content-Type": "application/json", ...(secret !== undefined ? { "X-Telegram-Bot-Api-Secret-Token": secret } : {}) },
     body: JSON.stringify({ update_id: updateId, message: { message_id: updateId, date: 0, ...message } }),
   }).then(response => response.status);
-  return { root, base, call, tg, model, createChannel, deliver };
+  return { root, db, base, call, tg, model, createChannel, deliver };
 }
 const ada = { id: 42, is_bot: false, first_name: "Ada", username: "ada" };
 const bob = { id: 7, is_bot: false, first_name: "Bob", username: "bob" };
@@ -169,7 +171,7 @@ test("channel credentials are encrypted, never returned, and the webhook is regi
     assert.equal(response.text.includes(BOT_TOKEN.split(":")[1]), false);
     assert.equal(response.text.includes(secret), false);
   }
-  const stored = await readFile(join(r.root, "channels", `${channel.id}.json`), "utf8");
+  const stored = JSON.stringify((await r.db.query("select * from channels where id = $1", [channel.id])).rows[0]);
   assert.equal(stored.includes(BOT_TOKEN.split(":")[1]), false);
   assert.equal(stored.includes(secret), false);
   assert.equal((await r.call("/v1/channels")).json.length, 1);
@@ -219,7 +221,7 @@ test("each conversation gets its own agent; replies are chunked; a retried updat
   assert.equal((await agents()).length, 2, "another conversation gets another agent");
   // Bob's agent saw only Bob's conversation.
   assert.equal(r.model.bodies[2].messages.filter((message: any) => message.role === "user").length, 1);
-  await until(async () => (await readdir(join(r.root, "channel-items")).catch(() => [])).length === 0, "no work left over");
+  await until(async () => (await r.db.query("select count(*) as count from channel_items")).rows[0].count === 0, "no work left over");
 });
 
 test("senders outside the allowlist are ignored unless the channel is public; /start is greeted", async t => {
@@ -299,40 +301,65 @@ test("send_message reaches the chat mid-turn, and tools see who is asking", asyn
 
 test("an outbound message that fails is retried, and delivered exactly once across two scanners", async t => {
   const tg = await fakeTelegram(t);
-  const storage = memoryStorage();
-  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), storage, secretsKey: randomBytes(32).toString("hex") });
+  const { db } = await testDatabase();
+  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), db, secretsKey: randomBytes(32).toString("hex") });
   const node = (name: string) => new Channels({
-    storage, accounts, node: name, publicUrl: "https://agents.example.test", retryBaseMs: 50,
+    db, accounts, node: name, publicUrl: "https://agents.example.test", retryBaseMs: 50,
     providers: { telegram: telegram({ apiUrl: tg.url }) },
     createAgent: async () => { throw new Error("unused"); }, live: async () => true, submit: async () => { throw new Error("unused"); },
   });
   const [a, b] = [node("a"), node("b")];
   const channel = await a.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
-  await storage.writeJson("channel-agents/client_x", { channel: channel.id, tenant: "default", conversationId: "42" });
+  await db.query("insert into channel_agents (agent, channel, tenant, conversation) values ('client_x', $1, 'default', '42')", [channel.id]);
 
   // A scheduled turn on the conversation's agent ends while Telegram is failing.
   tg.state.failSends = 1;
   const reply = `${"x".repeat(4090)}\n${"y".repeat(10)}`;
   a.hooks.runEnded!({ id: "client_x", tenant: "default" }, { id: "schedule-1", method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply } } });
   await until(() => tg.calls.some(entry => entry.method === "sendMessage:failed"), "the failed send");
-  const [key] = await until(async () => { const keys = await storage.listJson("channel-items/"); return keys.length && (await storage.readJson<any>(keys[0]))?.value.claim === undefined && keys; }, "the released item");
-  assert.equal((await storage.readJson<any>(key))!.value.attempts, 1);
+  const released = await until(async () => (await db.query("select item from channel_items where claimed_by is null")).rows[0], "the released item");
+  assert.equal(released.item.attempts, 1);
 
   // Both nodes scan at once, repeatedly: one claims the item, and it is sent once.
   await sleep(60);
   for (let round = 0; round < 5; round++) { await Promise.all([a.scan(), b.scan()]); await sleep(20); }
   assert.deepEqual(tg.sent("42"), ["x".repeat(4090), "y".repeat(10)]);
-  assert.deepEqual(await storage.listJson("channel-items/"), []);
+  assert.equal((await db.query("select count(*) as count from channel_items")).rows[0].count, 0);
+});
+
+test("a backlog of outbound messages is sent exactly once when two nodes on separate connections drain it", async t => {
+  const tg = await fakeTelegram(t);
+  const { db, url } = await testDatabase();
+  const secretsKey = randomBytes(32).toString("hex");
+  const node = (name: string) => {
+    const pool = new pg.Pool({ connectionString: url, max: 3 });
+    t.after(() => pool.end());
+    return new Channels({
+      db: pool, accounts: new Accounts({ tenants: new Tenants({ legacyToken: operator }), db: pool, secretsKey }), node: name, publicUrl: "https://agents.example.test",
+      providers: { telegram: telegram({ apiUrl: tg.url }) },
+      createAgent: async () => { throw new Error("unused"); }, live: async () => true, submit: async () => { throw new Error("unused"); },
+    });
+  };
+  const [a, b] = [node("a"), node("b")];
+  const channel = await a.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
+  const now = Date.now();
+  for (let index = 0; index < 40; index++) {
+    const item = { id: `out_${index}`, channel: channel.id, tenant: "default", conversationId: "42", createdAt: now, state: "sending", text: `message ${index}`, sent: 0, attempts: 0 };
+    await db.query("insert into channel_items (id, item, due) values ($1, $2, $3)", [item.id, JSON.stringify(item), now]);
+  }
+  for (let round = 0; round < 3; round++) await Promise.all([a.scan(), b.scan(), a.scan(), b.scan()]);
+  assert.deepEqual(tg.sent("42").sort(), Array.from({ length: 40 }, (_, index) => `message ${index}`).sort());
+  assert.equal((await db.query("select count(*) as count from channel_items")).rows[0].count, 0);
 });
 
 test("a turn whose end no node saw (a crash) is re-checked and answered once", async t => {
   const tg = await fakeTelegram(t);
-  const storage = memoryStorage();
-  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), storage, secretsKey: randomBytes(32).toString("hex") });
+  const { db } = await testDatabase();
+  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), db, secretsKey: randomBytes(32).toString("hex") });
   const submitted: string[] = [];
   let finished = false;
   const channels = new Channels({
-    storage, accounts, node: "a", publicUrl: "https://agents.example.test",
+    db, accounts, node: "a", publicUrl: "https://agents.example.test",
     providers: { telegram: telegram({ apiUrl: tg.url }) },
     createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), live: async () => true,
     // The agent's journal answers a repeated request id with the same record.
@@ -358,7 +385,7 @@ test("a turn whose end no node saw (a crash) is re-checked and answered once", a
   await channels.scan(Date.now() + 300_000);
   assert.deepEqual(tg.sent("42"), ["Recovered."]);
   assert.equal(submitted.length, 3);
-  assert.deepEqual(await storage.listJson("channel-items/"), []);
+  assert.equal((await db.query("select count(*) as count from channel_items")).rows[0].count, 0);
   // Telegram retrying the update now finds it handled.
   assert.equal((await post()).status, 200);
   await sleep(50);

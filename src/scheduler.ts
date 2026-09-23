@@ -1,16 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { PreconditionFailed, type Storage } from "../shared/storage.ts";
+import type { Db } from "./db.ts";
 
 /**
- * Durable timers that wake agents with a prompt, on any node:
- *
- *   schedules/<agent>/<id>          the schedule (text, next due time, repeat interval)
- *   timers/<minute>/<agent>.<id>    one entry per pending wake-up, grouped by due minute
- *   timer-claims/<agent>.<id>.<due> which node is delivering a due wake-up
- *
- * Every node scans for due timers; a conditional create of the claim lets exactly
- * one deliver it. Delivery submits a prompt whose request id is derived from the
- * schedule and due time, so a repeated delivery (after a crash) is a no-op.
+ * Durable timers that wake agents with a prompt, on any node. Each schedule is a
+ * row in `schedules`; a node claims due rows with `FOR UPDATE SKIP LOCKED`, so one
+ * node delivers each wake-up, and a claim left by a crashed node lapses after a
+ * minute. Delivery submits a request whose id is derived from the schedule and due
+ * time, so a repeated delivery (after a crash) is a no-op.
  */
 /** A wake-up either prompts the agent (`text`) or runs sandboxed code with its tools (`code`). */
 export interface Schedule {
@@ -19,20 +15,25 @@ export interface Schedule {
 }
 export type Deliver = (schedule: Schedule, requestId: string) => Promise<void>;
 
-const minuteOf = (time: number) => new Date(time).toISOString().slice(0, 16).replace(/[-:T]/g, "");
 /** A claim older than this is assumed abandoned by a crashed node and may be retaken. */
 const CLAIM_TIMEOUT_MS = 60_000;
+const CLAIM_BATCH = 100;
 export const MIN_REPEAT_SECONDS = 60;
+const COLUMNS = "id, agent, tenant, text, code, due_at, every_seconds, created_at";
+const schedule = (row: any): Schedule => ({
+  id: row.id, agent: row.agent, tenant: row.tenant, ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}),
+  dueAt: row.due_at, ...(row.every_seconds !== null ? { everySeconds: row.every_seconds } : {}), createdAt: row.created_at,
+});
 
 export class Scheduler {
-  readonly storage: Storage;
+  readonly db: Db;
   readonly node: string;
   private readonly deliver: Deliver;
   private timer?: ReturnType<typeof setInterval>;
   private scanning = false;
 
-  constructor(options: { storage: Storage; node: string; deliver: Deliver }) {
-    this.storage = options.storage;
+  constructor(options: { db: Db; node: string; deliver: Deliver }) {
+    this.db = options.db;
     this.node = options.node;
     this.deliver = options.deliver;
   }
@@ -48,82 +49,62 @@ export class Scheduler {
     if ((input.text === undefined) === (input.code === undefined) || typeof content !== "string" || !content.trim() || content.length > 32_000) throw new Error("Give exactly one of text or code (1–32000 characters)");
     if (!Number.isFinite(input.dueAt)) throw new Error("A schedule needs a due time");
     if (input.everySeconds !== undefined && (!Number.isInteger(input.everySeconds) || input.everySeconds < MIN_REPEAT_SECONDS)) throw new Error(`everySeconds must be an integer of at least ${MIN_REPEAT_SECONDS}`);
-    const existing = await this.list(input.agent);
-    if (existing.length >= 100) throw new Error("An agent can have at most 100 schedules");
-    const schedule: Schedule = { id: randomUUID(), ...input, createdAt: Date.now() };
-    await this.storage.writeJson(`schedules/${schedule.agent}/${schedule.id}`, schedule, null);
-    await this.storage.writeJson(this.timerKey(schedule), { agent: schedule.agent, id: schedule.id, dueAt: schedule.dueAt });
-    return schedule;
+    if ((await this.db.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
+    const created: Schedule = { id: randomUUID(), ...input, dueAt: Math.round(input.dueAt), createdAt: Date.now() };
+    await this.db.query(`insert into schedules (${COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt]);
+    return created;
   }
 
   async list(agent: string): Promise<Schedule[]> {
-    const keys = await this.storage.listJson(`schedules/${agent}/`);
-    const schedules = await Promise.all(keys.map(key => this.storage.readJson<Schedule>(key)));
-    return schedules.flatMap(entry => entry ? [entry.value] : []).sort((a, b) => a.dueAt - b.dueAt);
+    return (await this.db.query(`select ${COLUMNS} from schedules where agent = $1 order by due_at, id`, [agent])).rows.map(schedule);
   }
 
   async remove(agent: string, id: string) {
-    const stored = await this.storage.readJson<Schedule>(`schedules/${agent}/${id}`);
-    if (!stored) return false;
-    await this.storage.deleteJson(this.timerKey(stored.value));
-    await this.storage.deleteJson(`schedules/${agent}/${id}`);
-    return true;
+    if (!/^[0-9a-f-]{36}$/.test(id)) return false;
+    return !!(await this.db.query("delete from schedules where agent = $1 and id = $2", [agent, id])).rowCount;
   }
 
-  private timerKey(schedule: Pick<Schedule, "agent" | "id" | "dueAt">) { return `timers/${minuteOf(schedule.dueAt)}/${schedule.agent}.${schedule.id}`; }
-
-  /** Deliver every due wake-up this node wins the claim for. */
+  /** Deliver every due wake-up this node claims. */
   async scan(now = Date.now()) {
     if (this.scanning) return;
     this.scanning = true;
     try {
-      const current = minuteOf(now);
-      for (const key of await this.storage.listJson("timers/")) {
-        if (key.split("/")[1] > current) continue;
-        const entry = await this.storage.readJson<{ agent: string; id: string; dueAt: number }>(key);
-        if (!entry || entry.value.dueAt > now) continue;
-        if (await this.claim(entry.value)) await this.fire(key, entry.value);
+      for (let batch; (batch = await this.claim(now)).length;) {
+        for (const due of batch) await this.fire(due);
+        if (batch.length < CLAIM_BATCH) break;
       }
     } finally { this.scanning = false; }
   }
 
-  private async claim(timer: { agent: string; id: string; dueAt: number }) {
-    const key = `timer-claims/${timer.agent}.${timer.id}.${timer.dueAt}`;
-    try { await this.storage.writeJson(key, { node: this.node, at: Date.now() }, null); return true; }
-    catch (error) {
-      if (!(error instanceof PreconditionFailed)) throw error;
-      const claim = await this.storage.readJson<{ node: string; at: number }>(key);
-      if (!claim || Date.now() - claim.value.at < CLAIM_TIMEOUT_MS) return false;
-      try { await this.storage.writeJson(key, { node: this.node, at: Date.now() }, claim.version); return true; }
-      catch (retake) { if (retake instanceof PreconditionFailed) return false; throw retake; }
-    }
+  private async claim(now: number): Promise<Schedule[]> {
+    const { rows } = await this.db.query(`
+      update schedules set claimed_by = $2, claimed_until = now() + $3 * interval '1 millisecond'
+      where id in (
+        select id from schedules where due_at <= $1 and (claimed_until is null or claimed_until <= now())
+        order by due_at limit ${CLAIM_BATCH} for update skip locked)
+      returning ${COLUMNS}`, [now, this.node, CLAIM_TIMEOUT_MS]);
+    return rows.map(schedule);
   }
 
-  private async fire(key: string, timer: { agent: string; id: string; dueAt: number }) {
-    const stored = await this.storage.readJson<Schedule>(`schedules/${timer.agent}/${timer.id}`);
-    let gone = false;
-    if (stored && stored.value.dueAt === timer.dueAt) {
-      try { await this.deliver(stored.value, `schedule-${timer.id}-${timer.dueAt}`); }
-      catch (error) {
-        // The agent was deleted or expired: drop its schedule. Anything else retries after the claim times out.
-        const status = (error as { status?: number }).status;
-        if (status !== 404 && status !== 410) throw error;
-        gone = true;
-      }
+  /** Deliver a claimed wake-up, then move it to its next occurrence or drop it. Only the claim holder advances it. */
+  private async fire(due: Schedule) {
+    try { await this.deliver(due, `schedule-${due.id}-${due.dueAt}`); }
+    catch (error) {
+      // The agent was deleted or expired: drop its schedule. Anything else retries after the claim times out.
+      const status = (error as { status?: number }).status;
+      if (status !== 404 && status !== 410) throw error;
+      await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, this.node]);
+      return;
     }
-    if (stored && stored.value.dueAt === timer.dueAt && !gone) {
-      if (stored.value.everySeconds) {
-        // Next occurrence after now, skipping any missed while nothing was running.
-        const step = stored.value.everySeconds * 1000;
-        const next = { ...stored.value, dueAt: timer.dueAt + Math.max(1, Math.ceil((Date.now() - timer.dueAt + 1) / step)) * step };
-        await this.storage.writeJson(`schedules/${timer.agent}/${timer.id}`, next, stored.version);
-        await this.storage.writeJson(this.timerKey(next), { agent: next.agent, id: next.id, dueAt: next.dueAt });
-      } else {
-        await this.storage.deleteJson(`schedules/${timer.agent}/${timer.id}`);
-      }
-    } else if (gone) await this.storage.deleteJson(`schedules/${timer.agent}/${timer.id}`);
-    await this.storage.deleteJson(key);
-    await this.storage.deleteJson(`timer-claims/${timer.agent}.${timer.id}.${timer.dueAt}`);
+    if (due.everySeconds) {
+      // Next occurrence after now, skipping any missed while nothing was running.
+      const step = due.everySeconds * 1000;
+      const next = due.dueAt + Math.max(1, Math.ceil((Date.now() - due.dueAt + 1) / step)) * step;
+      await this.db.query("update schedules set due_at = $3, claimed_by = null, claimed_until = null where id = $1 and due_at = $2 and claimed_by = $4", [due.id, due.dueAt, next, this.node]);
+    } else {
+      await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, this.node]);
+    }
   }
 }
 

@@ -19,13 +19,15 @@ import { FRAME_BYTES } from "../shared/client-protocol.ts";
 import { CHUNK_BYTES, VolumeService, type Mount } from "../src/volumes.ts";
 import { searchLines } from "../src/volume-tools.ts";
 import { AgentError, AgentRuntime, memoryJournalStore, type AgentClient } from "../clients/node.ts";
+import type { Db } from "../src/db.ts";
+import { testDatabase } from "./database.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const bytes = (text: string) => Buffer.from(text, "utf8");
 const never = new AbortController().signal;
 
-function service(t: Context, storage = memoryStorage()) {
-  const volumes = new VolumeService({ storage });
+async function service(t: Context, storage = memoryStorage(), db?: Db) {
+  const volumes = new VolumeService({ db: db ?? (await testDatabase()).db, storage });
   t.after(() => volumes.close());
   const write = async (id: string, path: string, content: string | Buffer, ifMatch?: number, tenant = "acme") =>
     volumes.call(id, tenant, "commit", { path, ...await volumes.store(tenant, typeof content === "string" ? bytes(content) : content), ...(ifMatch !== undefined ? { ifMatch } : {}) });
@@ -41,7 +43,7 @@ const tools = (volumes: VolumeService, mounts: Mount[], agent = "client_agent", 
   (name: string, args: Record<string, unknown>) => volumes.tool({ tenant, agent, mounts }, name, args, never) as Promise<any>;
 
 test("contents are content-addressed chunks: identical data and unchanged chunks are stored once", async t => {
-  const { volumes, storage, write, read } = service(t);
+  const { volumes, storage, write, read } = await service(t);
   const { id } = await volumes.create("acme", { name: "docs" });
   await write(id, "/a.txt", "same bytes");
   await write(id, "/copy/a.txt", "same bytes");
@@ -63,7 +65,7 @@ test("contents are content-addressed chunks: identical data and unchanged chunks
 });
 
 test("versioned writes reject stale versions, and the tree keeps files and directories apart", async t => {
-  const { volumes, write } = service(t);
+  const { volumes, write } = await service(t);
   const { id } = await volumes.create("acme");
   const v1 = await write(id, "/notes.md", "one", 0);
   await assert.rejects(write(id, "/notes.md", "again", 0), (error: any) => error.status === 412 && error.current === v1.version && /already exists/.test(error.message));
@@ -84,11 +86,12 @@ test("versioned writes reject stale versions, and the tree keeps files and direc
 
 test("the tree survives a reload from its log, including after folding", async t => {
   const storage = memoryStorage();
-  const first = service(t, storage);
+  const { db } = await testDatabase();
+  const first = await service(t, storage, db);
   const { id } = await first.volumes.create("acme");
   for (let index = 0; index < 1100; index++) await first.write(id, `/f/${index % 50}.txt`, `v${index}`);
   await first.volumes.close();
-  const second = service(t, storage);
+  const second = await service(t, storage, db);
   assert.equal(await second.read(id, "/f/49.txt"), "v1099");
   const info = await second.volumes.call(id, "acme", "info");
   assert.equal(info.files, 50);
@@ -96,7 +99,7 @@ test("the tree survives a reload from its log, including after folding", async t
 });
 
 test("snapshots and forks copy metadata only and diverge independently", async t => {
-  const { volumes, storage, write, read } = service(t);
+  const { volumes, storage, write, read } = await service(t);
   const { id } = await volumes.create("acme", { name: "source" });
   await write(id, "/a.txt", "a1");
   await write(id, "/b.txt", "b1");
@@ -126,7 +129,7 @@ test("snapshots and forks copy metadata only and diverge independently", async t
 });
 
 test("tenants cannot reach each other's volumes, by operation or by mount", async t => {
-  const { volumes, write } = service(t);
+  const { volumes, write } = await service(t);
   const { id } = await volumes.create("acme");
   await write(id, "/secret.txt", "acme only");
   assert.equal(await volumes.owns(id, "evil"), false);
@@ -140,7 +143,7 @@ test("tenants cannot reach each other's volumes, by operation or by mount", asyn
 });
 
 test("file tools: mount paths, read-only mounts, subpaths and edit conflicts the model can act on", async t => {
-  const { volumes, write } = service(t);
+  const { volumes, write } = await service(t);
   const { id } = await volumes.create("acme");
   await write(id, "/team/plan.md", "alpha\nbeta\n");
   const mounts: Mount[] = [{ volumeId: id, path: "/workspace", mode: "rw" }, { volumeId: id, path: "/team", mode: "ro", subpath: "/team" }];
@@ -178,7 +181,7 @@ test("large files are read in bounded windows that fetch only the chunks they co
   const reads: string[] = [];
   const readBlob = storage.readBlob.bind(storage);
   storage.readBlob = key => { reads.push(key); return readBlob(key); };
-  const { volumes, write } = service(t, storage);
+  const { volumes, write } = await service(t, storage);
   const { id } = await volumes.create("acme");
   // Three chunks of distinct text, with a multi-byte character straddling the read window's end.
   const line = (index: number) => `line ${String(index).padStart(7, "0")} ${"é".repeat(20)}\n`;
@@ -201,7 +204,7 @@ test("large files are read in bounded windows that fetch only the chunks they co
 });
 
 test("glob and grep are capped by result, file and byte limits", async t => {
-  const { volumes, write } = service(t);
+  const { volumes, write } = await service(t);
   const { id } = await volumes.create("acme");
   for (let index = 0; index < 250; index++) await write(id, `/src/${index % 5}/file${index}.ts`, `export const value${index} = ${index};\n// TODO item ${index}\n`);
   await write(id, "/src/readme.md", "TODO docs\n");
@@ -262,9 +265,10 @@ async function agents(t: Context) {
   const root = await mkdtemp(join(tmpdir(), "volumes-agents-"));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
   const storage = fileStorage(join(root, "state"));
+  const { db } = await testDatabase();
   let sessions: ClientSessions;
-  const volumes = new VolumeService({ storage, deliver: (agent, tenant, request) => sessions.submit(agent, tenant, request) });
-  sessions = new ClientSessions(supervisor, { storage, prefix: "client-sessions/", secret: "volumes-test-secret-with-32-characters", apiKey: "fixture-only", volumes });
+  const volumes = new VolumeService({ db, storage, deliver: (agent, tenant, request) => sessions.submit(agent, tenant, request) });
+  sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", secret: "volumes-test-secret-with-32-characters", apiKey: "fixture-only", volumes });
   let model = (await fixtureModel(t)).model;
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
@@ -373,8 +377,9 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   const sha = (value: string) => createHash("sha256").update(value).digest("hex");
   const alice = "alice-volumes-token-at-least-24-chars", bob = "bob-volumes-token-at-least-24-chars";
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(alice), apiKeys: { "*": "fixture-key" } }, bob: { tokenSha256: sha(bob), apiKeys: { "*": "fixture-key" } } } }));
+  const { url: databaseUrl } = await testDatabase();
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
-    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, PORT: "0", HOST: "127.0.0.1", AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "volumes-api-session-secret-with-32-chars", ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}) } as NodeJS.ProcessEnv,
+    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, PORT: "0", HOST: "127.0.0.1", AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "volumes-api-session-secret-with-32-chars", ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}) } as NodeJS.ProcessEnv,
     stdio: ["ignore", "pipe", "inherit"],
   });
   t.after(async () => {

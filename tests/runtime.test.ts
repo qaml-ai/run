@@ -11,6 +11,7 @@ import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { localTools } from "../src/local-tools.ts";
 import { configuredModel } from "../src/model.ts";
 import { readTranscript } from "../src/transcript.ts";
+import { testDatabase } from "./database.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 const model = configuredModel();
@@ -192,8 +193,9 @@ test("stopping an agent also kills a CPU-bound codemode child", async t => {
 test("HTTP control plane authenticates, streams codemode output, and stops agents", async t => {
   const root = await mkdtemp(join(tmpdir(), "camelai-http-test-"));
   const token = "runtime-test-token-with-enough-characters";
+  const { db, url: databaseUrl } = await testDatabase();
   const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
-    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_RUNTIME_TOKEN: token, PORT: "0", ...(process.env.AGENT_RUNTIME ? { AGENT_RUNTIME: process.env.AGENT_RUNTIME } : {}) },
+    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, AGENT_RUNTIME_TOKEN: token, PORT: "0", ...(process.env.AGENT_RUNTIME ? { AGENT_RUNTIME: process.env.AGENT_RUNTIME } : {}) },
     stdio: ["ignore", "pipe", "inherit"],
   });
   t.after(async () => {
@@ -222,7 +224,7 @@ test("HTTP control plane authenticates, streams codemode output, and stops agent
   const clientSessionResponse = await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ tools: [], name: "Test agent", type: "reviewer", systemPrompt: "You are a test assistant." }) });
   assert.equal(clientSessionResponse.status, 201);
   const clientSession = await clientSessionResponse.json() as { id: string; token: string };
-  assert.equal(JSON.parse(await readFile(join(root, "client-sessions", `${clientSession.id}.json`), "utf8")).config.systemPrompt, "You are a test assistant.");
+  assert.equal((await db.query("select header from agents where id = $1", [clientSession.id])).rows[0].header.config.systemPrompt, "You are a test assistant.");
   const registryUrl = base.replace("/agents/demo", "/registry");
   assert.equal((await fetch(registryUrl)).status, 401);
   assert.equal((await fetch(registryUrl, { headers: { Authorization: `Bearer ${clientSession.token}` } })).status, 401);

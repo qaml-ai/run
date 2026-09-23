@@ -1,22 +1,22 @@
 import { createHash, randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AppendLog } from "../shared/append-log.ts";
-import type { Lease, LeaseStore } from "../shared/leases.ts";
-import { PreconditionFailed, type Storage } from "../shared/storage.ts";
+import type { Storage } from "../shared/storage.ts";
 import { NotOwner } from "./client-sessions.ts";
+import type { Db } from "./db.ts";
+import type { Claim, Ownership } from "./ownership.ts";
 import { HttpError } from "./http.ts";
 import { errorText, type ToolDefinition } from "./protocol.ts";
 import { runVolumeTool, volumeToolDefinitions, type ToolContext } from "./volume-tools.ts";
 
 /**
  * Volumes: shared file trees agents mount, without POSIX. A volume is an actor
- * like an agent: one node at a time holds its lease and orders its writes.
+ * like an agent: one node at a time owns it and orders its writes. Headers,
+ * snapshot summaries and watchers are rows in Postgres (`volumes`,
+ * `volume_snapshots`, `volume_watchers`); the rest is in Storage:
  *
- *   volumes/<id>                         header (tenant, name, tombstone)
  *   volumes/<id>/tree                    append log of file puts and deletes, folded into a base
- *   volumes/<id>/snapshots/<snap>        snapshot summary; its file map is in snapshot-files/<snap>
- *   volumes/<id>/watchers/<agent>        mounts that wake an agent when files change
- *   volumes/index/<tenant>/<id>          the tenant's volumes
+ *   volumes/<id>/snapshots/<snap>        a snapshot's file map (a blob, written once)
  *   chunks/<tenant>/<aa>/<sha256>        file contents, 1 MiB content-addressed chunks
  *
  * File contents never pass through the owner: any node writes chunks, then asks
@@ -39,17 +39,17 @@ type TreeRecord =
   | { t: "put"; seq: number; path: string; entry: FileEntry }
   | { t: "del"; seq: number; path: string; at: number; by?: string };
 type Volume = {
-  header: VolumeHeader; lease?: Lease; tree: Tree; seq: number; log: AppendLog<TreeRecord>;
+  header: VolumeHeader; claim?: Claim; tree: Tree; seq: number; log: AppendLog<TreeRecord>;
   /** Writes are ordered through this chain. */
   queue: Promise<unknown>; active: number; lastActive: number; fault?: Error;
   changes: Change[]; pending: Change[]; notifying?: ReturnType<typeof setTimeout>;
 };
 export type VolumeRequest = { id: string; method: string; params: Record<string, unknown> };
 export interface VolumeOptions {
-  storage: Storage;
-  /** With leases, one node at a time serves each volume, identified by `node`. */
-  leases?: LeaseStore; node?: string; leaseTtlMs?: number;
-  /** Unload a volume (and release its lease) after this long without use. */
+  db: Db; storage: Storage;
+  /** With ownership, one node at a time serves each volume. */
+  ownership?: Ownership;
+  /** Unload a volume (and give up ownership) after this long without use. */
   idleMs?: number;
   /** Run an operation on the node that owns a volume (a signed node-to-node POST). */
   peer?: (owner: string, path: string, body: unknown) => Promise<unknown>;
@@ -60,12 +60,13 @@ export interface VolumeOptions {
 export const validVolumeId = (value: unknown): value is string => typeof value === "string" && /^vol_[a-f0-9]{24}$/.test(value);
 const newId = (prefix: string, bytes: number) => `${prefix}_${randomBytes(bytes).toString("hex")}`;
 const sha256 = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
-const headerKey = (id: string) => `volumes/${id}`;
 const treeKey = (id: string) => `volumes/${id}/tree`;
-const indexKey = (tenant: string, id = "") => `volumes/index/${tenant}/${id}`;
-const snapshotKey = (id: string, snapshot = "") => `volumes/${id}/snapshots/${snapshot}`;
-const snapshotFilesKey = (id: string, snapshot: string) => `volumes/${id}/snapshot-files/${snapshot}`;
-const watcherKey = (id: string, agent = "") => `volumes/${id}/watchers/${agent}`;
+const snapshotFilesKey = (id: string, snapshot: string) => `volumes/${id}/snapshots/${snapshot}`;
+const header = (row: any): VolumeHeader => ({
+  version: 1, id: row.id, tenant: row.tenant, name: row.name, createdAt: row.created_at,
+  ...(row.deleted_at !== null ? { deleted: row.deleted_at } : {}), ...(row.origin ? { origin: row.origin } : {}),
+});
+const SNAPSHOT_COLUMNS = "id, volume, name, seq, created_at as \"createdAt\", files, bytes";
 const chunkKey = (tenant: string, hash: string) => `chunks/${tenant}/${hash.slice(0, 2)}/${hash}`;
 
 /** A path inside a volume: absolute, `/`-separated, no `.`/`..` or empty segments. */
@@ -159,6 +160,7 @@ class Tree {
 }
 
 export class VolumeService {
+  readonly db: Db;
   readonly storage: Storage;
   readonly options: VolumeOptions;
   private readonly loaded = new Map<string, Volume>();
@@ -168,26 +170,34 @@ export class VolumeService {
 
   constructor(options: VolumeOptions) {
     this.options = options;
+    this.db = options.db;
     this.storage = options.storage;
-    this.timer = setInterval(() => void this.tick(), Math.max(50, Math.min(Math.floor(this.leaseTtl / 3), Math.floor(this.idleMs / 2))));
+    this.timer = setInterval(() => void this.tick(), Math.max(50, Math.min(5_000, Math.floor(this.idleMs / 2))));
     this.timer.unref();
+    // A fenced node may already have been replaced: stop every volume at once.
+    options.ownership?.onFence(() => {
+      for (const volume of [...this.loaded.values()]) {
+        volume.fault = new HttpError(503, "This node lost ownership of the volume; retry");
+        this.loaded.delete(volume.header.id);
+      }
+    });
   }
 
-  private get leaseTtl() { return this.options.leaseTtlMs ?? 30_000; }
   private get idleMs() { return this.options.idleMs ?? 5 * 60_000; }
-  private get node() { return this.options.node ?? "local"; }
 
   async create(tenant: string, input: { name?: unknown } = {}, id = newId("vol", 12)) {
     const name = input.name === undefined ? "volume" : input.name;
     if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
     const header: VolumeHeader = { version: 1, id, tenant, name: name.trim(), createdAt: Date.now() };
-    await this.writeNew(header);
+    if (!await this.writeNew(header)) throw new HttpError(409, `Volume ${id} already exists`);
     return this.summary(header);
   }
 
+  /** Insert a new volume; false if one with its id already exists. */
   private async writeNew(header: VolumeHeader) {
-    await this.storage.writeJson(headerKey(header.id), header, null);
-    await this.storage.writeJson(indexKey(header.tenant, header.id), { id: header.id, name: header.name, createdAt: header.createdAt });
+    const { rowCount } = await this.db.query("insert into volumes (id, tenant, name, created_at, origin) values ($1, $2, $3, $4, $5) on conflict (id) do nothing",
+      [header.id, header.tenant, header.name, header.createdAt, header.origin ? JSON.stringify(header.origin) : null]);
+    return !!rowCount;
   }
 
   private summary(header: VolumeHeader, tree?: Tree, seq = 0) {
@@ -195,21 +205,26 @@ export class VolumeService {
   }
 
   async list(tenant: string) {
-    const keys = await this.storage.listJson(indexKey(tenant));
-    const entries = await Promise.all(keys.map(key => this.storage.readJson<{ id: string; name: string; createdAt: number }>(key)));
-    return entries.flatMap(entry => entry ? [entry.value] : []).sort((a, b) => a.createdAt - b.createdAt);
+    const { rows } = await this.db.query(`select id, name, created_at as "createdAt" from volumes where tenant = $1 and deleted_at is null order by created_at, id`, [tenant]);
+    return rows as { id: string; name: string; createdAt: number }[];
   }
 
   /** Whether `id` is one of `tenant`'s volumes (one read). */
   async owns(id: string, tenant: string) {
-    return validVolumeId(id) && !!await this.storage.readJson(indexKey(tenant, id));
+    return validVolumeId(id) && !!(await this.db.query("select 1 from volumes where id = $1 and tenant = $2 and deleted_at is null", [id, tenant])).rowCount;
+  }
+
+  private async readHeader(id: string): Promise<VolumeHeader | undefined> {
+    const row = (await this.db.query("select * from volumes where id = $1", [id])).rows[0];
+    return row && header(row);
   }
 
   /** The live owner of a volume when it is another node; undefined when this node can serve it. */
   async ownerElsewhere(id: string): Promise<string | undefined> {
-    if (!this.options.leases || this.loaded.has(id)) return undefined;
-    const lease = await this.options.leases.get(id);
-    return lease?.live && lease.owner !== this.node ? lease.owner : undefined;
+    const ownership = this.options.ownership;
+    if (!ownership || this.loaded.has(id)) return undefined;
+    const owner = await ownership.owner(id);
+    return owner !== ownership.node ? owner : undefined;
   }
 
   /** Run an owner operation here or on the owning node, following a moved volume a few times. */
@@ -240,23 +255,25 @@ export class VolumeService {
 
   private async read(id: string): Promise<Volume | undefined> {
     if (this.closed) throw new HttpError(503, "The runtime is stopping; retry");
-    if (!validVolumeId(id) || !(await this.storage.readJson<VolumeHeader>(headerKey(id)))) return undefined;
+    if (!validVolumeId(id) || !(await this.readHeader(id))) return undefined;
     // Take ownership before reading the log, so no other node appends meanwhile.
-    let lease: Lease | undefined;
-    if (this.options.leases) {
-      const acquired = await this.options.leases.acquire(id, this.node, this.leaseTtl);
-      if ("heldBy" in acquired) throw new NotOwner(acquired.heldBy.owner);
-      lease = acquired.lease;
+    const ownership = this.options.ownership;
+    let claim: Claim | undefined;
+    if (ownership) {
+      const acquired = await ownership.acquire(id);
+      if ("owner" in acquired) throw new NotOwner(acquired.owner);
+      claim = acquired.claim;
     }
     try {
-      const stored = await this.storage.readJson<VolumeHeader>(headerKey(id));
-      if (!stored || stored.value.deleted) { if (lease) await this.options.leases!.release(lease); return undefined; }
-      const volume: Volume = { header: stored.value, lease, tree: new Tree(), seq: 0, log: this.storage.log<TreeRecord>(treeKey(id)), queue: Promise.resolve(), active: 0, lastActive: Date.now(), changes: [], pending: [] };
+      const stored = await this.readHeader(id);
+      if (!stored || stored.deleted) { if (claim) await ownership!.release(claim); return undefined; }
+      const volume: Volume = { header: stored, claim, tree: new Tree(), seq: 0, log: this.storage.log<TreeRecord>(treeKey(id)), queue: Promise.resolve(), active: 0, lastActive: Date.now(), changes: [], pending: [] };
       for (const record of await volume.log.read()) this.apply(volume, record);
+      if (claim && !ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the volume; retry");
       this.loaded.set(id, volume);
       return volume;
     } catch (error) {
-      if (lease) await this.options.leases!.release(lease).catch(() => {});
+      if (claim) await ownership!.release(claim).catch(() => {});
       throw error;
     }
   }
@@ -361,10 +378,8 @@ export class VolumeService {
     return { seq: volume.seq, changes: volume.changes.filter(change => change.seq > since), ...(since < oldest - 1 && since < volume.seq ? { gap: true } : {}) };
   }
 
-  private async snapshots(id: string) {
-    const keys = await this.storage.listJson(snapshotKey(id));
-    const entries = await Promise.all(keys.map(key => this.storage.readJson<SnapshotSummary>(key)));
-    return entries.flatMap(entry => entry ? [entry.value] : []).sort((a, b) => a.createdAt - b.createdAt);
+  private async snapshots(id: string): Promise<SnapshotSummary[]> {
+    return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 order by created_at, id`, [id])).rows;
   }
 
   private check(volume: Volume, path: string, ifMatch: unknown) {
@@ -398,30 +413,32 @@ export class VolumeService {
       return { path, deleted: true, seq: change.seq };
     }
     if (op === "snapshot") {
-      if ((await this.storage.listJson(snapshotKey(id))).length >= VOLUME_LIMITS.snapshots) throw new HttpError(409, `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
+      if ((await this.db.query("select count(*) as count from volume_snapshots where volume = $1", [id])).rows[0].count >= VOLUME_LIMITS.snapshots) throw new HttpError(409, `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
       const name = args.name === undefined ? `seq ${volume.seq}` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
       // Metadata only: the snapshot shares every chunk with the volume.
       const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: volume.tree.files.size, bytes: volume.tree.bytes };
-      await this.storage.writeJson(snapshotFilesKey(id, snapshot.id), Object.fromEntries(volume.tree.files), null);
-      await this.storage.writeJson(snapshotKey(id, snapshot.id), snapshot, null);
+      // The file map can hold 100,000 entries, so it is a blob; the summary is a row.
+      await this.storage.writeBlob(snapshotFilesKey(id, snapshot.id), Buffer.from(JSON.stringify(Object.fromEntries(volume.tree.files))));
+      await this.db.query("insert into volume_snapshots (id, volume, name, seq, created_at, files, bytes) values ($1, $2, $3, $4, $5, $6, $7)",
+        [snapshot.id, id, snapshot.name, snapshot.seq, snapshot.createdAt, snapshot.files, snapshot.bytes]);
       return snapshot;
     }
     if (op === "deleteSnapshot") {
-      if (typeof args.snapshot !== "string" || !/^snap_[a-f0-9]{16}$/.test(args.snapshot) || !await this.storage.readJson(snapshotKey(id, args.snapshot))) throw new HttpError(404, "Unknown snapshot");
-      await this.storage.deleteJson(snapshotKey(id, args.snapshot));
-      await this.storage.deleteJson(snapshotFilesKey(id, args.snapshot));
+      // The file map stays in Storage, like chunks, until garbage collection exists.
+      if (typeof args.snapshot !== "string" || !(await this.db.query("delete from volume_snapshots where id = $1 and volume = $2", [args.snapshot, id])).rowCount) throw new HttpError(404, "Unknown snapshot");
       return { deleted: true };
     }
     if (op === "fork") {
       let files: [string, FileEntry][] = [...volume.tree.files];
       let seq = volume.seq;
       if (args.snapshot !== undefined) {
-        const summary = typeof args.snapshot === "string" && /^snap_[a-f0-9]{16}$/.test(args.snapshot) ? await this.storage.readJson<SnapshotSummary>(snapshotKey(id, args.snapshot)) : undefined;
-        const stored = summary && await this.storage.readJson<Record<string, FileEntry>>(snapshotFilesKey(id, args.snapshot));
+        const summary: SnapshotSummary | undefined = typeof args.snapshot === "string" && /^snap_[a-f0-9]{16}$/.test(args.snapshot)
+          ? (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where id = $1 and volume = $2`, [args.snapshot, id])).rows[0] : undefined;
+        const stored = summary && await this.storage.readBlob(snapshotFilesKey(id, summary.id));
         if (!summary || !stored) throw new HttpError(404, "Unknown snapshot");
-        files = Object.entries(stored.value);
-        seq = summary.value.seq;
+        files = Object.entries(JSON.parse(Buffer.from(stored).toString("utf8")) as Record<string, FileEntry>);
+        seq = summary.seq;
       }
       const name = args.name === undefined ? `${volume.header.name} (fork)` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
@@ -436,11 +453,9 @@ export class VolumeService {
       return this.summary(header, tree, seq);
     }
     if (op === "delete") {
-      const stored = await this.storage.readJson<VolumeHeader>(headerKey(id));
-      if (!stored) throw new HttpError(404, `Unknown volume ${id}`);
-      await this.storage.writeJson(headerKey(id), { ...stored.value, deleted: Date.now() }, stored.version);
-      await this.storage.deleteJson(indexKey(volume.header.tenant, id));
-      for (const key of [...await this.storage.listJson(snapshotKey(id)), ...await this.storage.listJson(`volumes/${id}/snapshot-files/`), ...await this.storage.listJson(watcherKey(id))]) await this.storage.deleteJson(key);
+      if (!(await this.db.query("update volumes set deleted_at = $2 where id = $1 and deleted_at is null", [id, Date.now()])).rowCount) throw new HttpError(404, `Unknown volume ${id}`);
+      await this.db.query("delete from volume_snapshots where volume = $1", [id]);
+      await this.db.query("delete from volume_watchers where volume = $1", [id]);
       volume.fault = new HttpError(404, `Unknown volume ${id}`);
       await this.unload(volume);
       return { deleted: true };
@@ -512,12 +527,8 @@ export class VolumeService {
   async mountsFor(tenant: string, agent: string, requested: unknown): Promise<Mount[]> {
     if (requested === undefined) {
       const id = VolumeService.workspaceOf(agent);
-      const existing = await this.storage.readJson<VolumeHeader>(headerKey(id));
-      if (existing && existing.value.tenant !== tenant) throw new HttpError(409, "Workspace volume belongs to another tenant");
-      if (!existing) {
-        try { await this.create(tenant, { name: "workspace" }, id); }
-        catch (error) { if (!(error instanceof PreconditionFailed)) throw error; }
-      }
+      await this.writeNew({ version: 1, id, tenant, name: "workspace", createdAt: Date.now() });
+      if ((await this.readHeader(id))?.tenant !== tenant) throw new HttpError(409, "Workspace volume belongs to another tenant");
       return [{ volumeId: id, path: "/workspace", mode: "rw" }];
     }
     if (!Array.isArray(requested) || requested.length > VOLUME_LIMITS.mounts) throw new HttpError(400, `mounts must be an array of at most ${VOLUME_LIMITS.mounts}`);
@@ -542,8 +553,10 @@ export class VolumeService {
     const volumes = new Set([...previous, ...next].map(mount => mount.volumeId));
     for (const volumeId of volumes) {
       const mounts = next.filter(mount => mount.volumeId === volumeId && mount.notify).map(mount => ({ path: mount.path, subpath: mount.subpath ?? "/" }));
-      if (mounts.length) await this.storage.writeJson(watcherKey(volumeId, agent), { agent, tenant, mounts } satisfies Watcher);
-      else if (previous.some(mount => mount.volumeId === volumeId && mount.notify)) await this.storage.deleteJson(watcherKey(volumeId, agent));
+      if (mounts.length) {
+        await this.db.query("insert into volume_watchers (volume, agent, tenant, mounts) values ($1, $2, $3, $4) on conflict (volume, agent) do update set tenant = excluded.tenant, mounts = excluded.mounts",
+          [volumeId, agent, tenant, JSON.stringify(mounts)]);
+      } else if (previous.some(mount => mount.volumeId === volumeId && mount.notify)) await this.db.query("delete from volume_watchers where volume = $1 and agent = $2", [volumeId, agent]);
     }
   }
 
@@ -560,9 +573,9 @@ export class VolumeService {
 
   private async notify(volume: Volume, changes: Change[]) {
     const id = volume.header.id;
-    for (const key of await this.storage.listJson(watcherKey(id))) {
-      const watcher = (await this.storage.readJson<Watcher>(key))?.value;
-      if (!watcher || watcher.tenant !== volume.header.tenant) continue;
+    const { rows } = await this.db.query("select agent, tenant, mounts from volume_watchers where volume = $1 order by agent", [id]);
+    for (const watcher of rows as Watcher[]) {
+      if (watcher.tenant !== volume.header.tenant) continue;
       // An agent is not woken by its own writes.
       const seen = changes.filter(change => change.by !== watcher.agent).flatMap(change => watcher.mounts
         .filter(mount => within(change.path, mount.subpath))
@@ -572,7 +585,7 @@ export class VolumeService {
       try { await this.options.deliver!(watcher.agent, watcher.tenant, { id: `volume-${id}-${changes[0].seq}-${changes.at(-1)!.seq}`, method: "prompt", params: { text } }); }
       catch (error) {
         const status = (error as { status?: number }).status;
-        if (status === 404 || status === 410) await this.storage.deleteJson(key);
+        if (status === 404 || status === 410) await this.db.query("delete from volume_watchers where volume = $1 and agent = $2", [id, watcher.agent]);
         else throw error;
       }
     }
@@ -589,20 +602,15 @@ export class VolumeService {
       await this.notify(volume, volume.pending.splice(0)).catch(() => {});
     }
     await volume.log.close().catch(() => {});
-    if (volume.lease) await this.options.leases!.release(volume.lease).catch(() => {});
+    if (volume.claim) await this.options.ownership!.release(volume.claim).catch(() => {});
   }
 
-  /** Renew leases (fencing volumes whose lease was lost) and unload idle volumes. */
+  /** Unload idle volumes. */
   private async tick() {
     const now = Date.now();
     for (const volume of [...this.loaded.values()]) {
       if (this.closed) return;
-      if (!volume.active && !volume.notifying && now - volume.lastActive >= this.idleMs) { await this.unload(volume); continue; }
-      if (!volume.lease) continue;
-      const renewed = await this.options.leases!.renew(volume.lease, this.leaseTtl).catch(() => undefined);
-      if (renewed) { volume.lease = renewed; continue; }
-      volume.fault = new HttpError(503, "This node lost ownership of the volume; retry");
-      if (this.loaded.get(volume.header.id) === volume) this.loaded.delete(volume.header.id);
+      if (!volume.active && !volume.notifying && now - volume.lastActive >= this.idleMs) await this.unload(volume);
     }
   }
 

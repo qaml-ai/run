@@ -13,6 +13,7 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY src ./src
 COPY shared ./shared
+COPY migrations ./migrations
 # Built on the host first (npm run build:console); served at /console/.
 COPY console/dist ./console/dist
 

@@ -9,8 +9,8 @@ import { errorText } from "./protocol.ts";
 import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
-import { postgresLeases, storageLeases, type LeaseStore } from "../shared/leases.ts";
-import type { Storage } from "../shared/storage.ts";
+import { databaseFromEnvironment, migrate } from "./db.ts";
+import { Ownership } from "./ownership.ts";
 import { DEFAULT_TENANT, Tenants } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
 import { ConsoleAuth } from "./console-auth.ts";
@@ -39,13 +39,17 @@ if (!Number.isInteger(maxAgents) || maxAgents < 1) throw new Error("AGENT_MAX_PR
 const maxProcessesPerTenant = Number(process.env.AGENT_MAX_PROCESSES_PER_TENANT ?? Math.max(1, Math.ceil(maxAgents / 2)));
 if (!Number.isInteger(maxProcessesPerTenant) || maxProcessesPerTenant < 1) throw new Error("AGENT_MAX_PROCESSES_PER_TENANT must be a positive integer");
 const port = Number(process.env.PORT ?? 8790);
-// Durable state: local files by default, or shared storage (S3) so any node can serve any agent.
+// Control plane: coordination and small mutable state in Postgres.
+const db = databaseFromEnvironment();
+await migrate(db);
+// Data plane: logs and blobs in local files by default, or shared storage (S3) so any node can serve any agent.
 const storageDescriptor = storageFromEnvironment(root);
 const storage = await openStorage(storageDescriptor);
 const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
-// How peers reach this node; it is also the lease owner name.
+// How peers reach this node; it is also the name its heartbeat and ownership rows carry.
 const node = (process.env.AGENT_NODE_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
-const leases = await leasesFromEnvironment(storage);
+const ownership = new Ownership(db, { node, ttlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000) });
+await ownership.start();
 const hosting = (process.env.AGENT_HOSTING ?? "process") as Hosting;
 if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
 // With AGENT_EXECUTOR_URL, js_exec runs on executor hosts that hold no credentials or agent state.
@@ -57,22 +61,6 @@ const executor = process.env.AGENT_EXECUTOR_URL ? {
 const callbackPort = Number(process.env.AGENT_EXECUTOR_CALLBACK_PORT ?? 8791);
 if (!Number.isInteger(callbackPort) || callbackPort < 1 || callbackPort > 65535) throw new Error("AGENT_EXECUTOR_CALLBACK_PORT must be a TCP port");
 const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: process.env.AGENT_RUNTIME, maxAgents, hosting, executor, ...(distributed ? { storage: storageDescriptor } : {}) });
-
-/** AGENT_LEASES: none | storage | postgres (AGENT_LEASES_POSTGRES_URL). Distributed storage defaults to storage leases. */
-async function leasesFromEnvironment(storage: Storage): Promise<LeaseStore | undefined> {
-  const kind = process.env.AGENT_LEASES ?? (distributed ? "storage" : "none");
-  if (kind === "none") {
-    if (distributed) throw new Error("Shared storage needs leases so two nodes never serve the same agent");
-    return undefined;
-  }
-  if (kind === "storage") return storageLeases(storage);
-  if (kind === "postgres") {
-    if (!process.env.AGENT_LEASES_POSTGRES_URL) throw new Error("AGENT_LEASES=postgres needs AGENT_LEASES_POSTGRES_URL");
-    const { default: pg } = await import("pg");
-    return postgresLeases(new pg.Pool({ connectionString: process.env.AGENT_LEASES_POSTGRES_URL, max: 10 }));
-  }
-  throw new Error(`Unknown AGENT_LEASES: ${kind}`);
-}
 const model = configuredModel();
 const toolTimeoutMs = Number(process.env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
 if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
@@ -82,7 +70,7 @@ if (!Number.isInteger(idleMs) || idleMs < 1000) throw new Error("AGENT_IDLE_MS m
 const allowedBaseUrls = (process.env.AGENT_ALLOWED_BASE_URLS ?? "").split(",").map(value => value.trim()).filter(Boolean);
 const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
 // Tenant-set provider keys are encrypted with AGENT_SECRETS_KEY; without it tenants cannot store keys.
-const accounts = new Accounts({ tenants, storage, secretsKey: process.env.AGENT_SECRETS_KEY, node });
+const accounts = new Accounts({ tenants, db, secretsKey: process.env.AGENT_SECRETS_KEY });
 const github = process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
   ? { clientId: process.env.GITHUB_CLIENT_ID, clientSecret: process.env.GITHUB_CLIENT_SECRET, org: process.env.GITHUB_ORG ?? "qaml-ai",
       webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL }
@@ -171,7 +159,7 @@ async function submitAnywhere(agent: string, tenant: string, request: { id: stri
 }
 
 const volumes = new VolumeService({
-  storage, leases, node, leaseTtlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000), idleMs,
+  db, storage, ownership, idleMs,
   // Volume operations on another node keep their status (and a conflict's current version).
   peer: async (owner, path, payload) => {
     const response = await signedPost(owner, path, payload, 30_000);
@@ -202,13 +190,13 @@ const clients = new ClientSessions(supervisor, {
   secret: sessionSecret, toolTimeoutMs, idleMs, maxProcessesPerTenant,
   apiKeyFor: (tenant, provider) => accounts.apiKey(tenant, provider),
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
-  storage, prefix: "client-sessions/", leases, node, leaseTtlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000), volumes,
+  db, storage, prefix: "client-sessions/", ownership, volumes,
   get scheduler() { return scheduler; },
   get hooks() { return channels.hooks; },
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({
-  storage, node,
+  db, node,
   deliver: async (schedule, requestId) => {
     const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code } } : { method: "prompt", params: { text: schedule.text! } };
     await submitAnywhere(schedule.agent, schedule.tenant, { id: requestId, ...request });
@@ -217,7 +205,7 @@ const scheduler = new Scheduler({
 scheduler.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 // Messaging channels: webhooks in, replies out through a durable queue any node can drain.
 const channels = new Channels({
-  storage, accounts, node, publicUrl,
+  db, accounts, node, publicUrl,
   providers: { telegram: telegram({ apiUrl: process.env.AGENT_TELEGRAM_API_URL }) },
   createAgent: (tenant, params, key) => createAgent(tenant, params, key) as Promise<{ id: string }>,
   live: (agent, tenant) => clients.owns(agent, tenant),
@@ -232,7 +220,7 @@ app.get("/healthz", c => c.json({ ok: true }));
 // One node serves each agent and volume; anything addressed to one another node holds goes there.
 // Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
 app.use(async (c, next) => {
-  const owner = leases && !c.req.header(FORWARDED) ? await ownerOf(c.env.incoming.url)?.catch(() => undefined) : undefined;
+  const owner = !c.req.header(FORWARDED) ? await ownerOf(c.env.incoming.url)?.catch(() => undefined) : undefined;
   if (!owner) return next();
   forward(c.env.incoming, c.env.outgoing, owner);
   return RESPONSE_ALREADY_SENT;
@@ -321,9 +309,6 @@ app.all("/agents/:id{[a-zA-Z0-9_-]{1,80}}/:action{prompt|execute|abort}?", async
 app.notFound(c => c.body(null, 404));
 app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", 400, { "Content-Type": "application/json" }));
 
-// One-time migrations of single-host data (both are no-ops once done).
-await clients.init();
-await accounts.init();
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
@@ -345,5 +330,6 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
   callbacks?.close();
   scheduler.stop();
   channels.stop();
-  void clients.close().then(() => supervisor.close()).then(() => volumes.close()).then(() => accounts.flushUsage()).catch(() => {}).then(() => process.exit(0));
+  void clients.close().then(() => supervisor.close()).then(() => volumes.close()).then(() => accounts.flushUsage())
+    .then(() => ownership.close()).catch(() => {}).then(() => db.end()).catch(() => {}).then(() => process.exit(0));
 });

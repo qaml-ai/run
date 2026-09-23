@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { checkProviderKey } from "../src/key-check.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
-import { fileStorage } from "../shared/storage.ts";
+import { testDatabase } from "./database.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const alice = "alice-operator-token-at-least-24-chars";
@@ -45,9 +45,10 @@ async function runtime(t: { after(fn: () => Promise<void>): void }, github?: str
     alice: { tokenSha256: sha(alice), apiKeys: {} },
     bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "bob-admin-anthropic-key" }, github: "Bob-Builder" },
   } }));
+  const { db, url } = await testDatabase();
   const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: {
-      PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, PORT: "0", HOST: "127.0.0.1",
+      PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: url, PORT: "0", HOST: "127.0.0.1",
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "api-test-session-secret-with-32-characters",
       AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), AGENT_VERIFY_KEYS: "false",
       ...(github ? { GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", GITHUB_ORG: "qaml-ai", AGENT_GITHUB_WEB_URL: github, AGENT_GITHUB_API_URL: github } : {}),
@@ -74,11 +75,11 @@ async function runtime(t: { after(fn: () => Promise<void>): void }, github?: str
     try { json = JSON.parse(text); } catch { /* not JSON */ }
     return { status: response.status, json, headers: response.headers };
   };
-  return { root, base, call };
+  return { root, db, base, call };
 }
 
 test("tenants set provider keys over REST; keys are encrypted at rest and never returned", async t => {
-  const { root, call } = await runtime(t);
+  const { db, call } = await runtime(t);
   assert.equal((await call("/v1/me")).status, 401);
   assert.deepEqual((await call("/v1/me", { token: alice })).json, { tenant: "alice", via: "operator", canStoreKeys: true });
   const providers = (await call("/v1/providers", { token: alice })).json as any[];
@@ -95,7 +96,8 @@ test("tenants set provider keys over REST; keys are encrypted at rest and never 
   const status = (await call("/v1/providers", { token: alice })).json.find((provider: any) => provider.id === "anthropic").key;
   assert.equal(status.source, "tenant");
   assert.equal(status.last4, "1234");
-  const stored = await readFile(join(root, "tenants", "alice", "keys.json"), "utf8");
+  const stored = JSON.stringify((await db.query("select * from provider_keys where tenant = 'alice'")).rows);
+  assert.match(stored, /"last4":"1234"/);
   assert.equal(stored.includes("sk-ant-alice-secret"), false);
   for (const path of ["/v1/providers", "/v1/me", "/v1/models?provider=anthropic"]) assert.equal(JSON.stringify((await call(path, { token: alice })).json).includes("sk-ant-alice"), false);
 
@@ -245,12 +247,11 @@ test("key checks treat only 401/403 as invalid and send each API's auth header",
   assert.equal((await checkProviderKey("openai", "k4", (async () => { throw new Error("offline"); }) as typeof fetch)).status, "unverified");
 });
 
-test("usage is recorded per response and summed per day and model across nodes", async t => {
-  const root = await mkdtemp(join(tmpdir(), "agent-usage-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+test("usage is recorded per response and summed per day and model across nodes", async () => {
+  const { db } = await testDatabase();
   const tenants = new Tenants({ legacyToken: "legacy-token-with-24-characters" });
-  const nodeA = new Accounts({ tenants, storage: fileStorage(root), node: "http://10.0.0.1:8790" });
-  const nodeB = new Accounts({ tenants, storage: fileStorage(root), node: "http://10.0.0.2:8790" });
+  const nodeA = new Accounts({ tenants, db });
+  const nodeB = new Accounts({ tenants, db });
   const message = (at: number, input: number) => ({ provider: "anthropic", model: "claude-sonnet-5", timestamp: at, usage: { input, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } });
   nodeA.recordUsage("alice", "agent-1", message(Date.UTC(2026, 8, 1, 10), 100));
   nodeB.recordUsage("alice", "agent-2", message(Date.UTC(2026, 8, 1, 18), 50));

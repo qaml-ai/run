@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 const root = await mkdtemp(join(tmpdir(), "camelai-client-demos-"));
 const token = randomBytes(32).toString("hex");
 const runtimeArgs = process.versions.bun ? [] : ["--experimental-strip-types"];
-const env = { PATH: process.env.PATH, HOME: root, AGENT_RUNTIME_TOKEN: token, AGENT_DATA_DIR: root, AGENT_CLIENT_STATE_DIR: join(root, "sdk"), PORT: "0", AGENT_RUNTIME: process.env.AGENT_RUNTIME };
+const env = { PATH: process.env.PATH, HOME: root, AGENT_RUNTIME_TOKEN: token, AGENT_DATABASE_URL: process.env.AGENT_DATABASE_URL, AGENT_DATA_DIR: root, AGENT_CLIENT_STATE_DIR: join(root, "sdk"), PORT: "0", AGENT_RUNTIME: process.env.AGENT_RUNTIME };
 const server = spawn(process.execPath, [...runtimeArgs, fileURLToPath(new URL("../src/server.ts", import.meta.url))], { env, stdio: ["ignore", "pipe", "inherit"] });
 const clients = new Set<ChildProcess>();
 async function run(command: string, args: string[], base: string) {

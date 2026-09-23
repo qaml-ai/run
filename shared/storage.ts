@@ -1,31 +1,19 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, rename, rm, stat, unlink } from "node:fs/promises";
-import { setTimeout as sleep } from "node:timers/promises";
-import { join, relative, sep } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { fileAppendLog, type AppendLog } from "./append-log.ts";
-import { writeDurableJson } from "./durable-json.ts";
 
 /**
- * Where the runtime keeps durable state: JSON documents with optimistic
- * concurrency, and append-only logs. Keys are slash-separated paths without
- * extensions, e.g. "client-sessions/client_ab12" or "sessions/client_ab12/transcript".
+ * The data plane: bulk state that is appended or written once. Coordination and
+ * small mutable metadata are in Postgres (see src/db.ts). Keys are slash-separated
+ * paths without extensions, e.g. "sessions/client_ab12/transcript".
  *
- * - `fileStorage` keeps the single-host layout (`<key>.json`, `<key>.jsonl`).
+ * - `fileStorage` keeps the single-host layout (`<key>.jsonl`, `<key>.bin`).
  * - `s3Storage` makes state independent of any host: a log is a series of
  *   segment objects created with If-None-Match, so two writers can never both
  *   append the same segment; the loser is fenced out.
  */
 export interface Storage {
-  readJson<T>(key: string): Promise<{ value: T; version: string } | undefined>;
-  /**
-   * Write a document. `expected` makes it conditional: a version from `readJson`
-   * (must be unchanged) or `null` (must not exist). A failed condition throws
-   * `PreconditionFailed`.
-   */
-  writeJson(key: string, value: unknown, expected?: string | null): Promise<string>;
-  deleteJson(key: string): Promise<void>;
-  /** Document keys starting with `prefix`. */
-  listJson(prefix: string): Promise<string[]>;
   log<T>(key: string): AppendLog<T>;
   /** True if a log has any records (without reading it). */
   hasLog(key: string): Promise<boolean>;
@@ -38,76 +26,23 @@ export class PreconditionFailed extends Error {
   constructor(key: string) { super(`Conditional write lost for ${key}: another writer changed it`); this.name = "PreconditionFailed"; }
 }
 
-const versionOf = (text: string) => createHash("sha256").update(text).digest("hex");
 export const validKey = (key: string) => {
   if (!/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/.test(key) || key.split("/").some(part => part === "." || part === "..")) throw new Error(`Invalid storage key: ${key}`);
   return key;
 };
 
-/** Serialize conditional writes per key within this process (the file backend has one writer host). */
-function keyedMutex() {
-  const chains = new Map<string, Promise<unknown>>();
-  return <T>(key: string, work: () => Promise<T>) => {
-    const next = (chains.get(key) ?? Promise.resolve()).then(work, work);
-    const settled = next.catch(() => {});
-    chains.set(key, settled);
-    void settled.then(() => { if (chains.get(key) === settled) chains.delete(key); });
-    return next;
-  };
-}
-
 /**
  * Files under `root`. By default one process owns the directory (the single-host
  * layout). With `shared`, several processes (or hosts on a shared filesystem) can
- * use it safely: logs become exclusive-create segment files, and conditional
- * document writes hold a lock file.
+ * append to the same logs safely: logs become exclusive-create segment files.
  */
 export function fileStorage(root: string, options: { shared?: boolean } = {}): Storage {
-  const inProcess = keyedMutex();
-  const lock = options.shared ? <T>(key: string, work: () => Promise<T>) => inProcess(key, () => withLockFile(path(key, ".json.lock"), work)) : inProcess;
   const path = (key: string, extension: string) => join(root, `${validKey(key)}${extension}`);
   const read = async (file: string) => {
     try { return await readFile(file, "utf8"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   };
   return {
-    async readJson(key) {
-      const text = await read(path(key, ".json"));
-      return text === undefined ? undefined : { value: JSON.parse(text), version: versionOf(text) };
-    },
-    writeJson(key, value, expected) {
-      return lock(key, async () => {
-        const file = path(key, ".json");
-        if (expected !== undefined) {
-          const current = await read(file);
-          if (expected === null ? current !== undefined : current === undefined || versionOf(current) !== expected) throw new PreconditionFailed(key);
-        }
-        const text = JSON.stringify(value);
-        writeDurableJson(file, value);
-        return versionOf(text);
-      });
-    },
-    async deleteJson(key) { await rm(path(key, ".json"), { force: true }); },
-    async listJson(prefix) {
-      // Walk only the directory the prefix points into; keys may continue below it.
-      const directory = prefix.includes("/") ? validKey(prefix.slice(0, prefix.lastIndexOf("/"))) : "";
-      const found: string[] = [];
-      const walk = async (directory: string) => {
-        let entries;
-        try { entries = await readdir(directory, { withFileTypes: true }); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-        for (const entry of entries) {
-          const full = join(directory, entry.name);
-          if (entry.isDirectory()) await walk(full);
-          else if (entry.name.endsWith(".json")) {
-            const key = relative(root, full).split(sep).join("/").slice(0, -".json".length);
-            if (key.startsWith(prefix)) found.push(key);
-          }
-        }
-      };
-      await walk(join(root, directory));
-      return found.sort();
-    },
     log: key => options.shared ? segmentLog(fileSegments(path(key, ".log")), key) : fileAppendLog(path(key, ".jsonl")),
     async hasLog(key) {
       if (!options.shared) return !!(await read(path(key, ".jsonl")));
@@ -129,18 +64,6 @@ export function fileStorage(root: string, options: { shared?: boolean } = {}): S
       await rename(temporary, file);
     },
   };
-}
-
-async function withLockFile<T>(lockPath: string, work: () => Promise<T>): Promise<T> {
-  await mkdir(join(lockPath, ".."), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; ; attempt++) {
-    try { await (await open(lockPath, "wx", 0o600)).close(); break; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 400) throw error;
-      await sleep(5);
-    }
-  }
-  try { return await work(); } finally { await unlink(lockPath).catch(() => {}); }
 }
 
 function fileSegments(directory: string): SegmentStore {
@@ -167,25 +90,11 @@ function fileSegments(directory: string): SegmentStore {
 }
 
 /** In-process storage for tests. */
-export function memoryStorage(): Storage & { documents: Map<string, string>; logs: Map<string, Map<string, string>>; blobs: Map<string, Uint8Array> } {
-  const documents = new Map<string, string>();
+export function memoryStorage(): Storage & { logs: Map<string, Map<string, string>>; blobs: Map<string, Uint8Array> } {
   const logs = new Map<string, Map<string, string>>();
   const blobs = new Map<string, Uint8Array>();
   return {
-    documents, logs, blobs,
-    async readJson(key) {
-      const text = documents.get(validKey(key));
-      return text === undefined ? undefined : { value: JSON.parse(text), version: versionOf(text) };
-    },
-    async writeJson(key, value, expected) {
-      const current = documents.get(validKey(key));
-      if (expected === null ? current !== undefined : expected !== undefined && (current === undefined || versionOf(current) !== expected)) throw new PreconditionFailed(key);
-      const text = JSON.stringify(value);
-      documents.set(key, text);
-      return versionOf(text);
-    },
-    async deleteJson(key) { documents.delete(key); },
-    async listJson(prefix) { return [...documents.keys()].filter(key => key.startsWith(prefix)).sort(); },
+    logs, blobs,
     log<T>(key: string) { return segmentLog<T>(memorySegments(logs, validKey(key)), key); },
     async hasLog(key) { return (logs.get(key)?.size ?? 0) > 0; },
     async readBlob(key) { const data = blobs.get(validKey(key)); return data && Uint8Array.from(data); },

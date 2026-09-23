@@ -14,13 +14,15 @@ import { FRAME_BYTES } from "../shared/client-protocol.ts";
 import { configuredModel } from "../src/model.ts";
 import { AgentClient, AgentRuntime, tool, schema, type AgentOptions, type RuntimeOptions, type Tool } from "../clients/node.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { testDatabase } from "./database.ts";
 
 const token = "fixture-operator-secret-32-characters";
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number; ttlMs?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), "camelai-sse-test-"));
+  const { db } = await testDatabase();
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, maxAgents: options.maxAgents });
-  let sessions = new ClientSessions(supervisor, { root: join(root, "sessions"), secret: token, apiKey: "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxProcessesPerTenant: options.perTenant, ttlMs: options.ttlMs });
+  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKey: "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxProcessesPerTenant: options.perTenant, ttlMs: options.ttlMs });
   let model = configuredModel();
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
@@ -55,12 +57,13 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
   }
   return {
     root, supervisor, url, runtimeOptions, start, post, clients,
+    header: async (id: string) => (await db.query("select header from agents where id = $1", [id])).rows[0]?.header,
     get sessions() { return sessions; },
     setModel(chosen: Model<Api>) { model = chosen; },
     async restartHost() {
       await sessions.close();
       await supervisor.close();
-      sessions = new ClientSessions(supervisor, { root: join(root, "sessions"), secret: token, apiKey: "fixture-only" });
+      sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKey: "fixture-only" });
     },
   };
 }
@@ -241,8 +244,7 @@ test("SDK system prompts are agent-scoped and persisted across host restarts", a
   const systemPrompt = "You are the release reviewer. Answer concisely.";
   const agent = await runtime.createAgent({ tools: {}, systemPrompt, name: "September release", type: "release-reviewer" });
   f.clients.push(agent);
-  const path = join(f.root, "sessions", `${agent.session.id}.json`);
-  assert.equal(JSON.parse(await readFile(path, "utf8")).config.systemPrompt, systemPrompt);
+  assert.equal((await f.header(agent.session.id)).config.systemPrompt, systemPrompt);
   await agent.setMetadata({ name: "October release", type: "release-reviewer" });
   await agent.close();
   await f.restartHost();
@@ -252,8 +254,8 @@ test("SDK system prompts are agent-scoped and persisted across host restarts", a
   assert.deepEqual(await resumed.status(), { running: false });
   await resumed.execute("return 1");
   assert.ok((await resumed.status()).pid);
-  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).metadata, { name: "October release", type: "release-reviewer" });
-  assert.equal(JSON.parse(await readFile(path, "utf8")).config.systemPrompt, systemPrompt);
+  assert.deepEqual((await f.header(agent.session.id)).metadata, { name: "October release", type: "release-reviewer" });
+  assert.equal((await f.header(agent.session.id)).config.systemPrompt, systemPrompt);
 });
 
 test("streamed events are not journaled: only request and tool state reach the session log", async t => {
@@ -263,7 +265,7 @@ test("streamed events are not journaled: only request and tool state reach the s
   const journal = (await readFile(join(f.root, "sessions", `${agent.session.id}.journal.jsonl`), "utf8")).trim().split("\n").map(line => JSON.parse(line));
   assert.ok(journal.length <= 6, `journal has ${journal.length} records`);
   assert.deepEqual([...new Set(journal.map((record: any) => record.t))].sort(), ["call", "request"]);
-  const header = JSON.parse(await readFile(join(f.root, "sessions", `${agent.session.id}.json`), "utf8"));
+  const header = await f.header(agent.session.id);
   assert.equal(header.version, 3);
   assert.equal("events" in header, false);
 });

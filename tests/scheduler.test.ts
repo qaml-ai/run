@@ -1,16 +1,20 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { memoryStorage } from "../shared/storage.ts";
+import pg from "pg";
 import { Scheduler, scheduleInput, type Schedule } from "../src/scheduler.ts";
+import { testDatabase } from "./database.ts";
 
-function nodes(count: number, deliver: (node: string, schedule: Schedule, requestId: string) => Promise<void> | void) {
-  const storage = memoryStorage();
-  return { storage, schedulers: Array.from({ length: count }, (_, index) => new Scheduler({ storage, node: `node-${index}`, deliver: async (schedule, requestId) => deliver(`node-${index}`, schedule, requestId) })) };
+/** Schedulers on separate pools, as separate nodes would be. */
+async function nodes(count: number, deliver: (node: string, schedule: Schedule, requestId: string) => Promise<void> | void) {
+  const { db, url } = await testDatabase();
+  const pools = Array.from({ length: count }, () => new pg.Pool({ connectionString: url, max: 2 }));
+  after(() => Promise.all(pools.map(pool => pool.end())));
+  return { db, schedulers: pools.map((pool, index) => new Scheduler({ db: pool, node: `node-${index}`, deliver: async (schedule, requestId) => deliver(`node-${index}`, schedule, requestId) })) };
 }
 
 test("a due wake-up is delivered exactly once even when every node scans at the same moment", async () => {
   const deliveries: [string, string][] = [];
-  const { schedulers } = nodes(3, (node, _schedule, requestId) => { deliveries.push([node, requestId]); });
+  const { schedulers } = await nodes(3, (node, _schedule, requestId) => { deliveries.push([node, requestId]); });
   const now = Date.now();
   const created = await schedulers[0].create({ agent: "client_a", tenant: "alice", text: "Check the queue", dueAt: now - 10 });
   await Promise.all(schedulers.map(scheduler => scheduler.scan(now)));
@@ -21,9 +25,37 @@ test("a due wake-up is delivered exactly once even when every node scans at the 
   assert.equal(deliveries.length, 1);
 });
 
+test("many due wake-ups are each delivered once when three nodes scan concurrently and repeatedly", async () => {
+  const deliveries: string[] = [];
+  const { schedulers } = await nodes(3, async (_node, _schedule, requestId) => { await new Promise(resolve => setTimeout(resolve, Math.random() * 5)); deliveries.push(requestId); });
+  const now = Date.now();
+  const created = await Promise.all(Array.from({ length: 150 }, (_, index) => schedulers[index % 3].create({ agent: `client_${index % 7}`, tenant: "alice", text: `wake ${index}`, dueAt: now - index })));
+  for (let round = 0; round < 3; round++) await Promise.all(schedulers.map(scheduler => scheduler.scan(now)));
+  assert.equal(deliveries.length, 150);
+  assert.deepEqual(new Set(deliveries), new Set(created.map(schedule => `schedule-${schedule.id}-${schedule.dueAt}`)));
+});
+
+test("a wake-up claimed by a node that died is delivered by another once the claim lapses, with the same request id", async () => {
+  const deliveries: [string, string][] = [];
+  let crash = true;
+  const { db, schedulers: [dying, survivor] } = await nodes(2, (node, _schedule, requestId) => {
+    if (node === "node-0" && crash) throw new Error("killed mid-delivery");
+    deliveries.push([node, requestId]);
+  });
+  const created = await dying.create({ agent: "client_e", tenant: "alice", text: "once", dueAt: Date.now() - 1 });
+  await assert.rejects(dying.scan(), /killed/);
+  crash = false;
+  await survivor.scan();
+  assert.deepEqual(deliveries, [], "the claim still holds");
+  await db.query("update schedules set claimed_until = now() - interval '1 second'");
+  await survivor.scan();
+  assert.deepEqual(deliveries, [["node-1", `schedule-${created.id}-${created.dueAt}`]]);
+  assert.deepEqual(await survivor.list("client_e"), []);
+});
+
 test("repeating wake-ups move to their next occurrence, skipping ones missed while nothing ran", async () => {
   const deliveries: string[] = [];
-  const { schedulers: [scheduler] } = nodes(1, (_node, _schedule, requestId) => { deliveries.push(requestId); });
+  const { schedulers: [scheduler] } = await nodes(1, (_node, _schedule, requestId) => { deliveries.push(requestId); });
   const start = Date.now() - 3 * 60_000;
   const created = await scheduler.create({ agent: "client_b", tenant: "alice", code: "return 1", dueAt: start, everySeconds: 60 });
   await scheduler.scan(Date.now());
@@ -39,11 +71,11 @@ test("repeating wake-ups move to their next occurrence, skipping ones missed whi
 test("a deleted agent's wake-ups are dropped; other delivery failures are retried", async () => {
   let failure: { status?: number } = { status: 404 };
   let attempts = 0;
-  const { storage, schedulers: [scheduler] } = nodes(1, () => { attempts++; throw Object.assign(new Error("failed"), failure); });
+  const { db, schedulers: [scheduler] } = await nodes(1, () => { attempts++; throw Object.assign(new Error("failed"), failure); });
   await scheduler.create({ agent: "client_c", tenant: "alice", text: "gone", dueAt: Date.now() - 1 });
   await scheduler.scan();
   assert.deepEqual(await scheduler.list("client_c"), []);
-  assert.deepEqual(await storage.listJson("timers/"), []);
+  assert.equal((await db.query("select count(*) as count from schedules")).rows[0].count, 0);
   failure = { status: 503 };
   await scheduler.create({ agent: "client_d", tenant: "alice", text: "retry me", dueAt: Date.now() - 1 });
   await assert.rejects(scheduler.scan(), /failed/);

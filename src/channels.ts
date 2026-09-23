@@ -9,24 +9,25 @@ import { resolveModel } from "./session-config.ts";
 import { validateDefinitions } from "./tool-policy.ts";
 import { HttpError, readText } from "./http.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
-import { PreconditionFailed, type Storage } from "../shared/storage.ts";
+import { PreconditionFailed } from "../shared/storage.ts";
+import { transaction, type Db } from "./db.ts";
 
 /**
  * Channels let people talk to agents through messaging services. Each external
  * conversation gets its own agent, created on first contact from the channel's
  * template; a message becomes a prompt, and the turn's reply goes back the same way.
- * Everything is in shared storage, so any node can take a webhook or send a reply:
+ * Everything is in Postgres, so any node can take a webhook or send a reply:
  *
- *   channels/<id>                         the channel: template, access, limits, sealed credentials
- *   channel-index/<tenant>/<id>           a tenant's channels
- *   channel-conversations/<id>/<conv>     the agent answering one external conversation
- *   channel-agents/<agent>                the conversation an agent answers
- *   channel-items/<item>                  live work: an inbound message until its reply is sent, or an outbound message
- *   channel-seen/<id>/<hash>              inbound messages already handled, so provider retries are dropped
- *   channel-counts/<id>/<window>/<who>    rate-limit and daily-turn counters
+ *   channels                the channel: template, access, limits, sealed credentials
+ *   channel_conversations   the agent answering one external conversation
+ *   channel_agents          the conversation an agent answers
+ *   channel_items           live work: an inbound message until its reply is sent, or an outbound message
+ *   channel_seen            inbound messages already recorded, so provider retries are dropped
+ *   channel_counts          rate-limit and daily-turn counters
  *
- * Items move received → submitted → sending by conditional writes, and whoever
- * holds an item's claim is the only node advancing it, so a reply is sent once.
+ * Items move received → submitted → sending by writes conditional on their
+ * revision, and whoever holds an item's claim is the only node advancing it, so a
+ * reply is sent once.
  */
 export interface Sender { id: string; username?: string; name?: string }
 export interface Inbound {
@@ -82,11 +83,12 @@ type Item = {
   state: "received" | "submitted" | "sending";
   /** Not before this time: the next retry or re-check. */
   due: number;
-  claim?: { node: string; until: number };
   inbound?: Inbound;
   agent?: string; prompt?: { text: string; images?: ImageContent[] };
   text?: string; sent?: number; attempts?: number;
 };
+/** An item as last written; the next write is conditional on its revision. */
+type Held = { item: Item; revision: number };
 
 export const SEND_MESSAGE: ToolDefinition = {
   name: "send_message",
@@ -101,14 +103,17 @@ const FAILED_REPLY = "Sorry, something went wrong while answering. Please try ag
 const CLAIM_MS = 60_000;
 /** How often a submitted message's turn is checked when its end was not observed (a crash). */
 const RECHECK_MS = 60_000;
+const CLAIM_BATCH = 100;
+/** Provider retries come within minutes; seen markers and counters are pruned after this. */
+const SEEN_DAYS = 7;
+const PRUNE_EVERY_MS = 60 * 60_000;
 const MAX_ATTEMPTS = 8;
 const MAX_REPLY = 32_000;
 const TYPING_MS = 4_000;
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
-const itemKey = (id: string) => `channel-items/${id}`;
+const held = (row: any): Held => ({ item: { ...row.item, due: row.due }, revision: row.revision });
 const validConversation = (value: string) => /^[A-Za-z0-9_.-]{1,64}$/.test(value);
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Split text for a service's message limit, at a line or word break when one is near. */
 export function chunks(text: string, max: number): string[] {
@@ -126,7 +131,7 @@ export function chunks(text: string, max: number): string[] {
 }
 
 export interface ChannelsOptions {
-  storage: Storage; accounts: Accounts; node: string; publicUrl: string;
+  db: Db; accounts: Accounts; node: string; publicUrl: string;
   providers: Record<string, ChannelProvider>;
   createAgent(tenant: string, params: any, key: string): Promise<{ id: string }>;
   /** Whether the agent still exists and is the tenant's. */
@@ -137,16 +142,17 @@ export interface ChannelsOptions {
 }
 
 export class Channels {
-  readonly storage: Storage;
+  readonly db: Db;
   private readonly options: ChannelsOptions;
   private readonly bindings = new Map<string, Promise<Binding | undefined>>();
   private readonly typing = new Map<string, ReturnType<typeof setInterval>>();
   private timer?: ReturnType<typeof setInterval>;
   private scanning = false;
+  private prunedAt = 0;
 
   constructor(options: ChannelsOptions) {
     this.options = options;
-    this.storage = options.storage;
+    this.db = options.db;
   }
 
   start(intervalMs = 5_000) {
@@ -169,7 +175,7 @@ export class Channels {
   }
   private async read(id: string) {
     if (!/^ch_[a-f0-9]{20}$/.test(id)) return undefined;
-    return (await this.storage.readJson<Channel>(`channels/${id}`))?.value;
+    return (await this.db.query("select channel from channels where id = $1", [id])).rows[0]?.channel as Channel | undefined;
   }
   private async owned(tenant: string, id: string) {
     const channel = await this.read(id);
@@ -183,9 +189,8 @@ export class Channels {
   view({ sealed: _sealed, masked, ...channel }: Channel) { return { ...channel, credentials: masked }; }
 
   async list(tenant: string) {
-    const keys = await this.storage.listJson(`channel-index/${tenant}/`);
-    const channels = await Promise.all(keys.map(key => this.read(key.slice(key.lastIndexOf("/") + 1))));
-    return channels.filter((channel): channel is Channel => !!channel && channel.tenant === tenant).sort((a, b) => a.createdAt - b.createdAt).map(channel => this.view(channel));
+    const { rows } = await this.db.query("select channel from channels where tenant = $1 order by created_at, id", [tenant]);
+    return rows.map(row => this.view(row.channel));
   }
   async get(tenant: string, id: string) { return this.view(await this.owned(tenant, id)); }
 
@@ -206,8 +211,7 @@ export class Channels {
       ...(settings.greeting ? { greeting: settings.greeting } : {}), account, masked,
       sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials: input.credentials, secret })), createdAt: now, updatedAt: now,
     };
-    await this.storage.writeJson(`channels/${id}`, channel, null);
-    await this.storage.writeJson(`channel-index/${tenant}/${id}`, {});
+    await this.db.query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]);
     return this.view(channel);
   }
 
@@ -230,7 +234,7 @@ export class Channels {
       // A different bot keeps its webhook pointed here otherwise.
       if (next.account.id !== channel.account.id) await provider.teardown(old).catch(() => {});
     }
-    await this.storage.writeJson(`channels/${id}`, next);
+    await this.db.query("update channels set channel = $2 where id = $1", [id, JSON.stringify(next)]);
     return this.view(next);
   }
 
@@ -238,8 +242,7 @@ export class Channels {
     const channel = await this.owned(tenant, id);
     try { await this.provider(channel.type).teardown(this.secrets(channel).credentials); }
     catch (error) { console.error(JSON.stringify({ type: "channel_teardown_failed", channel: id, error: errorText(error) })); }
-    await this.storage.deleteJson(`channels/${id}`);
-    await this.storage.deleteJson(`channel-index/${tenant}/${id}`);
+    await this.db.query("delete from channels where id = $1 and tenant = $2", [id, tenant]);
   }
 
   private settings(input: ChannelInput) {
@@ -268,7 +271,7 @@ export class Channels {
     // Anything the channel does not handle, or from someone not allowed, is acknowledged and dropped.
     if (!inbound || !validConversation(inbound.conversationId) || !this.allowed(channel, inbound.sender)) return c.body(null, 200);
     const recorded = await this.record(channel, inbound);
-    if (recorded) void this.advance(recorded.item, recorded.version).catch(error => this.failed(recorded.item, error));
+    if (recorded) void this.advance(recorded).catch(error => this.failed(recorded.item, error));
     return c.body(null, 200);
   });
 
@@ -281,23 +284,27 @@ export class Channels {
     });
   }
 
-  private seenKey(channel: string, messageId: string) { return `channel-seen/${channel}/${sha(messageId).slice(0, 40)}`; }
-
-  /** Durably record a message before acknowledging it; false for one already recorded. */
-  private async record(channel: Channel, inbound: Inbound) {
-    const seen = this.seenKey(channel.id, inbound.messageId);
-    if (await this.storage.readJson(seen)) return undefined;
+  /** Durably record a message before acknowledging it, claimed by this node; undefined for one already recorded. */
+  private record(channel: Channel, inbound: Inbound) {
     const now = Date.now();
     const item: Item = {
       id: `in_${sha(`${channel.id}:${inbound.messageId}`).slice(0, 40)}`, channel: channel.id, tenant: channel.tenant, conversationId: inbound.conversationId,
-      createdAt: now, state: "received", due: now, claim: { node: this.options.node, until: now + CLAIM_MS }, inbound,
+      createdAt: now, state: "received", due: now, inbound,
     };
-    let version: string;
-    try { version = await this.storage.writeJson(itemKey(item.id), item, null); }
-    catch (error) { if (error instanceof PreconditionFailed) return undefined; throw error; }
-    // The first copy may have finished between the check above and the create.
-    if (await this.storage.readJson(seen)) { await this.storage.deleteJson(itemKey(item.id)); return undefined; }
-    return { item, version };
+    // The seen marker and the item commit together, so a retried delivery finds one or the other.
+    return transaction(this.db, async sql => {
+      const seen = await sql.query("insert into channel_seen (channel, message) values ($1, $2) on conflict do nothing", [channel.id, sha(inbound.messageId).slice(0, 40)]);
+      if (!seen.rowCount) return undefined;
+      return this.insert(sql, item);
+    });
+  }
+
+  private async insert(sql: Pick<Db, "query">, item: Item): Promise<Held | undefined> {
+    const { due, ...stored } = item;
+    const { rows } = await sql.query(`
+      insert into channel_items (id, item, due, claimed_by, claimed_until) values ($1, $2, $3, $4, now() + $5 * interval '1 millisecond')
+      on conflict (id) do nothing returning revision`, [item.id, JSON.stringify(stored), due, this.options.node, CLAIM_MS]);
+    return rows[0] && { item, revision: rows[0].revision };
   }
 
   // Work items ------------------------------------------------------------------
@@ -307,65 +314,84 @@ export class Channels {
     if (this.scanning) return;
     this.scanning = true;
     try {
-      for (const key of await this.storage.listJson("channel-items/")) {
-        const claimed = await this.claim(key, now).catch(error => { console.error(JSON.stringify({ type: "channel_claim_failed", key, error: errorText(error) })); return undefined; });
-        if (claimed) await this.advance(claimed.item, claimed.version).catch(error => this.failed(claimed.item, error));
+      await this.prune();
+      for (let batch; (batch = await this.claim(now)).length;) {
+        for (const claimed of batch) await this.advance(claimed).catch(error => this.failed(claimed.item, error));
+        if (batch.length < CLAIM_BATCH) break;
       }
     } finally { this.scanning = false; }
   }
 
-  private async claim(key: string, now = Date.now()) {
-    const stored = await this.storage.readJson<Item>(key);
-    if (!stored) return undefined;
-    const item = stored.value;
-    if (item.due > now || (item.claim && item.claim.until > now)) return undefined;
-    const claimed = { ...item, claim: { node: this.options.node, until: Date.now() + CLAIM_MS } };
-    try { return { item: claimed, version: await this.storage.writeJson(key, claimed, stored.version) }; }
-    catch (error) { if (error instanceof PreconditionFailed) return undefined; throw error; }
+  private async claim(now: number): Promise<Held[]> {
+    const { rows } = await this.db.query(`
+      update channel_items set claimed_by = $2, claimed_until = now() + $3 * interval '1 millisecond', revision = revision + 1
+      where id in (
+        select id from channel_items where due <= $1 and (claimed_until is null or claimed_until <= now())
+        order by due limit ${CLAIM_BATCH} for update skip locked)
+      returning item, due, revision`, [now, this.options.node, CLAIM_MS]);
+    return rows.map(held);
   }
 
-  /** Write the next state of an item this node holds; the version check fences out anyone who retook it. */
-  private async save(item: Item, version: string, changes: Partial<Item>) {
+  /** Forget seen markers and counters once no retry or window can need them. */
+  private async prune() {
+    if (Date.now() - this.prunedAt < PRUNE_EVERY_MS) return;
+    this.prunedAt = Date.now();
+    await this.db.query(`delete from channel_seen where seen_at < now() - interval '${SEEN_DAYS} days'`);
+    await this.db.query("delete from channel_counts where created_at < now() - interval '2 days'");
+  }
+
+  /**
+   * Write the next state of an item this node holds; the revision check fences out
+   * anyone who retook it. `claim` true extends this node's claim, false releases it.
+   */
+  private async save({ item, revision }: Held, changes: Partial<Item>, claim?: boolean): Promise<Held> {
     const next = { ...item, ...changes };
     for (const key of Object.keys(changes) as (keyof Item)[]) if (changes[key] === undefined) delete next[key];
-    return { item: next, version: await this.storage.writeJson(itemKey(item.id), next, version) };
+    const { due, ...stored } = next;
+    const { rows } = await this.db.query(`
+      update channel_items set item = $3, due = $4, revision = revision + 1,
+        claimed_by = case when $5::boolean is null then claimed_by when $5 then $6 end,
+        claimed_until = case when $5::boolean is null then claimed_until when $5 then now() + $7 * interval '1 millisecond' end
+      where id = $1 and revision = $2 returning revision`, [item.id, revision, JSON.stringify(stored), due, claim ?? null, this.options.node, CLAIM_MS]);
+    if (!rows[0]) throw new PreconditionFailed(`channel item ${item.id}`);
+    return { item: next, revision: rows[0].revision };
   }
 
   private async finish(item: Item) {
-    if (item.inbound) await this.storage.writeJson(this.seenKey(item.channel, item.inbound.messageId), { at: Date.now() });
-    await this.storage.deleteJson(itemKey(item.id));
+    await this.db.query("delete from channel_items where id = $1", [item.id]);
   }
 
   /** Release a claimed item after an unexpected error, to be retried later. */
   private async failed(item: Item, error: unknown) {
     console.error(JSON.stringify({ type: "channel_item_failed", item: item.id, state: item.state, error: errorText(error) }));
-    const stored = await this.storage.readJson<Item>(itemKey(item.id)).catch(() => undefined);
-    if (!stored || stored.value.claim?.node !== this.options.node) return;
-    const { claim: _claim, ...rest } = stored.value;
-    const attempts = (rest.attempts ?? 0) + 1;
-    if (attempts >= MAX_ATTEMPTS) return this.finish(rest).catch(() => {});
-    await this.storage.writeJson(itemKey(item.id), { ...rest, attempts, due: Date.now() + this.retryDelay(attempts - 1) }, stored.version).catch(() => {});
+    const row = (await this.db.query("select item, due, revision, claimed_by from channel_items where id = $1", [item.id]).catch(() => undefined))?.rows[0];
+    if (!row || row.claimed_by !== this.options.node) return;
+    const current = held(row);
+    const attempts = (current.item.attempts ?? 0) + 1;
+    if (attempts >= MAX_ATTEMPTS) return this.finish(current.item).catch(() => {});
+    await this.save(current, { attempts, due: Date.now() + this.retryDelay(attempts - 1) }, false).catch(() => {});
   }
 
   private retryDelay(attempts: number) { return Math.min(10 * 60_000, (this.options.retryBaseMs ?? 2_000) * 2 ** attempts); }
 
-  private async advance(item: Item, version: string): Promise<void> {
-    const channel = await this.read(item.channel);
-    if (!channel) return this.finish(item);
-    if (item.state === "received") return this.receive(channel, item, version);
-    if (item.state === "submitted") return this.recheck(channel, item, version);
-    return this.deliver(channel, item, version);
+  private async advance(current: Held): Promise<void> {
+    const channel = await this.read(current.item.channel);
+    if (!channel) return this.finish(current.item);
+    if (current.item.state === "received") return this.receive(channel, current);
+    if (current.item.state === "submitted") return this.recheck(channel, current);
+    return this.deliver(channel, current);
   }
 
-  private async receive(channel: Channel, item: Item, version: string) {
+  private async receive(channel: Channel, current: Held) {
+    const item = current.item;
     const inbound = item.inbound!;
-    const reply = (text: string) => this.save(item, version, { state: "sending", text, sent: 0, attempts: 0 }).then(next => this.deliver(channel, next.item, next.version));
+    const reply = (text: string) => this.save(current, { state: "sending", text, sent: 0, attempts: 0 }).then(next => this.deliver(channel, next));
     if (inbound.command === "start") return reply(channel.greeting ?? DEFAULT_GREETING);
     const minute = Math.floor(Date.now() / 60_000);
-    const recent = await this.count(`${channel.id}/m${minute}/${sha(inbound.sender.id).slice(0, 16)}`);
+    const recent = await this.count(channel.id, `m${minute}/${sha(inbound.sender.id).slice(0, 16)}`);
     // Only the first message over a limit is told why; the rest are dropped quietly.
     if (recent > channel.limits.perSenderPerMinute) return recent === channel.limits.perSenderPerMinute + 1 ? reply("You're sending messages too quickly. Please wait a minute and try again.") : this.finish(item);
-    const today = await this.count(`${channel.id}/d${new Date().toISOString().slice(0, 10)}/turns`);
+    const today = await this.count(channel.id, `d${new Date().toISOString().slice(0, 10)}/turns`);
     if (today > channel.limits.turnsPerDay) return today === channel.limits.turnsPerDay + 1 ? reply("This assistant has reached its limit for today. Please try again tomorrow.") : this.finish(item);
     const { credentials } = this.secrets(channel);
     void this.provider(channel.type).typing(credentials, item.conversationId).catch(() => {});
@@ -373,11 +399,11 @@ export class Channels {
     const images = inbound.images.length ? await this.provider(channel.type).images(credentials, inbound.images) : [];
     const prompt = { text: this.promptText(channel, inbound, images.length), ...(images.length ? { images } : {}) };
     // Submitted before submitting: the turn may end (and its reply be settled) before submit returns.
-    const next = await this.save(item, version, { state: "submitted", agent, prompt, claim: undefined, due: Date.now() + RECHECK_MS });
+    const next = await this.save(current, { state: "submitted", agent, prompt, due: Date.now() + RECHECK_MS }, false);
     try { await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: prompt }); }
     catch (error) {
       console.error(JSON.stringify({ type: "channel_submit_failed", item: item.id, error: errorText(error) }));
-      await this.storage.writeJson(itemKey(item.id), { ...next.item, due: Date.now() + this.retryDelay(0) }, next.version).catch(() => {});
+      await this.save(next, { due: Date.now() + this.retryDelay(0) }).catch(() => {});
     }
   }
 
@@ -389,7 +415,8 @@ export class Channels {
   }
 
   /** A submitted message whose turn end this runtime did not see: ask again (idempotently) how it went. */
-  private async recheck(channel: Channel, item: Item, version: string) {
+  private async recheck(channel: Channel, current: Held) {
+    const item = current.item;
     let record: RequestRecord;
     try { record = await this.options.submit(item.agent!, channel.tenant, { id: item.id, method: "prompt", params: item.prompt! }); }
     catch (error) {
@@ -397,65 +424,57 @@ export class Channels {
       if (status === 404 || status === 410) return this.finish(item);
       throw error;
     }
-    if (record.state !== "completed") { await this.save(item, version, { claim: undefined, due: Date.now() + RECHECK_MS }); return; }
+    if (record.state !== "completed") { await this.save(current, { due: Date.now() + RECHECK_MS }, false); return; }
     const text = replyText(record);
     if (!text) return this.finish(item);
-    const next = await this.save(item, version, { state: "sending", text, sent: 0, attempts: 0 });
-    await this.deliver(channel, next.item, next.version);
+    await this.deliver(channel, await this.save(current, { state: "sending", text, sent: 0, attempts: 0 }));
   }
 
-  private async deliver(channel: Channel, item: Item, version: string) {
+  private async deliver(channel: Channel, current: Held) {
     const provider = this.provider(channel.type);
-    const parts = chunks(item.text ?? "", provider.maxMessageLength);
+    const parts = chunks(current.item.text ?? "", provider.maxMessageLength);
     const { credentials } = this.secrets(channel);
-    for (let index = item.sent ?? 0; index < parts.length; index++) {
-      try { await provider.send(credentials, item.conversationId, parts[index]); }
+    for (let index = current.item.sent ?? 0; index < parts.length; index++) {
+      try { await provider.send(credentials, current.item.conversationId, parts[index]); }
       catch (error) {
-        const attempts = (item.attempts ?? 0) + 1;
+        const attempts = (current.item.attempts ?? 0) + 1;
         const permanent = error instanceof SendError && error.permanent;
-        console.error(JSON.stringify({ type: "channel_send_failed", item: item.id, attempts, permanent, error: errorText(error) }));
-        if (permanent || attempts >= MAX_ATTEMPTS) return this.finish(item);
+        console.error(JSON.stringify({ type: "channel_send_failed", item: current.item.id, attempts, permanent, error: errorText(error) }));
+        if (permanent || attempts >= MAX_ATTEMPTS) return this.finish(current.item);
         const delay = Math.max(this.retryDelay(attempts - 1), error instanceof SendError ? error.retryAfterMs ?? 0 : 0);
-        await this.save(item, version, { attempts, claim: undefined, due: Date.now() + delay });
+        await this.save(current, { attempts, due: Date.now() + delay }, false);
         return;
       }
       // Progress is durable per part, so a retry resumes after the last part sent.
-      ({ item, version } = await this.save(item, version, { sent: index + 1, claim: { node: this.options.node, until: Date.now() + CLAIM_MS } }));
+      current = await this.save(current, { sent: index + 1 }, true);
     }
-    await this.finish(item);
+    await this.finish(current.item);
   }
 
   /** Queue a message to a conversation and try to send it now. */
   private async enqueue(binding: Binding, id: string, text: string) {
     const now = Date.now();
-    const item: Item = {
+    const created = await this.insert(this.db, {
       id, channel: binding.channel, tenant: binding.tenant, conversationId: binding.conversationId, createdAt: now,
-      state: "sending", text, sent: 0, attempts: 0, due: now, claim: { node: this.options.node, until: now + CLAIM_MS },
-    };
-    let version: string;
-    try { version = await this.storage.writeJson(itemKey(id), item, null); }
-    catch (error) { if (error instanceof PreconditionFailed) return; throw error; }
+      state: "sending", text, sent: 0, attempts: 0, due: now,
+    });
+    if (!created) return;
     const channel = await this.read(binding.channel);
-    if (!channel) return this.finish(item);
-    await this.deliver(channel, item, version).catch(error => this.failed(item, error));
+    if (!channel) return this.finish(created.item);
+    await this.deliver(channel, created).catch(error => this.failed(created.item, error));
   }
 
   /** Count one event in a window, across nodes; returns the new count. */
-  private async count(name: string) {
-    const key = `channel-counts/${name}`;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const stored = await this.storage.readJson<{ count: number }>(key);
-      const count = (stored?.value.count ?? 0) + 1;
-      try { await this.storage.writeJson(key, { count }, stored?.version ?? null); return count; }
-      catch (error) { if (!(error instanceof PreconditionFailed)) throw error; await sleep(Math.random() * 20); }
-    }
-    throw new Error("Counter contention");
+  private async count(channel: string, window: string): Promise<number> {
+    const { rows } = await this.db.query(`
+      insert into channel_counts (channel, window_key, count) values ($1, $2, 1)
+      on conflict (channel, window_key) do update set count = channel_counts.count + 1 returning count`, [channel, window]);
+    return rows[0].count;
   }
 
   /** The conversation's agent, created on first contact (and again if it expired or was deleted). */
   private async agentFor(channel: Channel, conversationId: string, sender: Sender) {
-    const key = `channel-conversations/${channel.id}/${conversationId}`;
-    const stored = (await this.storage.readJson<{ agent: string; generation: number }>(key))?.value;
+    const stored = (await this.db.query("select agent, generation from channel_conversations where channel = $1 and conversation = $2", [channel.id, conversationId])).rows[0] as { agent: string; generation: number } | undefined;
     if (stored && await this.options.live(stored.agent, channel.tenant)) return stored.agent;
     const generation = stored ? stored.generation + 1 : 0;
     const label = sender.username ? `@${sender.username}` : sender.name ?? sender.id;
@@ -467,9 +486,13 @@ export class Channels {
     };
     const created = await this.options.createAgent(channel.tenant, params, `${channel.type}-${channel.id}-${conversationId}${generation ? `-${generation}` : ""}`);
     const binding: Binding = { channel: channel.id, tenant: channel.tenant, conversationId };
-    await this.storage.writeJson(`channel-agents/${created.id}`, binding);
+    await this.db.query(`
+      insert into channel_agents (agent, channel, tenant, conversation) values ($1, $2, $3, $4)
+      on conflict (agent) do update set channel = excluded.channel, tenant = excluded.tenant, conversation = excluded.conversation`, [created.id, channel.id, channel.tenant, conversationId]);
     this.bindings.set(created.id, Promise.resolve(binding));
-    await this.storage.writeJson(key, { agent: created.id, generation });
+    await this.db.query(`
+      insert into channel_conversations (channel, conversation, agent, generation) values ($1, $2, $3, $4)
+      on conflict (channel, conversation) do update set agent = excluded.agent, generation = excluded.generation`, [channel.id, conversationId, created.id, generation]);
     return created.id;
   }
 
@@ -477,7 +500,8 @@ export class Channels {
     let binding = this.bindings.get(agent);
     if (!binding) {
       if (this.bindings.size > 10_000) this.bindings.clear();
-      binding = this.storage.readJson<Binding>(`channel-agents/${agent}`).then(stored => stored?.value);
+      binding = this.db.query("select channel, tenant, conversation from channel_agents where agent = $1", [agent])
+        .then(({ rows }) => rows[0] && { channel: rows[0].channel, tenant: rows[0].tenant, conversationId: rows[0].conversation });
       binding.catch(() => this.bindings.delete(agent));
       this.bindings.set(agent, binding);
     }
@@ -521,7 +545,7 @@ export class Channels {
       const binding = await this.binding(agent.id);
       if (!binding) return undefined;
       const channel = await this.read(binding.channel);
-      const item = requestId?.startsWith("in_") ? (await this.storage.readJson<Item>(itemKey(requestId)))?.value : undefined;
+      const item = requestId?.startsWith("in_") ? (await this.db.query("select item from channel_items where id = $1", [requestId])).rows[0]?.item as Item | undefined : undefined;
       const sender = item?.agent === agent.id ? item.inbound?.sender : undefined;
       return { channel: { id: binding.channel, type: channel?.type }, conversationId: binding.conversationId, ...(sender ? { sender } : {}) };
     },
@@ -545,15 +569,16 @@ export class Channels {
       return;
     }
     for (let attempt = 0; attempt < 10; attempt++) {
-      const stored = await this.storage.readJson<Item>(itemKey(record.id));
-      if (!stored || stored.value.state !== "submitted" || stored.value.agent !== agent.id) return;
-      if (!text) return this.finish(stored.value);
-      let next;
-      try { next = await this.save(stored.value, stored.version, { state: "sending", text, sent: 0, attempts: 0, due: Date.now(), claim: { node: this.options.node, until: Date.now() + CLAIM_MS } }); }
+      const row = (await this.db.query("select item, due, revision from channel_items where id = $1", [record.id])).rows[0];
+      const stored = row && held(row);
+      if (!stored || stored.item.state !== "submitted" || stored.item.agent !== agent.id) return;
+      if (!text) return this.finish(stored.item);
+      let next: Held;
+      try { next = await this.save(stored, { state: "sending", text, sent: 0, attempts: 0, due: Date.now() }, true); }
       catch (error) { if (error instanceof PreconditionFailed) continue; throw error; }
       const channel = await this.read(binding.channel);
       if (!channel) return this.finish(next.item);
-      return this.deliver(channel, next.item, next.version).catch(error => this.failed(next.item, error));
+      return this.deliver(channel, next).catch(error => this.failed(next.item, error));
     }
   }
 }

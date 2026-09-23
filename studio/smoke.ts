@@ -6,8 +6,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
+import { randomBytes } from 'node:crypto';
+import pg from 'pg';
 
 const root = await mkdtemp(join(tmpdir(), 'agent-studio-test-'));
+// The runtime keeps its control-plane state in Postgres: a schema of its own here, dropped afterwards.
+const databaseUrl = process.env.AGENT_TEST_DATABASE_URL ?? 'postgres://postgres:test@127.0.0.1:55432/postgres';
+const databaseSchema = `studio_${randomBytes(6).toString('hex')}`;
+const admin = new pg.Client({ connectionString: databaseUrl });
+await admin.connect();
+await admin.query(`create schema ${databaseSchema}`);
+const runtimeDatabase = new URL(databaseUrl);
+runtimeDatabase.searchParams.set('options', `-c search_path=${databaseSchema}`);
 let child: ChildProcess | undefined;
 let origin = '', cookie = '', runtimeUrl = '';
 let third: AgentClient | undefined;
@@ -20,7 +30,7 @@ async function until<T>(fn: () => Promise<T | undefined>): Promise<T> {
   throw new Error('Timed out waiting for studio');
 }
 async function start() {
-  const env = { ...process.env, STUDIO_DATA_DIR: root, STUDIO_PORT: '0', AGENT_API_KEY: '', OPENROUTER_API_KEY: '' };
+  const env = { ...process.env, STUDIO_DATA_DIR: root, STUDIO_PORT: '0', AGENT_API_KEY: '', OPENROUTER_API_KEY: '', AGENT_DATABASE_URL: runtimeDatabase.toString() };
   child = spawn(process.execPath, [fileURLToPath(new URL('./server.ts', import.meta.url))], { env, stdio: ['ignore', 'pipe', 'inherit'] });
   let output = ''; child.stdout!.on('data', b => { output += b; });
   await until(async () => {
@@ -99,4 +109,7 @@ try {
   assert.equal(extraResumed.name, 'Documentation review'); assert.equal(extraResumed.connected, false);
   assert.equal(extraResumed.runs[0].traces.find((t: any) => t.name === 'echo').result.value, 42);
   console.log('Studio smoke passed: TS + Python tools, dynamic SDK discovery, rename/regroup, private traces, reviews, and restart persistence.');
-} finally { await third?.close(); await stop(); await rm(root, { recursive: true, force: true }); }
+} finally {
+  await third?.close(); await stop(); await rm(root, { recursive: true, force: true });
+  await admin.query(`drop schema ${databaseSchema} cascade`); await admin.end();
+}
