@@ -17,6 +17,8 @@ COPY shared ./shared
 COPY console/dist ./console/dist
 
 # CA bundle for verifying the RDS control-plane database over TLS (AGENT_DATABASE_CA).
+# Create the directory first: ADD would create it with the file mode, and Node could no longer read /etc/ssl/openssl.cnf.
+RUN mkdir -p /etc/ssl
 ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /etc/ssl/rds-global-bundle.pem
 RUN mkdir -p /data && chown node:node /data
 USER node
