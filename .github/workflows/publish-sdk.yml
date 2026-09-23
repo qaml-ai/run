@@ -1,0 +1,16 @@
+name: Publish SDK
+# Push a tag like sdk-v0.3.0 (matching sdk/package.json) to publish @qaml-ai/agent-runtime to npmjs.
+on:
+  push: { tags: ["sdk-v*"] }
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, registry-url: https://registry.npmjs.org }
+      - run: npm ci
+      - run: test "sdk-v$(node -p 'require("./sdk/package.json").version')" = "$GITHUB_REF_NAME"
+      - run: npm publish
+        working-directory: sdk
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }

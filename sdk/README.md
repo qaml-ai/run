@@ -10,16 +10,8 @@ Requires Node 22 or later (or Bun).
 
 ## Install
 
-The package is published to GitHub Packages. Create a GitHub token with
-`read:packages`, then add an `.npmrc` next to your `package.json`:
-
-```
-@qaml-ai:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
 ```sh
-GITHUB_TOKEN=<token> npm install @qaml-ai/agent-runtime
+npm install @qaml-ai/agent-runtime
 ```
 
 Upgrade with `npm update @qaml-ai/agent-runtime`.
