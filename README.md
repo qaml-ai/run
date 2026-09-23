@@ -177,6 +177,46 @@ Pi's published endpoint for the requested provider and model, or an entry in
 `AGENT_ALLOWED_BASE_URLS` (comma-separated). Scoped credentials can only submit
 user messages; assistant and tool-result history is produced by the runtime.
 
+## Channels
+
+A channel lets people talk to agents from a messaging service (Telegram for
+now). Tenants manage channels with `/v1/channels` or the console's Channels page:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"type":"telegram","credentials":{"botToken":"<from @BotFather>"},
+       "template":{"systemPrompt":"You are our support assistant."},
+       "access":{"allow":["@ada","123456789"]}}' \
+  https://agents.camelai.dev/v1/channels
+```
+
+Creating a channel checks the bot token (`getMe`) and registers
+`$AGENT_PUBLIC_URL/channels/telegram/<id>` as its webhook with a random secret,
+which each delivery must echo (compared in constant time). Credentials and the
+secret are encrypted with `AGENT_SECRETS_KEY`; the API returns only a masked
+token. Deleting the channel removes the webhook.
+
+- Each external conversation gets its own agent, created on first contact from
+  the channel's template (model, system prompt, thinking level, client tools).
+  Its prompts go through the agent's normal queue on whichever node serves it.
+- Senders must be on the allowlist (Telegram user ids or @usernames) unless the
+  channel sets `access.public`. Each sender is rate limited
+  (`limits.perSenderPerMinute`, default 10) and the channel has a daily turn
+  cap (`limits.turnsPerDay`, default 1000).
+- The prompt names the sender, and tool calls carry a runtime-set `origin`
+  (`{channel, conversationId, sender}`, `context.origin` in the SDKs) that
+  tools can authorize against. Photos reach the model as images (up to 750 KB).
+- The turn's final answer is sent back when the turn ends (split into 4,096
+  character messages), with a typing indicator meanwhile. Channel agents also
+  get a `send_message` tool for updates mid-turn. `/start` gets the channel's
+  `greeting` without a model call.
+- A webhook is recorded in shared storage before it is acknowledged, and
+  duplicates (Telegram retries) are dropped by message id. Replies go through a
+  durable queue: a failed send is retried with backoff by any node, and a
+  conditional-write claim means one node sends each message.
+
+`AGENT_TELEGRAM_API_URL` overrides the Bot API endpoint (tests use a local fake).
+
 ## Tenant isolation contract
 
 This prototype is **single-tenant, with one trusted operator**. Separate agent
