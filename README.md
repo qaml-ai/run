@@ -136,6 +136,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
 | `AGENT_EXECUTOR_URL` | run `js_exec` on executor hosts (see `infra/executor/README.md`) |
+| `AGENT_EXECUTOR_CALLBACK_URL` | where executors call tools back; unset on ECS, it is `http://<task private IPv4>:<AGENT_EXECUTOR_CALLBACK_PORT>` (default 8791), since only the task that started an execution holds its capabilities |
 
 Start the HTTP supervisor on a VM using a trusted terminal:
 

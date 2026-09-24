@@ -26,7 +26,7 @@ import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
-import { nodeLoadLine, nodeUrl } from "./ecs.ts";
+import { callbackUrl, nodeLoadLine, nodeUrl, taskAddress } from "./ecs.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -49,19 +49,20 @@ await migrate(db);
 const storageDescriptor = storageFromEnvironment(root);
 const storage = await openStorage(storageDescriptor);
 const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
-const node = await nodeUrl(process.env, port);
+const address = await taskAddress();
+const node = nodeUrl(process.env, port, address);
 const ownership = new Ownership(db, { node, ttlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000) });
 await ownership.start();
 const hosting = (process.env.AGENT_HOSTING ?? "process") as Hosting;
 if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
 // With AGENT_EXECUTOR_URL, js_exec runs on executor hosts that hold no credentials or agent state.
 // They call tools back through a separate listener on a private address, never the public one.
-const executor = process.env.AGENT_EXECUTOR_URL ? {
-  endpoint: executorEndpoint(process.env.AGENT_EXECUTOR_URL, process.env.AGENT_EXECUTOR_TOKEN),
-  executions: new Executions(process.env.AGENT_EXECUTOR_CALLBACK_URL ?? ""),
-} : undefined;
 const callbackPort = Number(process.env.AGENT_EXECUTOR_CALLBACK_PORT ?? 8791);
 if (!Number.isInteger(callbackPort) || callbackPort < 1 || callbackPort > 65535) throw new Error("AGENT_EXECUTOR_CALLBACK_PORT must be a TCP port");
+const executor = process.env.AGENT_EXECUTOR_URL ? {
+  endpoint: executorEndpoint(process.env.AGENT_EXECUTOR_URL, process.env.AGENT_EXECUTOR_TOKEN),
+  executions: new Executions(callbackUrl(process.env, callbackPort, address)),
+} : undefined;
 const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: process.env.AGENT_RUNTIME, maxAgents, hosting, executor, ...(distributed ? { storage: storageDescriptor } : {}) });
 const model = configuredModel();
 const toolTimeoutMs = Number(process.env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
@@ -197,6 +198,12 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
   upstream.on("error", () => {
     ownership.forget(actor);
     if (!res.headersSent) res.writeHead(502, { "Content-Type": "application/json" }).end('{"error":"The node serving this agent is unreachable; retry"}'); else res.destroy();
+  });
+  // An owner that cannot be reached (a partitioned or firewalled address) fails fast instead of hanging until the client gives up.
+  upstream.on("socket", socket => {
+    if (!socket.connecting) return;
+    const timer = setTimeout(() => upstream.destroy(new Error("Connecting to the owner timed out")), 5_000);
+    socket.once("connect", () => clearTimeout(timer)).once("close", () => clearTimeout(timer));
   });
   res.on("close", () => upstream.destroy());
   req.pipe(upstream);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { nodeLoadLine, nodeUrl } from "../src/ecs.ts";
+import { callbackUrl, nodeLoadLine, nodeUrl, taskAddress } from "../src/ecs.ts";
 import { tenantsFromEnvironment } from "../src/tenants.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -20,10 +20,10 @@ async function fake(t: { after(fn: () => unknown): void }, handle: (req: Incomin
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
 
-test("the node address is AGENT_NODE_URL, else the ECS task's private IPv4, else loopback", async t => {
-  assert.equal(await nodeUrl({ AGENT_NODE_URL: "http://10.0.0.9:8790/", ECS_CONTAINER_METADATA_URI_V4: "http://127.0.0.1:1" }, 8790), "http://10.0.0.9:8790");
-  assert.equal(await nodeUrl({}, 8123), "http://127.0.0.1:8123");
-  assert.equal(await nodeUrl({ PORT: "8124" }), "http://127.0.0.1:8124");
+test("the node and executor callback addresses are explicit, else the ECS task's private IPv4, else loopback", async t => {
+  assert.equal(await taskAddress({}), undefined);
+  assert.equal(nodeUrl({}, 8123), "http://127.0.0.1:8123");
+  assert.equal(callbackUrl({}, 8791), "", "off ECS, executor callbacks need AGENT_EXECUTOR_CALLBACK_URL");
 
   let metadata: unknown = {
     DockerId: "ea32192c8553fbff06c9340478a2ff089b2bb5646fb718b4ee206641c9086d66", Name: "runtime",
@@ -32,14 +32,19 @@ test("the node address is AGENT_NODE_URL, else the ECS task's private IPv4, else
   let status = 200;
   const paths: string[] = [];
   const endpoint = await fake(t, (req, res) => { paths.push(req.url!); res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(metadata)); });
-  const ecs = { ECS_CONTAINER_METADATA_URI_V4: `${endpoint}/v4/0123`, PORT: "8790" };
-  assert.equal(await nodeUrl(ecs), "http://10.0.2.106:8790");
+  const ecs = { ECS_CONTAINER_METADATA_URI_V4: `${endpoint}/v4/0123` };
+  const address = await taskAddress(ecs);
+  assert.equal(address, "10.0.2.106");
   assert.deepEqual(paths, ["/v4/0123"], "the container's own metadata, not the task's");
+  assert.equal(nodeUrl(ecs, 8790, address), "http://10.0.2.106:8790");
+  assert.equal(callbackUrl(ecs, 8791, address), "http://10.0.2.106:8791", "callbacks come back to this task, which holds the execution");
+  assert.equal(nodeUrl({ ...ecs, AGENT_NODE_URL: "http://runtime.internal:8790/" }, 8790, address), "http://runtime.internal:8790");
+  assert.equal(callbackUrl({ ...ecs, AGENT_EXECUTOR_CALLBACK_URL: "http://callbacks.internal:9000/" }, 8791, address), "http://callbacks.internal:9000");
 
   metadata = { Networks: [{ NetworkMode: "awsvpc", IPv4Addresses: [] }] };
-  await assert.rejects(nodeUrl(ecs), /no private IPv4 address; set AGENT_NODE_URL/);
+  await assert.rejects(taskAddress(ecs), /no private IPv4 address; set AGENT_NODE_URL/);
   status = 500;
-  await assert.rejects(nodeUrl(ecs), /HTTP 500/);
+  await assert.rejects(taskAddress(ecs), /HTTP 500/);
 });
 
 test("node load is a CloudWatch Embedded Metric Format line", () => {
