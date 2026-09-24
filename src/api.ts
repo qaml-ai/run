@@ -9,7 +9,7 @@ import { listModels, listProviders, providerInfo } from "./catalog.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { HttpError, readJson } from "./http.ts";
+import { errorStatus, HttpError, readJson } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import * as schema from "./api-schemas.ts";
@@ -316,7 +316,7 @@ export function api(context: ApiContext) {
   app.all("/v1/agents/:id/schedules/*", () => { scheduler(); throw new HttpError(404, "Unknown schedule route"); });
   app.all("/v1/agents/:id/*", () => { throw new HttpError(404, "Unknown agent route"); });
   app.all("/v1/*", () => { throw new HttpError(404, "Unknown API route"); });
-  app.onError((error, c) => json(c, (error as { status?: number }).status ?? 400, { error: errorText(error) }));
+  app.onError((error, c) => json(c, errorStatus(error, 400), { error: errorText(error) }));
   return app;
 }
 

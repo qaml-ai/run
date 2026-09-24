@@ -19,7 +19,7 @@ import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
-import type { Db } from "./db.ts";
+import { databaseUnavailable, type Db } from "./db.ts";
 import type { Claim, Ownership } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
 
@@ -62,6 +62,8 @@ type Session = {
   /** How the agent process found the interrupted turn when it started. */
   handoff?: { continue: true } | { finished: unknown };
   fault?: Error;
+  /** A header write failed with the database unreachable, so the stored revision is unknown. */
+  unsettled?: boolean;
   lastActive: number;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -189,11 +191,18 @@ export class ClientSessions {
             on conflict (id) do nothing returning revision`, columns)
         : await this.db.query(`
             update agents set tenant = $2, header = $3, name = $4, type = $5, model = $6, expires_at = $7, revoked = $8, revision = revision + 1
-            where id = $1 and revision = $9 and ($10::uuid is null or exists (select 1 from actor_owners where actor = $1 and session = $10 and epoch = $11))
-            returning revision`, [...columns, session.revision, session.claim?.session ?? null, session.claim?.epoch ?? null]);
+            where id = $1 and (revision = $9 or $12) and ($10::uuid is null or exists (select 1 from actor_owners where actor = $1 and session = $10 and epoch = $11))
+            returning revision`, [...columns, session.revision, session.claim?.session ?? null, session.claim?.epoch ?? null, !!session.unsettled]);
       if (!rows[0]) throw new Error("Another node changed this agent; it moved");
       session.revision = rows[0].revision;
+      session.unsettled = false;
     } catch (error) {
+      // The database was unreachable, so the write may or may not have landed: answer 503, and write the
+      // next update over whichever revision is stored. While this node's claim holds, only it writes here.
+      if (databaseUnavailable(error)) {
+        if (session.revision !== undefined) session.unsettled = true;
+        throw error;
+      }
       this.fail(session, error);
       throw session.fault;
     }
@@ -651,7 +660,7 @@ export class ClientSessions {
     });
     app.all(`${agent}/*`, () => { throw new HttpError(404, "Unknown client route"); });
     app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
-    app.onError((error, c) => json(c, error instanceof HttpError ? error.status : 500, { error: errorText(error) }));
+    app.onError((error, c) => json(c, error instanceof HttpError ? error.status : databaseUnavailable(error) ? 503 : 500, { error: errorText(error) }));
     return app;
   }
 
@@ -855,7 +864,8 @@ export class ClientSessions {
 
   async remove(id: string) {
     const session = await this.load(id);
-    if (!session || session.header.revoked) return;
+    // A revocation whose write may not have landed is written again.
+    if (!session || (session.header.revoked && !session.unsettled)) return;
     session.header.revoked = true;
     await this.writeHeader(session);
     await this.interrupt(session, "Session revoked");

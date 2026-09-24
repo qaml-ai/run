@@ -8,7 +8,8 @@ export interface Claim { actor: string; session: string; epoch: number }
 
 /**
  * Which node serves each actor (an agent or a volume). Every node keeps one
- * heartbeat row, renewed every third of the TTL on the database's clock, and each
+ * heartbeat row, renewed every sixth of the TTL on the database's clock (and retried
+ * every thirtieth while renewal fails, as in a database failover), and each
  * actor it serves has an ownership row naming the node's session and an epoch.
  * Renewal is one write per node however many actors it serves.
  *
@@ -29,6 +30,7 @@ export class Ownership {
   private readonly fenced = new Set<(reason: string) => void>();
   private timer?: ReturnType<typeof setInterval>;
   private watchdog?: ReturnType<typeof setTimeout>;
+  private retry?: ReturnType<typeof setTimeout>;
   /** Other nodes' actors, so forwarding needs no query per request; entries never outlive the owner's heartbeat. */
   private readonly owners = new Map<string, { node: string; until: number }>();
   private readonly cacheMs: number;
@@ -38,13 +40,13 @@ export class Ownership {
   constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number }) {
     this.db = db;
     this.node = options.node;
-    this.ttlMs = options.ttlMs ?? 30_000;
+    this.ttlMs = options.ttlMs ?? 90_000;
     this.cacheMs = options.cacheMs ?? 5_000;
   }
 
   async start() {
     await this.register();
-    this.timer ??= setInterval(() => void this.renew(), Math.max(10, Math.floor(this.ttlMs / 3)));
+    this.timer ??= setInterval(() => void this.renew(), Math.max(10, Math.floor(this.ttlMs / 6)));
     this.timer.unref();
   }
 
@@ -79,6 +81,9 @@ export class Ownership {
       else this.arm(started + this.ttlMs);
     } catch (error) {
       console.error(JSON.stringify({ type: "heartbeat_renew_failed", error: (error as Error).message }));
+      // Retry soon rather than a whole interval later: every second lost here is a second less of outage the node survives.
+      this.retry ??= setTimeout(() => { this.retry = undefined; void this.renew(); }, Math.max(10, Math.floor(this.ttlMs / 30)));
+      this.retry.unref();
     } finally { this.renewing = false; }
   }
 
@@ -190,6 +195,7 @@ export class Ownership {
   async close() {
     clearInterval(this.timer);
     clearTimeout(this.watchdog);
+    clearTimeout(this.retry);
     const session = this.session;
     this.registered = false;
     this.session = randomUUID();

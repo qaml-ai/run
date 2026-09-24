@@ -9,8 +9,8 @@ import { errorText } from "./protocol.ts";
 import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
-import { databaseFromEnvironment, migrate } from "./db.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
+import { databaseFromEnvironment, databaseUnavailable, migrate } from "./db.ts";
 import { Ownership } from "./ownership.ts";
 import { DEFAULT_TENANT, tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
@@ -24,7 +24,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { HttpError, readJson, readText } from "./http.ts";
+import { errorStatus, HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { runtimeSecrets } from "./secrets.ts";
@@ -56,7 +56,7 @@ const storage = await openStorage(storageDescriptor, postgresTail(db));
 const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
 const address = await taskAddress();
 const node = nodeUrl(process.env, port, address);
-const ownership = new Ownership(db, { node, ttlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000) });
+const ownership = new Ownership(db, { node, ttlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 90_000) });
 await ownership.start();
 const hosting = (process.env.AGENT_HOSTING ?? "process") as Hosting;
 if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
@@ -258,7 +258,7 @@ app.post("/internal/agents/:id{client_[a-f0-9]{40}}/requests", async c => {
     const { tenant, request } = JSON.parse(body);
     return c.json(await clients.submit(c.req.param("id"), tenant, request), 202);
   } catch (error) {
-    return c.json({ error: errorText(error) }, ((error as { status?: number }).status ?? 400) as ContentfulStatusCode);
+    return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode);
   }
 });
 app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
@@ -269,7 +269,7 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
     const { tenant, op, args } = JSON.parse(body);
     return c.json(await volumes.handle(c.req.param("id"), tenant, op, args));
   } catch (error) {
-    return c.json({ error: errorText(error), ...(error instanceof VersionConflict ? { current: error.current } : {}) }, ((error as { status?: number }).status ?? 400) as ContentfulStatusCode);
+    return c.json({ error: errorText(error), ...(error instanceof VersionConflict ? { current: error.current } : {}) }, errorStatus(error, 400) as ContentfulStatusCode);
   }
 });
 app.all("/internal/*", c => c.body(null, 404));
@@ -331,8 +331,8 @@ app.all("/agents/:id{[a-zA-Z0-9_-]{1,80}}/:action{prompt|execute|abort}?", async
   return c.json(result);
 });
 app.notFound(c => c.body(null, 404));
-// Only 503 keeps its status here: clients retry it (the node is draining, full, or an actor is moving).
-app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", error instanceof HttpError && error.status === 503 ? 503 : 400, { "Content-Type": "application/json" }));
+// Only 503 keeps its status here: clients retry it (the node is draining, full, an actor is moving, or the database is unreachable).
+app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", (error instanceof HttpError && error.status === 503) || databaseUnavailable(error) ? 503 : 400, { "Content-Type": "application/json" }));
 
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;

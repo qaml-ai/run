@@ -76,7 +76,8 @@ heartbeats and claims use `timestamptz` on the database clock.
 
 **Ownership.** An agent or volume is an actor, served by one node at a time.
 Each node keeps one heartbeat row (`runtime_nodes`: node, session, expiry) and
-renews it every third of `AGENT_LEASE_TTL_MS` with `now()`: one write per node,
+renews it every sixth of `AGENT_LEASE_TTL_MS` with `now()` (every thirtieth
+while renewal fails): one write per node,
 however many actors it serves. Each actor has one `actor_owners` row naming a
 node's session and an epoch. A node takes an actor in one statement that
 succeeds only when the row is released, already names this session, or names a
@@ -107,6 +108,17 @@ writes nothing to Storage; unloading writes one object per log with new records.
 Tail rows of revoked agents and deleted volumes are dropped with them, and an
 hourly sweep drops any a dead node left. Logs written before the tail existed are
 read unchanged: their segments are ordinary segments.
+
+**Database outages.** The default 90-second lease outlasts most of an RDS
+Multi-AZ failover (60–120 s direct; shorter through RDS Proxy, which holds
+client connections and queues statements while the writer moves). A node
+survives an outage of up to about 0.9 × TTL less the time since its last renewal
+(between 63 and 78 s at the default); its running turns carry on meanwhile,
+since they need only storage. Requests that need the database answer 503 with
+`Retry-After`, and the pool replaces broken connections by itself. A longer
+outage fences the node, and it takes its actors back under a higher epoch once
+the database returns. A longer lease survives longer outages but delays
+takeover after a crash; planned stops release explicitly and are unaffected.
 
 Nodes cache an actor's owner for up to 5 seconds, never past the owner's
 heartbeat as last read, so forwarding costs no query per request. The cache is
@@ -180,9 +192,10 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_DATABASE_HOST`, `AGENT_DATABASE_SECRET_ARN` | production instead of a URL: the login is read from the Secrets Manager secret (`{username, password}`, rotated by RDS), cached, and re-read every 10 minutes and whenever a connection fails authentication; `AGENT_DATABASE_NAME` (default `agent_runtime`), `AGENT_DATABASE_PORT` (default 5432), `AWS_REGION` |
 | `AGENT_DATABASE_CA` | PEM bundle the server's certificate must chain to (e.g. `/etc/ssl/rds-global-bundle.pem`); TLS settings in a URL are then ignored |
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
+| `AGENT_DATABASE_QUERY_TIMEOUT_MS` | how long a query may take before it fails and its connection is replaced (default 30000; 0 for none), so a connection that went dark in a failover cannot hang a request |
 | `AGENT_STORAGE` | `file` (default), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
-| `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 30000) |
+| `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
 | `AGENT_DRAIN_TIMEOUT_MS` | how long SIGTERM waits for running turns before handing them off (default 100000; see [Draining](#draining)) |
 | `AGENT_ECS_SERVICE`, `AGENT_ECS_CLUSTER` | the ECS service this task belongs to, for retirement (see [Deploys](#deploys)); the cluster defaults to the task's own; without the service, tasks never retire |
 | `AGENT_RETIRE_MAX_MS` | how long a retiring task keeps protection for running turns (default 21600000, 6 h) |

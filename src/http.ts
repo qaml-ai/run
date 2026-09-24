@@ -1,6 +1,13 @@
+import { databaseUnavailable } from "./db.ts";
+
 export class HttpError extends Error {
   status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
+}
+
+/** The status to answer an error with: its own, else 503 (retry) when the database is unreachable, else `fallback`. */
+export function errorStatus(error: unknown, fallback: number): number {
+  return (error as { status?: number } | undefined)?.status ?? (databaseUnavailable(error) ? 503 : fallback);
 }
 
 /** Read a request body as text, failing with 413 past `limit` bytes rather than buffering it all. */
