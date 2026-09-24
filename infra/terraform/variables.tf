@@ -82,7 +82,7 @@ variable "database_engine_version" {
 variable "runtime_image_tag" {
   description = "Image tag for the task definition Terraform registers. Deploys (infra/ecs-deploy.sh) register later revisions outside Terraform; the service ignores task_definition."
   type        = string
-  default     = "ae56a2ca3d86"
+  default     = "95d93dde9f7b"
 }
 
 variable "task_cpu" {
