@@ -26,6 +26,8 @@ locals {
     # Scale-in protection while turns run, and retirement once superseded.
     AGENT_ECS_CLUSTER = local.cluster_name
     AGENT_ECS_SERVICE = local.service_name
+    # ServiceName dimension on the AgentRuntime EMF metrics.
+    AGENT_SERVICE_NAME = local.service_name
     }, local.executor_enabled ? {
     AGENT_EXECUTOR_URL           = local.executor_url
     AGENT_EXECUTOR_CALLBACK_PORT = tostring(var.executor_callback_port)
@@ -229,6 +231,8 @@ resource "aws_ecs_task_definition" "runtime" {
     secrets     = [for name in sort(keys(local.runtime_secrets)) : { name = name, valueFrom = local.runtime_secrets[name] }]
     # SIGTERM starts the runtime's drain (about 100 s); SIGKILL follows after this.
     stopTimeout = 120
+    # An init as PID 1 forwards signals and reaps the sandbox children.
+    linuxParameters = { initProcessEnabled = true }
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -321,9 +325,9 @@ resource "aws_appautoscaling_policy" "runtime" {
   }
 }
 
-# Example: scale on a runtime EMF metric (namespace AgentRuntime) instead of,
-# or as well as, CPU and memory. The metric must be an average per task for
-# target tracking to work; set its name and dimensions to what the runtime emits.
+# Example: scale on the runtime's EMF metric AgentRuntime/agents (agents
+# resident per task, dimension ServiceName from AGENT_SERVICE_NAME) instead of,
+# or as well as, CPU and memory. Pick target_value from observed load.
 #
 # resource "aws_appautoscaling_policy" "runtime_active_agents" {
 #   name               = "${var.name}-active-agents"
@@ -339,10 +343,10 @@ resource "aws_appautoscaling_policy" "runtime" {
 #
 #     customized_metric_specification {
 #       namespace   = "AgentRuntime"
-#       metric_name = "ActiveAgents"
+#       metric_name = "agents"
 #       statistic   = "Average"
 #       dimensions {
-#         name  = "Service"
+#         name  = "ServiceName"
 #         value = aws_ecs_service.runtime.name
 #       }
 #     }

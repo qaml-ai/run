@@ -85,7 +85,7 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
    ALB camelai-agent-runtime   (default public subnets, 4 AZs)
      :443  ACM cert, TLS 1.2/1.3, idle timeout 360 s
      :80   301 to https
-                   │ target group (ip) :8790, GET /healthz, deregistration 110 s
+                   │ target group (ip) :8790, GET /healthz, deregistration 15 s
                    ▼
    ECS Fargate service camelai-agent-runtime  (ARM64, 1 vCPU / 2 GB, 2..10 tasks)
      tasks in the default subnets with public IPs (egress to model providers, no NAT)
@@ -118,7 +118,8 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
 - **Scaling**. Target tracking holds average CPU at 60% and average memory at 70%,
   within `service_min_count`..`service_max_count` (2..10). Scale-in has a
   5-minute cooldown. `ecs.tf` has a commented example of scaling on an
-  `AgentRuntime` EMF metric instead.
+  `AgentRuntime` EMF metric instead: `agents`, Average, dimension
+  `ServiceName` (the task sets `AGENT_SERVICE_NAME`).
 - **Task protection**. The runtime turns on ECS scale-in protection for its own
   task while turns are running (`AGENT_ECS_CLUSTER`, `AGENT_ECS_SERVICE` are
   set for it). Scale-in skips protected tasks, so it removes idle tasks first;
@@ -127,16 +128,20 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
 - **Stopping a task** (deploy, scale-in, rebalancing):
   0. If the task is protected, ECS waits until the runtime clears protection
      (its turns have finished, or `AGENT_RETIRE_MAX_MS`, default 6 h, passed).
-  1. ECS deregisters the task, and the ALB keeps its open connections for 110 s.
+  1. ECS deregisters the task. The ALB sends it no new requests, and its open
+     connections, including SSE streams, stay up for the 15 s deregistration
+     delay. A retiring task already returns 503 on `/healthz`, so a longer
+     delay would only postpone SIGTERM.
   2. ECS sends SIGTERM. `/healthz` returns 503 while the runtime drains agents
-     (about 100 s).
+     (about 100 s). The container runs with `initProcessEnabled`, so an init
+     is PID 1: it forwards the signal and reaps sandbox children.
   3. SIGKILL follows 120 s after SIGTERM (`stopTimeout`).
 - **Deployments** are rolling: `minimumHealthyPercent` 100 and `maximumPercent`
   200. The circuit breaker rolls back automatically if new tasks never pass
   `/healthz`. It counts failed task launches, not time, so old tasks that stay
   protected for hours never trip it. A deployment's `rolloutState` stays
   `IN_PROGRESS` until its last old task is gone: up to `AGENT_RETIRE_MAX_MS`
-  (6 h) + 110 s + 120 s. The runtime notices a newer deployment and retires
+  (6 h) + 15 s + 120 s. The runtime notices a newer deployment and retires
   itself once idle. Don't make CI wait on `services-stable` or on
   `rolloutState = COMPLETED`; wait as `ecs-deploy.sh` does.
 - **Alarms** (`alarms.tf`, us-west-2):
