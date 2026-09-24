@@ -8,6 +8,7 @@
 #   tenant.sh remove <tenant>                   # removes the tenant (its agents stay on disk, unreachable)
 #   tenant.sh link-github <tenant> <login>      # console sign-in with that GitHub login uses this tenant
 #   tenant.sh set-limit <tenant> <n|default>    # hosted agents per task for this tenant (default: AGENT_MAX_AGENTS_PER_TENANT)
+#   tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month, e.g. 250 or 99.50 (default: none, unlimited)
 #
 # The operator token is stored at <SECRET_PREFIX>/operator-token/<tenant>. Share it
 # through a password manager; anyone holding it controls every agent in that tenant.
@@ -15,7 +16,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 command=${1:-}; tenant=${2:-}
 [[ -n "$command" ]] || usage
@@ -51,11 +52,15 @@ elif action == "limit":
     if tenant not in tenants: sys.exit(f"No tenant {tenant}")
     if os.environ["LIMIT"] == "default": tenants[tenant].pop("maxAgents", None)
     else: tenants[tenant]["maxAgents"] = int(os.environ["LIMIT"])
+elif action == "spend":
+    if tenant not in tenants: sys.exit(f"No tenant {tenant}")
+    if os.environ["LIMIT"] == "none": tenants[tenant].pop("maxMonthlyCost", None)
+    else: tenants[tenant]["maxMonthlyCost"] = float(os.environ["LIMIT"])
 elif action == "remove":
     if tenants.pop(tenant, None) is None: sys.exit(f"No tenant {tenant}")
 json.dump(data, open(path, "w"))
 PY
-# edit <add|token|key|github|limit|remove>: stdin stays free for the API key.
+# edit <add|token|key|github|limit|spend|remove>: stdin stays free for the API key.
 edit() { TENANT="$tenant" PROVIDER="${provider:-}" TOKEN_SHA="${token_sha:-}" GITHUB_LOGIN="${login:-}" LIMIT="${limit:-}" python3 "$work/edit.py" "$work/tenants.json" "$1"; }
 save() { aws secretsmanager put-secret-value --secret-id "$SECRET_PREFIX/tenants" --secret-string "file://$work/tenants.json" >/dev/null; }
 new_token() {
@@ -80,7 +85,7 @@ reload() {
 case "$command" in
   list)
     python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tenants"]
-for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")))' "$work/tenants.json" ;;
+for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")) + "\tmonthly spend limit: " + ("$%.2f" % v["maxMonthlyCost"] if "maxMonthlyCost" in v else "none"))' "$work/tenants.json" ;;
   add)
     new_token; edit add; save; store_token
     echo "Next: echo -n \"\$KEY\" | $0 set-key $tenant anthropic"
@@ -102,6 +107,13 @@ for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v
     edit limit; save
     if [[ "$limit" == default ]]; then echo "$tenant uses the default limit (AGENT_MAX_AGENTS_PER_TENANT)."; else echo "$tenant may have $limit agents hosted per task."; fi
     echo "Agents already running above a lowered limit keep running; it gates new starts."
+    reload ;;
+  set-spend-limit)
+    limit=${3:-}
+    [[ "$limit" == none || "$limit" =~ ^[0-9]{1,9}(\.[0-9]{1,2})?$ ]] || { echo "Usage: $0 set-spend-limit <tenant> <usd|none>  (usd: e.g. 250 or 99.50)" >&2; exit 2; }
+    edit spend; save
+    if [[ "$limit" == none ]]; then echo "$tenant has no monthly spend limit."; else echo "$tenant may spend \$$limit per UTC month on models."; fi
+    echo "At the limit, new model runs get 402 and a running turn ends after its current model response."
     reload ;;
   remove)
     edit remove; save; echo "Removed $tenant. Delete $SECRET_PREFIX/operator-token/$tenant when you no longer need it."; reload ;;

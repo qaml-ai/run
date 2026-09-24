@@ -9,6 +9,7 @@ const host = createAgentHost({
   emit: event => rpc.send({ type: "event", event }),
   tool: (name, args, toolCallId) => rpc.request("tool", { name, args, ...(toolCallId ? { toolCallId } : {}) }),
   cancelTools: () => rpc.request("cancel-tools"),
+  spendLimit: async () => (await rpc.request("spend-limit")) ?? undefined,
   transcript: remoteTranscript(rpc),
 });
 

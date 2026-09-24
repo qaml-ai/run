@@ -101,6 +101,7 @@ infra/tenant.sh set-key <tenant> anthropic      # key on stdin
 infra/tenant.sh rotate-token <tenant>
 infra/tenant.sh link-github <tenant> <login>
 infra/tenant.sh set-limit <tenant> <n|default>  # hosted agents per task
+infra/tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month
 infra/tenant.sh remove <tenant>
 ```
 
@@ -110,6 +111,18 @@ agents one task hosts at once, in place of `AGENT_MAX_AGENTS_PER_TENANT` (500);
 running above it keep running. Past the limit, creating or waking an agent gets
 429 with `Retry-After` (the SDKs retry it), and the task logs `quota_rejected`
 with the limit and whether it was the tenant's own or the default.
+
+`set-spend-limit` sets the tenant's `maxMonthlyCost` (USD) in the tenants secret;
+`none` removes it, and without one a tenant's spend is unlimited (there is no
+operator-wide default). Spend is the tenant's `GET /v1/usage` cost for the current
+UTC month (list-price estimates, turns and compaction summaries alike), read from
+the database at most every 5 seconds per task. At or over the cap, new model runs
+(`prompt`, `continue`) get 402 with the reason, runs already queued complete with
+that error, and a running turn ends after the model response that crossed the cap:
+that response's tool calls finish and are recorded, then the turn stops with
+`stopped: "spend_limit"` in its outcome. So a tenant can overshoot by about one
+response per running agent. Code executions (`execute`) make no model calls and
+are not limited. Raising the cap lets the agent carry on from where it stopped.
 
 Changes take effect within a minute, when the tasks next re-read the tenants
 secret. Nothing restarts, and running agents are unaffected. Share the operator

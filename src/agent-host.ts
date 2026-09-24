@@ -18,6 +18,8 @@ export interface HostIO {
   tool(name: string, args: Record<string, unknown>, toolCallId?: string): Promise<any>;
   /** Abort the application tool calls this agent has in flight. */
   cancelTools(): Promise<unknown>;
+  /** Why the tenant may not spend more on models (a reached cap), if so. */
+  spendLimit(): Promise<string | undefined>;
   /** The agent's transcript, which its supervisor writes. */
   transcript: AppendLog<TranscriptRecord>;
 }
@@ -33,6 +35,8 @@ export function createAgentHost(io: HostIO) {
   let busy = false;
   let active: AbortController | undefined;
   let persistenceError: unknown;
+  /** Set when a spend limit ended the current run early. */
+  let stopped: string | undefined;
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
   let dropped = new WeakSet<AgentMessage>();
   let summary: { state: CompactionState; message: AgentMessage } | undefined;
@@ -246,6 +250,17 @@ export function createAgentHost(io: HostIO) {
         // Renders compaction summaries for the model (the default drops non-chat roles).
         convertToLlm,
         transformContext: (messages, signal) => contextFor(messages, signal),
+        // A tenant past its spend cap stops before the next model request, after this response's tool results.
+        finishTurn: async turn => {
+          if (!turn.toolResults.length && !agent!.hasQueuedMessages()) return;
+          let reason: string | undefined;
+          try { reason = await io.spendLimit(); }
+          catch { return; /* Unknown spend never stops a turn. */ }
+          if (!reason) return;
+          stopped = reason;
+          io.emit({ type: "spend_limit_reached", message: reason });
+          return { action: "end" };
+        },
         sessionId: config.id,
         toolExecution: "parallel",
       });
@@ -289,6 +304,7 @@ export function createAgentHost(io: HostIO) {
     if (method === "prompt" && params.message === undefined && (typeof params.text !== "string" || !params.text.trim())) throw new Error("Prompt text is required");
     const promptMessages = method === "prompt" && params.message !== undefined ? userMessages(params.message) : undefined;
     busy = true;
+    stopped = undefined;
     active = new AbortController();
     try {
       if (method === "execute") return await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
@@ -300,7 +316,7 @@ export function createAgentHost(io: HostIO) {
       if (persistenceError) throw persistenceError;
       await transcript.setActive(false);
       const last = agent.state.messages.at(-1) as AssistantMessage | undefined;
-      return { messages: transcript.total, ...answer(last), error: agent.state.errorMessage ?? null };
+      return { messages: transcript.total, ...answer(last), error: agent.state.errorMessage ?? null, ...(stopped ? { stopped: "spend_limit", error: stopped } : {}) };
     } finally {
       // Release what compaction folded away: the next run starts from summary + kept messages.
       if (method !== "execute" && !persistenceError) {

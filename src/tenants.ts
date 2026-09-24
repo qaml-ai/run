@@ -17,6 +17,8 @@ export interface Tenant {
   github?: string;
   /** Agents this tenant may have hosted at once on each node; overrides AGENT_MAX_AGENTS_PER_TENANT. */
   maxAgents?: number;
+  /** Model spend (USD, list prices) this tenant may reach per UTC month; absent means unlimited. */
+  maxMonthlyCost?: number;
 }
 
 /** The single-token mode used before tenants existed; its agents keep their original IDs. */
@@ -69,7 +71,11 @@ export class Tenants {
       hashes.add(tenant.tokenSha256);
       if (tenant.github !== undefined && (typeof tenant.github !== "string" || !/^[A-Za-z0-9-]{1,39}$/.test(tenant.github))) throw new Error(`Tenant ${tenant.id} has an invalid github login`);
       if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
-      next.set(tenant.id, { id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...tenant.apiKeys }, ...(tenant.github ? { github: tenant.github } : {}), ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}) });
+      if (tenant.maxMonthlyCost !== undefined && (typeof tenant.maxMonthlyCost !== "number" || !Number.isFinite(tenant.maxMonthlyCost) || tenant.maxMonthlyCost < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxMonthlyCost: a non-negative number of USD, or absent for no limit`);
+      next.set(tenant.id, {
+        id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...tenant.apiKeys }, ...(tenant.github ? { github: tenant.github } : {}),
+        ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}), ...(tenant.maxMonthlyCost !== undefined ? { maxMonthlyCost: tenant.maxMonthlyCost } : {}),
+      });
     }
     this.byId = next;
   }
@@ -93,6 +99,9 @@ export class Tenants {
 
   /** The tenant's own hosted-agent limit per node, if its entry sets one. */
   maxAgents(id: string) { return this.byId.get(id)?.maxAgents; }
+
+  /** The tenant's monthly spend cap in USD, if its entry sets one. */
+  maxMonthlyCost(id: string) { return this.byId.get(id)?.maxMonthlyCost; }
 
   /** Providers an admin configured keys for (`*` covers any provider). Names only. */
   providers(id: string) { return Object.keys(this.byId.get(id)?.apiKeys ?? {}); }

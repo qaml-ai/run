@@ -222,7 +222,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_ECS_SERVICE`, `AGENT_ECS_CLUSTER` | the ECS service this task belongs to, for retirement (see [Deploys](#deploys)); the cluster defaults to the task's own; without the service, tasks never retire |
 | `AGENT_RETIRE_MAX_MS` | how long a retiring task keeps protection for running turns (default 21600000, 6 h) |
 | `AGENT_ECS_POLL_MS`, `AGENT_PROTECTION_IDLE_MS` | how often to check the service's deployment (default 30000), and how long without work before task protection is cleared (default 30000) |
-| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?}}}`), re-read on SIGHUP |
+| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?, maxMonthlyCost?}}}`), re-read on SIGHUP |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, for development |
 | `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
@@ -361,7 +361,20 @@ the SDKs retry both. A tenant's entry in the tenants file or secret may set its 
 `maxAgents` (a positive integer), which replaces `AGENT_MAX_AGENTS_PER_TENANT` for
 it; it applies from the next tenants reload (SIGHUP, or the secret's refresh every
 minute) to new starts, and agents already running above a lowered limit keep
-running. With `AGENT_STORAGE=file`, logs are local files, not
+running.
+
+A tenant's entry may also set `maxMonthlyCost`, a monthly model spend cap in USD
+(`infra/tenant.sh set-spend-limit`; absent means unlimited). Spend is the tenant's
+usage cost this UTC month, turns and compaction summaries, cached per node for 5
+seconds. A tenant at its cap gets 402 Payment Required for new `prompt` and
+`continue` runs (queued runs complete with the same error), and a running turn ends
+cleanly after the model response that crossed it: that response's tool calls run
+and their results are recorded, then the turn stops before the next model request,
+with `stopped: "spend_limit"` and the reason as `error` in its outcome. The
+transcript stays valid, so once the cap is raised (at the next tenants reload) the
+agent carries on. `execute` makes no model calls and is not limited.
+
+With `AGENT_STORAGE=file`, logs are local files, not
 replicated storage, and their writes are not fenced: it is for a single node. A node
 with it refuses to start while another node's heartbeat is live in the same database
 (after waiting one lease for a peer that just stopped). The whole transcript of an

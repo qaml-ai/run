@@ -6,6 +6,8 @@ export type { ToolDefinition };
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown>;
+  /** Why the agent's tenant may not spend more on models, if it has reached a limit. */
+  spendLimit?(): Promise<string | undefined> | string | undefined;
 }
 export interface AgentConfig {
   id: string;

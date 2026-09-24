@@ -42,3 +42,22 @@ test("a tenant's maxAgents is a positive integer; an invalid one rejects the rel
   assert.equal(tenants.maxAgents("acme"), undefined, "absent: the default applies");
   assert.equal(tenants.maxAgents("nobody"), undefined);
 });
+
+test("a tenant's maxMonthlyCost is a non-negative number of USD; an invalid one rejects the reload, and absent means unlimited", async () => {
+  const entry = (maxMonthlyCost?: unknown) => JSON.stringify({ tenants: { acme: { tokenSha256: createHash("sha256").update("acme-token").digest("hex"), apiKeys: {}, ...(maxMonthlyCost !== undefined ? { maxMonthlyCost } : {}) } } });
+  let secret = entry(12.5);
+  const tenants = new Tenants({ read: async () => secret });
+  await tenants.reload();
+  assert.equal(tenants.maxMonthlyCost("acme"), 12.5);
+  for (const bad of [-1, "20", null, Number.POSITIVE_INFINITY]) {
+    secret = bad === Number.POSITIVE_INFINITY ? entry().replace("{}", '{},"maxMonthlyCost":1e999') : entry(bad);
+    await assert.rejects(tenants.reload(), /invalid maxMonthlyCost/, String(bad));
+    assert.equal(tenants.maxMonthlyCost("acme"), 12.5, "the last good tenants stay in force");
+  }
+  secret = entry(0);
+  await tenants.reload();
+  assert.equal(tenants.maxMonthlyCost("acme"), 0, "zero stops all model spend");
+  secret = entry();
+  await tenants.reload();
+  assert.equal(tenants.maxMonthlyCost("acme"), undefined);
+});

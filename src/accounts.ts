@@ -26,6 +26,8 @@ const add = (target: Totals, source: Totals) => {
 const COMPACTION = "compaction:";
 /** Revocations reach other nodes within this long. */
 const TOKEN_CACHE_MS = 10_000;
+/** Spend on other nodes counts toward a tenant's cap within this long. */
+const SPEND_CACHE_MS = 5_000;
 
 export class Accounts {
   readonly tenants: Tenants;
@@ -35,6 +37,9 @@ export class Accounts {
   /** Usage not yet written: JSON [tenant, day, model] → totals. */
   private pendingUsage = new Map<string, Totals>();
   private usageTimer?: ReturnType<typeof setTimeout>;
+  /** This UTC month's spend per tenant, as last read plus what this node recorded since. */
+  private readonly spend = new Map<string, { month: string; cost: number; until: number }>();
+  private readonly spendReads = new Map<string, Promise<number>>();
 
   constructor(options: { tenants: Tenants; db: Db; secretsKey?: string }) {
     this.tenants = options.tenants;
@@ -184,6 +189,8 @@ export class Accounts {
     const totals = this.pendingUsage.get(key) ?? zero();
     add(totals, { responses: 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost: usage.cost?.total ?? 0 });
     this.pendingUsage.set(key, totals);
+    const spent = this.spend.get(tenant);
+    if (spent?.month === day.slice(0, 7)) spent.cost += usage.cost?.total ?? 0;
     this.usageTimer ??= setTimeout(() => void this.flushUsage().catch(error => console.error(JSON.stringify({ type: "usage_flush_failed", error: String(error) }))), 5_000);
     this.usageTimer.unref?.();
   }
@@ -216,6 +223,34 @@ export class Accounts {
       }
       throw error;
     }
+  }
+
+  /** The tenant's model spend this UTC month, turns and compaction, read from the database at most every few seconds. */
+  async monthSpend(tenant: string): Promise<number> {
+    const month = new Date().toISOString().slice(0, 7);
+    const cached = this.spend.get(tenant);
+    if (cached?.month === month && cached.until > Date.now()) return cached.cost;
+    let reading = this.spendReads.get(tenant);
+    if (!reading) {
+      reading = (async () => {
+        await this.flushUsage();
+        const { rows } = await this.db.query("select coalesce(sum(cost), 0) as cost from usage where tenant = $1 and day >= $2::date", [tenant, `${month}-01`]);
+        const cost = Number(rows[0].cost);
+        this.spend.set(tenant, { month, cost, until: Date.now() + SPEND_CACHE_MS });
+        return cost;
+      })().finally(() => this.spendReads.delete(tenant));
+      this.spendReads.set(tenant, reading);
+    }
+    return reading;
+  }
+
+  /** Why the tenant may not start or continue model work, when it has reached its monthly cap. */
+  async spendLimit(tenant: string): Promise<string | undefined> {
+    const cap = this.tenants.maxMonthlyCost(tenant);
+    if (cap === undefined) return undefined;
+    const spent = await this.monthSpend(tenant);
+    if (spent < cap) return undefined;
+    return `This tenant has reached its monthly spend limit of $${cap.toFixed(2)} ($${spent.toFixed(2)} spent this UTC month); ask the runtime operator to raise it`;
   }
 
   /** Usage since `since`, summed per UTC day and model. */

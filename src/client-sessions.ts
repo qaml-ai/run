@@ -80,6 +80,8 @@ const validId = (value: unknown): value is string => typeof value === "string" &
 const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 const has = (object: object, key: string) => Object.hasOwn(object, key);
 const RUN_METHODS = ["prompt", "execute", "continue"];
+/** Runs that call the model; code executions do not, so spend limits leave them alone. */
+const MODEL_RUNS = ["prompt", "continue"];
 const FILE_TOOL_NAMES = new Set(volumeToolDefinitions([]).map(tool => tool.name));
 /** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. */
 const MAX_RESUMES = 2;
@@ -141,6 +143,11 @@ export interface ClientSessionOptions {
   retry?: AgentConfig["retry"];
   /** Durable wake-ups for agents (`/clients/:id/schedules`). */
   scheduler?: Scheduler;
+  /**
+   * Why a tenant may not spend more on models (a reached monthly cap). Checked when a model run is
+   * accepted (402), when it starts, and after each model response in a turn that would continue.
+   */
+  spendLimit?: (tenant: string) => Promise<string | undefined>;
   /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
   onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
   hooks?: SessionHooks;
@@ -456,6 +463,7 @@ export class ClientSessions {
       const apiKey = await this.apiKey(session, session.header.config.model.provider);
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: [...this.fileTools(session, session.header.definitions), ...session.header.definitions],
+        spendLimit: () => this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT),
         // File tools run here against the agent's current mounts; every other tool goes to the application.
         call: async (name, args, signal, context) => {
           if (!this.isFileTool(session, name)) return this.call(session, name, args, signal, context);
@@ -829,6 +837,10 @@ export class ClientSessions {
     const retried = existing();
     if (retried) return { status: 200, record: visible(retried) };
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
+    if (MODEL_RUNS.includes(body.method)) {
+      const limited = await this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT);
+      if (limited) throw new HttpError(402, limited);
+    }
     const isRun = RUN_METHODS.includes(body.method);
     // Reads and aborts never need a process; runs start it when their turn comes.
     if (!isRun && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
@@ -905,6 +917,11 @@ export class ClientSessions {
     try {
       if (RUN_METHODS.includes(record.method)) {
         if (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running") return;
+        // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
+        if (MODEL_RUNS.includes(record.method) && !session.resuming.has(record.id)) {
+          const limited = await this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT);
+          if (limited) throw new HttpError(402, limited);
+        }
         await this.ensureStarted(session);
         if (this.draining) return;
         // Durable before any side effect: after a crash this run is "began", never repeated.

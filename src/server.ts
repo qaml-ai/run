@@ -231,6 +231,7 @@ const clients = new ClientSessions(supervisor, {
   secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, agentLimitFor: tenant => tenants.maxAgents(tenant),
   apiKeyFor: (tenant, provider) => accounts.apiKey(tenant, provider),
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
+  spendLimit: tenant => accounts.spendLimit(tenant),
   db, storage, prefix: "client-sessions/", ownership, volumes,
   get scheduler() { return scheduler; },
   get hooks() { return channels.hooks; },

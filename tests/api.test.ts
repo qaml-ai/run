@@ -364,3 +364,60 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
   assert.equal((await create(bob, refused)).status, 201);
   assert.equal((await create(alice, "a3")).status, 201, "alice's idle agent makes room under the default");
 });
+
+test("a tenant's monthly spend cap ends a turn after the response that crosses it, refuses new runs, and a reload raising it lets the turn continue", async t => {
+  // Each response costs $0.15: 5000 input tokens of openai/gpt-5.5-pro, far below its context window.
+  const bodies: any[] = [];
+  const model = createServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    bodies.push(body);
+    const index = bodies.length - 1;
+    const delta = index < 2 ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${index}`, type: "function", function: { name: "js_exec", arguments: JSON.stringify({ code: `return ${index}` }) } }] } : { role: "assistant", content: "finished" };
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: index < 2 ? "tool_calls" : "stop" }], usage: { prompt_tokens: 5000, completion_tokens: 0 } })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  }).listen(0, "127.0.0.1");
+  await once(model, "listening");
+  t.after(async () => { model.closeAllConnections(); await new Promise(resolve => model.close(resolve)); });
+  const tenants = (cap: number) => ({ alice: { tokenSha256: sha(alice), apiKeys: { "*": "fixture-key" }, maxMonthlyCost: cap } });
+  const { root, call, child, logged } = await runtime(t, undefined, {
+    AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_BASE_URL: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`,
+    ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),
+  }, tenants(0.25));
+  const agent = (await call("/v1/agents", { token: alice, body: {} })).json;
+  const settled = async (requestId: string) => {
+    for (let tries = 0; ; tries++) {
+      const record = (await call(`/v1/agents/${agent.id}/requests/${requestId}`, { token: alice })).json;
+      if (record.state === "completed") return record.outcome;
+      assert.ok(tries < 200, "the run settles");
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  };
+  assert.equal((await call(`/v1/agents/${agent.id}/prompt`, { token: alice, body: { text: "go", requestId: "first" } })).status, 202);
+  const first = await settled("first");
+  assert.equal(first.result.stopped, "spend_limit");
+  assert.match(first.result.error, /monthly spend limit of \$0\.25/);
+  assert.equal(bodies.length, 2, "the turn ended after the response that crossed the cap");
+  const history = (await call(`/v1/agents/${agent.id}/history`, { token: alice })).json.messages;
+  assert.deepEqual(history.map((message: any) => message.role), ["user", "assistant", "toolResult", "assistant", "toolResult"], "every tool call has its result");
+
+  const refused = await call(`/v1/agents/${agent.id}/prompt`, { token: alice, body: { text: "again", requestId: "refused" } });
+  assert.equal(refused.status, 402);
+  assert.match(refused.json.error, /spend limit/);
+  assert.equal(bodies.length, 2);
+
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: tenants(10) }));
+  const reloaded = logged(/tenants_reloaded/);
+  child.kill("SIGHUP");
+  await reloaded;
+  assert.equal((await call(`/v1/agents/${agent.id}/prompt`, { token: alice, body: { text: "carry on", requestId: "after" } })).status, 202);
+  const after = await settled("after");
+  assert.equal(after.result.error, null);
+  assert.equal(after.result.reply, "finished");
+  assert.deepEqual(bodies[2].messages.map((message: any) => message.role).filter((role: string) => !["system", "developer"].includes(role)), ["user", "assistant", "tool", "assistant", "tool", "user"]);
+  const usage = (await call("/v1/usage", { token: alice })).json;
+  assert.equal(usage.totals.responses, 3);
+});

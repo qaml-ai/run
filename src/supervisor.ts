@@ -114,6 +114,7 @@ export class AgentSupervisor {
     rpc.handler = async (method, params) => {
       if (method === "cancel-tools") return this.cancelTools(handle);
       if (method === "transcript") return this.transcriptRequest(handle, params);
+      if (method === "spend-limit") return (await handle.bridge.spendLimit?.()) ?? null;
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
@@ -142,6 +143,7 @@ export class AgentSupervisor {
       emit: event => { for (const listener of handle.listeners) listener(structuredClone(event)); },
       tool: (name, args, toolCallId) => this.dispatchTool(handle, { name, args: structuredClone(args), toolCallId }),
       cancelTools: async () => this.cancelTools(handle),
+      spendLimit: async () => handle.bridge.spendLimit?.(),
     });
     this.agents.set(id, handle);
     this.starting.delete(id);
