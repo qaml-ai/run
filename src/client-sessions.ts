@@ -59,6 +59,8 @@ type Session = {
   runs: Promise<void>;
   /** Runs that began on a lost node, queued here to resume their turn. */
   resuming: Set<string>;
+  /** Runs marked completed whose outcome is not yet durable and published: still in flight. */
+  settling: number;
   /** How the agent process found the interrupted turn when it started. */
   handoff?: { continue: true } | { finished: unknown };
   fault?: Error;
@@ -251,7 +253,7 @@ export class ClientSessions {
     const session: Session = {
       header, revision: stored.revision, claim, requests: new Map(), calls: new Map(), log,
       // Cursors restart above any cursor from an earlier process, so clients see a gap, never a repeat.
-      cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), lastActive: Date.now(),
+      cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
     };
     for (const record of await log.read()) this.apply(session, record);
     if (header.version !== 3 || header.id !== id) throw new Error("Invalid client session header");
@@ -353,7 +355,7 @@ export class ClientSessions {
   }
 
   private busy(session: Session) {
-    return !!session.starting || session.pending.size > 0 || [...session.requests.values()].some(request => request.state === "running");
+    return !!session.starting || session.settling > 0 || session.pending.size > 0 || [...session.requests.values()].some(request => request.state === "running");
   }
 
   /**
@@ -455,7 +457,7 @@ export class ClientSessions {
       session = {
         header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
         claim, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
-        cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), lastActive: Date.now(),
+        cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
       };
       // A conditional create: if a concurrent request made this agent first, retry as a load.
       try { await this.writeHeader(session); }
@@ -784,12 +786,16 @@ export class ClientSessions {
     catch (error) { value = { error: errorText(error) }; }
     if (this.closed || session.fault || session.requests.get(record.id)?.state !== "running") return;
     const { params: _params, ...finished } = record;
-    const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now() });
-    try { await this.commit(session, true); }
-    catch { return; /* The fault is reported to every later request. */ }
-    if (RUN_METHODS.includes(record.method)) this.hook("runEnded", session, completed);
-    session.lastActive = Date.now();
-    this.publish(session, { type: "response", id: record.id, outcome: value });
+    // Until the response is published, a drain or release must not close the stream and drop it.
+    session.settling++;
+    try {
+      const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now() });
+      try { await this.commit(session, true); }
+      catch { return; /* The fault is reported to every later request. */ }
+      if (RUN_METHODS.includes(record.method)) this.hook("runEnded", session, completed);
+      session.lastActive = Date.now();
+      this.publish(session, { type: "response", id: record.id, outcome: value });
+    } finally { session.settling--; }
     await this.fold(session);
   }
 
@@ -907,7 +913,7 @@ export class ClientSessions {
     await this.commit(session, true);
   }
 
-  /** Requests being worked on: runs that began and other open requests, but not queued runs or resumes. */
+  /** Requests being worked on: runs that began, until their outcome is published, and other open requests; not queued runs or resumes. */
   inFlight() {
     let count = 0;
     for (const session of this.sessions.values()) count += this.working(session);
@@ -915,7 +921,7 @@ export class ClientSessions {
   }
 
   private working(session: Session) {
-    let count = session.starting ? 1 : 0;
+    let count = (session.starting ? 1 : 0) + session.settling;
     for (const request of session.requests.values()) {
       if (request.state === "running" && (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method))) count++;
     }

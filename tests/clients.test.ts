@@ -146,6 +146,38 @@ test("SSE reconnect replays events and preserves an in-flight client callback", 
   assert.ok(events.length >= 1);
 });
 
+test("a run stays in flight until its outcome is durable and published, so a drain never closes the stream first", async t => {
+  const f = await fixture(t);
+  const release = Promise.withResolvers<void>();
+  const agent = await f.start({ echo: echo(async () => { await release.promise; return "done"; }) });
+  const running = agent.execute('return await tools.echo({value:"x"})', { timeoutMs: 20_000 });
+  let session;
+  for (let i = 0; !(session = f.sessions.sessions.get(agent.session.id))?.pending.size; i++) { assert.ok(i < 500, "the tool call was offered"); await sleep(10); }
+  // Hold the durable flush that records the run as completed, as a slow database would.
+  const flushing = Promise.withResolvers<void>();
+  const proceed = Promise.withResolvers<void>();
+  const flush = session.log.flush.bind(session.log);
+  session.log.flush = async durable => {
+    if (durable && [...session.requests.values()].some(request => request.state === "completed")) { flushing.resolve(); await proceed.promise; }
+    return flush(durable);
+  };
+  release.resolve();
+  await flushing.promise;
+  const inFlight = f.sessions.inFlight();
+  // What SIGTERM does: wait until nothing is in flight, then close every stream.
+  const drained = (async () => {
+    while (f.sessions.inFlight()) await sleep(10);
+    const published = session.events.some(event => event.data.type === "response");
+    await f.sessions.close();
+    return published;
+  })();
+  await sleep(100);
+  proceed.resolve();
+  assert.equal(inFlight, 1, "a completed run whose outcome is not yet durable is still in flight");
+  assert.equal(await drained, true, "the response was published before the drain closed the stream");
+  assert.deepEqual((await running).output, ["done"]);
+});
+
 test("execution claims are one-time; a timed-out claimed call settles as unknown without blocking the agent", async t => {
   const f = await fixture(t, { timeout: 400 });
   const agent = await f.start({ echo: echo(() => "must not execute") });
