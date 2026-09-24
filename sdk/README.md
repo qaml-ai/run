@@ -1,4 +1,4 @@
-# @qaml-ai/agent-runtime
+# @camelai/agent-runtime
 
 SDK for the camelAI hosted agent runtime. Your application defines tools as
 ordinary functions; the runtime runs the model loop, keeps each agent's history,
@@ -11,10 +11,10 @@ Requires Node 22 or later (or Bun).
 ## Install
 
 ```sh
-npm install @qaml-ai/agent-runtime
+npm install @camelai/agent-runtime
 ```
 
-Upgrade with `npm update @qaml-ai/agent-runtime`.
+Upgrade with `npm update @camelai/agent-runtime`.
 
 The SDK has one runtime dependency (`typebox`). Its message and model types come
 from Pi; for full typing of history and events, also install
@@ -27,7 +27,7 @@ You need the runtime URL and your tenant's operator token. Keep the operator
 token on your backend; it can create and control every agent in your tenant.
 
 ```ts
-import { AgentRuntime, schema, tool } from "@qaml-ai/agent-runtime/node";
+import { AgentRuntime, schema, tool } from "@camelai/agent-runtime/node";
 
 const runtime = new AgentRuntime({
   url: "https://agents.camelai.dev",
@@ -83,7 +83,7 @@ Save `agent.session` (it contains a scoped credential) to reconnect later with
 `runtime.connectAgent(session, { tools })`. Pass the same `idempotencyKey` to
 `createAgent` to get the same agent back instead of a new one.
 
-`@qaml-ai/agent-runtime` (without `/node`) is the portable build for Workers and
+`@camelai/agent-runtime` (without `/node`) is the portable build for Workers and
 other runtimes without a filesystem; supply your own `journalStore`.
 
 See `clients/README.md` in the repository for delivery

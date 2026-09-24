@@ -1,5 +1,5 @@
 {
-  "name": "@qaml-ai/agent-runtime",
+  "name": "@camelai/agent-runtime",
   "version": "0.3.0",
   "description": "SDK for the camelAI hosted agent runtime: define tools in your app, and the runtime runs the model loop, history and sandbox.",
   "type": "module",

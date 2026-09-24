@@ -8,7 +8,7 @@ export function QuickstartPage() {
   const available = useApi<Model[]>("/v1/models?available=true");
   const url = location.origin;
   const model = available.data?.find(entry => entry.id === "anthropic/claude-sonnet-5")?.id ?? available.data?.[0]?.id ?? "anthropic/claude-sonnet-5";
-  const typescript = `import { AgentRuntime, schema, tool } from "@qaml-ai/agent-runtime/node";
+  const typescript = `import { AgentRuntime, schema, tool } from "@camelai/agent-runtime/node";
 
 const runtime = new AgentRuntime({
   url: "${url}",
@@ -77,12 +77,11 @@ curl ${url}/v1/agents/<id>/history -H "Authorization: Bearer $AGENT_RUNTIME_TOKE
           <CardHeader>
             <CardTitle>1. Install the SDK</CardTitle>
             <CardDescription>
-              The TypeScript SDK is in the qaml-ai GitHub Packages registry. You need access to the qaml-ai/camelAI repository and a GitHub token with <code className="font-mono">read:packages</code>. Requires Node 22+.
+              The TypeScript SDK is on npm. Requires Node 22+.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <CodeBlock language=".npmrc" code={"@qaml-ai:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}"} />
-            <CodeBlock language="shell" code="GITHUB_TOKEN=<github token> npm install @qaml-ai/agent-runtime" />
+            <CodeBlock language="shell" code="npm install @camelai/agent-runtime" />
           </CardContent>
         </Card>
         <Card>

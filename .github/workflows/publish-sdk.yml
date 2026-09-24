@@ -1,5 +1,5 @@
 name: Publish SDK
-# Push a tag like sdk-v0.3.0 (matching sdk/package.json) to publish @qaml-ai/agent-runtime to npmjs.
+# Push a tag like sdk-v0.3.0 (matching sdk/package.json) to publish @camelai/agent-runtime to npmjs.
 on:
   push: { tags: ["sdk-v*"] }
 jobs:

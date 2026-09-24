@@ -117,7 +117,7 @@ and redeploy.
 
 ## SDKs
 
-- TypeScript: `sdk`, published as `@qaml-ai/agent-runtime`
+- TypeScript: `sdk`, published as `@camelai/agent-runtime`
   to GitHub Packages. Bump `version` in `sdk/package.json`, then run
   `npm publish` from that directory. Installation instructions are in
   `sdk/README.md`.
