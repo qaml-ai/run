@@ -157,8 +157,8 @@ variable "dns_ttl" {
   default     = 60
 }
 
-variable "github_repository" {
-  description = "GitHub repository (owner/name) whose production environment may deploy."
+variable "github_subject" {
+  description = "OIDC subject prefix of the repository whose production environment may deploy. The repository uses immutable subjects: gh api repos/<owner>/<repo>/actions/oidc/customization/sub shows sub_claim_prefix."
   type        = string
-  default     = "qaml-ai/agent-runtime"
+  default     = "qaml-ai@151090534/agent-runtime@1384214784"
 }
