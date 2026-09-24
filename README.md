@@ -192,8 +192,10 @@ resumed at most twice, counted in the journal; after that, and for code
 executions, the request fails as uncertain.
 
 **Load.** Every minute each node logs a `node_load` line in CloudWatch Embedded
-Metric Format: namespace `AgentRuntime`, metrics `agents` (awake agents),
-`volumes` (volumes it serves), `runningTurns` and `rssBytes`, with no dimension
+Metric Format: namespace `AgentRuntime`, metrics `hostedAgents` (agents started
+on the node, what `AGENT_MAX_AGENTS` caps), `sessions` (agents loaded on the node,
+hosted or not), `agents` (the older name of `hostedAgents`, kept for existing
+dashboards), `volumes` (volumes it serves), `runningTurns` and `rssBytes`, with no dimension
 or `ServiceName` from `AGENT_SERVICE_NAME`. CloudWatch Logs extracts them
 without API calls, so they can drive target-tracking scaling.
 

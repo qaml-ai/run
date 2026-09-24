@@ -371,7 +371,7 @@ tenantsTimer?.unref();
 
 // Load for autoscaling, as a CloudWatch metric extracted from the log line.
 const loadTimer = setInterval(() => console.log(nodeLoadLine({
-  agents: supervisor.agents.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: process.memoryUsage.rss(),
+  hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: process.memoryUsage.rss(),
 }, process.env.AGENT_SERVICE_NAME, { node, retiring: retiringSince !== undefined })), 60_000);
 loadTimer.unref();
 // Tail rows a dead node left for agents and volumes that are gone since.

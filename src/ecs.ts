@@ -103,11 +103,17 @@ export class TaskProtection {
   }
 }
 
-export type NodeLoad = { agents: number; volumes: number; runningTurns: number; rssBytes: number };
+/**
+ * `hostedAgents`: agents started on the node (processes, or inline hosts), what
+ * AGENT_MAX_AGENTS caps. `sessions`: agents loaded here (journal and stream in
+ * memory), hosted or not.
+ */
+export type NodeLoad = { hostedAgents: number; sessions: number; volumes: number; runningTurns: number; rssBytes: number };
 
 /**
  * A `node_load` log line in CloudWatch Embedded Metric Format: CloudWatch Logs
- * extracts the metrics itself, so publishing needs no API calls or IAM.
+ * extracts the metrics itself, so publishing needs no API calls or IAM. `agents`
+ * repeats `hostedAgents` for dashboards and alarms made before it had a name.
  */
 export function nodeLoadLine(load: NodeLoad, service?: string, extra: Record<string, unknown> = {}, now = Date.now()) {
   return JSON.stringify({
@@ -115,9 +121,12 @@ export function nodeLoadLine(load: NodeLoad, service?: string, extra: Record<str
       Timestamp: now,
       CloudWatchMetrics: [{
         Namespace: "AgentRuntime", Dimensions: [service ? ["ServiceName"] : []],
-        Metrics: [{ Name: "agents", Unit: "Count" }, { Name: "volumes", Unit: "Count" }, { Name: "runningTurns", Unit: "Count" }, { Name: "rssBytes", Unit: "Bytes" }],
+        Metrics: [
+          { Name: "hostedAgents", Unit: "Count" }, { Name: "sessions", Unit: "Count" }, { Name: "agents", Unit: "Count" },
+          { Name: "volumes", Unit: "Count" }, { Name: "runningTurns", Unit: "Count" }, { Name: "rssBytes", Unit: "Bytes" },
+        ],
       }],
     },
-    type: "node_load", ...extra, ...(service ? { ServiceName: service } : {}), ...load,
+    type: "node_load", ...extra, ...(service ? { ServiceName: service } : {}), ...load, agents: load.hostedAgents,
   });
 }

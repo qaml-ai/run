@@ -312,9 +312,11 @@ resource "aws_appautoscaling_policy" "runtime" {
   }
 }
 
-# Example: scale on the runtime's EMF metric AgentRuntime/agents (agents
-# resident per task, dimension ServiceName from AGENT_SERVICE_NAME) instead of,
-# or as well as, CPU and memory. Pick target_value from observed load.
+# Example: scale on the runtime's EMF metric AgentRuntime/hostedAgents (agents
+# started per task, what AGENT_MAX_AGENTS caps; dimension ServiceName from
+# AGENT_SERVICE_NAME) instead of, or as well as, CPU and memory. The metric
+# `sessions` counts agents loaded per task, hosted or not; `agents` is the older
+# name of hostedAgents. Pick target_value from observed load.
 #
 # resource "aws_appautoscaling_policy" "runtime_active_agents" {
 #   name               = "${var.name}-active-agents"
@@ -330,7 +332,7 @@ resource "aws_appautoscaling_policy" "runtime" {
 #
 #     customized_metric_specification {
 #       namespace   = "AgentRuntime"
-#       metric_name = "agents"
+#       metric_name = "hostedAgents"
 #       statistic   = "Average"
 #       dimensions {
 #         name  = "ServiceName"

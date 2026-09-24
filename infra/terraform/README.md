@@ -104,8 +104,11 @@ and the RDS instance also have deletion protection in AWS.
 - **Scaling**. Target tracking holds average CPU at 60% and average memory at 70%,
   within `service_min_count`..`service_max_count` (2..10). Scale-in has a
   5-minute cooldown. `ecs.tf` has a commented example of scaling on an
-  `AgentRuntime` EMF metric instead: `agents`, Average, dimension
-  `ServiceName` (the task sets `AGENT_SERVICE_NAME`).
+  `AgentRuntime` EMF metric instead: `hostedAgents` (agents started per task,
+  what `AGENT_MAX_AGENTS` caps), Average, dimension `ServiceName` (the task
+  sets `AGENT_SERVICE_NAME`). The runtime also publishes `sessions` (agents
+  loaded per task, hosted or not); `agents` is the older name of
+  `hostedAgents`, kept for existing dashboards.
 - **Task protection**. The runtime turns on ECS scale-in protection for its own
   task while turns are running (`AGENT_ECS_CLUSTER`, `AGENT_ECS_SERVICE` are
   set for it). Scale-in skips protected tasks, so it removes idle tasks first;
