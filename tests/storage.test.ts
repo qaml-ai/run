@@ -10,7 +10,7 @@ import { testDatabase } from "./database.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const temporary = async (t: Context) => { const root = await mkdtemp(join(tmpdir(), "storage-test-")); t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })); return root; };
-const tail = async () => postgresTail((await testDatabase()).db);
+const tail = async () => postgresTail((await testDatabase()).db, { unfenced: true });
 const backends: [string, (t: Context) => Promise<Storage>][] = [
   ["memory", async () => memoryStorage(await tail())],
   ["file", async t => fileStorage(await temporary(t))],

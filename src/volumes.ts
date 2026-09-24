@@ -3,8 +3,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage } from "../shared/storage.ts";
 import { NotOwner } from "./client-sessions.ts";
-import type { Db } from "./db.ts";
-import type { Claim, Ownership } from "./ownership.ts";
+import type { Db, Sql } from "./db.ts";
+import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { HttpError } from "./http.ts";
 import { deleteTail } from "./log-tail.ts";
 import { errorText, type ToolDefinition } from "./protocol.ts";
@@ -296,6 +296,18 @@ export class VolumeService {
     return change;
   }
 
+  /** Write the volume's own rows under its claim; a lost claim fences the volume as a failed append does. */
+  private async fenced<T>(volume: Volume, work: (sql: Sql) => Promise<T>): Promise<T> {
+    try { return await underClaim(this.db, volume.claim, work); }
+    catch (error) {
+      if (error instanceof LostClaim) {
+        volume.fault = error;
+        if (this.loaded.get(volume.header.id) === volume) this.loaded.delete(volume.header.id);
+      }
+      throw error;
+    }
+  }
+
   /** Append a record durably, then apply it. A failed append fences the volume until it reloads. */
   private async commit(volume: Volume, record: TreeRecord) {
     if (volume.fault) throw volume.fault;
@@ -418,20 +430,23 @@ export class VolumeService {
       return { path, deleted: true, seq: change.seq };
     }
     if (op === "snapshot") {
-      if ((await this.db.query("select count(*) as count from volume_snapshots where volume = $1", [id])).rows[0].count >= VOLUME_LIMITS.snapshots) throw new HttpError(409, `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
       const name = args.name === undefined ? `seq ${volume.seq}` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
       // Metadata only: the snapshot shares every chunk with the volume.
       const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: volume.tree.files.size, bytes: volume.tree.bytes };
       // The file map can hold 100,000 entries, so it is a blob; the summary is a row.
       await this.storage.writeBlob(snapshotFilesKey(id, snapshot.id), Buffer.from(JSON.stringify(Object.fromEntries(volume.tree.files))));
-      await this.db.query("insert into volume_snapshots (id, volume, name, seq, created_at, files, bytes) values ($1, $2, $3, $4, $5, $6, $7)",
-        [snapshot.id, id, snapshot.name, snapshot.seq, snapshot.createdAt, snapshot.files, snapshot.bytes]);
+      await this.fenced(volume, async sql => {
+        if ((await sql.query("select count(*) as count from volume_snapshots where volume = $1", [id])).rows[0].count >= VOLUME_LIMITS.snapshots) throw new HttpError(409, `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
+        await sql.query("insert into volume_snapshots (id, volume, name, seq, created_at, files, bytes) values ($1, $2, $3, $4, $5, $6, $7)",
+          [snapshot.id, id, snapshot.name, snapshot.seq, snapshot.createdAt, snapshot.files, snapshot.bytes]);
+      });
       return snapshot;
     }
     if (op === "deleteSnapshot") {
       // The file map stays in Storage, like chunks, until garbage collection exists.
-      if (typeof args.snapshot !== "string" || !(await this.db.query("delete from volume_snapshots where id = $1 and volume = $2", [args.snapshot, id])).rowCount) throw new HttpError(404, "Unknown snapshot");
+      const snapshot = args.snapshot;
+      if (typeof snapshot !== "string" || !(await this.fenced(volume, sql => sql.query("delete from volume_snapshots where id = $1 and volume = $2", [snapshot, id]))).rowCount) throw new HttpError(404, "Unknown snapshot");
       return { deleted: true };
     }
     if (op === "fork") {
@@ -448,22 +463,35 @@ export class VolumeService {
       const name = args.name === undefined ? `${volume.header.name} (fork)` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
       const header: VolumeHeader = { version: 1, id: newId("vol", 12), tenant: volume.header.tenant, name: name.trim(), createdAt: Date.now(), origin: { volume: id, ...(args.snapshot ? { snapshot: args.snapshot } : {}), seq } };
-      // The fork's tree starts as a folded copy of the source's metadata; chunks are shared.
-      const log = this.storage.log<TreeRecord>(treeKey(header.id));
-      await log.rewrite(() => [{ t: "base", seq }, ...files.map(([path, entry]) => ({ t: "put" as const, seq: entry.version, path, entry }))]);
-      await log.close();
-      await this.writeNew(header);
+      // The fork's tree starts as a folded copy of the source's metadata; chunks are shared. Written under
+      // the new volume's own claim, which nothing else can hold yet.
+      const ownership = this.options.ownership;
+      const acquired = ownership && await ownership.acquire(header.id);
+      if (acquired && !("claim" in acquired)) throw new HttpError(503, "The fork's new volume is taken; retry");
+      const claim = acquired?.claim;
+      try {
+        const log = this.storage.log<TreeRecord>(treeKey(header.id), claim);
+        await log.rewrite(() => [{ t: "base", seq }, ...files.map(([path, entry]) => ({ t: "put" as const, seq: entry.version, path, entry }))]);
+        await log.close();
+        await this.writeNew(header);
+      } finally {
+        if (claim) await ownership!.release(claim).catch(() => {});
+      }
       const tree = new Tree();
       for (const [path, entry] of files) tree.put(path, entry);
       return this.summary(header, tree, seq);
     }
     if (op === "delete") {
-      if (!(await this.db.query("update volumes set deleted_at = $2 where id = $1 and deleted_at is null", [id, Date.now()])).rowCount) throw new HttpError(404, `Unknown volume ${id}`);
-      await this.db.query("delete from volume_snapshots where volume = $1", [id]);
-      await this.db.query("delete from volume_watchers where volume = $1", [id]);
+      // Tail rows go before unloading, so nothing of a deleted volume is compacted into Storage.
+      const deleted = await this.fenced(volume, async sql => {
+        if (!(await sql.query("update volumes set deleted_at = $2 where id = $1 and deleted_at is null", [id, Date.now()])).rowCount) return false;
+        await sql.query("delete from volume_snapshots where volume = $1", [id]);
+        await sql.query("delete from volume_watchers where volume = $1", [id]);
+        await deleteTail(sql, id);
+        return true;
+      });
+      if (!deleted) throw new HttpError(404, `Unknown volume ${id}`);
       volume.fault = new HttpError(404, `Unknown volume ${id}`);
-      // Before unloading, so nothing of a deleted volume is compacted into Storage.
-      await deleteTail(this.db, id);
       await this.unload(volume);
       return { deleted: true };
     }

@@ -29,7 +29,7 @@ const never = new AbortController().signal;
 
 async function service(t: Context, storage?: ReturnType<typeof memoryStorage>, db?: Db) {
   db ??= (await testDatabase()).db;
-  storage ??= memoryStorage(postgresTail(db));
+  storage ??= memoryStorage(postgresTail(db, { unfenced: true }));
   const volumes = new VolumeService({ db, storage });
   t.after(() => volumes.close());
   const write = async (id: string, path: string, content: string | Buffer, ifMatch?: number, tenant = "acme") =>
@@ -89,7 +89,7 @@ test("versioned writes reject stale versions, and the tree keeps files and direc
 
 test("the tree survives a reload from its log, including after folding", async t => {
   const { db } = await testDatabase();
-  const storage = memoryStorage(postgresTail(db));
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   const first = await service(t, storage, db);
   const { id } = await first.volumes.create("acme");
   for (let index = 0; index < 1100; index++) await first.write(id, `/f/${index % 50}.txt`, `v${index}`);
@@ -181,7 +181,7 @@ test("file tools: mount paths, read-only mounts, subpaths and edit conflicts the
 
 test("large files are read in bounded windows that fetch only the chunks they cover", async t => {
   const { db } = await testDatabase();
-  const storage = memoryStorage(postgresTail(db));
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   const reads: string[] = [];
   const readBlob = storage.readBlob.bind(storage);
   storage.readBlob = key => { reads.push(key); return readBlob(key); };

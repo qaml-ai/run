@@ -35,7 +35,7 @@ const expire = (db: pg.Pool, node: string) => db.query("update runtime_nodes set
 
 test("appends go to the tail, not Storage; compaction folds them into one segment in the old format", async () => {
   const { db } = await testDatabase();
-  const storage = memoryStorage(postgresTail(db));
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   // A log written before the tail existed: segments (one per flush) and a snapshot.
   storage.logs.set("agents/old/log", new Map([
     ["000000000000", '{"n":0}\n'], ["snapshot-000000000001", '[{"n":1}]'], ["000000000002", '{"n":2}\n{"n":3}\n'],
@@ -57,7 +57,7 @@ const objects = (storage: ReturnType<typeof memoryStorage>, key: string) => [...
 
 test("a log reopened and compacted again and again folds into a snapshot instead of piling up segments", async () => {
   const { db } = await testDatabase();
-  const storage = memoryStorage(postgresTail(db));
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   const key = "agents/woken/log";
   for (let n = 0; n < 30; n++) {
     const log = storage.log<{ n: number }>(key);
@@ -99,7 +99,7 @@ test("reads fetch a log's segments a few at a time, in order", async () => {
 
 test("a long-lived writer compacts once the tail passes its bound", async () => {
   const { db } = await testDatabase();
-  const storage = memoryStorage(postgresTail(db));
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   const log = storage.log<{ n: number }>("agents/busy/log");
   await log.read();
   for (let n = 0; n < 1100; n++) { log.append({ n }); await log.flush(true); }
@@ -111,7 +111,7 @@ test("a long-lived writer compacts once the tail passes its bound", async () => 
 
 test("a crash between the Storage write and the row delete repeats no record", async () => {
   const { db } = await testDatabase();
-  const real = postgresTail(db);
+  const real = postgresTail(db, { unfenced: true });
   // The compaction's transaction fails after the segment is written, so the rows stay.
   const crashing: LogTail = { ...real, compact: (key, claim, fold) => real.compact(key, claim, async rows => { await fold(rows); throw new Error("crashed"); }) };
   const storage = memoryStorage(crashing);
@@ -165,6 +165,36 @@ test("a stale owner's appends and compactions are rejected, and it stays fenced"
   owner.append({ n: 2 }); await owner.flush(true);
   await owner.close();
   assert.deepEqual(await storage.log("volumes/vol_x/tree").read(), [{ n: 1 }, { n: 2 }]);
+});
+
+test("a stale owner's compaction keeps the blobs its successor names again", async t => {
+  const { db } = await testDatabase();
+  const real = postgresTail(db);
+  const big = { text: "x".repeat(100_000) };
+  const a = await claimed(t, db, "http://a", "client_blob");
+  let b: { ownership: Ownership; claim: Claim } | undefined;
+  // Once a's compaction commits, and before it removes the blob it folded, b takes the actor and writes the same record.
+  const tail: LogTail = {
+    ...real,
+    compact: async (key, claim, fold) => {
+      const held = await real.compact(key, claim, fold);
+      if (claim === a.claim) {
+        await expire(db, "http://a");
+        b = await claimed(t, db, "http://b", "client_blob");
+        const next = storage.log<typeof big>(key, b.claim);
+        await next.read();
+        next.append(big); await next.flush(true);
+      }
+      return held;
+    },
+  };
+  const storage = memoryStorage(tail);
+  const stale = storage.log<typeof big>("agents/blob/log", a.claim);
+  await stale.read();
+  stale.append(big); await stale.flush(true);
+  await stale.close();
+  assert.ok(b, "b took over mid-compaction");
+  assert.deepEqual(await storage.log("agents/blob/log", b.claim).read(), [big, big], "the blob b's row names is still there");
 });
 
 test("rows of revoked agents and deleted volumes that no live node holds are swept", async t => {

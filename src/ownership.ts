@@ -1,10 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import type { Db } from "./db.ts";
+import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 
 /** This node's ownership of one actor. Writes that only the owner may make are conditional on it. */
 export interface Claim { actor: string; session: string; epoch: number }
+
+/** A write under a claim that is no longer current: another node may own the actor now. */
+export class LostClaim extends HttpError {
+  constructor(actor: string) { super(503, `This node lost ownership of ${actor}; retry`); this.name = "LostClaim"; }
+}
+
+/**
+ * Run `work` in one transaction that first locks the claim's ownership row FOR SHARE,
+ * as a log append does: a takeover waits until it commits, and once the claim is no
+ * longer current nothing runs (LostClaim). Every write to state an actor owns goes
+ * through here or a log append. With no claim (no ownership configured: one node
+ * only) it is a plain transaction.
+ */
+export function underClaim<T>(db: Db, claim: Claim | undefined, work: (sql: Sql) => Promise<T>): Promise<T> {
+  return transaction(db, async sql => {
+    if (claim && !(await sql.query("select from actor_owners where actor = $1 and session = $2 and epoch = $3 for share", [claim.actor, claim.session, claim.epoch])).rowCount) {
+      throw new LostClaim(claim.actor);
+    }
+    return work(sql);
+  });
+}
 
 /**
  * Which node serves each actor (an agent or a volume). Every node keeps one
@@ -179,6 +200,11 @@ export class Ownership {
   forget(actor?: string) {
     if (actor) this.owners.delete(actor);
     this.peers = undefined;
+  }
+
+  /** Every other node whose heartbeat is live, draining or not. */
+  async livePeers(): Promise<string[]> {
+    return (await this.db.query("select node from runtime_nodes where node <> $1 and expires_at > now() order by node", [this.node])).rows.map(row => row.node);
   }
 
   /** A live peer that is not draining, if any. */

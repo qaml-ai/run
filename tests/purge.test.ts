@@ -45,7 +45,8 @@ async function execute(sessions: ClientSessions, id: string, request: string) {
 
 test("deleting an agent purges everything it stored and leaves a tombstone that keeps its id and key", { timeout: 60_000 }, async t => {
   const { db } = await testDatabase();
-  const storage = memoryStorage(postgresTail(db));
+  // Unfenced: the test writes a transcript itself, with no claim.
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   const { sessions } = await node(t, db, storage, "a");
   const { id } = await sessions.create([], { model }, "doomed");
   for (let n = 0; n < 3; n++) await execute(sessions, id, `run-${n}`);

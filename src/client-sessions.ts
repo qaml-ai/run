@@ -20,8 +20,8 @@ import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
 import { volumeToolDefinitions } from "./volume-tools.ts";
-import { databaseUnavailable, type Db } from "./db.ts";
-import type { Claim, Ownership } from "./ownership.ts";
+import { databaseUnavailable, type Db, type Sql } from "./db.ts";
+import { underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
@@ -147,7 +147,8 @@ export interface ClientSessionOptions {
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
 }
-export type AgentRef = { id: string; tenant: string };
+/** An agent, and this node's claim on it: hooks write what the agent owns under it. */
+export type AgentRef = { id: string; tenant: string; claim?: Claim };
 /** Runtime features layered on agents (channels): they observe runs and may answer tools themselves. */
 export interface SessionHooks {
   runStarted?(agent: AgentRef, record: RequestRecord): void;
@@ -216,14 +217,14 @@ export class ClientSessions {
         : await this.db.query(`
             with owner as (select from actor_owners where actor = $1 and session = $10 and epoch = $11 for share)
             update agents set tenant = $2, header = $3, name = $4, type = $5, model = $6, expires_at = $7, revoked = $8, revision = revision + 1
-            where id = $1 and (revision = $9 or $12) and ($10::uuid is null or exists (select from owner))
+            where id = $1 and (revision = $9 or ($12 and revision = $9 + 1)) and ($10::uuid is null or exists (select from owner))
             returning revision`, [...columns, session.revision, session.claim?.session ?? null, session.claim?.epoch ?? null, !!session.unsettled]);
       if (!rows[0]) throw new Error("Another node changed this agent; it moved");
       session.revision = rows[0].revision;
       session.unsettled = false;
     } catch (error) {
-      // The database was unreachable, so the write may or may not have landed: answer 503, and write the
-      // next update over whichever revision is stored. While this node's claim holds, only it writes here.
+      // The database was unreachable, so the write may or may not have landed: answer 503, and let the next
+      // update go over either revision. While this node's claim holds, only it writes here.
       if (databaseUnavailable(error)) {
         if (session.revision !== undefined) session.unsettled = true;
         throw error;
@@ -563,11 +564,13 @@ export class ClientSessions {
       await this.supervisor.stop(id);
       if (this.sessions.get(id) === session) this.sessions.delete(id);
       await session.log.close();
-      const deleted = await this.db.query("delete from agents where id = $1 and revision = $2 and not revoked", [id, session.revision]);
-      if (deleted.rowCount) {
-        if (session.header.mounts?.length) await this.options.volumes?.watch(id, session.header.tenant ?? DEFAULT_TENANT, session.header.mounts, []);
-        await this.purgeData(id);
-      }
+      // Under the claim, so a retry that took the agent on another node keeps what it wrote.
+      const deleted = await underClaim(this.db, session.claim, async sql => {
+        const { rowCount } = await sql.query("delete from agents where id = $1 and revision = $2 and not revoked", [id, session.revision]);
+        if (rowCount) await this.purgeData(id, sql);
+        return !!rowCount;
+      });
+      if (deleted && session.header.mounts?.length) await this.options.volumes?.watch(id, session.header.tenant ?? DEFAULT_TENANT, session.header.mounts, []);
     } catch (error) {
       console.error(JSON.stringify({ type: "agent_discard_failed", agent: id, error: errorText(error) }));
     } finally {
@@ -576,10 +579,10 @@ export class ClientSessions {
   }
 
   /** Delete everything an agent stored: its journal, its transcript (and local directory), and their tail rows. */
-  private async purgeData(id: string) {
+  private async purgeData(id: string, sql: Sql) {
     await this.storage.removeLog(this.journalKey(id));
     await this.supervisor.purge(id);
-    await deleteTail(this.db, id, [this.journalKey(id), AgentSupervisor.transcriptKey(id)]);
+    await deleteTail(sql, id, [this.journalKey(id), AgentSupervisor.transcriptKey(id)]);
   }
 
   /** A tenant's live agents. `running` covers agents served by any node. */
@@ -947,14 +950,14 @@ export class ClientSessions {
   }
 
   private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
-    try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT }, record); }
+    try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT, claim: session.claim }, record); }
     catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: errorText(error) })); }
   }
 
   private async call(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown> {
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
     const hooks = this.options.hooks;
-    const agent = { id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT };
+    const agent = { id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT, claim: session.claim };
     const handled = await hooks?.tool?.(agent, name, args, request?.id, () => this.beforeEffect(session));
     if (handled) return handled.result;
     const origin = await hooks?.origin?.(agent, request?.id);
@@ -1103,14 +1106,17 @@ export class ClientSessions {
     try {
       // Revoking released the agent's volumes; one that expired unrevoked still holds them.
       if (!header.revoked) await this.releaseVolumes(header);
-      await this.purgeData(id);
-      await this.db.query("delete from schedules where agent = $1", [id]);
-      await this.db.query("delete from channel_agents where agent = $1", [id]);
-      await this.db.query("delete from channel_conversations where agent = $1", [id]);
-      await this.db.query("delete from volume_watchers where agent = $1", [id]);
-      const tombstone = { version: 3, id, ...(header.tenant ? { tenant: header.tenant } : {}), digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
-      await this.db.query("update agents set header = $2, name = $1, type = 'general', revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
-        [id, JSON.stringify(tombstone), Date.now()]);
+      // Under the claim: a node that stalled past its lease finds the claim gone and leaves the purge to whoever took it.
+      await underClaim(this.db, claim, async sql => {
+        await this.purgeData(id, sql);
+        await sql.query("delete from schedules where agent = $1", [id]);
+        await sql.query("delete from channel_agents where agent = $1", [id]);
+        await sql.query("delete from channel_conversations where agent = $1", [id]);
+        await sql.query("delete from volume_watchers where agent = $1", [id]);
+        const tombstone = { version: 3, id, ...(header.tenant ? { tenant: header.tenant } : {}), digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
+        await sql.query("update agents set header = $2, name = $1, type = 'general', revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
+          [id, JSON.stringify(tombstone), Date.now()]);
+      });
       return true;
     } finally {
       if (claim) await ownership!.release(claim).catch(() => {});
@@ -1174,7 +1180,7 @@ export class ClientSessions {
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     await session.log.close().catch(() => {});
     // A revoked agent's logs are never read again.
-    if (session.header.revoked) await deleteTail(this.db, session.header.id).catch(() => {});
+    if (session.header.revoked) await underClaim(this.db, session.claim, sql => deleteTail(sql, session.header.id)).catch(() => {});
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
   }
 

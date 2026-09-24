@@ -162,6 +162,8 @@ export interface LogTail {
    * deleted. False when `claim` is no longer current.
    */
   compact(key: string, claim: Claim | undefined, fold: (rows: TailRow[]) => Promise<number>): Promise<boolean>;
+  /** Run `work` while `claim` is current, and keep it current until `work` ends: no takeover meanwhile. False when it is not current. */
+  whileHeld(key: string, claim: Claim | undefined, work: () => Promise<void>): Promise<boolean>;
 }
 
 const segmentName = (sequence: number) => String(sequence).padStart(12, "0");
@@ -280,8 +282,10 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     });
     if (!held) throw fence();
     tailRecords = tailBytes = 0;
-    // Only after the rows are gone: until then a reader may still need what these replace.
-    await store.remove([...superseded, ...blobs]);
+    // Only after the rows are gone: until then a reader may still need what these replace. And only while the
+    // claim holds: blobs are content-addressed, so a next owner's rows may name the same blob again. Should
+    // the claim be gone, the objects stay behind as garbage.
+    if (superseded.length || blobs.length) await tail.whileHeld(key, claim, () => store.remove([...superseded, ...blobs]));
   }
 
   const write = async () => {

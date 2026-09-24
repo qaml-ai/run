@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { databaseUnavailable, transaction, type Db } from "./db.ts";
+import { databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
 import type { LogTail, TailRow } from "../shared/storage.ts";
-import type { Claim } from "./ownership.ts";
+import { LostClaim, underClaim, type Claim } from "./ownership.ts";
 
 /**
  * Logs' hot tails in `log_records`. An append is one multi-row insert, fenced in
@@ -19,8 +19,13 @@ import type { Claim } from "./ownership.ts";
  * durable flush waits the outage out instead of failing the turn or session that
  * made it. The fence still holds: a node that lost the actor meanwhile inserts
  * nothing, and its rows already there do not count.
+ *
+ * Every write needs a claim. `unfenced` lets tests write logs no actor owns.
  */
-export function postgresTail(db: Db, options: { retryMs?: number } = {}): LogTail {
+export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boolean } = {}): LogTail {
+  const required = (claim: Claim | undefined, key: string) => {
+    if (!claim && !options.unfenced) throw new Error(`A write to ${key} needs its owner's claim`);
+  };
   return {
     async rows(key) {
       return (await db.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key])).rows;
@@ -29,6 +34,7 @@ export function postgresTail(db: Db, options: { retryMs?: number } = {}): LogTai
       return (await db.query("select max(seq) as seq from log_records where log_key = $1", [key])).rows[0].seq ?? undefined;
     },
     async append(key, claim, rows) {
+      required(claim, key);
       const deadline = Date.now() + (options.retryMs ?? 0);
       for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
         try { return await insert(db, key, claim, rows); }
@@ -39,6 +45,7 @@ export function postgresTail(db: Db, options: { retryMs?: number } = {}): LogTai
       }
     },
     compact(key, claim, fold) {
+      required(claim, key);
       return transaction(db, async sql => {
         // idle_in_transaction_session_timeout (set on the role, migration 004) bounds a node that hangs here.
         await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`log:${key}`]);
@@ -49,6 +56,11 @@ export function postgresTail(db: Db, options: { retryMs?: number } = {}): LogTai
         await sql.query("delete from log_records where log_key = $1 and seq <= $2", [key, through]);
         return true;
       });
+    },
+    async whileHeld(key, claim, work) {
+      required(claim, key);
+      try { await underClaim(db, claim, work); return true; }
+      catch (error) { if (error instanceof LostClaim) return false; throw error; }
     },
   };
 }
@@ -79,7 +91,7 @@ function columns(rows: TailRow[]) {
 }
 
 /** Drop a deleted actor's tail rows (and those of `keys`, its logs, written without a claim); nothing reads its logs again. */
-export async function deleteTail(db: Db, actor: string, keys: string[] = []) {
+export async function deleteTail(db: Sql, actor: string, keys: string[] = []) {
   await db.query("delete from log_records where actor = $1 or log_key = any($2::text[])", [actor, keys]);
 }
 

@@ -11,7 +11,7 @@ import { HttpError, readText } from "./http.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { PreconditionFailed } from "../shared/storage.ts";
 import { transaction, type Db } from "./db.ts";
-import type { Claim, Ownership } from "./ownership.ts";
+import { underClaim, type Claim, type Ownership } from "./ownership.ts";
 
 /**
  * Channels let people talk to agents through messaging services. Each external
@@ -457,8 +457,9 @@ export class Channels {
     return { item: next, revision: rows[0].revision };
   }
 
-  private async finish(item: Item) {
-    await this.db.query("delete from channel_items where id = $1", [item.id]);
+  /** Drop a finished item, unless another node retook it since `current` was read. */
+  private async finish({ item, revision }: Held) {
+    await this.db.query("delete from channel_items where id = $1 and revision = $2", [item.id, revision]);
   }
 
   /** Release a claimed item after an unexpected error, to be retried later. */
@@ -468,7 +469,7 @@ export class Channels {
     if (!row || row.claimed_by !== this.options.node) return;
     const current = held(row);
     const attempts = (current.item.attempts ?? 0) + 1;
-    if (attempts >= MAX_ATTEMPTS) return this.finish(current.item).catch(() => {});
+    if (attempts >= MAX_ATTEMPTS) return this.finish(current).catch(() => {});
     await this.save(current, { attempts, due: Date.now() + this.retryDelay(attempts - 1) }, false).catch(() => {});
   }
 
@@ -476,7 +477,7 @@ export class Channels {
 
   private async advance(current: Held): Promise<void> {
     const channel = await this.read(current.item.channel);
-    if (!channel) return this.finish(current.item);
+    if (!channel) return this.finish(current);
     if (current.item.state === "received") return this.receive(channel, current);
     if (current.item.state === "submitted") return this.recheck(channel, current);
     return this.deliver(channel, current);
@@ -490,9 +491,9 @@ export class Channels {
     const minute = Math.floor(Date.now() / 60_000);
     const recent = await this.count(channel.id, `m${minute}/${sha(inbound.sender.id).slice(0, 16)}`);
     // Only the first message over a limit is told why; the rest are dropped quietly.
-    if (recent > channel.limits.perSenderPerMinute) return recent === channel.limits.perSenderPerMinute + 1 ? reply("You're sending messages too quickly. Please wait a minute and try again.") : this.finish(item);
+    if (recent > channel.limits.perSenderPerMinute) return recent === channel.limits.perSenderPerMinute + 1 ? reply("You're sending messages too quickly. Please wait a minute and try again.") : this.finish(current);
     const today = await this.count(channel.id, `d${new Date().toISOString().slice(0, 10)}/turns`);
-    if (today > channel.limits.turnsPerDay) return today === channel.limits.turnsPerDay + 1 ? reply("This assistant has reached its limit for today. Please try again tomorrow.") : this.finish(item);
+    if (today > channel.limits.turnsPerDay) return today === channel.limits.turnsPerDay + 1 ? reply("This assistant has reached its limit for today. Please try again tomorrow.") : this.finish(current);
     const { credentials } = this.secrets(channel);
     void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
     const agent = await this.agentFor(channel, item.conversationId, inbound.sender);
@@ -521,12 +522,12 @@ export class Channels {
     try { record = await this.options.submit(item.agent!, channel.tenant, { id: item.id, method: "prompt", params: item.prompt! }); }
     catch (error) {
       const status = (error as { status?: number }).status;
-      if (status === 404 || status === 410) return this.finish(item);
+      if (status === 404 || status === 410) return this.finish(current);
       throw error;
     }
     if (record.state !== "completed") { await this.save(current, { due: Date.now() + RECHECK_MS }, false); return; }
     const text = replyText(record);
-    if (!text) return this.finish(item);
+    if (!text) return this.finish(current);
     await this.deliver(channel, await this.save(current, { state: "sending", text, sent: 0, attempts: 0 }));
   }
 
@@ -540,7 +541,7 @@ export class Channels {
         const attempts = (current.item.attempts ?? 0) + 1;
         const permanent = error instanceof SendError && error.permanent;
         console.error(JSON.stringify({ type: "channel_send_failed", item: current.item.id, attempts, permanent, error: errorText(error) }));
-        if (permanent || attempts >= MAX_ATTEMPTS) return this.finish(current.item);
+        if (permanent || attempts >= MAX_ATTEMPTS) return this.finish(current);
         const delay = Math.max(this.retryDelay(attempts - 1), error instanceof SendError ? error.retryAfterMs ?? 0 : 0);
         await this.save(current, { attempts, due: Date.now() + delay }, false);
         return;
@@ -548,19 +549,22 @@ export class Channels {
       // Progress is durable per part, so a retry resumes after the last part sent.
       current = await this.save(current, { sent: index + 1 }, true);
     }
-    await this.finish(current.item);
+    await this.finish(current);
   }
 
-  /** Queue a message to a conversation and try to send it now. */
-  private async enqueue(binding: Binding, id: string, text: string) {
+  /**
+   * Queue an agent's message to its conversation and try to send it now. Queued under
+   * the agent's claim, so a node that lost the agent mid-turn sends nothing more for it.
+   */
+  private async enqueue(agent: AgentRef, binding: Binding, id: string, text: string) {
     const now = Date.now();
-    const created = await this.insert(this.db, {
+    const created = await underClaim(this.db, agent.claim, sql => this.insert(sql, {
       id, channel: binding.channel, tenant: binding.tenant, conversationId: binding.conversationId, createdAt: now,
       state: "sending", text, sent: 0, attempts: 0, due: now,
-    });
+    }));
     if (!created) return;
     const channel = await this.read(binding.channel);
-    if (!channel) return this.finish(created.item);
+    if (!channel) return this.finish(created);
     await this.deliver(channel, created).catch(error => this.failed(created.item, error));
   }
 
@@ -640,7 +644,7 @@ export class Channels {
       const text = typeof args.text === "string" ? args.text.trim() : "";
       if (!text) throw new Error("send_message needs text");
       await beforeEffect();
-      await this.enqueue(binding, `msg_${randomUUID().replaceAll("-", "")}`, text);
+      await this.enqueue(agent, binding, `msg_${randomUUID().replaceAll("-", "")}`, text);
       return { result: { sent: true } };
     },
     origin: async (agent, requestId) => {
@@ -667,19 +671,19 @@ export class Channels {
     const text = replyText(record);
     if (!record.id.startsWith("in_")) {
       // Turns not started by a message (schedules, the API) reply to the conversation too.
-      if (text) await this.enqueue(binding, `out_${sha(`${agent.id}:${record.id}`).slice(0, 40)}`, text);
+      if (text) await this.enqueue(agent, binding, `out_${sha(`${agent.id}:${record.id}`).slice(0, 40)}`, text);
       return;
     }
     for (let attempt = 0; attempt < 10; attempt++) {
       const row = (await this.db.query("select item, due, revision from channel_items where id = $1", [record.id])).rows[0];
       const stored = row && held(row);
       if (!stored || stored.item.state !== "submitted" || stored.item.agent !== agent.id) return;
-      if (!text) return this.finish(stored.item);
+      if (!text) return this.finish(stored);
       let next: Held;
       try { next = await this.save(stored, { state: "sending", text, sent: 0, attempts: 0, due: Date.now() }, true); }
       catch (error) { if (error instanceof PreconditionFailed) continue; throw error; }
       const channel = await this.read(binding.channel);
-      if (!channel) return this.finish(next.item);
+      if (!channel) return this.finish(next);
       return this.deliver(channel, next).catch(error => this.failed(next.item, error));
     }
   }

@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Channels, chunks } from "../src/channels.ts";
+import { LostClaim, Ownership } from "../src/ownership.ts";
 import { telegram } from "../src/channels-telegram.ts";
 import pg from "pg";
 import { testDatabase } from "./database.ts";
@@ -44,7 +45,8 @@ async function listen(t: T, handler: Parameters<typeof createServer>[1]) {
 async function fakeTelegram(t: T) {
   const calls: { method: string; body: any }[] = [];
   const files = new Map<string, Buffer>();
-  const state = { failSends: 0 };
+  // `holdSends` keeps each sendMessage waiting until the test answers it with a status.
+  const state = { failSends: 0, holdSends: false, held: [] as { body: any; release(status: number): void }[] };
   const url = await listen(t, async (req, res) => {
     let text = "";
     for await (const chunk of req) text += chunk;
@@ -60,6 +62,13 @@ async function fakeTelegram(t: T) {
     if (!match || match[1] !== BOT_TOKEN) return answer(401, { ok: false, error_code: 401, description: "Unauthorized" });
     const method = match[2];
     const body = text ? JSON.parse(text) : {};
+    if (method === "sendMessage" && state.holdSends) {
+      const status = await new Promise<number>(release => state.held.push({ body, release }));
+      if (status !== 200) {
+        calls.push({ method: "sendMessage:failed", body });
+        return answer(status, { ok: false, error_code: status, description: "Bad Request" });
+      }
+    }
     if (method === "sendMessage" && state.failSends > 0) {
       state.failSends--;
       calls.push({ method: "sendMessage:failed", body });
@@ -325,6 +334,65 @@ test("an outbound message that fails is retried, and delivered exactly once acro
   for (let round = 0; round < 5; round++) { await Promise.all([a.scan(), b.scan()]); await sleep(20); }
   assert.deepEqual(tg.sent("42"), ["x".repeat(4090), "y".repeat(10)]);
   assert.equal((await db.query("select count(*) as count from channel_items")).rows[0].count, 0);
+});
+
+test("a node whose claim on a message lapsed, and whose send then fails for good, leaves the message to the node that retook it", async t => {
+  const tg = await fakeTelegram(t);
+  const { db } = await testDatabase();
+  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), db, secretsKey: randomBytes(32).toString("hex") });
+  const node = (name: string) => new Channels({
+    db, accounts, node: name, publicUrl: "https://agents.example.test", retryBaseMs: 50,
+    providers: { telegram: telegram({ apiUrl: tg.url }) },
+    createAgent: async () => { throw new Error("unused"); }, live: async () => true, submit: async () => { throw new Error("unused"); },
+  });
+  const [a, b] = [node("a"), node("b")];
+  const channel = await a.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
+  await db.query("insert into channel_agents (agent, channel, tenant, conversation) values ('client_x', $1, 'default', '42')", [channel.id]);
+  const items = async () => Number((await db.query("select count(*) as count from channel_items")).rows[0].count);
+
+  tg.state.holdSends = true;
+  a.hooks.runEnded!({ id: "client_x", tenant: "default" }, { id: "schedule-1", method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: "hello" } } });
+  await until(() => tg.state.held.length === 1, "a's send");
+  // a's send hangs past its claim, and b retakes the message.
+  await db.query("update channel_items set claimed_until = now() - interval '1 second'");
+  const scanned = b.scan();
+  await until(() => tg.state.held.length === 2, "b's send");
+  tg.state.held[0].release(400);
+  await until(() => tg.calls.some(call => call.method === "sendMessage:failed"), "a's permanent failure");
+  await sleep(100);
+  assert.equal(await items(), 1, "a gave up on its copy without deleting b's");
+  tg.state.held[1].release(200);
+  await scanned;
+  assert.equal(await items(), 0);
+  assert.deepEqual(tg.sent("42"), ["hello"]);
+});
+
+test("a node that lost an agent sends nothing more for it", async t => {
+  const tg = await fakeTelegram(t);
+  const { db } = await testDatabase();
+  const ownership = new Ownership(db, { node: "http://a" });
+  await ownership.start();
+  t.after(() => ownership.close().catch(() => {}));
+  const taken = await ownership.acquire("client_x");
+  assert.ok("claim" in taken);
+  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), db, secretsKey: randomBytes(32).toString("hex") });
+  const channels = new Channels({
+    db, accounts, node: "http://a", publicUrl: "https://agents.example.test", ownership,
+    providers: { telegram: telegram({ apiUrl: tg.url }) },
+    createAgent: async () => { throw new Error("unused"); }, live: async () => true, submit: async () => { throw new Error("unused"); },
+  });
+  const channel = await channels.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
+  await db.query("insert into channel_agents (agent, channel, tenant, conversation) values ('client_x', $1, 'default', '42')", [channel.id]);
+  const agent = { id: "client_x", tenant: "default", claim: taken.claim };
+  assert.deepEqual(await channels.hooks.tool!(agent, "send_message", { text: "first" }, undefined, async () => {}), { result: { sent: true } });
+
+  // A peer took the agent; this node's turn is still running and tries to talk.
+  await db.query("update actor_owners set node = 'http://b', session = gen_random_uuid(), epoch = epoch + 1 where actor = 'client_x'");
+  await assert.rejects(channels.hooks.tool!(agent, "send_message", { text: "stale" }, undefined, async () => {}), LostClaim);
+  channels.hooks.runEnded!(agent, { id: "schedule-2", method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: "stale reply" } } });
+  await sleep(200);
+  assert.deepEqual(tg.sent("42"), ["first"]);
+  assert.equal(Number((await db.query("select count(*) as count from channel_items")).rows[0].count), 0);
 });
 
 test("a backlog of outbound messages is sent exactly once when two nodes on separate connections drain it", async t => {
