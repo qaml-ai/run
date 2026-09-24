@@ -51,6 +51,8 @@ type Session = {
   revision?: number;
   claim?: Claim;
   requests: Map<string, RequestRecord>;
+  /** The requests still running, so nothing scans every retained record. */
+  running: Map<string, RequestRecord>;
   calls: Map<string, CallRecord>;
   log: AppendLog<JournalRecord>;
   /** Streamed events live only in memory; durable state is recovered through /state. */
@@ -257,7 +259,7 @@ export class ClientSessions {
     const header = stored.value;
     const log = this.storage.log<JournalRecord>(this.journalKey(id), claim);
     const session: Session = {
-      header, revision: stored.revision, claim, requests: new Map(), calls: new Map(), log,
+      header, revision: stored.revision, claim, requests: new Map(), running: new Map(), calls: new Map(), log,
       // Cursors restart above any cursor from an earlier process, so clients see a gap, never a repeat.
       cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
     };
@@ -268,7 +270,7 @@ export class ClientSessions {
     // transcript, a bounded number of times; anything else that began has an unknown outcome.
     const queued: RequestRecord[] = [];
     const resumed: RequestRecord[] = [];
-    for (const request of session.requests.values()) if (request.state === "running") {
+    for (const request of [...session.running.values()]) {
       if (RUN_METHODS.includes(request.method) && !request.began && request.params !== undefined) queued.push(request);
       else if (resumable(request) && (request.resumes ?? 0) < MAX_RESUMES) {
         resumed.push(this.upsertRequest(session, { ...request, resumes: (request.resumes ?? 0) + 1 }));
@@ -287,7 +289,7 @@ export class ClientSessions {
   }
 
   private apply(session: Session, entry: JournalRecord) {
-    if (entry.t === "request") session.requests.set(entry.record.id, entry.record);
+    if (entry.t === "request") this.track(session, entry.record);
     else if (entry.t === "call") session.calls.set(entry.record.id, entry.record);
   }
 
@@ -298,8 +300,13 @@ export class ClientSessions {
     ];
   }
 
-  private upsertRequest(session: Session, record: RequestRecord) {
+  private track(session: Session, record: RequestRecord) {
     session.requests.set(record.id, record);
+    if (record.state === "running") session.running.set(record.id, record);
+    else session.running.delete(record.id);
+  }
+  private upsertRequest(session: Session, record: RequestRecord) {
+    this.track(session, record);
     session.log.append({ t: "request", record });
     return record;
   }
@@ -365,7 +372,7 @@ export class ClientSessions {
   }
 
   private busy(session: Session) {
-    return !!session.starting || session.settling > 0 || session.pending.size > 0 || [...session.requests.values()].some(request => request.state === "running");
+    return !!session.starting || session.settling > 0 || session.pending.size > 0 || session.running.size > 0;
   }
 
   /**
@@ -493,7 +500,7 @@ export class ClientSessions {
         }
         session = {
           header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
-          claim, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
+          claim, requests: new Map(), running: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
         // A conditional create: if a concurrent request made this agent first, retry as a load.
@@ -783,7 +790,7 @@ export class ClientSessions {
     // A retried ID returns the committed record, including its outcome after a lost ack.
     const retried = existing();
     if (retried) return { status: 200, record: visible(retried) };
-    if ([...session.requests.values()].filter(request => request.state === "running").length >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
+    if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
     const isRun = RUN_METHODS.includes(body.method);
     // Reads and aborts never need a process; runs start it when their turn comes.
     if (!isRun && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
@@ -912,7 +919,7 @@ export class ClientSessions {
   }
 
   private async call(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown> {
-    const request = [...session.requests.values()].find(r => r.state === "running" && RUN_METHODS.includes(r.method) && r.began);
+    const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
     const hooks = this.options.hooks;
     const agent = { id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT };
     const handled = await hooks?.tool?.(agent, name, args, request?.id);
@@ -994,7 +1001,7 @@ export class ClientSessions {
       const uncertain = call.state === "started";
       this.upsertCall(session, { ...call, state: uncertain ? "uncertain" : "cancelled", outcome: { error: reason, ...(uncertain ? { uncertain: true } : {}) } });
     }
-    for (const request of session.requests.values()) if (request.state === "running") {
+    for (const request of [...session.running.values()]) {
       const queued = RUN_METHODS.includes(request.method) && (!request.began || session.resuming.has(request.id));
       if (handOff && (queued || resumable(request))) continue;
       const { params: _params, ...rest } = request;
@@ -1086,8 +1093,8 @@ export class ClientSessions {
 
   private working(session: Session) {
     let count = (session.starting ? 1 : 0) + session.settling;
-    for (const request of session.requests.values()) {
-      if (request.state === "running" && (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method))) count++;
+    for (const request of session.running.values()) {
+      if (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method)) count++;
     }
     return count;
   }
