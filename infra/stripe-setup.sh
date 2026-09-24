@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # Set up Stripe for credit purchases with as little dashboard as Stripe allows:
 #   1. opens the dashboard's "create restricted key" page, prefilled (name and the two
-#      permissions the runtime needs); click Create, copy the key, paste it here (hidden)
+#      permissions the runtime needs); click Create and copy the key: it is read from the clipboard
 #   2. creates the webhook endpoint with the Stripe CLI (already logged in) and takes
 #      its signing secret from the response
 #   3. hands both to infra/stripe.sh, which stores them in Secrets Manager and rolls the service
@@ -24,9 +24,19 @@ if [[ -n $existing ]]; then
 fi
 
 open "$dash/apikeys/create?name=agent-runtime%20credit&permissions%5B%5D=rak_customer_write&permissions%5B%5D=rak_checkout_session_write"
-echo "In the page that opened: check the key has Customers: Write and Checkout Sessions: Write, click Create key, copy it."
-read -rs "key?Paste the $mode key (hidden), then Enter: "; echo
-prefix=rk_${mode}_; [[ $key == $prefix* || $key == sk_${mode}_* ]] || { echo "That isn't a $mode secret or restricted key"; exit 1; }
+echo "In the page that opened: check the key has Customers: Write and Checkout Sessions: Write, click Create key, and copy it."
+# Read from the clipboard rather than a prompt, so this also works where stdin isn't a terminal.
+echo "Waiting for a $mode key on the clipboard (5 minutes)..."
+key=
+for i in {1..300}; do
+  clip=$(pbpaste 2>/dev/null | tr -d '[:space:]')
+  if [[ $clip == rk_${mode}_* || $clip == sk_${mode}_* ]]; then key=$clip; break; fi
+  sleep 1
+done
+unset clip
+[[ -n $key ]] || { echo "No $mode key appeared on the clipboard"; exit 1; }
+print -n | pbcopy
+echo "Got the key (clipboard cleared)."
 
 created=$("${cli[@]}" webhook_endpoints create --url $url \
   -d "enabled_events[]=checkout.session.completed" \
