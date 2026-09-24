@@ -843,6 +843,14 @@
                 },
                 "model": {
                   "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "turn",
+                    "compaction"
+                  ],
+                  "description": "turn: the agent's own responses; compaction: summaries of older context"
                 }
               },
               "required": [
@@ -853,7 +861,8 @@
                 "cacheWrite",
                 "cost",
                 "day",
-                "model"
+                "model",
+                "kind"
               ]
             }
           }

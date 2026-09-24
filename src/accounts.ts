@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "./db.ts";
 import type { Tenants } from "./tenants.ts";
+import type { UsageRecord } from "./client-sessions.ts";
 
 /**
  * Tenant state that tenants manage themselves: provider keys (encrypted at rest),
@@ -22,6 +23,7 @@ const add = (target: Totals, source: Totals) => {
   target.responses += source.responses; target.input += source.input; target.output += source.output;
   target.cacheRead += source.cacheRead; target.cacheWrite += source.cacheWrite; target.cost += source.cost;
 };
+const COMPACTION = "compaction:";
 /** Revocations reach other nodes within this long. */
 const TOKEN_CACHE_MS = 10_000;
 
@@ -169,11 +171,16 @@ export class Accounts {
 
   // Usage ---------------------------------------------------------------------
 
-  /** Count a model response. Totals are added to the database in batches, a few seconds later. */
-  recordUsage(tenant: string, _agent: string, message: { provider?: string; model?: string; usage: any; timestamp?: number }) {
+  /**
+   * Count a model response. Totals are added to the database in batches, a few seconds later.
+   * Compaction summaries are rows of their own, their model prefixed with `compaction:`
+   * (provider ids never contain a colon), so the table's key stays as older nodes write it.
+   */
+  recordUsage(tenant: string, _agent: string, message: UsageRecord) {
     const usage = message.usage ?? {};
     const day = new Date(message.timestamp ?? Date.now()).toISOString().slice(0, 10);
-    const key = JSON.stringify([tenant, day, `${message.provider ?? "unknown"}/${message.model ?? "unknown"}`]);
+    const model = `${message.provider ?? "unknown"}/${message.model ?? "unknown"}`;
+    const key = JSON.stringify([tenant, day, message.kind === "compaction" ? `${COMPACTION}${model}` : model]);
     const totals = this.pendingUsage.get(key) ?? zero();
     add(totals, { responses: 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost: usage.cost?.total ?? 0 });
     this.pendingUsage.set(key, totals);
@@ -221,7 +228,8 @@ export class Accounts {
     const days = rows.map(row => {
       const value = { responses: row.responses, input: row.input, output: row.output, cacheRead: row.cache_read, cacheWrite: row.cache_write, cost: row.cost };
       add(totals, value);
-      return { day: row.day, model: row.model, ...value };
+      const compaction = row.model.startsWith(COMPACTION);
+      return { day: row.day, model: compaction ? row.model.slice(COMPACTION.length) : row.model, kind: compaction ? "compaction" : "turn", ...value };
     });
     return { since, totals, days };
   }

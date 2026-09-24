@@ -3,6 +3,7 @@ import {
   type AgentMessage, type CompactionSettings, type StreamFn,
 } from "@earendil-works/pi-agent-core";
 import { completeSimple, streamSimple, type Api, type Model, type Models } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { CompactionState } from "./transcript.ts";
 import { messageChars } from "./history.ts";
 
@@ -59,9 +60,18 @@ export function explicitKeyStream(): StreamFn {
   };
 }
 
-/** Pi's summarizer only needs `completeSimple`; bind the tenant's key and never the environment. */
-function summarizer(apiKey: string): Models {
-  return { completeSimple: (model: Model<Api>, context: any, options: any) => completeSimple(model, context, { ...options, apiKey, env: {} }) } as unknown as Models;
+/**
+ * Pi's summarizer only needs `completeSimple`; bind the tenant's key and never the environment.
+ * Every completed request is reported, so chunks and a run that fails after some are billed too.
+ */
+function summarizer(apiKey: string, onResponse?: (message: AssistantMessage) => void): Models {
+  return {
+    completeSimple: async (model: Model<Api>, context: any, options: any) => {
+      const response = await completeSimple(model, context, { ...options, apiKey, env: {} });
+      if (response.stopReason !== "error") onResponse?.(response);
+      return response;
+    },
+  } as unknown as Models;
 }
 
 /**
@@ -95,6 +105,8 @@ export async function runCompaction(options: {
   model: Model<Api>; apiKey: string; signal?: AbortSignal;
   /** Keep less than usual, e.g. after the provider rejected the context as too long. */
   keepRecentTokens?: number;
+  /** Each summarization response the provider completed, for billing. */
+  onResponse?: (message: AssistantMessage) => void;
 }): Promise<CompactionOutcome> {
   const { context, offset, previous, model, apiKey, signal } = options;
   const defaults = compactionSettings(model);
@@ -103,7 +115,7 @@ export async function runCompaction(options: {
   if (!prepared.ok) throw prepared.error;
   const preparation = prepared.value;
   if (!preparation) return { skipped: "Nothing before the recent context to summarize" };
-  const models = summarizer(apiKey);
+  const models = summarizer(apiKey, options.onResponse);
   const scope = signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT;
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));

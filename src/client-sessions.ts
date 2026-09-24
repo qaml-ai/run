@@ -141,12 +141,14 @@ export interface ClientSessionOptions {
   retry?: AgentConfig["retry"];
   /** Durable wake-ups for agents (`/clients/:id/schedules`). */
   scheduler?: Scheduler;
-  /** Called with each finished assistant message that reports token usage. */
-  onUsage?: (tenant: string, agentId: string, message: { provider?: string; model?: string; usage: any; timestamp?: number }) => void;
+  /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
+  onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
   hooks?: SessionHooks;
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
 }
+/** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
+export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
 export type AgentRef = { id: string; tenant: string; claim?: Claim };
 /** Runtime features layered on agents (channels): they observe runs and may answer tools themselves. */
@@ -879,6 +881,7 @@ export class ClientSessions {
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
             this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, event.message);
           }
+          if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, { ...event, kind: "compaction" });
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
   }

@@ -68,7 +68,10 @@ export function createAgentHost(io: HostIO) {
       const offset = transcript.offset;
       // An overflow means the real limit is lower than assumed: keep about a fifth of the context.
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens(liveView(context)) * 0.2)) : undefined;
-      const outcome = await runCompaction({ context, offset, previous: transcript.compaction, model: config.model, apiKey: config.apiKey, signal, keepRecentTokens });
+      const outcome = await runCompaction({
+        context, offset, previous: transcript.compaction, model: config.model, apiKey: config.apiKey, signal, keepRecentTokens,
+        onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp }),
+      });
       if ("skipped" in outcome) {
         io.emit({ type: "compaction_end", reason, skipped: outcome.skipped });
         return false;

@@ -53,9 +53,9 @@ export function UsagePage() {
                   </TableHeader>
                   <TableBody>
                     {[...usage.data.days].reverse().map(row => (
-                      <TableRow key={`${row.day} ${row.model}`}>
+                      <TableRow key={`${row.day} ${row.model} ${row.kind}`}>
                         <TableCell className="tabular-nums">{row.day}</TableCell>
-                        <TableCell className="font-mono text-xs">{row.model}</TableCell>
+                        <TableCell className="font-mono text-xs">{row.model}{row.kind === "compaction" && <span className="ml-2 font-sans text-muted-foreground">compaction</span>}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNumber(row.responses)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNumber(row.input)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNumber(row.cacheRead)}</TableCell>

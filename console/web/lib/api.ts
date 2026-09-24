@@ -64,7 +64,7 @@ export interface ApiToken { id: string; name: string; prefix: string; createdAt:
 export interface Usage {
   since: number;
   totals: { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
-  days: { day: string; model: string; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }[];
+  days: { day: string; model: string; kind: "turn" | "compaction"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }[];
 }
 
 export const formatNumber = (value: number) => new Intl.NumberFormat("en-US", { notation: value >= 100_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);

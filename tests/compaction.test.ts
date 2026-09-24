@@ -10,13 +10,17 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { explicitKeyStream, runCompaction } from "../src/compaction.ts";
 import { readTranscript } from "../src/transcript.ts";
+import { ClientSessions } from "../src/client-sessions.ts";
+import { Accounts } from "../src/accounts.ts";
+import { Tenants } from "../src/tenants.ts";
+import { testDatabase } from "./database.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
 const isSummarization = (body: Body) => text(body).includes("context summarization assistant");
 
-/** An OpenAI-compatible provider that reports no usage, like some proxies. */
-async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowAboveChars?: number } = {}) {
+/** An OpenAI-compatible provider that reports no usage, like some proxies, unless `usage` is set. */
+async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowAboveChars?: number; usage?: boolean } = {}) {
   const requests: Body[] = [];
   let summaries = 0;
   const server = createServer(async (req, res) => {
@@ -31,15 +35,16 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
     const reply = isSummarization(body) ? `## Goal\nSUMMARY-MARKER-${++summaries}` : "ack";
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: reply }, finish_reason: null }] })}\n\n`);
-    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+    const usage = options.usage ? { usage: isSummarization(body) ? { prompt_tokens: 3000, completion_tokens: 200 } : { prompt_tokens: 10, completion_tokens: 1 } } : {};
+    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...usage })}\n\n`);
     res.end("data: [DONE]\n\n");
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-  const model = (contextWindow: number) => ({
-    id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
-    reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 1000,
+  const model = (contextWindow: number, id = "fixture") => ({
+    id, name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+    reasoning: false, input: ["text"], cost: { input: 1, output: 10, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 1000,
   }) as Model<Api>;
   return { requests, model, chat: () => requests.filter(body => !isSummarization(body)), summarizations: () => requests.filter(isSummarization) };
 }
@@ -150,6 +155,34 @@ test("a context overflow from the provider compacts and retries the turn once", 
   const history = (await supervisor.request("overflow", "history")).messages;
   assert.equal(history.filter((message: any) => message.stopReason === "error").length, 0, "the rejected attempt is not history");
   assert.equal(history.length, 6);
+});
+
+test("compaction summaries bill their tokens and cost to the tenant, apart from the agent's turns", async t => {
+  const fake = await provider(t, { usage: true });
+  const supervisor = await fixture(t);
+  const { db } = await testDatabase();
+  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: "legacy-token-with-24-characters" }), db });
+  const root = await mkdtemp(join(tmpdir(), "compaction-usage-"));
+  const sessions = new ClientSessions(supervisor, { db, root, secret: "compaction-usage-secret-32-characters", apiKey: "fixture", onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message) });
+  t.after(async () => { await sessions.close(); await rm(root, { recursive: true, force: true }); });
+  const { id } = await sessions.create([], { model: fake.model(8000, "turns") }, "billed", {}, "acme");
+  for (let index = 0; index < 4; index++) {
+    await sessions.submit(id, "acme", { id: `turn-${index}`, method: "prompt", params: { text: turn(index) } });
+    for (let tries = 0; sessions.sessions.get(id)!.requests.get(`turn-${index}`)!.state !== "completed"; tries++) {
+      assert.ok(tries < 400, "the turn finishes");
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.equal((sessions.sessions.get(id)!.requests.get(`turn-${index}`)!.outcome as any).result.error, null);
+  }
+  const summaries = fake.summarizations().length;
+  assert.ok(summaries >= 1, "a summary was requested");
+  const usage = await accounts.usage("acme", Date.now() - 86_400_000);
+  const compaction = usage.days.filter(row => row.kind === "compaction");
+  const turns = usage.days.filter(row => row.kind === "turn");
+  assert.deepEqual(compaction.map(row => [row.model, row.responses, row.input, row.output]), [["openai/turns", summaries, 3000 * summaries, 200 * summaries]]);
+  assert.ok(Math.abs(compaction[0].cost - summaries * (3000 * 1 + 200 * 10) / 1e6) < 1e-12, "priced at the summarizing model's rates");
+  assert.deepEqual(turns.map(row => [row.model, row.responses, row.input]), [["openai/turns", 4, 40]]);
+  assert.equal(usage.totals.responses, 4 + summaries);
 });
 
 test("model calls require the agent's explicit key and never read provider keys from the environment", async () => {

@@ -172,7 +172,7 @@ const Totals = z.object({ responses: z.number(), input: z.number(), output: z.nu
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
-  days: z.array(Totals.extend({ day: z.string(), model: z.string() })),
+  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context" }) })),
 }).openapi("Usage");
 
 const ChannelTemplate = z.object({
