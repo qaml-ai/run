@@ -11,7 +11,7 @@ variable "account_id" {
 }
 
 variable "name" {
-  description = "Name of the runtime host and most of its resources."
+  description = "Name of the runtime service and most of its resources."
   type        = string
   default     = "camelai-agent-runtime"
 }
@@ -135,7 +135,7 @@ variable "alb_access_logs_bucket" {
 }
 
 variable "runtime_env" {
-  description = "Non-secret runtime settings (from instance/runtime.defaults.env). Storage, database and public URL settings are derived in ecs.tf."
+  description = "Non-secret runtime settings for the ECS tasks. Storage, database and public URL settings are derived in ecs.tf."
   type        = map(string)
   default = {
     AGENT_PROVIDER                 = "anthropic"

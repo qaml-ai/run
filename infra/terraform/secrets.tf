@@ -1,6 +1,6 @@
 # Secret containers only. Values are set and rotated outside Terraform
-# (provision.sh generated the random ones; tenant.sh and github-oauth.sh write
-# the rest), so no secret value ever enters Terraform state. Do not add
+# (the random ones were generated once at setup; tenant.sh and github-oauth.sh
+# write the rest), so no secret value ever enters Terraform state. Do not add
 # aws_secretsmanager_secret_version resources here.
 
 locals {

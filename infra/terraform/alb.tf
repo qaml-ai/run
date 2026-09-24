@@ -1,5 +1,5 @@
-# NEW: public load balancer in front of the ECS runtime tasks (ecs.tf). It
-# terminates TLS with an ACM certificate, replacing Caddy on the EC2 host.
+# Public load balancer in front of the ECS runtime tasks (ecs.tf). It
+# terminates TLS with an ACM certificate.
 # agents.camelai.dev is a CNAME to it (dns.tf).
 
 # --- Certificate (validated through Cloudflare) ---

@@ -1,18 +1,20 @@
 # Hosted agent runtime
 
-Runs this service for teammates' own agents at
-`https://agents.camelai.dev`. This is the single-host deployment. It will be
-replaced by the distributed runtime (S3 storage, leases, many workers) described
-in `plans/agent-runtime-service.md`.
+Runs this service for teammates' own agents at `https://agents.camelai.dev`.
 
-Resources (AWS account `904534089871`, `us-west-2`), all named `camelai-agent-runtime`:
+Resources (AWS account `904534089871`, `us-west-2`), mostly named
+`camelai-agent-runtime`, all described in [`terraform/`](terraform/README.md):
 
-- EC2 `t4g.medium` (Amazon Linux 2023, arm64) with termination protection and a
-  40 GB encrypted gp3 root volume that survives termination
-- Elastic IP, and a DNS-only Cloudflare A record `agents.camelai.dev`
-- Security group: TCP/443 only, no SSH
-- IAM role/profile: SSM, read access to its two secrets, and pull access to its ECR repository
-- ECR repository `camelai-agent-runtime` (immutable tags, last 30 images kept)
+- ECS Fargate service and cluster `camelai-agent-runtime` (ARM64, 1 vCPU / 2 GB
+  per task). Autoscaling targets average CPU 60% and memory 70%, with 2 to 10 tasks.
+- A public ALB with an ACM certificate. `agents.camelai.dev` is a DNS-only
+  Cloudflare CNAME to it, with TTL 60.
+- RDS Postgres (`camelai-agent-runtime-control`, Multi-AZ): the control plane
+  (ownership leases, indexes, timers, outboxes, accounts). RDS manages and
+  rotates its credentials in Secrets Manager, and the runtime reads them from there.
+- S3 bucket `camelai-agent-runtime-state`, prefix `agents/`: the data plane
+  (transcripts, journals, logs).
+- ECR repository `camelai-agent-runtime` (immutable tags, last 30 images kept).
 - Secrets Manager:
   - `camelai/agent-runtime/session-secret`: derives client session tokens.
     Rotating it invalidates every issued session token.
@@ -23,31 +25,35 @@ Resources (AWS account `904534089871`, `us-west-2`), all named `camelai-agent-ru
     provider keys tenants set themselves. Losing it makes those keys unreadable.
   - `camelai/agent-runtime/github-oauth`: the console's GitHub OAuth app
     (optional; see below).
-- EBS snapshots: hourly (48 kept) and daily at 09:00 UTC (7 kept), via Data Lifecycle Manager
-- CloudWatch alarms: the instance recovers onto new hardware when the AWS system
-  check fails, and reboots when its instance check fails
-- A Route 53 HTTPS health check on `/healthz`, alarming to the SNS topic
-  `camelai-agent-runtime-alerts` in us-east-1. Subscribe with
-  `aws sns subscribe --region us-east-1 --topic-arn arn:aws:sns:us-east-1:904534089871:camelai-agent-runtime-alerts --protocol email --notification-endpoint <email>`
 
-On the instance, Caddy (`agent-runtime-caddy.service`) terminates TLS and
-proxies to the runtime container (`agent-runtime.service`). Agent state lives in
-`/opt/agent-runtime/data`. Before every start and reload,
-`refresh-config.sh` pulls the secrets into `runtime.env` and `tenants.json`.
+  Tasks read session-secret, secrets-key and github-oauth by ARN at startup,
+  and re-read the tenants secret every 60 s. No secret value is in the task's
+  environment.
+- Monitoring:
+  - A Route 53 HTTPS health check on `https://agents.camelai.dev/healthz`. Its
+    alarm goes to the SNS topic `camelai-agent-runtime-alerts` in us-east-1.
+  - ALB and ECS alarms (unhealthy hosts, ALB 5xx, target 5xx, running tasks,
+    `EcsControlErrors`) go to the topic of the same name in us-west-2.
 
-## Terraform
+  Subscribe to both topics:
+  `aws sns subscribe --region <region> --topic-arn arn:aws:sns:<region>:904534089871:camelai-agent-runtime-alerts --protocol email --notification-endpoint <email>`
 
-The resources above are described in [`terraform/`](terraform/README.md). Once
-its imports have been applied, `provision.sh` is superseded; the deploy, tenant
-and GitHub OAuth scripts below stay.
+The runtime moved here from a single EC2 host on 2026-09-24. The host proxied
+to the ALB through Caddy while DNS flipped to the ALB, and was then removed. Git
+history has the cutover runbook.
 
-## First-time setup
+## Scripts
+
+- `infra/ecs-deploy.sh`: build, push and deploy (see "Deploying changes").
+- `infra/tenant.sh`: tenants, operator tokens and provider keys in Secrets Manager.
+- `infra/github-oauth.sh`: stores the GitHub OAuth secret, then force-rolls the ECS service.
+- `infra/config.sh`: settings shared by the scripts above.
+
+## Adding a person
 
 ```sh
-infra/provision.sh          # idempotent; needs CLOUDFLARE_API_TOKEN for DNS
 infra/tenant.sh add miguel
 infra/tenant.sh set-key miguel anthropic   # paste the key, then Ctrl-D
-infra/deploy.sh
 AGENT_URL=https://agents.camelai.dev \
 AGENT_RUNTIME_TOKEN=$(aws secretsmanager get-secret-value --region us-west-2 \
   --secret-id camelai/agent-runtime/operator-token/miguel --query SecretString --output text) \
@@ -68,17 +74,18 @@ scripts that authenticate with an API token.
 
 Sign-in uses GitHub and is limited to active members of the `qaml-ai` org. A
 member's first sign-in creates a tenant named after their GitHub login. An
-admin tenant is linked to a GitHub login by adding `"github": "<login>"` to its
-entry in the tenants secret. Token sign-in also works: paste an operator token
-or an API token.
+admin tenant is linked to a GitHub login with
+`infra/tenant.sh link-github <tenant> <login>`. Token sign-in also works: paste
+an operator token or an API token.
 
 To enable GitHub sign-in, an org owner creates an OAuth app at
 https://github.com/organizations/qaml-ai/settings/applications/new with:
 - homepage `https://agents.camelai.dev`
 - callback URL `https://agents.camelai.dev/console/auth/callback`
 
-Then run `infra/github-oauth.sh <client-id>` and paste the client
-secret when prompted.
+Then run `infra/github-oauth.sh <client-id>` and paste the client secret when
+prompted. Tasks read this secret only at startup, so the script force-rolls the
+service. Old tasks retire as in any deploy, so running turns finish.
 
 ## Tenants (admin)
 
@@ -92,28 +99,40 @@ infra/tenant.sh list
 infra/tenant.sh add <tenant>
 infra/tenant.sh set-key <tenant> anthropic      # key on stdin
 infra/tenant.sh rotate-token <tenant>
+infra/tenant.sh link-github <tenant> <login>
 infra/tenant.sh remove <tenant>
 ```
 
-Changes take effect through `systemctl reload`, which sends SIGHUP to the
-runtime. No restart is needed, and running agents are unaffected. Share the
-operator token through a password manager: it can create, read and drive every
-agent in that tenant.
+Changes take effect within a minute, when the tasks next re-read the tenants
+secret. Nothing restarts, and running agents are unaffected. Share the operator
+token through a password manager: it can create, read and drive every agent in
+that tenant.
 
 ## Deploying changes
 
-`deploy.sh` builds an arm64 image from the current checkout, tagged with the
-git commit (plus `-dirty-<time>` for uncommitted runtime changes). It pushes
-the image to ECR, installs `instance/` onto the host via SSM, restarts the
-runtime, and checks `https://agents.camelai.dev/healthz`.
+```sh
+infra/ecs-deploy.sh          # build + push this checkout, register a revision, roll, wait
+infra/ecs-deploy.sh <tag>    # deploy an image already in ECR
+```
 
-A restart interrupts running turns. Their requests complete with an
-`uncertain` error, and each agent closes the interrupted turn with "outcome
-unknown" tool results the next time it runs. Nothing is replayed.
+The script builds an arm64 image from the current checkout, tagged with the git
+commit (plus `-dirty-<time>` for uncommitted runtime changes), and pushes it to
+ECR. It registers a task definition revision with the new image, rolls the
+service, and returns once the new tasks are healthy in the target group.
 
-Runtime settings that aren't secret are in `instance/runtime.defaults.env`: the
-default model, process cap, idle timeout, and tool timeout. Change them there
-and redeploy.
+A deploy interrupts no turns:
+- a busy task keeps itself protected from scale-in;
+- a task replaced by a newer deployment retires itself: it finishes its
+  running turns first (at most 6 h), then stops;
+- on SIGTERM a task drains for up to 120 s;
+- a turn interrupted by a crash is resumed by the agent's next owner.
+
+Details, including how long a rollout stays `IN_PROGRESS`, are in
+[`terraform/README.md`](terraform/README.md#deploying).
+
+Runtime settings that aren't secret (default model, agent caps, idle and tool
+timeouts) are `runtime_env` in `terraform/variables.tf`. Apply the change with
+Terraform, then ship it with `infra/ecs-deploy.sh <running tag>`.
 
 ## SDKs
 
@@ -125,26 +144,33 @@ and redeploy.
 
 ## Operations
 
-Use Session Manager; SSH is not open.
-
 ```sh
-aws ssm start-session --region us-west-2 --target <instance-id>
-sudo systemctl status agent-runtime agent-runtime-caddy
-sudo docker logs --tail 100 agent-runtime
-sudo ls /opt/agent-runtime/data/client-sessions
 curl https://agents.camelai.dev/healthz
+aws ecs describe-services --region us-west-2 --cluster camelai-agent-runtime \
+  --services camelai-agent-runtime \
+  --query 'services[0].deployments[].[status,rolloutState,runningCount,taskDefinition]'
+aws ecs list-tasks --region us-west-2 --cluster camelai-agent-runtime
+aws ecs execute-command --region us-west-2 --cluster camelai-agent-runtime --task <id> \
+  --container agent-runtime --interactive --command sh
 ```
 
-## Limits of this deployment
+Logs are in the CloudWatch log group `/ecs/camelai-agent-runtime` (kept 30
+days). The local AWS CLI is v1, which has no `aws logs tail`; use
+`filter-log-events` (here, the last 15 minutes):
 
-- Every agent lives on one host and its EBS volume. Losing the volume means
-  restoring from the last hourly snapshot, and up to an hour of work is lost.
-- The runtime still runs one process per active agent. Up to 16 run at once,
-  and at most 8 per tenant. Idle agents stop after 5 minutes. When a tenant or
-  the host is at its limit, the least recently used idle agent is stopped; if
-  none is idle, the request is refused (429 for a tenant's limit, 503 for the
-  host's).
-- Sandboxed code runs on the same host as agent state. Code runs in QuickJS
+```sh
+aws logs filter-log-events --region us-west-2 --log-group-name /ecs/camelai-agent-runtime \
+  --start-time $(( ($(date +%s) - 900) * 1000 )) --query 'events[].message' --output text
+```
+
+## Limits
+
+- Each task holds up to 16 awake agents, at most 8 per tenant
+  (`AGENT_MAX_PROCESSES`, `AGENT_MAX_PROCESSES_PER_TENANT`). Idle agents stop
+  after 5 minutes. When a tenant or the task is at its limit, the least recently
+  used idle agent is stopped; if none is idle, the request is refused (429 for a
+  tenant's limit, 503 for the task's).
+- Sandboxed code runs in the same task as agent state. Code runs in QuickJS
   compiled to WebAssembly, in a per-execution child process; a separate
   isolation tier (gVisor/Firecracker) is only warranted if agents ever run
   native code.

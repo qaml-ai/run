@@ -23,7 +23,7 @@ output "secret_arns" {
 }
 
 output "database" {
-  description = "Control-plane Postgres: set AGENT_DATABASE_HOST and AGENT_DATABASE_SECRET_ARN in instance/runtime.defaults.env from these."
+  description = "Control-plane Postgres; the ECS tasks get these as AGENT_DATABASE_HOST and AGENT_DATABASE_SECRET_ARN."
   value = {
     host       = aws_db_instance.control.address
     port       = aws_db_instance.control.port
@@ -33,7 +33,7 @@ output "database" {
 }
 
 output "alb_dns_name" {
-  description = "Verify before the DNS flip: curl --connect-to <hostname>:443:<this>:443 https://<hostname>/healthz"
+  description = "The ALB that agents.camelai.dev points at."
   value       = aws_lb.runtime.dns_name
 }
 

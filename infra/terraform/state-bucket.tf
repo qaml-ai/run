@@ -1,4 +1,4 @@
-# NEW: S3 bucket for agent state (AGENT_STORAGE=s3), plus the runtime role's
+# S3 bucket for agent state (AGENT_STORAGE=s3), plus the runtime's
 # access to it. See shared/s3-storage.ts: documents are <prefix>/<key>.json
 # written with If-Match / If-None-Match, logs are <prefix>/<key>.log/<segment>.
 

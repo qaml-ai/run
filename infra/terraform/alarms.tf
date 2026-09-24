@@ -1,4 +1,4 @@
-# NEW: alarms for the load-balanced service. CloudWatch alarms can only notify
+# alarms for the load-balanced service. CloudWatch alarms can only notify
 # an SNS topic in their own region, so these use a us-west-2 twin of the
 # us-east-1 alerts topic (monitoring.tf). Subscribe to both.
 

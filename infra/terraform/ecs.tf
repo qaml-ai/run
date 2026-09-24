@@ -1,4 +1,4 @@
-# NEW: the runtime as an autoscaled Fargate service behind the ALB (alb.tf).
+# the runtime as an autoscaled Fargate service behind the ALB (alb.tf).
 # Terraform registers the first task definition revision; infra/ecs-deploy.sh
 # registers every later one (new image) and rolls the service, so the service
 # ignores task_definition. See README.md, "Deploying".
