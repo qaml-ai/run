@@ -1,4 +1,4 @@
-import { Check } from "typebox/value";
+import { Compile, type Validator } from "typebox/compile";
 import type { ToolDefinition } from "./protocol.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 
@@ -23,11 +23,19 @@ export function validateDefinitions(definitions: ToolDefinition[]) {
   }
 }
 
+/** Compiled once per schema object: a tool's definition stays the same object for as long as the agent runs. */
+const validators = new WeakMap<object, Validator>();
+function validator(schema: object) {
+  let compiled = validators.get(schema);
+  if (!compiled) validators.set(schema, compiled = Compile(schema as never));
+  return compiled;
+}
+
 export function validateToolCall(definitions: ToolDefinition[], name: unknown, args: unknown) {
   const tool = definitions.find(tool => tool.name === name);
   if (!tool) throw new Error("Unknown tool");
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Tool arguments must be a JSON object");
   const json = jsonWithinLimit(args, SANDBOX_LIMITS.argumentBytes, "Tool arguments");
-  if (!Check(tool.parameters, args)) throw new Error(`Invalid arguments for tool: ${tool.name}`);
+  if (!validator(tool.parameters).Check(args)) throw new Error(`Invalid arguments for tool: ${tool.name}`);
   return { tool, args: args as Record<string, unknown>, bytes: Buffer.byteLength(json) };
 }
