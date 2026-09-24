@@ -22,6 +22,14 @@ test("migrations apply once: running them again does nothing", async () => {
   assert.deepEqual((await db.query("select name from schema_migrations order by name")).rows.map(row => row.name), MIGRATIONS);
 });
 
+test("new sessions carry the role's idle-in-transaction timeout, so no transaction needs a pinning SET", async () => {
+  await testDatabase();
+  const client = new pg.Client({ connectionString: process.env.AGENT_TEST_DATABASE_URL ?? "postgres://postgres:test@127.0.0.1:55432/postgres" });
+  await client.connect();
+  try { assert.equal((await client.query("show idle_in_transaction_session_timeout")).rows[0].idle_in_transaction_session_timeout, "30s"); }
+  finally { await client.end(); }
+});
+
 test("two processes starting at once apply each migration exactly once", async () => {
   const { db, url } = await testDatabase({ migrate: false });
   const script = `import { databaseFromEnvironment, migrate } from ${JSON.stringify(new URL("../src/db.ts", import.meta.url).href)};

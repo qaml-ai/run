@@ -40,8 +40,7 @@ export function postgresTail(db: Db, options: { retryMs?: number } = {}): LogTai
     },
     compact(key, claim, fold) {
       return transaction(db, async sql => {
-        // A node that hangs mid-compaction must not hold the actor's row for long.
-        await sql.query("set local idle_in_transaction_session_timeout = '30s'");
+        // idle_in_transaction_session_timeout (set on the role, migration 004) bounds a node that hangs here.
         await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`log:${key}`]);
         if (claim && !(await sql.query("select from actor_owners where actor = $1 and session = $2 and epoch = $3 for share", [claim.actor, claim.session, claim.epoch])).rowCount) return false;
         const { rows } = await sql.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key]);
