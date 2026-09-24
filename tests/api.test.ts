@@ -39,12 +39,14 @@ async function fakeGithub(t: { after(fn: () => Promise<void>): void }, members: 
   return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, signInAs(login: string) { nextLogin = login; } };
 }
 
-async function runtime(t: { after(fn: () => Promise<void>): void }, github?: string, env: Record<string, string> = {}) {
+const defaultTenants = {
+  alice: { tokenSha256: sha(alice), apiKeys: {} },
+  bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "bob-admin-anthropic-key" }, github: "Bob-Builder" },
+};
+
+async function runtime(t: { after(fn: () => Promise<void>): void }, github?: string, env: Record<string, string> = {}, tenants: Record<string, unknown> = defaultTenants) {
   const root = await mkdtemp(join(tmpdir(), "agent-runtime-api-"));
-  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: {
-    alice: { tokenSha256: sha(alice), apiKeys: {} },
-    bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "bob-admin-anthropic-key" }, github: "Bob-Builder" },
-  } }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants }));
   const { db, url } = await testDatabase();
   const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: {
@@ -76,7 +78,12 @@ async function runtime(t: { after(fn: () => Promise<void>): void }, github?: str
     try { json = JSON.parse(text); } catch { /* not JSON */ }
     return { status: response.status, json, headers: response.headers };
   };
-  return { root, db, base, call };
+  /** Resolves once the server logs a line matching `pattern` (after this call). */
+  const logged = (pattern: RegExp) => new Promise<void>(resolve => {
+    const listener = (chunk: Buffer) => { if (pattern.test(String(chunk))) { child.stdout.off("data", listener); resolve(); } };
+    child.stdout.on("data", listener);
+  });
+  return { root, db, base, call, child, logged };
 }
 
 test("tenants set provider keys over REST; keys are encrypted at rest and never returned", async t => {
@@ -316,4 +323,41 @@ test("a tenant at its agent quota gets 429 with Retry-After and nothing half-cre
   }
   assert.equal(retried.status, 201);
   assert.equal(await agents(), 2);
+});
+
+test("a tenant's own maxAgents replaces the default limit, and a change applies at the next tenants reload without a restart", async t => {
+  const tenants = (bobLimit: number) => ({
+    alice: { tokenSha256: sha(alice), apiKeys: { anthropic: "alice-admin-anthropic-key" } },
+    bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "bob-admin-anthropic-key" }, maxAgents: bobLimit },
+  });
+  const { root, call, child, logged } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "20000" }, tenants(2));
+  const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
+  const create = (token: string, key: string) => call("/client-sessions", { token, body: { tools: [hold] }, headers: { "Idempotency-Key": key } });
+  const statuses = (results: { status: number }[]) => results.map(result => result.status).sort();
+
+  // Three concurrent starts for bob (his own limit, 2), two for alice (the default, 1).
+  const logs = [logged(/"quota_rejected".*"tenant":"bob".*"limit":"agentsPerTenant","value":2,"source":"tenant"/), logged(/"quota_rejected".*"tenant":"alice".*"value":1,"source":"default"/)];
+  const [bobs, alices] = await Promise.all([Promise.all(["b1", "b2", "b3"].map(key => create(bob, key))), Promise.all(["a1", "a2"].map(key => create(alice, key)))]);
+  assert.deepEqual(statuses(bobs), [201, 201, 429]);
+  assert.deepEqual(statuses(alices), [201, 429]);
+  await Promise.all(logs);
+  const refused = ["b1", "b2", "b3"][bobs.findIndex(result => result.status === 429)];
+
+  // Bob's two agents are busy, so nothing can be evicted for the refused one.
+  for (const agent of bobs.filter(result => result.status === 201).map(result => result.json)) {
+    assert.equal((await call(`/clients/${agent.id}/requests`, { token: agent.token, body: { id: "hold", method: "execute", params: { code: "return await tools.hold({})" } } })).status, 202);
+    for (let tries = 0; !(await call(`/clients/${agent.id}/state`, { token: agent.token })).json.calls.length; tries++) {
+      assert.ok(tries < 100, "the call was offered");
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  assert.equal((await create(bob, refused)).status, 429);
+
+  // Raise bob's limit in the tenants file and reload, as the secret's refresh does: no restart.
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: tenants(3) }));
+  const reloaded = logged(/tenants_reloaded/);
+  child.kill("SIGHUP");
+  await reloaded;
+  assert.equal((await create(bob, refused)).status, 201);
+  assert.equal((await create(alice, "a3")).status, 201, "alice's idle agent makes room under the default");
 });

@@ -100,8 +100,16 @@ infra/tenant.sh add <tenant>
 infra/tenant.sh set-key <tenant> anthropic      # key on stdin
 infra/tenant.sh rotate-token <tenant>
 infra/tenant.sh link-github <tenant> <login>
+infra/tenant.sh set-limit <tenant> <n|default>  # hosted agents per task
 infra/tenant.sh remove <tenant>
 ```
+
+`set-limit` sets the tenant's `maxAgents` in the tenants secret: how many of its
+agents one task hosts at once, in place of `AGENT_MAX_AGENTS_PER_TENANT` (500);
+`default` removes it. A lower limit only gates new starts: agents already
+running above it keep running. Past the limit, creating or waking an agent gets
+429 with `Retry-After` (the SDKs retry it), and the task logs `quota_rejected`
+with the limit and whether it was the tenant's own or the default.
 
 Changes take effect within a minute, when the tasks next re-read the tenants
 secret. Nothing restarts, and running agents are unaffected. Share the operator
@@ -170,7 +178,8 @@ aws logs filter-log-events --region us-west-2 --log-group-name /ecs/camelai-agen
   `AGENT_MAX_PROCESSES` and `AGENT_MAX_PROCESSES_PER_TENANT` still work). Idle agents stop
   after 5 minutes. When a tenant or the task is at its limit, the least recently
   used idle agent is stopped; if none is idle, the request is refused (429 for a
-  tenant's limit, 503 for the task's).
+  tenant's limit, 503 for the task's). A tenant's own `maxAgents`
+  (`infra/tenant.sh set-limit`) replaces the per-tenant default.
 - Sandboxed code runs in the same task as agent state. Code runs in QuickJS
   compiled to WebAssembly, in a per-execution child process; a separate
   isolation tier (gVisor/Firecracker) is only warranted if agents ever run

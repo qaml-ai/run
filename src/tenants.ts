@@ -15,6 +15,8 @@ export interface Tenant {
   apiKeys: Record<string, string>;
   /** GitHub login that signs in to the console as this tenant. */
   github?: string;
+  /** Agents this tenant may have hosted at once on each node; overrides AGENT_MAX_AGENTS_PER_TENANT. */
+  maxAgents?: number;
 }
 
 /** The single-token mode used before tenants existed; its agents keep their original IDs. */
@@ -66,7 +68,8 @@ export class Tenants {
       if (!tenant.apiKeys || typeof tenant.apiKeys !== "object" || Object.values(tenant.apiKeys).some(key => typeof key !== "string" || !key)) throw new Error(`Tenant ${tenant.id} has invalid apiKeys`);
       hashes.add(tenant.tokenSha256);
       if (tenant.github !== undefined && (typeof tenant.github !== "string" || !/^[A-Za-z0-9-]{1,39}$/.test(tenant.github))) throw new Error(`Tenant ${tenant.id} has an invalid github login`);
-      next.set(tenant.id, { id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...tenant.apiKeys }, ...(tenant.github ? { github: tenant.github } : {}) });
+      if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
+      next.set(tenant.id, { id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...tenant.apiKeys }, ...(tenant.github ? { github: tenant.github } : {}), ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}) });
     }
     this.byId = next;
   }
@@ -87,6 +90,9 @@ export class Tenants {
     for (const tenant of this.byId.values()) if (tenant.github?.toLowerCase() === login.toLowerCase()) return tenant.id;
     return undefined;
   }
+
+  /** The tenant's own hosted-agent limit per node, if its entry sets one. */
+  maxAgents(id: string) { return this.byId.get(id)?.maxAgents; }
 
   /** Providers an admin configured keys for (`*` covers any provider). Names only. */
   providers(id: string) { return Object.keys(this.byId.get(id)?.apiKeys ?? {}); }

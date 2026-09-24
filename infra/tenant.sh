@@ -7,6 +7,7 @@
 #   tenant.sh rotate-token <tenant>             # replaces the operator token; the old one stops working
 #   tenant.sh remove <tenant>                   # removes the tenant (its agents stay on disk, unreachable)
 #   tenant.sh link-github <tenant> <login>      # console sign-in with that GitHub login uses this tenant
+#   tenant.sh set-limit <tenant> <n|default>    # hosted agents per task for this tenant (default: AGENT_MAX_AGENTS_PER_TENANT)
 #
 # The operator token is stored at <SECRET_PREFIX>/operator-token/<tenant>. Share it
 # through a password manager; anyone holding it controls every agent in that tenant.
@@ -14,7 +15,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 command=${1:-}; tenant=${2:-}
 [[ -n "$command" ]] || usage
@@ -46,12 +47,16 @@ elif action == "key":
 elif action == "github":
     if tenant not in tenants: sys.exit(f"No tenant {tenant}")
     tenants[tenant]["github"] = os.environ["GITHUB_LOGIN"]
+elif action == "limit":
+    if tenant not in tenants: sys.exit(f"No tenant {tenant}")
+    if os.environ["LIMIT"] == "default": tenants[tenant].pop("maxAgents", None)
+    else: tenants[tenant]["maxAgents"] = int(os.environ["LIMIT"])
 elif action == "remove":
     if tenants.pop(tenant, None) is None: sys.exit(f"No tenant {tenant}")
 json.dump(data, open(path, "w"))
 PY
-# edit <add|token|key|remove>: stdin stays free for the API key.
-edit() { TENANT="$tenant" PROVIDER="${provider:-}" TOKEN_SHA="${token_sha:-}" GITHUB_LOGIN="${login:-}" python3 "$work/edit.py" "$work/tenants.json" "$1"; }
+# edit <add|token|key|github|limit|remove>: stdin stays free for the API key.
+edit() { TENANT="$tenant" PROVIDER="${provider:-}" TOKEN_SHA="${token_sha:-}" GITHUB_LOGIN="${login:-}" LIMIT="${limit:-}" python3 "$work/edit.py" "$work/tenants.json" "$1"; }
 save() { aws secretsmanager put-secret-value --secret-id "$SECRET_PREFIX/tenants" --secret-string "file://$work/tenants.json" >/dev/null; }
 new_token() {
   printf 'art_%s' "$(openssl rand -hex 32)" > "$work/token"
@@ -75,7 +80,7 @@ reload() {
 case "$command" in
   list)
     python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tenants"]
-for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)"))' "$work/tenants.json" ;;
+for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")))' "$work/tenants.json" ;;
   add)
     new_token; edit add; save; store_token
     echo "Next: echo -n \"\$KEY\" | $0 set-key $tenant anthropic"
@@ -91,6 +96,13 @@ for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v
     login=${3:-}
     [[ "$login" =~ ^[A-Za-z0-9-]{1,39}$ ]] || { echo "Usage: $0 link-github <tenant> <github-login>" >&2; exit 2; }
     edit github; save; echo "GitHub user $login now signs in as $tenant."; reload ;;
+  set-limit)
+    limit=${3:-}
+    [[ "$limit" == default || "$limit" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "Usage: $0 set-limit <tenant> <n|default>  (n: a positive integer)" >&2; exit 2; }
+    edit limit; save
+    if [[ "$limit" == default ]]; then echo "$tenant uses the default limit (AGENT_MAX_AGENTS_PER_TENANT)."; else echo "$tenant may have $limit agents hosted per task."; fi
+    echo "Agents already running above a lowered limit keep running; it gates new starts."
+    reload ;;
   remove)
     edit remove; save; echo "Removed $tenant. Delete $SECRET_PREFIX/operator-token/$tenant when you no longer need it."; reload ;;
   *) usage ;;

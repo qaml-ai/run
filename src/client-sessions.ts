@@ -122,6 +122,8 @@ export interface ClientSessionOptions {
   maxAgentsPerTenant?: number;
   /** @deprecated The older name of `maxAgentsPerTenant`. */
   maxProcessesPerTenant?: number;
+  /** A tenant's own limit, overriding `maxAgentsPerTenant`; read at each start, so changes apply to the next one. */
+  agentLimitFor?: (tenant: string) => number | undefined;
   /** Stop an agent's process, and unload its session, after this long without activity. */
   idleMs?: number;
   retry?: AgentConfig["retry"];
@@ -395,10 +397,12 @@ export class ClientSessions {
       if (idle) await this.supervisor.stop(idle.header.id);
       return !!idle;
     };
-    const quota = this.options.maxAgentsPerTenant ?? this.options.maxProcessesPerTenant;
+    const own = this.options.agentLimitFor?.(tenant);
+    const quota = own ?? this.options.maxAgentsPerTenant ?? this.options.maxProcessesPerTenant;
+    const source = own !== undefined ? "tenant" : "default";
     const sameTenant = (session: Session) => tenantOf(session) === tenant;
     const reject = (status: 429 | 503, limit: string, value: number, message: string) => {
-      console.log(JSON.stringify({ type: "quota_rejected", level: "info", tenant, agent: id, limit, value, status }));
+      console.log(JSON.stringify({ type: "quota_rejected", level: "info", tenant, agent: id, limit, value, source: limit === "agentsPerTenant" ? source : "node", status }));
       return new HttpError(status, message);
     };
     for (;;) {
