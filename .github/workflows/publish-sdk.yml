@@ -1,7 +1,11 @@
 name: Publish SDK
-# Push a tag like sdk-v0.3.0 (matching sdk/package.json) to publish @camelai/agent-runtime to npmjs.
+# Push a tag like sdk-v0.3.1 (matching sdk/package.json) to publish @camelai/agent-runtime to npmjs.
+# Authentication is npm trusted publishing (GitHub OIDC); no npm token is stored anywhere.
 on:
   push: { tags: ["sdk-v*"] }
+permissions:
+  contents: read
+  id-token: write
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -9,8 +13,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, registry-url: https://registry.npmjs.org }
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: test "sdk-v$(node -p 'require("./sdk/package.json").version')" = "$GITHUB_REF_NAME"
       - run: npm publish
         working-directory: sdk
-        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
