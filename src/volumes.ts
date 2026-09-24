@@ -6,6 +6,7 @@ import { NotOwner } from "./client-sessions.ts";
 import type { Db } from "./db.ts";
 import type { Claim, Ownership } from "./ownership.ts";
 import { HttpError } from "./http.ts";
+import { deleteTail } from "./log-tail.ts";
 import { errorText, type ToolDefinition } from "./protocol.ts";
 import { runVolumeTool, volumeToolDefinitions, type ToolContext } from "./volume-tools.ts";
 
@@ -461,6 +462,8 @@ export class VolumeService {
       await this.db.query("delete from volume_snapshots where volume = $1", [id]);
       await this.db.query("delete from volume_watchers where volume = $1", [id]);
       volume.fault = new HttpError(404, `Unknown volume ${id}`);
+      // Before unloading, so nothing of a deleted volume is compacted into Storage.
+      await deleteTail(this.db, id);
       await this.unload(volume);
       return { deleted: true };
     }

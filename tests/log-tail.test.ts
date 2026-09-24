@@ -10,10 +10,11 @@ import pg from "pg";
 import { getRequestListener } from "@hono/node-server";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { fileStorage, memoryStorage, PreconditionFailed, type LogTail } from "../shared/storage.ts";
-import { postgresTail } from "../src/log-tail.ts";
+import { postgresTail, sweepTails } from "../src/log-tail.ts";
 import { Ownership, type Claim } from "../src/ownership.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
+import { VolumeService } from "../src/volumes.ts";
 import { AgentRuntime, schema, tool } from "../clients/node.ts";
 import { testDatabase } from "./database.ts";
 
@@ -119,6 +120,35 @@ test("a stale owner's appends and compactions are rejected, and it stays fenced"
   owner.append({ n: 2 }); await owner.flush(true);
   await owner.close();
   assert.deepEqual(await storage.log("volumes/vol_x/tree").read(), [{ n: 1 }, { n: 2 }]);
+});
+
+test("rows of revoked agents and deleted volumes that no live node holds are swept", async t => {
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const { ownership, claim } = await claimed(t, db, "http://a", "client_gone");
+  const log = storage.log<{ n: number }>("client-sessions/client_gone.journal", claim);
+  await log.read();
+  log.append({ n: 1 }); await log.flush(true);
+  await db.query("insert into agents (id, tenant, header, revision, name, type, model, revoked) values ('client_gone', 't', '{}', 1, 'n', 'g', 'm', true)");
+  assert.equal(await sweepTails(db), 0, "held by a live node");
+  await ownership.release(claim);
+  assert.equal(await sweepTails(db), 1);
+  assert.deepEqual(await rows(db, "client-sessions/client_gone.journal"), []);
+});
+
+test("deleting a volume drops its tail instead of compacting it", async t => {
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const { ownership } = await claimed(t, db, "http://a", "unused");
+  const volumes = new VolumeService({ db, storage, ownership });
+  t.after(() => volumes.close());
+  const { id } = await volumes.create("acme", { name: "gone" });
+  await volumes.call(id, "acme", "commit", { path: "/a.txt", ...await volumes.store("acme", Buffer.from("a")) });
+  assert.equal((await rows(db, `volumes/${id}/tree`)).length, 1);
+  const puts = storage.puts;
+  await volumes.call(id, "acme", "delete");
+  assert.deepEqual(await rows(db, `volumes/${id}/tree`), []);
+  assert.equal(storage.puts, puts);
 });
 
 /** A node in its own process that writes a log under its claim, then appends again when told. */

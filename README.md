@@ -104,8 +104,9 @@ Readers take the tail first, then Storage, then only rows above the highest
 sequence Storage covers, so a crash between the object write and the delete
 repeats nothing, and a compaction between the two reads loses nothing. A turn
 writes nothing to Storage; unloading writes one object per log with new records.
-Logs written before the tail existed are read unchanged: their segments are
-ordinary segments.
+Tail rows of revoked agents and deleted volumes are dropped with them, and an
+hourly sweep drops any a dead node left. Logs written before the tail existed are
+read unchanged: their segments are ordinary segments.
 
 Nodes cache an actor's owner for up to 5 seconds, never past the owner's
 heartbeat as last read, so forwarding costs no query per request. The cache is

@@ -21,6 +21,7 @@ import { HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
 import type { Db } from "./db.ts";
 import type { Claim, Ownership } from "./ownership.ts";
+import { deleteTail } from "./log-tail.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -952,6 +953,8 @@ export class ClientSessions {
   private async unload(session: Session) {
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     await session.log.close().catch(() => {});
+    // A revoked agent's logs are never read again.
+    if (session.header.revoked) await deleteTail(this.db, session.header.id).catch(() => {});
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
   }
 

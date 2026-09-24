@@ -54,3 +54,21 @@ export function postgresTail(db: Db): LogTail {
 function columns(rows: TailRow[]) {
   return [rows.map(row => row.seq), rows.map(row => row.snapshot), rows.map(row => row.body), rows.map(row => row.blob)];
 }
+
+/** Drop a deleted actor's tail rows; nothing reads its logs again. */
+export async function deleteTail(db: Db, actor: string) {
+  await db.query("delete from log_records where actor = $1", [actor]);
+}
+
+/**
+ * Drop tail rows of revoked or expired agents and deleted volumes that no live
+ * node holds: rows a node left when it died before unloading them.
+ */
+export async function sweepTails(db: Db) {
+  const { rowCount } = await db.query(`
+    delete from log_records r
+    where (exists (select 1 from agents a where a.id = r.actor and (a.revoked or a.expires_at <= $1))
+        or exists (select 1 from volumes v where v.id = r.actor and v.deleted_at is not null))
+      and not exists (select 1 from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = r.actor)`, [Date.now()]);
+  return rowCount ?? 0;
+}

@@ -10,7 +10,7 @@ import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { databaseFromEnvironment, migrate } from "./db.ts";
-import { postgresTail } from "./log-tail.ts";
+import { postgresTail, sweepTails } from "./log-tail.ts";
 import { Ownership } from "./ownership.ts";
 import { DEFAULT_TENANT, tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
@@ -353,6 +353,9 @@ const loadTimer = setInterval(() => console.log(nodeLoadLine({
   agents: supervisor.agents.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: process.memoryUsage.rss(),
 }, process.env.AGENT_SERVICE_NAME, { node, retiring: retiringSince !== undefined })), 60_000);
 loadTimer.unref();
+// Tail rows a dead node left for agents and volumes that are gone since.
+const sweepTimer = setInterval(() => void sweepTails(db).catch(error => console.error(JSON.stringify({ type: "tail_sweep_failed", error: errorText(error) }))), 60 * 60_000);
+sweepTimer.unref();
 
 /**
  * Deploys and scale-in on ECS. While a turn runs the task is protected, so ECS
@@ -404,6 +407,7 @@ async function drain(signal: string) {
   channels.stop();
   clearInterval(tenantsTimer);
   clearInterval(loadTimer);
+  clearInterval(sweepTimer);
   clearInterval(workTimer);
   if (retireTimer) clearInterval(retireTimer);
   clients.draining = true;
