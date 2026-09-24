@@ -116,7 +116,9 @@ export interface ClientSessionOptions {
   apiKey?: string;
   /** The provider key an agent uses, resolved per tenant at process start; never persisted. */
   apiKeyFor?: (tenant: string, provider: string) => Promise<string | undefined> | string | undefined;
-  /** At most this many agent processes per tenant at once (default: no per-tenant limit). */
+  /** At most this many hosted agents per tenant at once on this node (default: no per-tenant limit). */
+  maxAgentsPerTenant?: number;
+  /** @deprecated The older name of `maxAgentsPerTenant`. */
   maxProcessesPerTenant?: number;
   /** Stop an agent's process, and unload its session, after this long without activity. */
   idleMs?: number;
@@ -372,7 +374,7 @@ export class ClientSessions {
       if (idle) await this.supervisor.stop(idle.header.id);
       return !!idle;
     };
-    const quota = this.options.maxProcessesPerTenant;
+    const quota = this.options.maxAgentsPerTenant ?? this.options.maxProcessesPerTenant;
     const sameTenant = (session: Session) => tenantOf(session) === tenantOf(starting);
     while (quota && live(sameTenant).length >= quota) {
       if (!await evictIdle(live(sameTenant))) throw new HttpError(429, `This tenant already has ${quota} agents running; retry when one finishes`);

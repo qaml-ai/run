@@ -331,8 +331,10 @@ Context overflow is not retried.
 
 Sessions load lazily and unload after `AGENT_IDLE_MS` (default 5 minutes)
 without activity; the agent's process stops at the same point. When all
-`AGENT_MAX_PROCESSES` slots are in use, the least recently active idle agent is
-stopped to make room. With `AGENT_STORAGE=file`, logs are local files, not
+`AGENT_MAX_AGENTS` slots are in use (hosted agents per node, processes or inline;
+`AGENT_MAX_AGENTS_PER_TENANT` per tenant; the older names `AGENT_MAX_PROCESSES`
+and `AGENT_MAX_PROCESSES_PER_TENANT` still work), the least recently active idle
+agent is stopped to make room. With `AGENT_STORAGE=file`, logs are local files, not
 replicated storage; the whole transcript of an active agent is still held in memory.
 
 The host provider key is only sent to trusted endpoints: the default model's,
