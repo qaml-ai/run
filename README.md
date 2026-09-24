@@ -229,6 +229,9 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe, for credit purchases (development; see [Billing](#billing)) |
 | `AGENT_STRIPE_SECRET_ARN` | instead: a Secrets Manager secret holding `{secretKey, webhookSecret}`, read at startup; while it has no value, purchases are off |
+| `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
+| `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead (see [Billing](#billing)) |
+| `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | how old a GitHub account must be for a new tenant's starting credit (default 30) |
 | `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
 | `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
 | `AGENT_BILLING_INTERVAL_MS` | how often a node checks whether today's storage charge has run (default 3600000) |
@@ -711,8 +714,21 @@ zero gets **402** for new runs, code executions included, with where to add cred
 a running turn ends after the response that spent the last credit, as at the
 [monthly spend cap](#persistence). The balance counts this node's unwritten charges
 at once and other nodes' within about five seconds, so the overdraft is about one
-response per node running the tenant's turns. Each new self-serve tenant starts with
-$5 of credit, once.
+response per node running the tenant's turns.
+
+**Sign-up.** Console sign-in with GitHub admits members of `GITHUB_ORG`, or with
+`AGENT_OPEN_SIGNUP=true` anyone with a GitHub account (asking only for the public
+profile). A self-serve tenant is tied to the GitHub account's numeric id, so a
+renamed login keeps its tenant (and a new account that takes an old login gets a
+tenant of its own, `<login>-<id>` when the name is taken). Each GitHub account's
+first prepaid tenant gets $5 of starting credit, once per account id, and only if
+the account is at least `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` (30) days old; a newer
+account can still sign in, bring its own key or buy credit. A prepaid tenant that
+has never bought credit (grants and adjustments do not count; a full refund puts it
+back) is on **free credit**, with tighter limits: at most `AGENT_FREE_MAX_AGENTS` (2)
+agents at once per node, unless an admin set its `maxAgents`, and at most
+`AGENT_FREE_HOURLY_SPEND_USD` ($1) of usage charges in any hour, past which runs get
+429 and a running turn ends as above. Both lift with the first purchase.
 
 `GET /v1/billing` has the balance, this month by kind, recent entries and the
 rates; `GET /v1/billing/ledger?before=<id>` pages through the ledger; the console's

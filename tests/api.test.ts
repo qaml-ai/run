@@ -25,7 +25,8 @@ async function fakeGithub(t: { after(fn: () => Promise<void>): void }, members: 
     const url = new URL(req.url!, "http://github.test");
     if (url.pathname === "/login/oauth/access_token") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ access_token: `gho_${nextLogin}` })); return; }
     const login = (req.headers.authorization ?? "").replace("Bearer gho_", "");
-    if (url.pathname === "/user") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ login })); return; }
+    // Each login is its own account, with a stable numeric id.
+    if (url.pathname === "/user") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ login, id: parseInt(sha(login).slice(0, 8), 16), created_at: "2015-01-01T00:00:00Z" })); return; }
     if (url.pathname === "/user/memberships/orgs/qaml-ai") {
       const state = members[login];
       res.writeHead(state ? 200 : 404, { "Content-Type": "application/json" }).end(JSON.stringify(state ? { state } : { message: "Not Found" }));

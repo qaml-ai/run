@@ -120,12 +120,14 @@ test("a flush whose commit acknowledgement is lost is retried without counting t
 test("credit: prepaid tenants are refused at zero, others never; the balance counts this node's unwritten debits", async () => {
   const { db } = await testDatabase();
   const accounts = await accountsOn(db);
-  assert.match((await accounts.billing.creditLimit("payg"))!, /prepaid credit is used up \(balance \$0\.00\); add credit at https:\/\/agents\.example\.test\/console\/billing/);
+  assert.match((await accounts.billing.creditLimit("payg"))!.message, /prepaid credit is used up \(balance \$0\.00\); add credit at https:\/\/agents\.example\.test\/console\/billing/);
   assert.equal(await accounts.billing.creditLimit("ops"), undefined, "admin tenants are unbilled by default");
   await accounts.billing.post([{ tenant: "payg", kind: "adjustment", amount: 100_000, key: "a1" }]);
   assert.equal(await accounts.billing.creditLimit("payg"), undefined);
   accounts.recordUsage("payg", "a", response(0.1));
-  assert.match((await accounts.runLimit("payg"))!, /used up/, "an unwritten debit counts at once");
+  const limited = await accounts.runLimit("payg");
+  assert.equal(typeof limited === "object" && limited.status, 402);
+  assert.match(String(typeof limited === "object" && limited.message), /used up/, "an unwritten debit counts at once");
   // Another node's debits count once its cached balance expires.
   const other = await accountsOn(db);
   assert.equal(await other.billing.creditLimit("payg"), undefined);
@@ -145,8 +147,9 @@ test("a self-serve tenant gets its starting credit once; tenants from before bil
   await db.query("insert into tenants (id, github, created_at) values ('veteran', 'Veteran', 1)");
   await migrate(db);
   const accounts = await accountsOn(db);
-  assert.equal(await accounts.tenantForGithub("Carol"), "carol");
-  assert.equal(await accounts.tenantForGithub("carol"), "carol");
+  const carol = { login: "Carol", id: 1001, createdAt: Date.parse("2020-01-01") };
+  assert.equal(await accounts.tenantForGithub(carol), "carol");
+  assert.equal(await accounts.tenantForGithub({ ...carol, login: "carol" }), "carol");
   assert.equal(await balance(db, "carol"), micros(5));
   const summary = await accounts.billing.summary("carol");
   assert.equal(summary.billing, "prepaid");
@@ -370,3 +373,124 @@ test("without Stripe, checkout answers 503 and the webhook 404", async t => {
   assert.equal((await call("/v1/billing/checkout", { body: { amountUsd: 10 }, token: PAYG })).status, 503);
   assert.equal((await call("/v1/billing/stripe/webhook", { body: {}, token: null })).status, 404);
 });
+
+const DAY = 86_400_000;
+/** GitHub's OAuth and user API for accounts that can be renamed: login → numeric id and creation time. */
+async function fakeGithub(t: { after(fn: () => void | Promise<void>): void }) {
+  const accounts = new Map<number, { login: string; createdAt: number }>();
+  let current = 0;
+  const url = await listen(t, async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    const path = new URL(req.url!, "http://github.test").pathname;
+    const account = accounts.get(Number((req.headers.authorization ?? "").replace("Bearer gho_", "")));
+    const reply = path === "/login/oauth/access_token" ? { access_token: `gho_${current}` }
+      : path === "/user" && account ? { login: account.login, id: current, created_at: new Date(account.createdAt).toISOString() }
+      : undefined;
+    res.writeHead(reply ? 200 : 404, { "Content-Type": "application/json" }).end(JSON.stringify(reply ?? { message: "Not Found" }));
+  });
+  return {
+    url,
+    account(id: number, login: string, ageDays: number) { accounts.set(id, { login, createdAt: Date.now() - ageDays * DAY }); },
+    rename(id: number, login: string) { accounts.get(id)!.login = login; },
+    /** Complete the OAuth dance as account `id`; the session cookie, or the error the console is sent. */
+    async signIn(base: string, id: number) {
+      current = id;
+      const start = await fetch(`${base}/console/auth/github`, { redirect: "manual" });
+      const authorize = new URL(start.headers.get("location")!);
+      const state = start.headers.get("set-cookie")!.split(";")[0];
+      const callback = await fetch(`${base}/console/auth/callback?code=c&state=${authorize.searchParams.get("state")}`, { redirect: "manual", headers: { Cookie: state } });
+      const cookie = callback.headers.getSetCookie().find(value => value.startsWith("ar_session="))?.split(";")[0];
+      return { authorize, cookie, error: new URL(callback.headers.get("location")!, base).searchParams.get("error") };
+    },
+  };
+}
+const githubEnv = (github: string) => ({ GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", AGENT_GITHUB_WEB_URL: github, AGENT_GITHUB_API_URL: github, AGENT_OPEN_SIGNUP: "true" });
+const consoleCall = (call: (path: string, init?: any) => Promise<any>, cookie: string) =>
+  (path: string, init: { method?: string; body?: unknown } = {}) => call(path, { ...init, token: null, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1" } });
+
+test("open sign-up admits any GitHub account; starting credit is once per account id and only for accounts 30 days old; a renamed login keeps its tenant", async t => {
+  const github = await fakeGithub(t);
+  const stripeApi = await fakeStripe(t);
+  const { call, base } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {
+    ...githubEnv(github.url), AGENT_VERIFY_KEYS: "false", STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: stripeApi.url,
+  }, tenantsFile);
+  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, token: true, open: true, minAccountDays: 30 });
+
+  // Too new for free credit, but in: it can bring its own key or buy credit.
+  github.account(2001, "Newbie", 5);
+  const newbie = await github.signIn(base, 2001);
+  assert.equal(newbie.authorize.searchParams.get("scope"), null, "only the public profile");
+  assert.equal(newbie.authorize.searchParams.get("allow_signup"), "true");
+  const asNewbie = consoleCall(call, newbie.cookie!);
+  assert.equal((await asNewbie("/v1/me")).json.tenant, "newbie");
+  const newbieBilling = (await asNewbie("/v1/billing")).json;
+  assert.deepEqual([newbieBilling.billing, newbieBilling.balance, newbieBilling.freeCredit], ["prepaid", 0, true]);
+  assert.equal((await asNewbie("/v1/providers/anthropic/key", { method: "PUT", body: { apiKey: "sk-ant-newbie-1234" } })).status, 200);
+  assert.equal((await asNewbie("/v1/billing/checkout", { body: { amountUsd: 5 } })).status, 201);
+
+  // An old enough account gets $5, once, however often it signs in.
+  github.account(3001, "Dave", 400);
+  const dave = await github.signIn(base, 3001);
+  const asDave = consoleCall(call, dave.cookie!);
+  assert.equal((await asDave("/v1/billing")).json.balance, micros(5));
+  await github.signIn(base, 3001);
+  // Renamed on GitHub: the same account, the same tenant, no second grant.
+  github.rename(3001, "David");
+  const david = await github.signIn(base, 3001);
+  const asDavid = consoleCall(call, david.cookie!);
+  assert.deepEqual([(await asDavid("/v1/me")).json.tenant, (await asDavid("/v1/me")).json.login], ["dave", "David"]);
+  assert.equal((await asDavid("/v1/billing")).json.balance, micros(5));
+  assert.deepEqual((await asDavid("/v1/billing/ledger")).json.entries.map((entry: any) => entry.kind), ["grant"]);
+  // Someone else now has the login "Dave": another account, so another tenant and its own grant.
+  github.account(4001, "Dave", 90);
+  const other = await github.signIn(base, 4001);
+  const asOther = consoleCall(call, other.cookie!);
+  assert.equal((await asOther("/v1/me")).json.tenant, "dave-4001");
+  assert.equal((await asOther("/v1/billing")).json.balance, micros(5));
+});
+
+test("free credit brings fewer agents and an hourly spend limit, both lifted by the first purchase", async t => {
+  const github = await fakeGithub(t);
+  const { call, base, model } = await runtime(t, (_body, index) => ({
+    ...(index < 2 ? toolCall("js_exec", { code: `return ${index}` }, `call_${index}`) : { role: "assistant", content: "finished" }),
+    usage: { prompt_tokens: 5000, completion_tokens: 0 },
+  }), {
+    ...githubEnv(github.url), AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_PRICE_AGENT_HOUR_USD: "0",
+    AGENT_FREE_MAX_AGENTS: "2", AGENT_FREE_HOURLY_SPEND_USD: "0.2", AGENT_MAX_AGENTS_PER_TENANT: "5",
+    STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: "http://127.0.0.1:9",
+  }, tenantsFile);
+  github.account(5001, "Erin", 365);
+  const session = await github.signIn(base, 5001);
+  const token = (await consoleCall(call, session.cookie!)("/v1/tokens", { body: { name: "test" } })).json.token;
+  assert.equal((await call("/v1/billing", { token })).json.freeCredit, true);
+
+  const created = await Promise.all(["a", "b", "c"].map(key => call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": key } })));
+  assert.deepEqual(created.map(result => result.status).sort(), [201, 201, 429], "two agents at once on free credit");
+  const agent = created.find(result => result.status === 201)!.json;
+
+  const first = await prompt(call, agent.id, token);
+  assert.equal(first.result.stopped, "spend_limit");
+  assert.match(first.result.error, /Free credit allows \$0\.20 of usage per hour/);
+  assert.equal(model.bodies.length, 2, "the turn ended after the response that reached the hourly limit");
+  const limited = await call(`/v1/agents/${agent.id}/prompt`, { body: { text: "again" }, token });
+  assert.equal(limited.status, 429);
+  assert.match(limited.json.error, /buy credit/);
+
+  // The first purchase lifts both limits at once.
+  const event = { id: "evt_buy", type: "checkout.session.completed", data: { object: { id: "cs_erin", payment_status: "paid", payment_intent: "pi_erin", metadata: { purpose: "agent-runtime-credit", tenant: "erin", credit: "5000000" } } } };
+  assert.equal((await call("/v1/billing/stripe/webhook", { body: event, token: null, headers: { "Stripe-Signature": signWebhook(WEBHOOK_SECRET, JSON.stringify(event)) } })).status, 200);
+  assert.equal((await call("/v1/billing", { token })).json.freeCredit, false);
+  assert.equal((await prompt(call, agent.id, token)).result.reply, "finished");
+  const failed = created.findIndex(result => result.status === 429);
+  assert.equal((await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": ["a", "b", "c"][failed] } })).status, 201);
+});
+
+/** Prompt over the REST API with `token` and wait for the run's outcome. */
+async function prompt(call: (path: string, init?: any) => Promise<any>, agent: string, token: string) {
+  const accepted = await call(`/v1/agents/${agent}/prompt`, { body: { text: "go" }, token });
+  assert.equal(accepted.status, 202, accepted.text);
+  return (await until(async () => {
+    const record = (await call(`/v1/agents/${agent}/requests/${accepted.json.id}`, { token })).json;
+    return record.state === "completed" && record;
+  }, "the turn to end")).outcome;
+}

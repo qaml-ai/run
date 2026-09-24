@@ -5,6 +5,7 @@ import type { UsageRecord } from "./client-sessions.ts";
 import { Billing, postLedger, type LedgerEntry } from "./billing.ts";
 import { activeCharge, MICROS, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
+import type { HttpError } from "./http.ts";
 
 /**
  * Tenant state that tenants manage themselves: provider keys (encrypted at rest),
@@ -19,6 +20,8 @@ export type KeySource = "tenant" | "admin" | "platform";
 export interface KeyStatus { provider: string; source: KeySource; last4?: string; setAt?: number }
 export interface ApiToken { id: string; name: string; sha256: string; prefix: string; createdAt: number }
 export type Sealed = { iv: string; tag: string; ciphertext: string };
+/** A GitHub account at sign-in: its login, numeric id and creation time (ms). */
+export interface GithubUser { login: string; id?: number; createdAt?: number }
 type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
 /**
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
@@ -88,23 +91,53 @@ export class Accounts {
   }
 
   /**
-   * The tenant a GitHub user signs in as: an admin tenant linked to that login,
-   * otherwise a tenant named after the login, created on first sign-in.
+   * The tenant a GitHub user signs in as: an admin tenant linked to that login, else the
+   * tenant made for that GitHub account (found by its numeric id, so a renamed login keeps
+   * it), else a new tenant named after the login (or, when another account has that name,
+   * the login and the id). New self-serve tenants pay from prepaid credit and start with
+   * `startingGrant`, once per GitHub account, and only for accounts at least
+   * `minAccountAgeMs` old.
    */
-  async tenantForGithub(login: string): Promise<string> {
+  async tenantForGithub(user: GithubUser | string, options: { minAccountAgeMs?: number } = {}): Promise<string> {
+    const { login, id: githubId, createdAt } = typeof user === "string" ? { login: user } as GithubUser : user;
     const linked = this.tenants.byGithub(login);
     if (linked) return linked;
-    const id = login.toLowerCase();
-    if (!validTenant(id)) throw new Error(`GitHub login ${login} cannot be used as a tenant id`);
-    if (this.tenants.has(id)) throw new Error(`Tenant ${id} exists but is not linked to GitHub user ${login}; ask an admin to add "github": "${login}" to it`);
-    await this.db.query("insert into tenants (id, github, created_at) values ($1, $2, $3) on conflict (id) do nothing", [id, login, Date.now()]);
-    const existing = (await this.db.query("select github, billing from tenants where id = $1", [id])).rows[0];
-    if (existing.github?.toLowerCase() !== login.toLowerCase()) throw new Error(`Tenant ${id} belongs to another account`);
-    // Starting credit, once: the key makes a repeat (every later sign-in, or a retry after a failure here) a no-op.
-    if (existing.billing === "prepaid" && this.billing.pricing.startingGrant > 0) {
-      await this.billing.post([{ tenant: id, kind: "grant", amount: this.billing.pricing.startingGrant, key: `grant:signup:${id}`, metadata: { reason: "Starting credit" } }]);
+    let row: { id: string; github: string | null; github_id: number | null; billing: string } | undefined;
+    const columns = "id, github, github_id, billing";
+    if (githubId !== undefined) {
+      row = (await this.db.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
+      // A tenant from before ids were recorded is claimed by the account that has its login now.
+      row ??= (await this.db.query(`update tenants set github_id = $2 where lower(github) = lower($1) and github_id is null returning ${columns}`, [login, githubId])).rows[0];
+    } else {
+      row = (await this.db.query(`select ${columns} from tenants where lower(github) = lower($1)`, [login])).rows[0];
     }
-    return id;
+    if (!row) {
+      const name = login.toLowerCase();
+      const candidates = githubId === undefined ? [name] : [name, `${name.slice(0, 39 - String(githubId).length)}-${githubId}`];
+      for (const candidate of candidates) {
+        if (!validTenant(candidate) || this.tenants.has(candidate)) continue;
+        try {
+          row = (await this.db.query(`insert into tenants (id, github, github_id, created_at) values ($1, $2, $3, $4) on conflict (id) do nothing returning ${columns}`, [candidate, login, githubId ?? null, Date.now()])).rows[0];
+        } catch (error) {
+          // A concurrent first sign-in of the same account made its tenant.
+          if ((error as { code?: string }).code !== "23505") throw error;
+          row = (await this.db.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
+        }
+        if (row) break;
+      }
+      if (!row) {
+        if (this.tenants.has(name)) throw new Error(`Tenant ${name} exists but is not linked to GitHub user ${login}; ask an admin to add "github": "${login}" to it`);
+        throw new Error(`GitHub login ${login} cannot be used as a tenant id`);
+      }
+    }
+    if (githubId === undefined && row.github?.toLowerCase() !== login.toLowerCase()) throw new Error(`Tenant ${row.id} belongs to another account`);
+    if (row.github !== login) await this.db.query("update tenants set github = $2 where id = $1", [row.id, login]);
+    const oldEnough = createdAt !== undefined && Date.now() - createdAt >= (options.minAccountAgeMs ?? 0);
+    // The key makes a repeat (a later sign-in, a retry after a failure here, a second tenant for the account) a no-op.
+    if (row.billing === "prepaid" && githubId !== undefined && oldEnough && this.billing.pricing.startingGrant > 0) {
+      await this.billing.post([{ tenant: row.id, kind: "grant", amount: this.billing.pricing.startingGrant, key: `grant:github:${githubId}`, metadata: { reason: "Starting credit", github: login } }]);
+    }
+    return row.id;
   }
 
   // Provider keys -------------------------------------------------------------
@@ -347,8 +380,8 @@ export class Accounts {
     return `This tenant has reached its monthly spend limit of $${cap.toFixed(2)} ($${spent.toFixed(2)} spent this UTC month); ask the runtime operator to raise it`;
   }
 
-  /** Why the tenant may not start or continue model work: a reached monthly cap, or spent prepaid credit. */
-  async runLimit(tenant: string): Promise<string | undefined> {
+  /** Why the tenant may not start or continue model work: a reached monthly cap (a message, for 402), or spent or rate-limited prepaid credit. */
+  async runLimit(tenant: string): Promise<string | HttpError | undefined> {
     return await this.spendLimit(tenant) ?? await this.billing.creditLimit(tenant);
   }
 

@@ -149,7 +149,7 @@ export interface ClientSessionOptions {
   /** @deprecated The older name of `maxAgentsPerTenant`. */
   maxProcessesPerTenant?: number;
   /** A tenant's own limit, overriding `maxAgentsPerTenant`; read at each start, so changes apply to the next one. */
-  agentLimitFor?: (tenant: string) => number | undefined;
+  agentLimitFor?: (tenant: string) => Promise<number | undefined> | number | undefined;
   /** Stop an agent's process, and unload its session, after this long without activity. */
   idleMs?: number;
   retry?: AgentConfig["retry"];
@@ -159,9 +159,9 @@ export interface ClientSessionOptions {
    * Why a tenant may not spend more on models (a reached monthly cap). Checked when a model run is
    * accepted (402), when it starts, and after each model response in a turn that would continue.
    */
-  spendLimit?: (tenant: string) => Promise<string | undefined>;
-  /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted (402) and when it starts. */
-  creditLimit?: (tenant: string) => Promise<string | undefined>;
+  spendLimit?: (tenant: string) => Promise<Refusal | undefined>;
+  /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
+  creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
   /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
   onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
   /** Called with time an agent spent in runs (model calls and tool execution), at least every minute while one runs. */
@@ -178,6 +178,8 @@ export interface ClientSessionOptions {
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; tools: ToolDefinition[]; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean };
+/** Why runs are refused: a message (402), or an error with its own status. */
+export type Refusal = string | HttpError;
 /** A provider key and whether it is the platform's rather than the tenant's own. */
 export type ProviderKey = { key: string; platform: boolean };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
@@ -453,7 +455,7 @@ export class ClientSessions {
       if (idle) await this.supervisor.stop(idle.header.id);
       return !!idle;
     };
-    const own = this.options.agentLimitFor?.(tenant);
+    const own = await this.options.agentLimitFor?.(tenant);
     const quota = own ?? this.options.maxAgentsPerTenant ?? this.options.maxProcessesPerTenant;
     const source = own !== undefined ? "tenant" : "default";
     const sameTenant = (session: Session) => tenantOf(session) === tenant;
@@ -489,7 +491,10 @@ export class ClientSessions {
       session.platformKey = platform;
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: await this.toolset(session, session.header.definitions),
-        spendLimit: () => this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT),
+        spendLimit: async () => {
+          const limited = await this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT);
+          return typeof limited === "string" ? limited : limited?.message;
+        },
         // File tools run here against the agent's current mounts, and source tools against its sources; every other tool goes to the application.
         call: async (name, args, signal, context) => {
           if (this.isFileTool(session, name)) {
@@ -892,7 +897,7 @@ export class ClientSessions {
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
     const isRun = RUN_METHODS.includes(body.method);
     const limited = await this.runLimit(session, body.method);
-    if (limited) throw new HttpError(402, limited);
+    if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
     // Reads, aborts and applied definitions never need a process; runs start it when their turn comes.
     if (!isRun && !applying && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
     // Concurrent retries may have waited on the same process startup.
@@ -993,7 +998,7 @@ export class ClientSessions {
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
         if (!session.resuming.has(record.id)) {
           const limited = await this.runLimit(session, record.method);
-          if (limited) throw new HttpError(402, limited);
+          if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
         }
         await this.ensureStarted(session);
         if (this.draining) return;

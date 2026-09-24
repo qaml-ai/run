@@ -13,7 +13,11 @@ export interface ConsoleAuthOptions {
   secret: string;
   /** Public origin, e.g. https://agents.camelai.dev. Cookies are Secure when it is https. */
   publicUrl: string;
-  github?: { clientId: string; clientSecret: string; org: string; webUrl?: string; apiUrl?: string };
+  /**
+   * GitHub sign-in: for members of `org`, or with `open`, for anyone with a GitHub
+   * account. New tenants' starting credit needs an account at least `minAccountDays` old.
+   */
+  github?: { clientId: string; clientSecret: string; org: string; open?: boolean; minAccountDays?: number; webUrl?: string; apiUrl?: string };
   sessionHours?: number;
 }
 export const CONSOLE_HEADER = "x-agent-runtime-console";
@@ -81,7 +85,10 @@ export class ConsoleAuth {
     const fail = (c: Context, message: string, setCookies: string[] = []) => redirect(c, `/console/?error=${encodeURIComponent(message)}`, setCookies);
     app.use("/console/auth/*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
 
-    app.get("/console/auth/methods", c => json(c, 200, { github: !!this.options.github, token: true, org: this.options.github?.org }));
+    app.get("/console/auth/methods", c => {
+      const github = this.options.github;
+      return json(c, 200, { github: !!github, token: true, ...(github?.open ? { open: true, minAccountDays: github.minAccountDays ?? 30 } : { org: github?.org }) });
+    });
     app.get("/console/auth/github", c => {
       const github = this.options.github;
       if (!github) return fail(c, "GitHub sign-in is not configured");
@@ -89,9 +96,10 @@ export class ConsoleAuth {
       const authorize = new URL("/login/oauth/authorize", github.webUrl ?? "https://github.com");
       authorize.searchParams.set("client_id", github.clientId);
       authorize.searchParams.set("redirect_uri", new URL("/console/auth/callback", this.options.publicUrl).href);
-      authorize.searchParams.set("scope", "read:org");
+      // Open sign-up reads only the public profile; org mode needs to see memberships.
+      if (!github.open) authorize.searchParams.set("scope", "read:org");
       authorize.searchParams.set("state", state);
-      authorize.searchParams.set("allow_signup", "false");
+      authorize.searchParams.set("allow_signup", github.open ? "true" : "false");
       return redirect(c, authorize.href, [this.cookie(STATE_COOKIE, state, 600, "/console/auth")]);
     });
     app.get("/console/auth/callback", async c => {
@@ -113,12 +121,17 @@ export class ConsoleAuth {
         if (!accessToken) throw new Error("GitHub did not issue a token");
         const api = github.apiUrl ?? "https://api.github.com";
         const headers = { Authorization: `Bearer ${accessToken}`, Accept: "application/vnd.github+json", "User-Agent": "camelai-agent-runtime" };
-        const user = await (await fetch(`${api}/user`, { headers, signal: AbortSignal.timeout(10_000) })).json() as { login?: string };
-        if (!user.login) throw new Error("GitHub did not return a user");
-        const membership = await fetch(`${api}/user/memberships/orgs/${encodeURIComponent(github.org)}`, { headers, signal: AbortSignal.timeout(10_000) });
-        const member = membership.ok && (await membership.json() as { state?: string }).state === "active";
-        if (!member) throw new Error(`Only members of the ${github.org} GitHub organization can sign in`);
-        const tenant = await this.options.accounts.tenantForGithub(user.login);
+        const user = await (await fetch(`${api}/user`, { headers, signal: AbortSignal.timeout(10_000) })).json() as { login?: string; id?: number; created_at?: string };
+        if (!user.login || !Number.isSafeInteger(user.id)) throw new Error("GitHub did not return a user");
+        if (!github.open) {
+          const membership = await fetch(`${api}/user/memberships/orgs/${encodeURIComponent(github.org)}`, { headers, signal: AbortSignal.timeout(10_000) });
+          const member = membership.ok && (await membership.json() as { state?: string }).state === "active";
+          if (!member) throw new Error(`Only members of the ${github.org} GitHub organization can sign in`);
+        }
+        const createdAt = user.created_at ? Date.parse(user.created_at) : NaN;
+        const tenant = await this.options.accounts.tenantForGithub(
+          { login: user.login, id: user.id, ...(Number.isFinite(createdAt) ? { createdAt } : {}) },
+          { minAccountAgeMs: (github.minAccountDays ?? 30) * 86_400_000 });
         return redirect(c, "/console/", [clearState, this.startSession(tenant, user.login)]);
       } catch (error) {
         return fail(c, (error as Error).message, [clearState]);

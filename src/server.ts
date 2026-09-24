@@ -104,7 +104,14 @@ const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).r
 // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
 const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: process.env.AGENT_STRIPE_API_URL });
 const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing: pricingFromEnvironment(), publicUrl, stripe });
-const github = secrets.github && { ...secrets.github, org: process.env.GITHUB_ORG ?? "qaml-ai", webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL };
+// GitHub sign-in admits members of GITHUB_ORG, or with AGENT_OPEN_SIGNUP=true anyone; starting credit needs an account
+// AGENT_SIGNUP_MIN_ACCOUNT_DAYS (default 30) old.
+const minAccountDays = Number(process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS ?? 30);
+if (!Number.isFinite(minAccountDays) || minAccountDays < 0) throw new Error("AGENT_SIGNUP_MIN_ACCOUNT_DAYS must be a non-negative number of days");
+const github = secrets.github && {
+  ...secrets.github, org: process.env.GITHUB_ORG ?? "qaml-ai", open: process.env.AGENT_OPEN_SIGNUP === "true", minAccountDays,
+  webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL,
+};
 const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 
@@ -246,7 +253,11 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 }
 
 const clients = new ClientSessions(supervisor, {
-  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, agentLimitFor: tenant => tenants.maxAgents(tenant),
+  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, agentLimitFor: async tenant => {
+    // An admin's limit for the tenant, else, on free credit, the free limit (never above the default).
+    const free = tenants.maxAgents(tenant) === undefined ? await accounts.billing.agentLimit(tenant) : undefined;
+    return tenants.maxAgents(tenant) ?? (free === undefined ? undefined : Math.min(free, maxAgentsPerTenant));
+  },
   apiKeyFor: async (tenant, provider) => {
     const resolved = await accounts.providerKey(tenant, provider);
     return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
@@ -399,7 +410,7 @@ app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorTex
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
-  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys, sandbox, stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, keyStorage: accounts.canStoreKeys, sandbox, stripe: stripe ? (stripe.live ? "live" : "test") : false }));
 });
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
 const reloadTenants = (announce: boolean) => tenants.reload().then(

@@ -102,7 +102,7 @@ function SignOut() {
 }
 
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const methods = useApi<{ github: boolean; token: boolean; org?: string }>("/console/auth/methods");
+  const methods = useApi<{ github: boolean; token: boolean; org?: string; open?: boolean; minAccountDays?: number }>("/console/auth/methods");
   const [token, setToken] = useState("");
   const [error, setError] = useState(new URLSearchParams(location.search).get("error") ?? "");
   const [busy, setBusy] = useState(false);
@@ -127,7 +127,9 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
               <a href="/console/auth/github"><Github />Continue with GitHub</a>
             </Button>
           )}
-          {methods.data?.github && <p className="text-muted-foreground -mt-2 text-xs">For members of the {methods.data.org} GitHub organization.</p>}
+          {methods.data?.github && <p className="text-muted-foreground -mt-2 text-xs">{methods.data.open
+            ? `Any GitHub account can sign up. Accounts at least ${methods.data.minAccountDays} days old start with free credit.`
+            : `For members of the ${methods.data.org} GitHub organization.`}</p>}
           {methods.data?.github && <div className="text-muted-foreground flex items-center gap-3 text-xs"><Separator className="flex-1" />or<Separator className="flex-1" /></div>}
           <form onSubmit={submit} className="flex flex-col gap-2">
             <Label htmlFor="token">Operator or API token</Label>

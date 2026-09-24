@@ -21,6 +21,8 @@ export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustmen
 export const LEDGER_KINDS: LedgerKind[] = ["grant", "purchase", "usage", "storage", "adjustment", "refund"];
 export interface LedgerEntry { tenant: string; kind: LedgerKind; amount: number; key: string; metadata?: Record<string, unknown> }
 export interface LedgerRow { id: number; kind: LedgerKind; amount: number; metadata: Record<string, unknown>; createdAt: number }
+/** What limits a tenant's runs: its balance, what it ever bought (none: on free credit), and its usage charges in the last hour. */
+type Account = { balance: number; purchased: number; lastHour: number };
 
 /** Debits on other nodes count toward a tenant's balance within this long. */
 const BALANCE_CACHE_MS = 5_000;
@@ -80,9 +82,9 @@ export class Billing {
   readonly tenants: Tenants;
   readonly pricing: Pricing;
   private readonly options: BillingOptions;
-  /** Each tenant's balance and lifetime purchases as last read. */
-  private readonly accounts = new Map<string, { balance: number; purchased: number; until: number }>();
-  private readonly reads = new Map<string, Promise<{ balance: number; purchased: number }>>();
+  /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
+  private readonly accounts = new Map<string, Account & { until: number }>();
+  private readonly reads = new Map<string, Promise<Account>>();
   private readonly modes = new Map<string, { mode: BillingMode; until: number }>();
 
   constructor(options: BillingOptions) {
@@ -105,11 +107,12 @@ export class Billing {
     return mode;
   }
 
-  /** The tenant's balance (less what this node has recorded and not yet written) and lifetime purchases, read at most every few seconds. */
-  async account(tenant: string): Promise<{ balance: number; purchased: number }> {
+  /** The tenant's account, with what this node has recorded and not yet written counted in, read at most every few seconds. */
+  async account(tenant: string): Promise<Account> {
     const cached = this.accounts.get(tenant);
     const stored = cached && cached.until > Date.now() ? cached : await this.read(tenant);
-    return { balance: stored.balance - (this.options.pending?.(tenant) ?? 0), purchased: stored.purchased };
+    const pending = this.options.pending?.(tenant) ?? 0;
+    return { balance: stored.balance - pending, purchased: stored.purchased, lastHour: stored.lastHour + pending };
   }
 
   private read(tenant: string) {
@@ -117,8 +120,10 @@ export class Billing {
     if (!reading) {
       reading = (async () => {
         await this.options.flush?.();
-        const row = (await this.db.query("select balance, purchased from credit_accounts where tenant = $1", [tenant])).rows[0];
-        const value = { balance: row?.balance ?? 0, purchased: row?.purchased ?? 0 };
+        const { rows: [row] } = await this.db.query(`
+          select balance, purchased, (select coalesce(-sum(amount), 0) from credit_ledger where tenant = $1 and kind = 'usage' and created_at > $2) as last_hour
+          from (select $1::text as tenant) as t left join credit_accounts using (tenant)`, [tenant, Date.now() - 3_600_000]);
+        const value = { balance: row.balance ?? 0, purchased: row.purchased ?? 0, lastHour: Number(row.last_hour) };
         this.accounts.set(tenant, { ...value, until: Date.now() + BALANCE_CACHE_MS });
         return value;
       })().finally(() => this.reads.delete(tenant));
@@ -127,12 +132,26 @@ export class Billing {
     return reading;
   }
 
-  /** Why a prepaid tenant may not start or continue runs: its credit is spent. */
-  async creditLimit(tenant: string): Promise<string | undefined> {
+  /**
+   * Why a prepaid tenant may not start or continue runs: its credit is spent (402), or, on
+   * free credit, it has spent the free hourly allowance (429 until the hour's spend ages out).
+   */
+  async creditLimit(tenant: string): Promise<HttpError | undefined> {
     if (await this.mode(tenant) !== "prepaid") return undefined;
-    const { balance } = await this.account(tenant);
-    if (balance > 0) return undefined;
-    return `This tenant's prepaid credit is used up (balance ${usd(balance)}); add credit at ${this.options.publicUrl ?? ""}/console/billing`;
+    const { balance, purchased, lastHour } = await this.account(tenant);
+    const where = `${this.options.publicUrl ?? ""}/console/billing`;
+    if (balance <= 0) return new HttpError(402, `This tenant's prepaid credit is used up (balance ${usd(balance)}); add credit at ${where}`);
+    const allowance = this.pricing.free.hourlySpend;
+    if (purchased <= 0 && lastHour >= allowance) {
+      return new HttpError(429, `Free credit allows ${usd(allowance)} of usage per hour, and this tenant has used ${usd(lastHour)} in the last hour; retry later, or buy credit at ${where} to lift the limit`);
+    }
+    return undefined;
+  }
+
+  /** Agents a tenant on free credit may have hosted at once on each node; undefined once it has bought credit (or is not prepaid). */
+  async agentLimit(tenant: string): Promise<number | undefined> {
+    if (await this.mode(tenant) !== "prepaid") return undefined;
+    return (await this.account(tenant)).purchased > 0 ? undefined : this.pricing.free.maxAgents;
   }
 
   /** Append entries (see `postLedger`); the balances they move are read afresh next time. */
