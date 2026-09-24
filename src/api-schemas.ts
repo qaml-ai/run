@@ -182,6 +182,24 @@ const DefinitionLimits = z.object({
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400." }),
 }).openapi("DefinitionLimits");
 const definitionName = z.string().trim().min(1).max(120);
+const mcpServerFields = {
+  name: z.string().openapi({ description: "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them" }),
+  url: z.string().openapi({ description: "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address" }),
+  allowTools: z.array(z.string()).max(512).optional().openapi({ description: "Only these of its tools" }),
+  denyTools: z.array(z.string()).max(512).optional().openapi({ description: "None of these of its tools" }),
+  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its tools: directly, from js_exec (the default), or both" }),
+  timeoutMs: z.number().int().min(1_000).max(600_000).optional().openapi({ description: "Per call; default 60000" }),
+};
+const McpServerInput = z.object({
+  ...mcpServerFields,
+  headers: z.record(z.string(), z.string()).optional().openapi({ description: "Sent with every request to the server; stored encrypted and never returned. Leave out with auth to keep the ones stored for a server of this name and origin" }),
+  auth: z.object({ type: z.literal("bearer"), token: z.string() }).optional().openapi({ description: "A bearer token; stored encrypted and never returned" }),
+}).openapi("McpServerInput");
+const McpServer = z.object({
+  ...mcpServerFields,
+  headerNames: z.array(z.string()).optional().openapi({ description: "Headers the server gets; their values are never returned" }),
+  auth: z.object({ type: z.literal("bearer") }).optional(),
+}).openapi("McpServer");
 const definitionFields = {
   model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().trim().min(1).max(32_000),
@@ -189,6 +207,7 @@ const definitionFields = {
   tools: z.array(ToolDefinition).max(128).openapi({ description: "Client tools, answered by an application connected to the agent" }),
   limits: DefinitionLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
+  mcpServers: z.array(McpServerInput).max(16).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
 };
 const optional = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.optional()])) as { [K in keyof T]: z.ZodOptional<T[K]> };
 const removable = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.nullable().optional()])) as { [K in keyof T]: z.ZodOptional<z.ZodNullable<T[K]>> };
@@ -204,6 +223,7 @@ export const Definition = z.object({
   name: z.string(),
   revision: z.number().openapi({ description: "Increases with every change" }),
   ...optional(definitionFields),
+  mcpServers: z.array(McpServer).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 }).openapi("Definition");

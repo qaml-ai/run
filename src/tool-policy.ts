@@ -31,6 +31,11 @@ function validator(schema: object) {
   return compiled;
 }
 
+/** Whether arguments can be checked against `schema`: a schema from outside (an MCP server) may not compile. */
+export function compiles(schema: object) {
+  try { validator(schema); return true; } catch { return false; }
+}
+
 export function validateToolCall(definitions: ToolDefinition[], name: unknown, args: unknown) {
   const tool = definitions.find(tool => tool.name === name);
   if (!tool) throw new Error("Unknown tool");

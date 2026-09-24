@@ -6,6 +6,9 @@ import { errorText } from "./protocol.ts";
 import { configurationUpdate, resolveModel } from "./session-config.ts";
 import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
+import type { Accounts } from "./accounts.ts";
+import type { Outbound } from "./outbound.ts";
+import { mcpServersInput, mcpServerView, type McpServerSpec, type Sources } from "./tool-sources.ts";
 
 /**
  * Agent definitions: reusable, tenant-level agent configurations (`definitions`).
@@ -21,20 +24,24 @@ export interface DefinitionSpec {
   tools?: ToolDefinition[];
   limits?: { ttlSeconds?: number | null };
   mounts?: unknown[];
+  /** Remote MCP servers whose tools the runtime calls; credentials sealed. */
+  mcpServers?: McpServerSpec[];
   /** Made from this channel's inline template, so that channel may rewrite it. */
   channel?: string;
 }
 export interface Definition { id: string; tenant: string; name: string; revision: number; spec: DefinitionSpec; createdAt: number; updatedAt: number }
-/** Top-level fields replace the stored ones; null removes one. */
-export type DefinitionInput = { name?: string; revision?: number } & { [K in keyof DefinitionSpec]?: DefinitionSpec[K] | null };
+/** Top-level fields replace the stored ones; null removes one. Secrets go in as plain values and are sealed. */
+export type DefinitionInput = { name?: string; revision?: number } & { [K in keyof DefinitionSpec]?: unknown };
 /** What an agent records about the definition it was made from. `extraTools` were added at creation and survive an apply. */
 export interface DefinitionRef { id: string; revision: number; extraTools?: string[] }
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools: ToolDefinition[] };
 
-const FIELDS = ["model", "systemPrompt", "thinkingLevel", "tools", "limits", "mounts"] as const;
+const FIELDS = ["model", "systemPrompt", "thinkingLevel", "tools", "limits", "mounts", "mcpServers"] as const;
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
+/** The server-side tool sources an agent takes from a definition, if it has any. */
+export const sources = (spec: DefinitionSpec): Sources | undefined => spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : undefined;
 
 export function validTtl(ttl: unknown) {
   if (ttl !== undefined && ttl !== null && (!Number.isInteger(ttl) || (ttl as number) < 60 || (ttl as number) > 366 * 86_400)) throw new HttpError(400, "ttlSeconds must be null (never expires) or an integer from 60 to 31622400");
@@ -42,7 +49,13 @@ export function validTtl(ttl: unknown) {
 
 export class Definitions {
   readonly db: Db;
-  constructor(options: { db: Db }) { this.db = options.db; }
+  private readonly accounts?: Accounts;
+  private readonly outbound?: Outbound;
+  constructor(options: { db: Db; accounts?: Accounts; outbound?: Outbound }) {
+    this.db = options.db;
+    this.accounts = options.accounts;
+    this.outbound = options.outbound;
+  }
 
   private row(row: any): Definition {
     return { id: row.id, tenant: row.tenant, name: row.name, revision: row.revision, spec: row.spec, createdAt: row.created_at, updatedAt: row.updated_at };
@@ -55,8 +68,8 @@ export class Definitions {
 
   /** What callers see: the spec's fields, with secrets left out. */
   view({ tenant: _tenant, spec, ...definition }: Definition) {
-    const { channel: _channel, ...visible } = spec;
-    return { ...definition, ...visible };
+    const { channel: _channel, mcpServers, ...visible } = spec;
+    return { ...definition, ...visible, ...(mcpServers ? { mcpServers: mcpServers.map(mcpServerView) } : {}) };
   }
 
   async list(tenant: string) {
@@ -69,9 +82,10 @@ export class Definitions {
     const name = this.name(input.name);
     if (!name) throw new HttpError(400, "A definition needs a name");
     if ((await this.db.query("select count(*) as count from definitions where tenant = $1", [tenant])).rows[0].count >= MAX_DEFINITIONS) throw new HttpError(400, `A tenant can have at most ${MAX_DEFINITIONS} definitions`);
-    const spec = { ...this.merge({}, input), ...internal };
+    const id = `def_${randomBytes(10).toString("hex")}`;
+    const spec = { ...this.merge(id, {}, input), ...internal };
     const now = Date.now();
-    const definition: Definition = { id: `def_${randomBytes(10).toString("hex")}`, tenant, name, revision: 1, spec, createdAt: now, updatedAt: now };
+    const definition: Definition = { id, tenant, name, revision: 1, spec, createdAt: now, updatedAt: now };
     await this.db.query("insert into definitions (id, tenant, name, revision, spec, created_at, updated_at) values ($1, $2, $3, $4, $5, $6, $7)",
       [definition.id, tenant, name, 1, JSON.stringify(spec), now, now]);
     return definition;
@@ -82,7 +96,7 @@ export class Definitions {
     const current = await this.read(tenant, id);
     if (input.revision !== undefined && input.revision !== current.revision) throw new HttpError(409, `The definition is at revision ${current.revision}, not ${input.revision}`);
     if (input.name === undefined && FIELDS.every(key => input[key] === undefined)) return current;
-    const spec = this.merge(current.spec, input);
+    const spec = this.merge(id, current.spec, input);
     if (spec.tools?.some(tool => tool.name === "send_message") && await this.channelsUsing(tenant, id)) throw new HttpError(400, "send_message is the channel's own tool; a definition a channel uses cannot declare it");
     const next: Definition = { ...current, name: this.name(input.name) ?? current.name, spec, revision: current.revision + 1, updatedAt: Date.now() };
     const { rowCount } = await this.db.query("update definitions set name = $3, spec = $4, revision = $5, updated_at = $6 where id = $1 and tenant = $2 and revision = $7",
@@ -136,7 +150,7 @@ export class Definitions {
    * initialMessages). `provision` identifies the request for idempotency, whatever the
    * definition's revision.
    */
-  async provision(tenant: string, params: any): Promise<{ params: AgentParams; ref: DefinitionRef; provision: unknown }> {
+  async provision(tenant: string, params: any): Promise<{ params: AgentParams; ref: DefinitionRef; provision: unknown; sources?: Sources }> {
     if (typeof params.definition !== "string") throw new HttpError(400, "definition must be a definition id");
     for (const key of ["model", "systemPrompt", "thinkingLevel"]) if (params[key] !== undefined) throw new HttpError(400, `${key} comes from the definition; change the definition instead`);
     const definition = await this.read(tenant, params.definition);
@@ -156,6 +170,7 @@ export class Definitions {
         ...(params.initialMessages !== undefined ? { initialMessages: params.initialMessages } : {}),
       },
       ref: { id: definition.id, revision: definition.revision, ...(extra.length ? { extraTools: extra.map(tool => tool.name) } : {}) },
+      ...(sources(spec) ? { sources: sources(spec) } : {}),
       provision: { definition: definition.id, ...Object.fromEntries(["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages"].filter(key => params[key] !== undefined).map(key => [key, params[key]])) },
     };
   }
@@ -167,12 +182,13 @@ export class Definitions {
   }
 
   /** `current` with `input`'s fields applied, checked as agent configuration is. */
-  private merge(current: DefinitionSpec, input: DefinitionInput): DefinitionSpec {
+  private merge(id: string, current: DefinitionSpec, input: DefinitionInput): DefinitionSpec {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "Send a definition object");
     for (const key of Object.keys(input)) if (![...FIELDS, "name", "revision", "apply"].includes(key)) throw new HttpError(400, `Unknown definition field: ${key}`);
     const spec: DefinitionSpec = { ...current };
     for (const key of FIELDS) {
       if (input[key] === null) delete spec[key];
+      else if (key === "mcpServers" && input[key] !== undefined) spec.mcpServers = mcpServersInput(input[key], current.mcpServers, id, { accounts: this.accounts, outbound: this.outbound! });
       else if (input[key] !== undefined) (spec as Record<string, unknown>)[key] = input[key];
     }
     try {

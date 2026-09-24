@@ -18,7 +18,10 @@ import { ConsoleAuth } from "./console-auth.ts";
 import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
-import { Definitions, validTtl } from "./definitions.ts";
+import { Definitions, sources, validTtl } from "./definitions.ts";
+import { outboundFromEnvironment } from "./outbound.ts";
+import { McpConnections } from "./mcp.ts";
+import { ToolSources } from "./tool-sources.ts";
 import { telegram } from "./channels-telegram.ts";
 import { slack } from "./channels-slack.ts";
 import { discord } from "./channels-discord.ts";
@@ -100,7 +103,11 @@ const github = secrets.github && { ...secrets.github, org: process.env.GITHUB_OR
 const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 
-const definitions = new Definitions({ db });
+// Every call to a URL a tenant configured (MCP servers) goes through one guard: public addresses only.
+const outbound = outboundFromEnvironment();
+const mcp = new McpConnections({ outbound });
+const toolSources = new ToolSources({ accounts, mcp });
+const definitions = new Definitions({ db, accounts, outbound });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
@@ -114,7 +121,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
-    made && { definition: made.ref, provision: made.provision });
+    made && { definition: made.ref, provision: made.provision, sources: made.sources });
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
@@ -244,8 +251,9 @@ const clients = new ClientSessions(supervisor, {
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
     const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
-    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off" }, tools: spec.tools ?? [] };
+    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off" }, tools: spec.tools ?? [], sources: sources(spec) };
   },
+  sources: toolSources,
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({
@@ -471,6 +479,7 @@ async function drain(signal: string) {
   await step("agents", () => clients.close());
   await step("supervisor", () => supervisor.close());
   await step("volumes", () => volumes.close());
+  await step("mcp", () => mcp.close());
   await step("usage", () => accounts.flushUsage());
   await step("heartbeat", () => ownership.close());
   server.close();

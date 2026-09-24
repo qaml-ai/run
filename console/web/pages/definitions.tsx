@@ -33,20 +33,23 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
   const [systemPrompt, setSystemPrompt] = useState(definition?.systemPrompt ?? "");
   const [ttl, setTtl] = useState(definition?.limits?.ttlSeconds === null ? "never" : String(definition?.limits?.ttlSeconds ?? ""));
   const [tools, setTools] = useState(pretty(definition?.tools));
+  // Stored credentials are never shown; a server edited without headers or auth keeps them.
+  const [servers, setServers] = useState(pretty(definition?.mcpServers?.map(({ headerNames: _names, auth: _auth, ...server }) => server)));
+  const secured = definition?.mcpServers?.filter(server => server.headerNames || server.auth).map(server => server.name) ?? [];
   const [apply, setApply] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [applied, setApplied] = useState<{ accepted: string[]; failed: { agent: string; error: string }[] }>();
   async function save(event: FormEvent) {
     event.preventDefault();
-    const parsedTools = parseList("Tools", tools);
-    if (parsedTools.error) { setError(parsedTools.error); return; }
+    const parsedTools = parseList("Tools", tools), parsedServers = parseList("MCP servers", servers);
+    if (parsedTools.error || parsedServers.error) { setError(parsedTools.error ?? parsedServers.error); return; }
     const ttlSeconds = ttl.trim() === "never" ? null : ttl.trim() ? Number(ttl) : undefined;
     // On edit, a cleared field is null: the definition drops it.
     const clear = definition ? null : undefined;
     const body = {
       name: name.trim(), model: model.trim() || clear, systemPrompt: systemPrompt.trim() || clear,
-      thinkingLevel: thinking === DEFAULT ? clear : thinking, tools: parsedTools.value ?? clear,
+      thinkingLevel: thinking === DEFAULT ? clear : thinking, tools: parsedTools.value ?? clear, mcpServers: parsedServers.value ?? clear,
       limits: ttlSeconds === undefined ? clear : { ttlSeconds },
       ...(definition ? { revision: definition.revision, ...(apply ? { apply: "all" } : {}) } : {}),
     };
@@ -120,6 +123,11 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
           <div className="flex flex-col gap-2">
             <Label htmlFor="definition-tools">Client tools <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, description, parameters{"}"}], answered by your connected app)</span></Label>
             <Textarea id="definition-tools" rows={4} className="font-mono text-xs" placeholder="[]" value={tools} onChange={event => setTools(event.target.value)} />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="definition-servers">MCP servers <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, url, auth?: {"{"}type: "bearer", token{"}"}, headers?, allowTools?, exposure?{"}"}], called by the runtime)</span></Label>
+            <Textarea id="definition-servers" rows={4} className="font-mono text-xs" placeholder='[{"name": "kb", "url": "https://…/mcp", "auth": {"type": "bearer", "token": "…"}}]' value={servers} onChange={event => setServers(event.target.value)} />
+            {secured.length > 0 && <p className="text-muted-foreground text-xs">Credentials stored for {secured.join(", ")} are kept unless you give headers or auth for that server.</p>}
           </div>
           {definition && (
             <label className="flex items-center gap-2 text-sm">

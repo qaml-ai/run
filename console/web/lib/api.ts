@@ -74,6 +74,7 @@ export const formatTime = (value?: number) => value ? new Date(value).toLocaleSt
 export interface Definition {
   id: string; name: string; revision: number; model?: string; systemPrompt?: string; thinkingLevel?: string;
   tools?: unknown[]; limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; createdAt: number; updatedAt: number;
+  mcpServers?: { name: string; url: string; headerNames?: string[]; auth?: { type: "bearer" } }[];
 }
 export interface Channel {
   id: string; type: string; name: string; webhookUrl?: string; definition?: string;

@@ -24,6 +24,7 @@ import { databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
 import type { DefinitionRef } from "./definitions.ts";
+import type { Sources, ToolSources } from "./tool-sources.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -44,6 +45,8 @@ interface SessionHeader {
   purged?: true;
   /** The definition and revision the agent was made from, or last had applied. */
   definition?: DefinitionRef;
+  /** That revision's server-side tool sources, their secrets sealed under the definition. */
+  sources?: Sources;
 }
 /** Upserts of request and tool-call records, appended as their state changes. */
 type JournalRecord = { t: "request"; record: RequestRecord } | { t: "call"; record: CallRecord };
@@ -158,9 +161,11 @@ export interface ClientSessionOptions {
   volumes?: VolumeService;
   /** A definition's current configuration, to apply to an agent made from it (`configure` with `definition`). */
   definitionFor?: (tenant: string, id: string) => Promise<DefinitionConfig>;
+  /** Tools the runtime calls itself (MCP servers), from the agent's definition. */
+  sources?: ToolSources;
 }
-/** A definition resolved for an agent: its revision, agent configuration and client tools. */
-export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; tools: ToolDefinition[] };
+/** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
+export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; tools: ToolDefinition[]; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
@@ -469,13 +474,19 @@ export class ClientSessions {
       await this.makeRoom(id, session.header.tenant ?? DEFAULT_TENANT);
       const apiKey = await this.apiKey(session, session.header.config.model.provider);
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
-        definitions: [...this.fileTools(session, session.header.definitions), ...session.header.definitions],
+        definitions: await this.toolset(session, session.header.definitions),
         spendLimit: () => this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT),
-        // File tools run here against the agent's current mounts; every other tool goes to the application.
+        // File tools run here against the agent's current mounts, and source tools against its sources; every other tool goes to the application.
         call: async (name, args, signal, context) => {
-          if (!this.isFileTool(session, name)) return this.call(session, name, args, signal, context);
-          await this.beforeEffect(session);
-          return this.options.volumes!.tool({ tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, mounts: session.header.mounts ?? [] }, name, args, signal);
+          if (this.isFileTool(session, name)) {
+            await this.beforeEffect(session);
+            return this.options.volumes!.tool({ tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, mounts: session.header.mounts ?? [] }, name, args, signal);
+          }
+          if (this.isSourceTool(session, name)) {
+            await this.beforeEffect(session);
+            return this.options.sources!.call(this.sourceContext(session), session.header.sources, name, args, signal);
+          }
+          return this.call(session, name, args, signal, context);
         },
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
@@ -500,13 +511,25 @@ export class ClientSessions {
   private fileTools(session: Session, definitions: ToolDefinition[]) {
     return this.options.volumes && session.header.mounts?.length ? this.options.volumes.definitions(session.header.mounts, definitions) : [];
   }
+  private isSourceTool(session: Session, name: string) {
+    return !!this.options.sources?.handles(session.header.sources, name) && !session.header.definitions.some(tool => tool.name === name);
+  }
+  private sourceContext(session: Session) {
+    return { tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, definition: session.header.definition!.id };
+  }
+  /** Everything the agent can call: file tools, its sources' tools, then the application's `tools`, which win a clash of names. */
+  private async toolset(session: Session, tools: ToolDefinition[], sources = session.header.sources) {
+    const files = this.fileTools(session, tools);
+    const served = sources && session.header.definition && this.options.sources ? await this.options.sources.definitions(this.sourceContext(session), sources, [...files, ...tools]) : [];
+    return [...files, ...served, ...tools];
+  }
 
   /**
    * Provision an agent, idempotently per `key`. An agent made from a definition records it
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown }): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -553,7 +576,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}) },
+          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}) },
           claim, requests: new Map(), running: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -896,14 +919,19 @@ export class ClientSessions {
       // A new model may belong to another provider: the agent needs that provider's key.
       const apiKey = update.model ? await this.apiKey(session, update.model.provider) : undefined;
       if (update.model && this.options.apiKeyFor && !apiKey) throw new Error(`No ${update.model.provider} API key is configured for this tenant; set one with PUT /v1/providers/${update.model.provider}/key`);
-      // Replacing the application's tools keeps the runtime's file tools.
-      const withFiles = update.tools && [...this.fileTools(session, update.tools), ...update.tools];
       // An agent that is not running takes its new configuration when it next starts.
-      const result = live || params.definition === undefined ? await this.supervisor.request(id, "configure", { ...update, ...(withFiles ? { tools: withFiles } : {}), ...(apiKey ? { apiKey } : {}) }) : { configured: true };
+      const result = live || params.definition === undefined ? await this.supervisor.request(id, "configure", {
+        ...update, ...apiKey ? { apiKey } : {},
+        // Replacing the application's tools keeps the runtime's own.
+        ...update.tools ? { tools: await this.toolset(session, update.tools, applied ? applied.sources : session.header.sources) } : {},
+      }) : { configured: true };
       const { tools, ...config } = update;
       if (tools !== undefined) session.header.definitions = tools;
       session.header.config = { ...session.header.config, ...config };
-      if (applied) session.header.definition = applied.definition;
+      if (applied) {
+        session.header.definition = applied.definition;
+        if (applied.sources) session.header.sources = applied.sources; else delete session.header.sources;
+      }
       await this.writeHeader(session);
       return result;
     }
@@ -926,7 +954,7 @@ export class ClientSessions {
     const extra = session.header.definitions.filter(tool => current.extraTools?.includes(tool.name));
     const tools = [...resolved.tools, ...extra];
     validateDefinitions(tools);
-    return { update: { ...resolved.config, tools }, definition: { ...current, revision: resolved.revision } };
+    return { update: { ...resolved.config, tools }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };
   }
 
   /** Finish a run whose node was lost: continue its turn, or take the answer it had already reached. */
