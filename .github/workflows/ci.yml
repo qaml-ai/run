@@ -3,8 +3,9 @@ on:
   push: { branches: [main] }
   pull_request:
 concurrency:
-  # A newer push to the same PR supersedes its running check; pushes to main each run to completion.
-  group: ci-${{ github.ref }}
+  # A newer push to a PR supersedes its running check. Every main commit runs on its own, in parallel,
+  # because each one gates its own deploy.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   checks:
