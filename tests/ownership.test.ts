@@ -10,11 +10,14 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 /** A node's own connection pool, which a test can partition from the database and whose statements it counts. */
 async function node(url: string, name: string, ttlMs = 30_000) {
   const pool = new pg.Pool({ connectionString: url, max: 2 });
-  const link = { partitioned: false, statements: [] as string[] };
+  const link = { partitioned: false, statements: [] as string[], after: undefined as ((text: string) => Promise<void>) | undefined };
   const db = {
-    query: (text: string, values?: unknown[]) => {
+    query: async (text: string, values?: unknown[]) => {
       link.statements.push(text.trim().split(/\s+/)[0]);
-      return link.partitioned ? Promise.reject(new Error("connection refused")) : pool.query(text, values);
+      if (link.partitioned) throw new Error("connection refused");
+      const result = await pool.query(text, values);
+      await link.after?.(text);
+      return result;
     },
   } as unknown as Db;
   const ownership = new Ownership(db, { node: name, ttlMs });
@@ -71,20 +74,27 @@ test("renewal is one write per node, however many actors it owns", async t => {
 
 test("a node that cannot renew fences itself before its published expiry, and a peer then takes over with a new epoch", async t => {
   const { db, url } = await testDatabase();
-  const a = await node(url, "http://a", 900), b = await node(url, "http://b", 900);
+  // The node fences a tenth of the TTL before its published expiry; the checks below must reach the database within that margin.
+  const a = await node(url, "http://a", 1_500), b = await node(url, "http://b", 1_500);
   t.after(async () => { await a.stop(); await b.stop(); });
   const held = await a.ownership.acquire("client_z");
   assert.ok("claim" in held);
 
-  let liveAtFence: boolean | undefined;
-  a.ownership.onFence(() => { void db.query("select expires_at > now() as live from runtime_nodes where node = 'http://a'").then(({ rows }) => { liveAtFence = rows[0].live; }); });
+  // Asked the moment the node fences, so no test delay eats into the margin.
+  let atFence: Promise<[boolean, unknown]> | undefined;
+  a.ownership.onFence(() => {
+    atFence = Promise.all([
+      db.query("select expires_at > now() as live from runtime_nodes where node = 'http://a'").then(({ rows }) => rows[0].live as boolean),
+      b.ownership.acquire("client_z"),
+    ]);
+  });
   a.link.partitioned = true;
-  for (let waited = 0; !a.fences.length; waited += 25) { assert.ok(waited < 2_000, "the node fenced"); await sleep(25); }
+  for (let waited = 0; !a.fences.length; waited += 25) { assert.ok(waited < 3_000, "the node fenced"); await sleep(25); }
   assert.deepEqual(a.fences, ["heartbeat_expired"]);
   assert.equal(a.ownership.holds(held.claim), false);
-  await sleep(50);
+  const [liveAtFence, peerAtFence] = await atFence!;
   assert.equal(liveAtFence, true, "the node stopped serving while its heartbeat still looked live to peers");
-  assert.deepEqual(await b.ownership.acquire("client_z"), { owner: "http://a" }, "peers wait for the published expiry");
+  assert.deepEqual(peerAtFence, { owner: "http://a" }, "peers wait for the published expiry");
 
   for (let waited = 0; ; waited += 50) {
     const taken = await b.ownership.acquire("client_z");
@@ -98,6 +108,36 @@ test("a node that cannot renew fences itself before its published expiry, and a 
   assert.deepEqual(await a.ownership.acquire("client_z"), { owner: "http://b" });
   const fresh = await a.ownership.acquire("client_new");
   assert.ok("claim" in fresh && fresh.claim.session !== held.claim.session);
+});
+
+test("a node whose event loop was blocked past its deadline holds nothing, even before its late watchdog runs", async t => {
+  const { url } = await testDatabase();
+  const a = await node(url, "http://a", 600);
+  t.after(() => a.stop());
+  const held = await a.ownership.acquire("client_blocked");
+  assert.ok("claim" in held);
+  assert.equal(a.ownership.holds(held.claim), true);
+  a.link.partitioned = true;
+  // Nothing else runs while the loop is blocked: not the renewal, not the watchdog.
+  const until = performance.now() + 600;
+  while (performance.now() < until);
+  assert.deepEqual(a.fences, [], "the watchdog has not run yet");
+  assert.equal(a.ownership.holds(held.claim), false, "work resumed after the block must not act on the actor");
+});
+
+test("an acquire that races a heartbeat expiring between its two statements retries instead of failing", async t => {
+  const { db, url } = await testDatabase();
+  const a = await node(url, "http://a"), b = await node(url, "http://b");
+  t.after(async () => { await a.stop(); await b.stop(); });
+  assert.ok("claim" in await a.ownership.acquire("client_edge"));
+  // a's heartbeat expires right after b's insert saw it live, before b asks who owns the actor.
+  b.link.after = async text => {
+    if (!text.includes("insert into actor_owners")) return;
+    b.link.after = undefined;
+    await db.query("update runtime_nodes set expires_at = now() - interval '1 millisecond' where node = 'http://a'");
+  };
+  const taken = await b.ownership.acquire("client_edge");
+  assert.ok("claim" in taken && taken.claim.epoch === 2, "the second attempt takes the expired owner's actor");
 });
 
 test("a node whose heartbeat row was replaced fences at once", async t => {

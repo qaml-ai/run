@@ -31,6 +31,8 @@ export class Ownership {
   private timer?: ReturnType<typeof setInterval>;
   private watchdog?: ReturnType<typeof setTimeout>;
   private retry?: ReturnType<typeof setTimeout>;
+  /** When the watchdog is due; `holds` checks it too, so a timer delayed by a blocked event loop cannot extend a claim. */
+  private deadline = 0;
   /** Other nodes' actors, so forwarding needs no query per request; entries never outlive the owner's heartbeat. */
   private readonly owners = new Map<string, { node: string; until: number }>();
   private readonly cacheMs: number;
@@ -90,7 +92,8 @@ export class Ownership {
   /** Fence a tenth of the TTL before the deadline, so a slow timer or clock drift cannot outlast the published expiry. */
   private arm(deadline: number) {
     clearTimeout(this.watchdog);
-    this.watchdog = setTimeout(() => this.fence("heartbeat_expired"), Math.max(0, deadline - this.ttlMs / 10 - performance.now()));
+    this.deadline = deadline - this.ttlMs / 10;
+    this.watchdog = setTimeout(() => this.fence("heartbeat_expired"), Math.max(0, this.deadline - performance.now()));
     this.watchdog.unref();
   }
 
@@ -115,23 +118,26 @@ export class Ownership {
     }
     await this.register();
     const session = this.session;
-    // Only while this node's own heartbeat is live, so peers never see an owner they would call dead.
-    const { rows } = await this.db.query(`
-      insert into actor_owners as o (actor, node, session, epoch)
-      select $1, $2, $3, 1 where exists (select 1 from runtime_nodes where node = $2 and session = $3 and expires_at > now())
-      on conflict (actor) do update set node = excluded.node, session = excluded.session, epoch = o.epoch + 1
-      where o.session is null or o.session = excluded.session
-        or not exists (select 1 from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())
-      returning epoch`, [actor, this.node, session]);
-    this.owners.delete(actor);
-    if (rows[0]) return { claim: { actor, session, epoch: rows[0].epoch } };
-    const owner = await this.owner(actor);
-    if (owner && owner !== this.node) return { owner };
+    // Two statements see two clocks: a heartbeat can expire between them, leaving neither a claim nor an owner. Then try again.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Only while this node's own heartbeat is live, so peers never see an owner they would call dead.
+      const { rows } = await this.db.query(`
+        insert into actor_owners as o (actor, node, session, epoch)
+        select $1, $2, $3, 1 where exists (select 1 from runtime_nodes where node = $2 and session = $3 and expires_at > now())
+        on conflict (actor) do update set node = excluded.node, session = excluded.session, epoch = o.epoch + 1
+        where o.session is null or o.session = excluded.session
+          or not exists (select 1 from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())
+        returning epoch`, [actor, this.node, session]);
+      this.owners.delete(actor);
+      if (rows[0]) return { claim: { actor, session, epoch: rows[0].epoch } };
+      const owner = await this.owner(actor);
+      if (owner && owner !== this.node) return { owner };
+    }
     throw new HttpError(503, "This node could not take ownership; retry");
   }
 
-  /** Whether a claim is still this node's: it has not fenced since taking it. */
-  holds(claim: Claim) { return this.registered && claim.session === this.session; }
+  /** Whether a claim is still this node's: it has not fenced since taking it, and its fence is not overdue. */
+  holds(claim: Claim) { return this.registered && claim.session === this.session && performance.now() < this.deadline; }
 
   /** Give an actor up so any node can take it at once. */
   async release(claim: Claim) {
