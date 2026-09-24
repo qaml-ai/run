@@ -23,11 +23,6 @@ export function nodeUrl(env: NodeJS.ProcessEnv, port: number, address?: string) 
   return `http://${address ?? "127.0.0.1"}:${port}`;
 }
 
-/** Where executors call tools back: AGENT_EXECUTOR_CALLBACK_URL, else on ECS this task, which holds the execution's capabilities. */
-export function callbackUrl(env: NodeJS.ProcessEnv, port: number, address?: string) {
-  return (env.AGENT_EXECUTOR_CALLBACK_URL ?? (address ? `http://${address}:${port}` : "")).replace(/\/+$/, "");
-}
-
 /**
  * Whether a newer deployment of this task's ECS service has replaced it: the
  * primary deployment runs another task definition, or was created after this task

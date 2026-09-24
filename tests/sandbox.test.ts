@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, symlink, readFile, writeFile, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { executeCode } from "../src/codemode.ts";
 import { localTools } from "../src/local-tools.ts";
 import { SANDBOX_LIMITS, codeRequest } from "../src/limits.ts";
@@ -14,7 +17,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?:
   const tools = bridge ?? await localTools(join(directory, "workspace"));
   return {
     directory,
-    run: (code: string, options: { timeoutMs?: number; maxOutputCharacters?: number } = {}) => executeCode({
+    run: (code: string, options: { timeoutMs?: number; maxOutputCharacters?: number; signal?: AbortSignal } = {}) => executeCode({
       code, directory, bridge: tools, runtime: process.env.AGENT_RUNTIME, ...options,
     }),
   };
@@ -113,6 +116,7 @@ test("tool call count, concurrency and result transfer quotas hold outside the g
       try {
         if (args.delay) await new Promise(resolve => setTimeout(resolve, 50));
         if (args.big) return "x".repeat(SANDBOX_LIMITS.resultBytes + 1);
+        if (args.large) return "x".repeat(SANDBOX_LIMITS.resultBytes - 16);
         return args;
       } finally { inflight--; }
     },
@@ -124,6 +128,7 @@ test("tool call count, concurrency and result transfer quotas hold outside the g
   assert.equal(statuses.filter((s: string) => s === "fulfilled").length, SANDBOX_LIMITS.concurrentTools);
   assert.equal(peak, SANDBOX_LIMITS.concurrentTools);
   await assert.rejects(run('return await tools.echo({big:true});'), /Tool result exceeds JSON size limit/);
+  await assert.rejects(run('for(let i=0;i<9;i++) await tools.echo({large:true});'), /transfer limit exceeded/);
   const before = calls;
   await assert.rejects(run('tools.echo({}); return 1;'), /Unawaited tool calls/);
   assert.equal(calls, before, "An unawaited call must not dispatch after sandbox disposal");
@@ -141,4 +146,53 @@ test("workspace capabilities reject traversal, live/dangling symlinks and hard l
   }
   assert.equal(await readFile(outside, "utf8"), "unchanged");
   await assert.rejects(readFile(join(directory, "created-outside.txt")), /ENOENT/);
+});
+
+const codeChildren = () => {
+  try { return execFileSync("pgrep", ["-P", String(process.pid)], { encoding: "utf8" }).trim().split("\n").filter(Boolean).map(Number); }
+  catch { return []; }
+};
+const environment = (pid: number) => process.platform === "linux"
+  ? readFileSync(`/proc/${pid}/environ`, "utf8").replaceAll("\0", "\n")
+  : execFileSync("ps", ["eww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+
+test("timeouts and aborts kill the code child, which inherits none of the runtime's environment", async t => {
+  const CANARY = "sandbox-test-canary-must-not-leak";
+  process.env.SANDBOX_TEST_CANARY = CANARY;
+  t.after(async () => { delete process.env.SANDBOX_TEST_CANARY; });
+  let entered = Promise.withResolvers<void>();
+  const { run } = await fixture(t, {
+    definitions: [{ name: "hang", description: "Blocks until aborted", parameters: { type: "object" } }],
+    call: (_name, _args, signal) => new Promise((_, reject) => {
+      entered.resolve();
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }),
+  });
+  const before = codeChildren();
+  const timedOut = assert.rejects(run("await tools.hang({});", { timeoutMs: 1_500 }), /timed out after 1500ms/);
+  await entered.promise;
+  const [child] = codeChildren().filter(pid => !before.includes(pid));
+  assert.ok(child, "A code child is running");
+  const env = environment(child);
+  assert.ok(process.platform === "linux" || env.includes("code-child.ts"), "Inspected the code child");
+  assert.match(env, /TMPDIR=/, "The environment is visible, and it is the fixed one the runtime sets");
+  assert.ok(!env.includes(CANARY), "No inherited environment");
+  assert.ok(!env.includes("NODE_OPTIONS"));
+  await timedOut;
+  assert.ok(!codeChildren().includes(child), "The timed-out child is gone");
+
+  entered = Promise.withResolvers<void>();
+  const controller = new AbortController();
+  const aborted = assert.rejects(run("await tools.hang({});", { signal: controller.signal }), /aborted/);
+  await entered.promise;
+  const [running] = codeChildren().filter(pid => !before.includes(pid));
+  assert.ok(running);
+  controller.abort();
+  await aborted;
+  assert.ok(!codeChildren().includes(running), "The aborted child is gone");
+
+  const busy = run("while (true) {}", { timeoutMs: 60_000 }).catch(error => error);
+  while (!codeChildren().some(pid => !before.includes(pid))) await sleep(25);
+  assert.match(String(await busy), /CPU or wall-clock limit/, "A CPU-bound guest dies at the CPU limit, well before its deadline");
+  assert.deepEqual(codeChildren().filter(pid => !before.includes(pid)), []);
 });

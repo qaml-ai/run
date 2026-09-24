@@ -1,7 +1,7 @@
 // js_exec user code runs inside an async function body, so wrap it the same way
 // before handing it to sucrase: that makes top-level `return`/`await` parse. The
 // wrapper contains no TypeScript, so it survives the transform byte-for-byte and
-// can be sliced back off. Executor-style: models may write idiomatic TypeScript
+// can be sliced back off. Models may write idiomatic TypeScript
 // and the type syntax is stripped before execution. Anything sucrase cannot
 // parse falls back to the original code so plain-JS behavior never regresses.
 const TS_STRIP_PREFIX = "async function __camelTypeStrip__() {\n";

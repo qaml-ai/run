@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { callbackUrl, nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "../src/ecs.ts";
+import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "../src/ecs.ts";
 import { tenantsFromEnvironment } from "../src/tenants.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -20,10 +20,9 @@ async function fake(t: { after(fn: () => unknown): void }, handle: (req: Incomin
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
 
-test("the node and executor callback addresses are explicit, else the ECS task's private IPv4, else loopback", async t => {
+test("the node address is AGENT_NODE_URL, else the ECS task's private IPv4, else loopback", async t => {
   assert.equal(await taskAddress({}), undefined);
   assert.equal(nodeUrl({}, 8123), "http://127.0.0.1:8123");
-  assert.equal(callbackUrl({}, 8791), "", "off ECS, executor callbacks need AGENT_EXECUTOR_CALLBACK_URL");
 
   let metadata: unknown = {
     DockerId: "ea32192c8553fbff06c9340478a2ff089b2bb5646fb718b4ee206641c9086d66", Name: "runtime",
@@ -37,9 +36,7 @@ test("the node and executor callback addresses are explicit, else the ECS task's
   assert.equal(address, "10.0.2.106");
   assert.deepEqual(paths, ["/v4/0123"], "the container's own metadata, not the task's");
   assert.equal(nodeUrl(ecs, 8790, address), "http://10.0.2.106:8790");
-  assert.equal(callbackUrl(ecs, 8791, address), "http://10.0.2.106:8791", "callbacks come back to this task, which holds the execution");
   assert.equal(nodeUrl({ ...ecs, AGENT_NODE_URL: "http://runtime.internal:8790/" }, 8790, address), "http://runtime.internal:8790");
-  assert.equal(callbackUrl({ ...ecs, AGENT_EXECUTOR_CALLBACK_URL: "http://callbacks.internal:9000/" }, 8791, address), "http://callbacks.internal:9000");
 
   metadata = { Networks: [{ NetworkMode: "awsvpc", IPv4Addresses: [] }] };
   await assert.rejects(taskAddress(ecs), /no private IPv4 address; set AGENT_NODE_URL/);

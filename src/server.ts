@@ -18,7 +18,6 @@ import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
 import { telegram } from "./channels-telegram.ts";
-import { Executions, executorEndpoint } from "./executions.ts";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -26,7 +25,7 @@ import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
-import { callbackUrl, nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
+import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -57,15 +56,7 @@ const ownership = new Ownership(db, { node, ttlMs: Number(process.env.AGENT_LEAS
 await ownership.start();
 const hosting = (process.env.AGENT_HOSTING ?? "process") as Hosting;
 if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
-// With AGENT_EXECUTOR_URL, js_exec runs on executor hosts that hold no credentials or agent state.
-// They call tools back through a separate listener on a private address, never the public one.
-const callbackPort = Number(process.env.AGENT_EXECUTOR_CALLBACK_PORT ?? 8791);
-if (!Number.isInteger(callbackPort) || callbackPort < 1 || callbackPort > 65535) throw new Error("AGENT_EXECUTOR_CALLBACK_PORT must be a TCP port");
-const executor = process.env.AGENT_EXECUTOR_URL ? {
-  endpoint: executorEndpoint(process.env.AGENT_EXECUTOR_URL, process.env.AGENT_EXECUTOR_TOKEN),
-  executions: new Executions(callbackUrl(process.env, callbackPort, address)),
-} : undefined;
-const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: process.env.AGENT_RUNTIME, maxAgents, hosting, executor, ...(distributed ? { storage: storageDescriptor } : {}) });
+const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: process.env.AGENT_RUNTIME, maxAgents, hosting, ...(distributed ? { storage: storageDescriptor } : {}) });
 const model = configuredModel();
 const toolTimeoutMs = Number(process.env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
 if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
@@ -347,13 +338,6 @@ server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys }));
 });
-const callbacks = executor && createAdaptorServer({ fetch: executor.executions.app.fetch }) as Server;
-if (callbacks) {
-  callbacks.requestTimeout = 10_000;
-  callbacks.listen(callbackPort, process.env.HOST ?? "127.0.0.1", () => {
-    console.log(JSON.stringify({ type: "executor_callbacks_listening", address: callbacks.address(), executors: executor!.endpoint.urls }));
-  });
-}
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
 const reloadTenants = (announce: boolean) => tenants.reload().then(
   () => { if (announce) console.log(JSON.stringify({ type: "tenants_reloaded" })); },
@@ -437,8 +421,6 @@ async function drain(signal: string) {
   await step("heartbeat", () => ownership.close());
   server.close();
   server.closeAllConnections();
-  callbacks?.close();
-  callbacks?.closeAllConnections();
   await step("database", () => db.end());
   console.log(JSON.stringify({ type: "drain_finished", node, ms: Date.now() - started, unfinished }));
   if (failed) throw new Error("Drain finished with errors");
