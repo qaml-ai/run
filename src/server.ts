@@ -30,6 +30,7 @@ import { errorStatus, HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { runtimeSecrets } from "./secrets.ts";
+import { checkSandbox } from "./codemode.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -48,6 +49,8 @@ const drainMs = Number(process.env.AGENT_DRAIN_TIMEOUT_MS ?? 100_000);
 if (!Number.isInteger(drainMs) || drainMs < 0) throw new Error("AGENT_DRAIN_TIMEOUT_MS must be a non-negative integer");
 const retireMaxMs = Number(process.env.AGENT_RETIRE_MAX_MS ?? 6 * 60 * 60_000);
 if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RETIRE_MAX_MS must be a non-negative integer");
+// Where js_exec runs, reported in the "listening" line; fails startup if isolation is required but absent.
+const sandbox = await checkSandbox();
 // Control plane: coordination and small mutable state in Postgres.
 const db = await databaseFromEnvironment();
 await migrate(db);
@@ -345,7 +348,7 @@ app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorTex
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
-  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys }));
+  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys, sandbox }));
 });
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
 const reloadTenants = (announce: boolean) => tenants.reload().then(

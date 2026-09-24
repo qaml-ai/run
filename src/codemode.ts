@@ -1,9 +1,10 @@
 import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 import { availableParallelism } from "node:os";
+import { connect } from "node:net";
 import { Rpc } from "./rpc.ts";
-import type { ToolBridge, WireMessage } from "./protocol.ts";
+import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
+import { frames } from "./sandbox-wire.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
-import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
 
 /** How long a cancelled guest gets to unwind before its worker is terminated and replaced. */
@@ -126,6 +127,106 @@ export class CodePool {
   }
 }
 
+/** One execution's link to a QuickJS worker: in this process, or in a sandbox process. */
+export interface Guest {
+  /** Whether a worker has taken the execution, rather than it waiting in a queue. */
+  readonly dispatched: boolean;
+  send(message: WireMessage): void;
+  /** Messages from the guest, unvalidated; `onClose` when its worker or process goes away first. */
+  listen(onMessage: (message: unknown) => void, onClose: (reason: string) => void): void;
+  /** Cancel the guest and let its worker go: at once if it answered, else once it unwinds or is replaced. */
+  end(answered: boolean): void;
+}
+
+/** A worker of `pool` bound to one execution. */
+export async function localGuest(pool: CodePool, signal: AbortSignal): Promise<Guest> {
+  const slot = await pool.acquire(signal);
+  const cancel = new SharedArrayBuffer(4);
+  const { port1, port2 } = new MessageChannel();
+  const idle = pool.dispatch(slot, port2, cancel);
+  let ended = false;
+  return {
+    dispatched: true,
+    send: message => port1.postMessage(message),
+    listen(onMessage, onClose) {
+      port1.on("message", onMessage);
+      // A terminated or crashed worker closes its end.
+      port1.once("close", () => onClose("Codemode worker exited"));
+    },
+    end(answered) {
+      if (ended) return;
+      ended = true;
+      // Reaches a guest spinning in QuickJS, which sees no messages until it yields.
+      Atomics.store(new Int32Array(cancel), 0, 1);
+      port1.close();
+      if (answered) pool.release(slot);
+      else void pool.recover(slot, idle);
+    },
+  };
+}
+
+/**
+ * One sandbox process (src/sandbox-server.ts), reached over the unix socket the
+ * launcher bound for it: a connection per execution, closed to cancel it.
+ */
+export class SandboxProcess {
+  readonly path: string;
+  /** Executions this process has open to it. */
+  load = 0;
+  constructor(path: string) { this.path = path; }
+
+  open(): Guest {
+    const socket = connect(this.path);
+    this.load++;
+    let failure: Error | undefined;
+    let ended = false;
+    let deliver: (message: unknown) => void = () => {};
+    const guest = {
+      dispatched: false,
+      send(message: WireMessage) {
+        try { write(message); } catch (error) { socket.destroy(error as Error); }
+      },
+      listen(onMessage: (message: unknown) => void, onClose: (reason: string) => void) {
+        deliver = onMessage;
+        socket.once("close", () => onClose(`Codemode sandbox process exited${failure ? ` (${failure.message})` : ""}`));
+      },
+      end: () => {
+        if (ended) return;
+        ended = true;
+        this.load--;
+        socket.destroy();
+      },
+    };
+    socket.on("error", error => { failure ??= error; });
+    const write = frames(socket, message => {
+      if (!guest.dispatched && (message as { type?: unknown })?.type === "dispatched") guest.dispatched = true;
+      else deliver(message);
+    });
+    return guest;
+  }
+}
+
+/** The sandbox processes the launcher started; each execution goes to the least loaded, ties round-robin. */
+export class SandboxProcesses {
+  readonly processes: SandboxProcess[];
+  private next = 0;
+  constructor(paths: string[]) {
+    if (!paths.length) throw new Error("No sandbox processes");
+    this.processes = paths.map(path => new SandboxProcess(path));
+  }
+
+  open(): Guest {
+    const count = this.processes.length;
+    let pick = this.processes[this.next % count];
+    for (let i = 1; i < count; i++) {
+      const candidate = this.processes[(this.next + i) % count];
+      if (candidate.load < pick.load) pick = candidate;
+    }
+    this.next = this.processes.indexOf(pick) + 1;
+    return pick.open();
+  }
+}
+
 let shared: CodePool | undefined;
 /** The process-wide pool, sized by AGENT_CODE_WORKERS_MIN and AGENT_CODE_WORKERS_MAX. */
 export function codePool() {
@@ -133,51 +234,109 @@ export function codePool() {
   return shared ??= new CodePool({ min: count("AGENT_CODE_WORKERS_MIN"), max: count("AGENT_CODE_WORKERS_MAX") });
 }
 
+let sandboxes: SandboxProcesses | null | undefined;
+/**
+ * The sandbox processes agent-launcher started (AGENT_SANDBOX_SOCKETS, which it sets), or
+ * undefined without them: then js_exec runs on this process's own pool.
+ */
+export function sandboxProcesses(): SandboxProcesses | undefined {
+  if (sandboxes === undefined) {
+    const paths = (process.env.AGENT_SANDBOX_SOCKETS ?? "").split(",").filter(Boolean);
+    sandboxes = paths.length ? new SandboxProcesses(paths) : null;
+  }
+  return sandboxes ?? undefined;
+}
+
+/** Tool calls, output events and the answer: more than this from one execution means the sandbox is misbehaving. */
+const GUEST_MESSAGE_LIMIT = SANDBOX_LIMITS.toolCalls + SANDBOX_LIMITS.outputEvents + 8;
+
+/**
+ * Everything a guest sends is untrusted: a sandbox process could be compromised.
+ * Keep only the checked fields of the messages a guest may send.
+ */
+function guestMessage(value: any): WireMessage {
+  const id = value?.id;
+  const validId = typeof id === "string" && id.length <= 64;
+  if (value?.type === "request" && validId && value.method === "tool" && typeof value.params?.name === "string") {
+    return { type: "request", id, method: "tool", params: { name: value.params.name, args: value.params.args } };
+  }
+  if (value?.type === "response" && validId) {
+    if (value.error === undefined) return { type: "response", id, result: value.result };
+    if (typeof value.error === "string") return { type: "response", id, error: value.error.slice(0, 4096) };
+  }
+  if (value?.type === "event" && value.event?.type === "output" && typeof value.event.text === "string") {
+    return { type: "event", event: { type: "output", text: value.event.text } };
+  }
+  throw new Error("Codemode sandbox sent an invalid message");
+}
+
+function guestResult(value: any, maxOutputCharacters: number): { output: string[]; truncated: boolean } {
+  const output = value?.output;
+  if (!Array.isArray(output) || typeof value.truncated !== "boolean" || output.length > SANDBOX_LIMITS.outputEvents ||
+    !output.every(part => typeof part === "string") || output.reduce((total, part) => total + part.length, 0) > maxOutputCharacters) {
+    throw new Error("Codemode sandbox returned an invalid result");
+  }
+  return { output, truncated: value.truncated };
+}
+
 export async function executeCode(options: {
   code: string; bridge: ToolBridge; signal?: AbortSignal;
   timeoutMs?: number; maxOutputCharacters?: number;
   onEvent?: (event: unknown) => void;
-  pool?: CodePool;
+  /** Where to run: by default the sandbox processes, or without them this process's pool. */
+  pool?: CodePool | { open(): Guest };
 }) {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const maxOutputCharacters = options.maxOutputCharacters ?? 32_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new Error("timeoutMs must be 1..120000");
   if (!Number.isInteger(maxOutputCharacters) || maxOutputCharacters < 1 || maxOutputCharacters > 128_000) throw new Error("maxOutputCharacters must be 1..128000");
   if (typeof options.code !== "string" || options.code.length > 256_000) throw new Error("Invalid or oversized code");
+  // Loaded here: sandbox processes import this module for CodePool alone, and typebox would cost each about 25 MB.
+  const { validateDefinitions, validateToolCall } = await import("./tool-policy.ts");
   validateDefinitions(options.bridge.definitions);
   // Here rather than in the worker: sucrase would cost every worker its own copy,
   // and it is linear in code already capped at 256 KB (tens of milliseconds at worst).
   const code = prepareCodeModeUserCode(await stripTypeScriptFromUserCode(options.code));
   options.signal?.throwIfAborted();
-  const pool = options.pool ?? codePool();
+  const pool = options.pool ?? sandboxProcesses() ?? codePool();
   const started = performance.now();
   const timedOut = `Codemode timed out after ${timeoutMs}ms; external side effects may have completed`;
   const controller = new AbortController();
-  const cancel = new SharedArrayBuffer(4);
-  let slot: Slot | undefined;
-  let idle: Promise<boolean> | undefined;
+  let guest: Guest | undefined;
   let rpc: Rpc | undefined;
   let responded = false;
   const stop = (reason: string) => {
     if (controller.signal.aborted) return;
     controller.abort(new Error(reason));
-    // Reaches a guest spinning in QuickJS, which sees no messages until it yields.
-    Atomics.store(new Int32Array(cancel), 0, 1);
     rpc?.close(reason);
+    guest?.end(false);
   };
   const abort = () => stop("Codemode aborted; any external tool side effects may already have completed");
-  const timer = setTimeout(() => stop(slot ? timedOut : `Codemode timed out after ${timeoutMs}ms waiting for a sandbox worker (all ${pool.max} busy)`), timeoutMs);
+  const waiting = `Codemode timed out after ${timeoutMs}ms waiting for a sandbox worker${pool instanceof CodePool ? ` (all ${pool.max} busy)` : ""}`;
+  const timer = setTimeout(() => stop(guest?.dispatched ? timedOut : waiting), timeoutMs);
   options.signal?.addEventListener("abort", abort, { once: true });
-  const { port1, port2 } = new MessageChannel();
   try {
-    slot = await pool.acquire(controller.signal);
+    guest = pool instanceof CodePool ? await localGuest(pool, controller.signal) : pool.open();
     controller.signal.throwIfAborted();
-    idle = pool.dispatch(slot, port2, cancel);
-    const channel = rpc = new Rpc(message => port1.postMessage(message));
-    port1.on("message", message => { void channel.receive(message as WireMessage); });
-    // A terminated or crashed worker closes its end.
-    port1.once("close", () => stop("Codemode worker exited"));
-    channel.onEvent = options.onEvent;
+    const link = guest;
+    const channel = rpc = new Rpc(message => link.send(message));
+    let received = 0;
+    link.listen(message => {
+      if (++received > GUEST_MESSAGE_LIMIT) return stop("Codemode sandbox sent too many messages");
+      let checked: WireMessage;
+      try { checked = guestMessage(message); }
+      catch (error) { return stop(errorText(error)); }
+      void channel.receive(checked);
+    }, stop);
+    // The worker bounds output too; this side holds the same line in case it does not.
+    let remaining = maxOutputCharacters;
+    let events = 0;
+    channel.onEvent = event => {
+      const text = event.text.slice(0, remaining);
+      if (!text || ++events > SANDBOX_LIMITS.outputEvents) return;
+      remaining -= text.length;
+      options.onEvent?.({ type: "output", text });
+    };
     let calls = 0;
     let inflight = 0;
     let transferred = 0;
@@ -201,8 +360,9 @@ export async function executeCode(options: {
     };
     const remainingMs = Math.max(1, Math.floor(timeoutMs - (performance.now() - started)));
     // The worker answers only after disposing the guest, so an answer means it is free again.
-    return await channel.request("execute", { code, tools: options.bridge.definitions, maxOutputCharacters, timeoutMs: remainingMs })
+    const result = await channel.request("execute", { code, tools: options.bridge.definitions, maxOutputCharacters, timeoutMs: remainingMs })
       .finally(() => { responded = !controller.signal.aborted; });
+    return guestResult(result, maxOutputCharacters);
   } catch (error) {
     if (controller.signal.aborted) throw controller.signal.reason;
     // The guest's own deadline can report just before this side's timer fires.
@@ -211,9 +371,24 @@ export async function executeCode(options: {
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);
+    guest?.end(responded);
     stop("Codemode completed");
-    port1.close();
-    if (slot && (responded || !idle)) pool.release(slot);
-    else if (slot) void pool.recover(slot, idle!);
   }
+}
+
+/**
+ * Where js_exec runs, for the startup log. With sandbox processes, each must answer
+ * `return 1` first; with AGENT_SANDBOX_REQUIRED=1 (the image sets it), running without them is an error.
+ */
+export async function checkSandbox(): Promise<Record<string, unknown>> {
+  const processes = sandboxProcesses();
+  if (!processes) {
+    const reason = "no sandbox processes: agent-launcher starts them when run as root on Linux with AGENT_SANDBOX_PROCESSES > 0";
+    if (process.env.AGENT_SANDBOX_REQUIRED === "1") throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
+    return { mode: "in-process", reason };
+  }
+  const started = performance.now();
+  const bridge: ToolBridge = { definitions: [], call: async () => null };
+  await Promise.all(processes.processes.map(target => executeCode({ code: "return 1", bridge, pool: target, timeoutMs: 60_000 })));
+  return { mode: "isolated", processes: processes.processes.length, ms: Math.round(performance.now() - started) };
 }
