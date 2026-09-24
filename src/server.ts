@@ -22,6 +22,7 @@ import { Definitions, sources, validTtl } from "./definitions.ts";
 import { outboundFromEnvironment } from "./outbound.ts";
 import { McpConnections } from "./mcp.ts";
 import { ToolSources } from "./tool-sources.ts";
+import { applicationTools } from "./mcp-results.ts";
 import { telegram } from "./channels-telegram.ts";
 import { slack } from "./channels-slack.ts";
 import { discord } from "./channels-discord.ts";
@@ -123,6 +124,13 @@ const definitions = new Definitions({ db, accounts, outbound });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
+  // An application attaching an MCP server declares its tools/list; they become the agent's application tools.
+  let attached: "mcp" | undefined;
+  if (params?.mcp !== undefined) {
+    const { mcp: _mcp, ...rest } = params;
+    try { ({ tools: rest.tools, attached } = applicationTools(params)); } catch (error) { throw new HttpError(400, errorText(error)); }
+    params = rest;
+  }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
   const config = sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
@@ -133,7 +141,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
-    made && { definition: made.ref, provision: made.provision, sources: made.sources });
+    made && { definition: made.ref, provision: made.provision, sources: made.sources }, attached);
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };

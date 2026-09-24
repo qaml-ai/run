@@ -98,6 +98,30 @@ Callbacks must be async; use `asyncio.to_thread` for blocking operations. Python
 cancellation uses task cancellation. Both SDKs expose parallel tool calls without
 requiring applications to handle messages, request IDs, or raw HTTP.
 
+## Tools are an attached MCP server
+
+Both SDKs serve an application's tools to its agent as an MCP server, attached
+over the agent's own connection (see [the sketch](../plans/mcp-only-tools.md)).
+`tool({...})` and `@tool` build that server; a TypeScript application can attach
+one written with the MCP SDK instead:
+
+```ts
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { fromMcpServer } from "./clients/mcp.ts";
+
+const server = new McpServer({ name: "shop", version: "1.0.0" });
+server.registerTool("price", { description: "Price of a SKU", inputSchema: { sku: z.string() } },
+  async ({ sku }) => ({ content: [{ type: "text", text: `${sku}: $3` }], structuredContent: { sku, cents: 300 } }));
+const agent = await runtime.createAgent({ mcp: await fromMcpServer(server) });
+```
+
+The same server can run remotely later, as a definition's `mcpServers` entry,
+without changing its tools. Code in `js_exec` gets a tool's data: its
+`structuredContent`, or its one text block (parsed when it is JSON). A tool's own
+failure is an MCP error result, which the model sees and which throws in code.
+`callId`, `toolCallId` and `origin` reach the server's handlers as
+`_meta["agent-runtime/…"]`.
+
 ## Agent identity and Studio
 
 `name` identifies an individual agent; `type` groups agents in Studio. For example,

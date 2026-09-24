@@ -22,6 +22,7 @@ import { AgentError, AgentRuntime, memoryJournalStore, type AgentClient } from "
 import type { Db } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
 import { postgresTail } from "../src/log-tail.ts";
+import { applicationTools } from "../src/mcp-results.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const bytes = (text: string) => Buffer.from(text, "utf8");
@@ -278,7 +279,8 @@ async function agents(t: Context) {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
     try {
       const body = await readJson(req.body, FRAME_BYTES);
-      return Response.json(await sessions.create(body.tools, { model }, req.headers.get("idempotency-key") ?? undefined, {}, "default", undefined, mountsFor.shift()), { status: 201 });
+      const { tools, attached } = applicationTools(body);
+      return Response.json(await sessions.create(tools, { model }, req.headers.get("idempotency-key") ?? undefined, {}, "default", undefined, mountsFor.shift(), undefined, attached), { status: 201 });
     } catch (error) { return Response.json({ error: String(error) }, { status: (error as any).status ?? 400 }); }
   }));
   const mountsFor: unknown[] = [];

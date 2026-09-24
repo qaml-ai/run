@@ -10,6 +10,10 @@ import { tmpdir } from "node:os";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { getRequestListener } from "@hono/node-server";
 import { ClientSessions } from "../src/client-sessions.ts";
+import { applicationTools } from "../src/mcp-results.ts";
+import { fromMcpServer } from "../clients/mcp.ts";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 import { readJson } from "../src/http.ts";
 import { FRAME_BYTES } from "../shared/client-protocol.ts";
 import { configuredModel } from "../src/model.ts";
@@ -30,7 +34,8 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
     if (req.headers.get("authorization") !== `Bearer ${token}`) return new Response(null, { status: 401 });
     try {
       const body = await readJson(req.body, FRAME_BYTES);
-      const result = await sessions.create(body.tools, { model, ...(body.systemPrompt !== undefined ? { systemPrompt: body.systemPrompt } : {}) }, req.headers.get("idempotency-key") ?? undefined, { name: body.name, type: body.type });
+      const { tools, attached } = applicationTools(body);
+      const result = await sessions.create(tools, { model, ...(body.systemPrompt !== undefined ? { systemPrompt: body.systemPrompt } : {}) }, req.headers.get("idempotency-key") ?? undefined, { name: body.name, type: body.type }, undefined, undefined, undefined, undefined, attached);
       return Response.json(result, { status: 201 });
     } catch (error) { return Response.json({ error: String(error) }, { status: 400 }); }
   }));
@@ -89,6 +94,31 @@ test("SDK provisions scoped SSE sessions, infers tools, and controls lifecycle w
   await a.destroy();
   assert.equal((await fetch(`${f.url}/clients/${a.session.id}/state`, { headers: { Authorization: `Bearer ${a.session.token}` } })).status, 410);
   assert.equal((await b.status()).busy, false);
+});
+
+test("an application's tools are an attached MCP server: code gets their data, and any MCP SDK server can be attached", async t => {
+  const f = await fixture(t);
+  const failing = tool({ description: "Always fails", input: schema.Object({}), execute: () => { throw new Error("no stock data"); } });
+  const own = await f.start({ echo: echo(({ value }) => [value, value.length]), failing });
+  assert.equal((await f.header(own.session.id)).attached, "mcp");
+  assert.deepEqual((await own.execute('return await tools.echo({value:"hi"})')).output, ['["hi",2]'], "a JSON result reaches code as data");
+  await assert.rejects(own.execute("return await tools.failing({})"), /no stock data/, "a tool's failure is an MCP error result, thrown in code");
+
+  // A server written with the MCP SDK, attached as is; the runtime's call IDs reach it as _meta.
+  const seen: unknown[] = [];
+  const server = new McpServer({ name: "shop", version: "1.0.0" });
+  server.registerTool("price", { description: "Price of a SKU", inputSchema: { sku: z.string() } }, async ({ sku }, extra) => {
+    seen.push(extra._meta?.["agent-runtime/callId"]);
+    return { content: [{ type: "text", text: `${sku} costs 3` }], structuredContent: { sku, cents: 300 } };
+  });
+  server.registerTool("stock.level", { description: "A name MCP allows and tools do not" }, async () => ({ content: [{ type: "text", text: "12" }] }));
+  const attached = await fromMcpServer(server);
+  t.after(() => attached.close());
+  const agent = await f.start(undefined, { mcp: attached });
+  assert.deepEqual((await f.header(agent.session.id)).definitions.map((tool: any) => tool.name).sort(), ["price", "stock_level"]);
+  assert.deepEqual(JSON.parse((await agent.execute('return [await tools.price({sku:"BEAN-01"}), await tools.stock_level({})]')).output[0]), [{ sku: "BEAN-01", cents: 300 }, 12]);
+  assert.equal(seen.length, 1);
+  assert.match(String(seen[0]), /^[0-9a-f-]{36}$/);
 });
 
 test("parallel calls correlate reversed replies and schemas reject invalid arguments", async t => {

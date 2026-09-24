@@ -6,6 +6,7 @@ import {
   type AssistantMessage, type SystemMessage, type Tool,
 } from "@earendil-works/pi-ai";
 import { executeCode } from "./codemode.ts";
+import { scriptValue } from "./mcp-results.ts";
 import type { AgentConfig, ToolBridge } from "./protocol.ts";
 import { applicationInstructions, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
 import type { AppendLog } from "../shared/append-log.ts";
@@ -154,7 +155,9 @@ export function createAgentHost(io: HostIO) {
       definitions: config.tools.filter(tool => tool.exposure !== "direct"),
       call: async (name, args) => {
         signal.throwIfAborted();
-        return io.tool(name, args);
+        const value = await io.tool(name, args);
+        // MCP tools answer with content; code gets their data.
+        return config.tools.find(tool => tool.name === name)?.resultFormat === "content" ? scriptValue(value) : value;
       },
     };
   }

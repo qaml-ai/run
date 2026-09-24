@@ -6,6 +6,15 @@ export interface RegistrySnapshot {
   cursor: number; events: { id: number; at?: number; data: ClientEvent }[];
   requests: RequestRecord[]; calls: CallRecord[];
 }
+/** A call's outcome as a trace shows it: an MCP result's data (its error text when `isError`), or the plain result. */
+function toolOutcome(outcome: CallRecord['outcome']): Pick<Trace, 'result' | 'error'> {
+  const result = outcome?.result as any;
+  if (!result || !Array.isArray(result.content)) return { result, error: outcome?.error };
+  const text = result.content.filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n');
+  if (result.isError) return { error: text || 'Tool failed' };
+  if (result.structuredContent !== undefined) return { result: result.structuredContent };
+  try { return { result: JSON.parse(text) }; } catch { return { result: text }; }
+}
 /** Fold the passive runtime journal; never connect a second tool receiver. */
 export function snapshotAgent(snapshot: RegistrySnapshot, previous: Run[]): AgentView {
   const runs = new Map(previous.map(r => [r.id, structuredClone(r)]));
@@ -35,7 +44,7 @@ export function snapshotAgent(snapshot: RegistrySnapshot, previous: Run[]): Agen
     }
     run.cursor = snapshot.cursor;
     for (const call of snapshot.calls.filter(c => c.requestId === request.id)) {
-      const trace: Trace = { at: call.createdAt ?? run.started, kind: 'tool', callId: call.id, name: call.name, args: call.args, result: call.outcome?.result, error: call.outcome?.error };
+      const trace: Trace = { at: call.createdAt ?? run.started, kind: 'tool', callId: call.id, name: call.name, args: call.args, ...toolOutcome(call.outcome) };
       const index = run.traces.findIndex(t => t.callId === call.id);
       if (index >= 0) run.traces[index] = trace; else if (run.traces.length < 300) run.traces.push(trace);
     }

@@ -61,7 +61,8 @@ test("an MCP server's tools reach the model and js_exec; its credentials are sea
   const mcp = await mcpServer(t);
   const r = await runtime(t, (_body, index) => [
     toolCall("kb__echo", { text: "hi" }),
-    toolCall("js_exec", { code: "const r = await tools.kb__echo({ text: 'from code' }); return r.content[0].text;" }),
+    // Code gets the tool's data, not the MCP envelope: here its one text block.
+    toolCall("js_exec", { code: "const r = await tools.kb__echo({ text: 'from code' }); return r.toUpperCase();" }),
     toolCall("kb__picture", {}),
     toolCall("kb__fail", {}),
     toolCall("kb__echo", { words: "no text" }),
@@ -81,7 +82,7 @@ test("an MCP server's tools reach the model and js_exec; its credentials are sea
   assert.deepEqual(offered.filter((name: string) => name.startsWith("kb__")).sort(), ["kb__echo", "kb__fail", "kb__picture"]);
   assert.ok(offered.includes("js_exec"));
   assert.match(toolResults(r.model.bodies[1]).at(-1), /echo: hi/);
-  assert.match(toolResults(r.model.bodies[2]).at(-1), /from code/);
+  assert.match(toolResults(r.model.bodies[2]).at(-1), /ECHO: FROM CODE/);
   assert.match(toolResults(r.model.bodies[3]).at(-1), /a dot/);
   assert.match(JSON.stringify(r.model.bodies[4].messages), /data:image\/png;base64,iVBORw0KGgo=/, "the image reaches the model");
   assert.match(toolResults(r.model.bodies[4]).at(-1), /it broke/);

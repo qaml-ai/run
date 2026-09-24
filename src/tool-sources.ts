@@ -10,6 +10,7 @@ import type { Outbound } from "./outbound.ts";
 import type { Claim } from "./ownership.ts";
 import type { Scheduler } from "./scheduler.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
+import { contentResult, type McpResult } from "./mcp-results.ts";
 
 /**
  * Server-side tool sources: tools the runtime calls itself, configured in a
@@ -272,22 +273,6 @@ export class ToolSources {
     try { return text ? JSON.parse(text) : null; }
     catch { throw new Error(`${tool.name} answered with invalid JSON`); }
   }
-}
-
-type McpResult = { content?: any[]; structuredContent?: unknown; isError?: boolean; toolResult?: unknown };
-
-/** An MCP tool result as a content result: text and images pass through; other content is described in text. */
-function contentResult(result: McpResult) {
-  const content = (result.content ?? []).map((part: any) => {
-    if (part?.type === "text") return { type: "text", text: String(part.text) };
-    if (part?.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") return { type: "image", data: part.data, mimeType: part.mimeType };
-    if (part?.type === "resource" && typeof part.resource?.text === "string") return { type: "text", text: part.resource.text };
-    if (part?.type === "resource_link") return { type: "text", text: `Resource: ${part.name ?? ""} ${part.uri ?? ""}`.trim() };
-    return { type: "text", text: `[${part?.type ?? "unknown"} content${part?.mimeType ? ` (${part.mimeType})` : ""} omitted]` };
-  });
-  const structured = result.structuredContent ?? result.toolResult;
-  if (!content.length) content.push({ type: "text", text: structured === undefined ? "" : JSON.stringify(structured) });
-  return { content, ...(result.isError ? { isError: true } : {}), ...(structured !== undefined ? { details: structured } : {}) };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {

@@ -328,6 +328,8 @@ export async function executeCode(options: {
   // Loaded here: sandbox processes import this module for CodePool alone, and typebox would cost each about 25 MB.
   const { validateDefinitions, validateToolCall } = await import("./tool-policy.ts");
   validateDefinitions(options.bridge.definitions);
+  // What code sees of each tool (`tools.describe`). How the runtime delivers a result is not part of it: code gets data either way.
+  const catalog = options.bridge.definitions.map(({ resultFormat: _format, ...tool }) => tool);
   // Most code is plain JavaScript, and sucrase is most of what preparing it costs. Code
   // without a "<" goes to the sandbox as it is: QuickJS compiles it and, if that fails,
   // answers without running any of it, and it comes back here to be stripped. Never
@@ -402,7 +404,7 @@ export async function executeCode(options: {
     };
     const remainingMs = Math.max(1, Math.floor(timeoutMs - (performance.now() - started)));
     // The worker answers only after disposing the guest, so an answer means it is free again.
-    const result = await channel.request("execute", { code, tools: options.bridge.definitions, maxOutputCharacters, timeoutMs: remainingMs, ...(javascriptOnly ? { javascriptOnly } : {}) })
+    const result = await channel.request("execute", { code, tools: catalog, maxOutputCharacters, timeoutMs: remainingMs, ...(javascriptOnly ? { javascriptOnly } : {}) })
       .finally(() => { responded = !controller.signal.aborted; });
     // Believed only when asked, and when nothing ran: no tool call, no output.
     if (javascriptOnly && result?.typescript === true && !calls && !events) typescript = true;

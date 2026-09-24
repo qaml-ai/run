@@ -17,6 +17,7 @@ import { ClientSessions } from "../src/client-sessions.ts";
 import { VolumeService } from "../src/volumes.ts";
 import { AgentRuntime, schema, tool } from "../clients/node.ts";
 import { testDatabase } from "./database.ts";
+import { applicationTools } from "../src/mcp-results.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -314,7 +315,8 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
     const body = await req.json() as any;
-    return Response.json(await sessions.create(body.tools, { model }, req.headers.get("idempotency-key") ?? undefined), { status: 201 });
+    const { tools, attached } = applicationTools(body);
+    return Response.json(await sessions.create(tools, { model }, req.headers.get("idempotency-key") ?? undefined, undefined, undefined, undefined, undefined, undefined, attached), { status: 201 });
   }));
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(async () => {

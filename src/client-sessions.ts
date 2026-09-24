@@ -25,6 +25,7 @@ import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.t
 import { deleteTail } from "./log-tail.ts";
 import type { DefinitionRef } from "./definitions.ts";
 import type { Sources, ToolSources } from "./tool-sources.ts";
+import { contentResult, type McpResult } from "./mcp-results.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -47,6 +48,8 @@ interface SessionHeader {
   definition?: DefinitionRef;
   /** That revision's server-side tool sources, their secrets sealed under the definition. */
   sources?: Sources;
+  /** The application's tools come from its attached MCP server: its calls answer with MCP results. */
+  attached?: "mcp";
 }
 /** Upserts of request and tool-call records, appended as their state changes. */
 type JournalRecord = { t: "request"; record: RequestRecord } | { t: "call"; record: CallRecord };
@@ -548,7 +551,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }, attached?: "mcp"): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -595,7 +598,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}) },
+          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(attached ? { attached } : {}) },
           claim, requests: new Map(), running: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -610,7 +613,7 @@ export class ClientSessions {
         if (!created) {
           this.supervisor.unreserve(id);
           if (claim) await this.options.ownership!.release(claim).catch(() => {});
-          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin);
+          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, attached);
           throw error;
         }
         await this.discard(session!);
@@ -946,6 +949,7 @@ export class ClientSessions {
       const { tools, ...config } = update;
       if (resolved && live) session.platformKey = resolved.platform;
       if (tools !== undefined) session.header.definitions = tools;
+      if (params.mcp !== undefined) session.header.attached = "mcp";
       session.header.config = { ...session.header.config, ...config };
       if (applied) {
         session.header.definition = applied.definition;
@@ -1090,7 +1094,11 @@ export class ClientSessions {
     const handled = await hooks?.tool?.(agent, name, args, request?.id, () => this.beforeEffect(session));
     if (handled) return handled.result;
     const origin = await hooks?.origin?.(agent, request?.id);
-    return this.offer(session, name, args, signal, context, request, origin);
+    const result = await this.offer(session, name, args, signal, context, request, origin);
+    if (session.header.attached !== "mcp") return result;
+    const value = result as McpResult | null;
+    if (!value || typeof value !== "object" || !Array.isArray(value.content)) throw new Error("The attached MCP server answered without a CallToolResult");
+    return contentResult(value);
   }
 
   private offer(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }, request?: RequestRecord, origin?: Record<string, unknown>): Promise<unknown> {

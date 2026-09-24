@@ -44,6 +44,16 @@ class Tool:
     def definition(self):
         return {"name": self.name, "description": self.description, "parameters": self.parameters}
 
+    def mcp_tool(self):
+        """This tool as an attached MCP server lists it (tools/list)."""
+        return {"name": self.name, "description": self.description, "inputSchema": self.parameters}
+
+
+def _call_tool_result(result):
+    """A tool's JSON value as an MCP tools/call result: a text block, plus structured content for objects."""
+    text = json.dumps(result, allow_nan=False)
+    return {"content": [{"type": "text", "text": text}], **({"structuredContent": result} if isinstance(result, dict) else {})}
+
 
 def tool(function=None, *, name=None, description=None):
     """Expose an async function; infer its JSON schema from Python annotations."""
@@ -160,7 +170,8 @@ class AgentRuntime:
         if not self.api_key:
             raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to provision an agent")
         optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level, "mounts": mounts}
-        body = {"tools": [item.definition() for item in tools], **{key: value for key, value in optional.items() if value is not None}}
+        # The tools are served to the agent as an attached MCP server; this is its tools/list.
+        body = {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
         if ttl_seconds is not _DEFAULT:
             body["ttlSeconds"] = ttl_seconds
         session = await _http(self.http, self.base, "/client-sessions", self.api_key, "POST", body,
@@ -460,13 +471,15 @@ class AgentClient:
                         import time
                         remaining = max(0.001, call["deadline"] / 1000 - time.time())
                         result = await asyncio.wait_for(definition.function(**args), remaining)
-                        if len(json.dumps(result, allow_nan=False).encode()) > 1024 * 1024:
+                        answer = _call_tool_result(result)
+                        if len(json.dumps(answer).encode()) > 1024 * 1024:
                             raise ValueError("Tool result too large")
-                        value = {"result": result}
+                        value = {"result": answer}
                     except (asyncio.CancelledError, TimeoutError):
                         value = {"error": "Tool cancelled; verify any side effects", "uncertain": True}
                     except Exception as error:
-                        value = {"error": str(error)[:2048]}
+                        # The tool's own failure is an MCP error result, not a transport failure.
+                        value = {"result": {"content": [{"type": "text", "text": str(error)[:2048]}], "isError": True}}
             except asyncio.CancelledError:
                 value = {"error": "Tool cancelled during claim; outcome unknown", "uncertain": True}
             except Exception as error:

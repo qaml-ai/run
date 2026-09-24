@@ -2,6 +2,7 @@ import { getModel } from '@earendil-works/pi-ai/compat';
 import type { AgentConfig } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';
+import { attachedTools } from './mcp-results.ts';
 
 type SessionConfig = Omit<AgentConfig, 'id' | 'directory' | 'tools' | 'apiKey'>;
 
@@ -61,7 +62,13 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  */
 export function configurationUpdate(input: any): Pick<AgentConfig, 'systemPrompt' | 'thinkingLevel'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model'] } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'thinkingLevel', 'tools', 'model'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'thinkingLevel', 'tools', 'mcp', 'model'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  // An attached MCP server's tools/list replaces the application's tools.
+  if (input.mcp !== undefined) {
+    if (input.tools !== undefined) throw new Error('Give tools or mcp, not both');
+    const { mcp, ...rest } = input;
+    input = { ...rest, tools: attachedTools(mcp?.tools) };
+  }
   if (input.model !== undefined && typeof input.model !== 'string') throw new Error('model must be a "provider/model-id" string');
   if (input.systemPrompt !== undefined && (typeof input.systemPrompt !== 'string' || !input.systemPrompt.trim() || input.systemPrompt.length > 32000)) throw new Error('systemPrompt must contain 1–32000 characters');
   if (input.thinkingLevel !== undefined && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(input.thinkingLevel)) throw new Error('Invalid thinkingLevel');

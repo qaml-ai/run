@@ -2,7 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import { Type, type TSchema, type Static } from "typebox";
 import { Check } from "typebox/value";
-import { FRAME_BYTES, type ToolDefinition, type CallRecord, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
+import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
 export { Type as schema };
 export type { SessionCredentials, SessionState };
 
@@ -24,6 +24,44 @@ export function tool<S extends TSchema>(definition: Omit<Tool<Static<S>>, "input
   return { ...definition, input: definition.input as unknown as Record<string, unknown> };
 }
 export type Tools = Record<string, Tool>;
+/** A tool as an MCP server lists it (`tools/list`). Runtime options ride in `_meta` under "agent-runtime/". */
+export interface McpTool { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown>; _meta?: Record<string, unknown> }
+/** An MCP `tools/call` result. */
+export interface CallToolResult { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean }
+/**
+ * The MCP server an application attaches to its agent: the SDK relays the runtime's
+ * `tools/list` and `tools/call` to it over the agent's connection. Throw from `callTool`
+ * only when the call could not be answered; a tool's own failure is an `isError` result.
+ */
+export interface ToolServer {
+  listTools(): McpTool[] | Promise<McpTool[]>;
+  callTool(name: string, args: Record<string, unknown>, context: ToolContext): Promise<CallToolResult>;
+}
+const META = "agent-runtime/";
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+/** `tool({...})` definitions as an attached MCP server: JSON results become a text block (and structured content for objects). */
+export function toolServer(tools: Tools): ToolServer {
+  return {
+    listTools: () => Object.entries(tools).map(([name, tool]) => ({
+      name, description: tool.description, inputSchema: tool.input,
+      ...(tool.exposure || tool.executionMode ? { _meta: { ...(tool.exposure ? { [`${META}exposure`]: tool.exposure } : {}), ...(tool.executionMode ? { [`${META}executionMode`]: tool.executionMode } : {}) } } : {}),
+    })),
+    async callTool(name, args, context) {
+      const definition = tools[name];
+      if (!Object.hasOwn(tools, name) || !Check(definition.input, args)) throw new Error("Tool is missing or arguments failed validation");
+      context.signal.throwIfAborted();
+      let result: unknown;
+      try { result = await definition.execute(args, context); }
+      catch (error) {
+        if (context.signal.aborted) throw error;
+        return { content: [{ type: "text", text: String(error).slice(0, 2048) }], isError: true };
+      }
+      if (result === undefined || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("Tool must return a bounded JSON value");
+      if (definition.resultFormat === "content") return result as CallToolResult;
+      return { content: [{ type: "text", text: JSON.stringify(result) }], ...(isRecord(result) ? { structuredContent: result } : {}) };
+    },
+  };
+}
 export interface RuntimeOptions {
   url?: string;
   apiKey?: string;
@@ -33,7 +71,10 @@ export interface RuntimeOptions {
   fetch?: typeof globalThis.fetch;
 }
 export interface AgentOptions {
-  tools: Tools;
+  /** The application's tools, served to the agent as an attached MCP server. */
+  tools?: Tools;
+  /** Or an MCP server of the application's own (see `clients/mcp.ts` for MCP SDK servers). */
+  mcp?: ToolServer;
   onEvent?: (event: any, requestId?: string) => unknown | Promise<unknown>;
   onConnection?: (connected: boolean) => void;
   onError?: (error: Error) => void;
@@ -90,7 +131,6 @@ function retryAfter(response: Response): number | undefined {
 const RATE_LIMIT_ATTEMPTS = 8;
 const byteLength = (value: string) => new TextEncoder().encode(value).byteLength;
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-const definitions = (tools: Tools): ToolDefinition[] => Object.entries(tools).map(([name, tool]) => ({ name, description: tool.description, parameters: tool.input, ...(tool.resultFormat ? { resultFormat: tool.resultFormat } : {}), ...(tool.exposure ? { exposure: tool.exposure } : {}), ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) }));
 
 async function rejectRedirect(response: Response) {
   if (response.status >= 300 && response.status < 400) {
@@ -153,7 +193,8 @@ export class AgentRuntime {
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
     const key = this.options.apiKey;
     if (!key) throw new AgentError("Set apiKey to provision an agent");
-    const session = await this.transport.json("/client-sessions", key, "POST", { tools: definitions(options.tools), ...(options.definition !== undefined ? { definition: options.definition } : {}), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
+    const server = options.mcp ?? toolServer(options.tools ?? {});
+    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...(options.definition !== undefined ? { definition: options.definition } : {}), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }
@@ -233,6 +274,7 @@ type Pending = { resolve: (value: any) => void; reject: (error: Error) => void }
 export class AgentClient {
   readonly session: SessionCredentials;
   readonly tools: Tools;
+  private server: ToolServer;
   private readonly transport: Transport;
   private readonly store: JournalStore;
   private journal: Journal = { version: 1, cursor: 0, calls: {} };
@@ -252,6 +294,7 @@ export class AgentClient {
     if (!/^client_[a-f0-9]{40}$/.test(session.id)) throw new AgentError("Invalid session id");
     this.session = { id: session.id, token: session.token, expiresAt: session.expiresAt };
     this.tools = { ...options.tools };
+    this.server = options.mcp ?? toolServer(this.tools);
     this.options = options;
     this.transport = new Transport(runtime);
     this.store = runtime.journalStore ?? memoryJournalStore();
@@ -407,11 +450,9 @@ export class AgentClient {
           // A callback that ignores cancellation must not keep a closed client's process alive until the deadline.
           (timer as { unref?: () => void }).unref?.();
           try {
-            const definition = this.tools[call.name];
-            if (!Object.hasOwn(this.tools, call.name) || !Check(definition.input, call.args)) throw new Error("Tool is missing or arguments failed validation");
             controller.signal.throwIfAborted();
-            const result = await definition.execute(call.args, { callId: call.id, toolCallId: call.toolCallId, signal: controller.signal, ...(call.origin ? { origin: call.origin } : {}) });
-            if (result === undefined || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("Tool must return a bounded JSON value");
+            const result = await this.server.callTool(call.name, call.args, { callId: call.id, toolCallId: call.toolCallId, signal: controller.signal, ...(call.origin ? { origin: call.origin } : {}) });
+            if (!isRecord(result) || !Array.isArray(result.content) || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
             value = { result };
           } catch (error) { value = { error: String(error).slice(0, 2048), ...(controller.signal.aborted ? { uncertain: true } : {}) }; }
           finally { clearTimeout(timer); }
@@ -471,12 +512,15 @@ export class AgentClient {
   steer(text: string) { return this.request("steer", { text }); }
   followUp(text: string) { return this.request("followUp", { text }); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
-  async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; model?: string }) {
-    const result = await this.request("configure", { ...options, ...(options.tools ? { tools: definitions(options.tools) } : {}) });
-    if (options.tools) {
+  async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string }) {
+    const { tools, mcp, ...rest } = options;
+    const server = mcp ?? (tools ? toolServer(tools) : undefined);
+    const result = await this.request("configure", { ...rest, ...(server ? { mcp: { tools: await server.listTools() } } : {}) });
+    if (tools) {
       for (const key of Object.keys(this.tools)) delete this.tools[key];
-      Object.assign(this.tools, options.tools);
+      Object.assign(this.tools, tools);
     }
+    if (server) this.server = mcp ?? toolServer(this.tools);
     return result;
   }
   execute(code: string, options?: RequestOptions & { timeoutMs?: number; executionTimeoutMs?: number }) {
