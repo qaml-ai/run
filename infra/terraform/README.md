@@ -125,15 +125,33 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
   set for it). Scale-in skips protected tasks, so it removes idle tasks first;
   when every task is busy, the desired count drops but the extra tasks keep
   running until their turns finish.
+  - **Retiring.** A task superseded by a newer deployment keeps `/healthz` at
+    200 while it finishes long turns. It takes no new actors: it forwards
+    requests for anything it doesn't hold to a live peer, and releases each
+    actor it holds once that actor goes idle. So the ALB may keep routing to it.
+  - **Why it doesn't fail `/healthz`.** AWS documents scale-in protection as
+    guarding tasks only against "scale-in events from either service auto
+    scaling or deployments" ([task scale-in protection][tsp];
+    `ExpiresInMinutes` is 1 to 2880, default 120). It says nothing about health
+    checks. The service scheduler replaces tasks that fail ALB health checks
+    as a separate mechanism ([ALB health checks for ECS][hc]), so a protected
+    task that returned 503 would be killed, along with its turns.
+  - **How long protection lasts.** `AGENT_RETIRE_MAX_MS` (6 h) bounds how long
+    a task holds protection. The runtime must keep refreshing it within the
+    2880-minute limit.
+
+[tsp]: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-scale-in-protection.html
+[hc]: https://repost.aws/knowledge-center/elb-ecs-tasks-improperly-replaced
 - **Stopping a task** (deploy, scale-in, rebalancing):
   0. If the task is protected, ECS waits until the runtime clears protection
      (its turns have finished, or `AGENT_RETIRE_MAX_MS`, default 6 h, passed).
   1. ECS deregisters the task. The ALB sends it no new requests, and its open
      connections, including SSE streams, stay up for the 15 s deregistration
-     delay. A retiring task already returns 503 on `/healthz`, so a longer
-     delay would only postpone SIGTERM.
-  2. ECS sends SIGTERM. `/healthz` returns 503 while the runtime drains agents
-     (about 100 s). The container runs with `initProcessEnabled`, so an init
+     delay. After that, clients reconnect to another task. A longer delay would
+     only postpone SIGTERM.
+  2. ECS sends SIGTERM. The runtime drains its agents (about 100 s,
+     `AGENT_DRAIN_TIMEOUT_MS` 100000, which fits `stopTimeout`), and `/healthz`
+     returns 503. That's only a backstop, since the task is already deregistered. The container runs with `initProcessEnabled`, so an init
      is PID 1: it forwards the signal and reaps sandbox children.
   3. SIGKILL follows 120 s after SIGTERM (`stopTimeout`).
 - **Deployments** are rolling: `minimumHealthyPercent` 100 and `maximumPercent`
@@ -202,8 +220,13 @@ registers a revision.
 
 The old host and the ECS tasks must never both serve real traffic. The old host
 advertises `127.0.0.1` as its node URL and cannot reach the tasks on 8790, so
-requests forwarded between them fail. Coexisting is safe, but agents owned by
-the other side are unavailable. So the old runtime keeps all real traffic until
+requests forwarded between them fail. They fail fast: the runtime's forward
+has a 5 s connect timeout, then answers 502, and clients retry. Scheduler and
+channel deliveries across the divide fail and retry. Coexisting is safe for
+data, because leases and epochs in the shared Postgres keep ownership
+exclusive, but agents owned by the other side are unavailable. The old host
+runs pre-migration code against the migrated schema; the new column is
+additive. So the old runtime keeps all real traffic until
 step 3, stops at step 3, and from then on ECS serves everything.
 
 0. **Create alongside.** Run `tofu plan` with default vars
@@ -212,9 +235,10 @@ step 3, stops at step 3, and from then on ECS serves everything.
    and the service starts `service_min_count` tasks. The image
    (`runtime_image_tag`) must include the ECS runtime changes (tenants from
    `AGENT_TENANTS_SECRET_ARN`, node URL from ECS metadata, drain on SIGTERM).
-1. **Verify ECS through the ALB** while the old runtime still serves. Use test
-   agents only. An agent the old host owns is unavailable through the ALB, and
-   the reverse is also true.
+1. **Verify ECS through the ALB** while the old runtime still serves, with the
+   service at its normal desired count (2). Use test agents only. An agent the
+   old host owns gets a 502 through the ALB after 5 s, and the reverse is also
+   true.
    ```sh
    alb=$(tofu output -raw alb_dns_name)
    curl -fsS --connect-to agents.camelai.dev:443:$alb:443 https://agents.camelai.dev/healthz

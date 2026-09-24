@@ -20,6 +20,7 @@ locals {
     AGENT_S3_PREFIX           = var.state_prefix
     AWS_REGION                = var.region
     AGENT_DATABASE_HOST       = aws_db_instance.control.address
+    AGENT_DATABASE_NAME       = aws_db_instance.control.db_name
     AGENT_DATABASE_SECRET_ARN = aws_db_instance.control.master_user_secret[0].secret_arn
     AGENT_DATABASE_CA         = "/etc/ssl/rds-global-bundle.pem"
     AGENT_TENANTS_SECRET_ARN  = aws_secretsmanager_secret.runtime["tenants"].arn

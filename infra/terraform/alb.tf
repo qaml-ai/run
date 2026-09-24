@@ -91,13 +91,16 @@ resource "aws_lb_target_group" "runtime" {
   protocol    = "HTTP"
   port        = local.runtime_port
   vpc_id      = data.aws_vpc.default.id
-  # A retiring task already fails /healthz itself, and SIGTERM (after which it
-  # has stopTimeout, 120 s, to drain) only arrives once this delay ends. Its
-  # open SSE streams stay up through it. A long delay would only postpone SIGTERM.
+  # SIGTERM (after which the task has stopTimeout, 120 s, to drain) only
+  # arrives once this delay ends; open SSE streams stay up through it and
+  # clients reconnect to another task. A long delay would only postpone SIGTERM.
   deregistration_delay = 15
 
   health_check {
-    # 200 healthy; 503 while the runtime drains or retires.
+    # 200 healthy, including while retiring (a superseded, protected task
+    # finishing turns: scale-in protection does not stop ECS replacing a task
+    # that fails ALB health checks). 503 only during the SIGTERM drain, after
+    # deregistration.
     path                = "/healthz"
     matcher             = "200"
     interval            = 10
