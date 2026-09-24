@@ -189,7 +189,11 @@ answer the model had already finished is taken as the outcome; otherwise any
 tool call whose outcome was lost gets an "outcome unknown" result (claimed calls
 are never run again) and the model is called once more to continue. A run is
 resumed at most twice, counted in the journal; after that, and for code
-executions, the request fails as uncertain.
+executions, the request fails as uncertain. A code execution counts as begun
+once it has called a tool: until then it has no effect outside its sandbox, so
+one whose node is lost before its first tool call is simply run again (its
+start becomes durable with the first tool call's claim, or before a tool the
+runtime answers itself).
 
 **Load.** Every minute each node logs a `node_load` line in CloudWatch Embedded
 Metric Format: namespace `AgentRuntime`, metrics `hostedAgents` (agents started

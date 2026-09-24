@@ -65,6 +65,8 @@ type Session = {
   resuming: Set<string>;
   /** Runs marked completed whose outcome is not yet durable and published: still in flight. */
   settling: number;
+  /** An execution began and its record may not be durable yet: `beforeEffect` makes it so, once. */
+  beginning?: { durable?: Promise<void> };
   /** How the agent process found the interrupted turn when it started. */
   handoff?: { continue: true } | { finished: unknown };
   fault?: Error;
@@ -143,8 +145,11 @@ export interface SessionHooks {
   runStarted?(agent: AgentRef, record: RequestRecord): void;
   /** After the run's outcome is durable, on the node that ran it. */
   runEnded?(agent: AgentRef, record: RequestRecord): void;
-  /** Answer a tool call in the runtime; undefined leaves it to the application. */
-  tool?(agent: AgentRef, name: string, args: Record<string, unknown>, requestId?: string): Promise<{ result: unknown } | undefined>;
+  /**
+   * Answer a tool call in the runtime; undefined leaves it to the application.
+   * A hook that acts awaits `beforeEffect` first: it makes the run's start durable.
+   */
+  tool?(agent: AgentRef, name: string, args: Record<string, unknown>, requestId: string | undefined, beforeEffect: () => Promise<void>): Promise<{ result: unknown } | undefined>;
   /** Trusted context attached to calls the application answers. */
   origin?(agent: AgentRef, requestId?: string): Promise<Record<string, unknown> | undefined>;
 }
@@ -439,9 +444,11 @@ export class ClientSessions {
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: [...this.fileTools(session, session.header.definitions), ...session.header.definitions],
         // File tools run here against the agent's current mounts; every other tool goes to the application.
-        call: (name, args, signal, context) => this.fileTools(session, session.header.definitions).some(tool => tool.name === name)
-          ? this.options.volumes!.tool({ tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, mounts: session.header.mounts ?? [] }, name, args, signal)
-          : this.call(session, name, args, signal, context),
+        call: async (name, args, signal, context) => {
+          if (!this.fileTools(session, session.header.definitions).some(tool => tool.name === name)) return this.call(session, name, args, signal, context);
+          await this.beforeEffect(session);
+          return this.options.volumes!.tool({ tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, mounts: session.header.mounts ?? [] }, name, args, signal);
+        },
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
@@ -871,12 +878,18 @@ export class ClientSessions {
         // Durable before any side effect: after a crash this run is "began", never repeated.
         const { params: _params, ...rest } = session.requests.get(record.id)!;
         record = this.upsertRequest(session, { ...rest, began: Date.now() });
-        await this.commit(session, true);
+        // Code has no effect outside its sandbox until it calls a tool, and every tool call
+        // makes this record durable first (`beforeEffect`; the application's tools do it with
+        // their claim, which is appended after it). So an execution needs no commit of its
+        // own here: one that crashes before a tool call is simply run again.
+        if (record.method === "execute") session.beginning = {};
+        else await this.commit(session, true);
         this.hook("runStarted", session, record);
       }
       value = session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
     }
     catch (error) { value = { error: errorText(error) }; }
+    session.beginning = undefined;
     if (this.closed || session.fault || session.requests.get(record.id)?.state !== "running") return;
     const { params: _params, ...finished } = record;
     // Until the response is published, a drain or release must not close the stream and drop it.
@@ -890,6 +903,12 @@ export class ClientSessions {
       this.publish(session, { type: "response", id: record.id, outcome: value });
     } finally { session.settling--; }
     await this.fold(session);
+  }
+
+  /** Make a pending execution's start durable before anything outside its sandbox acts for it. */
+  private async beforeEffect(session: Session) {
+    const beginning = session.beginning;
+    if (beginning) await (beginning.durable ??= this.commit(session, true));
   }
 
   private async recordOutcome(session: Session, call: CallRecord, value: Outcome) {
@@ -922,7 +941,7 @@ export class ClientSessions {
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
     const hooks = this.options.hooks;
     const agent = { id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT };
-    const handled = await hooks?.tool?.(agent, name, args, request?.id);
+    const handled = await hooks?.tool?.(agent, name, args, request?.id, () => this.beforeEffect(session));
     if (handled) return handled.result;
     const origin = await hooks?.origin?.(agent, request?.id);
     return this.offer(session, name, args, signal, context, request, origin);

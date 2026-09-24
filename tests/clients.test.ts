@@ -437,3 +437,21 @@ test("concurrent starts never take a tenant past its quota, and refused creates 
   assert.deepEqual(stored.map(header => header?.id).filter(Boolean).sort(), created.sort());
   assert.equal(supervisor.reserved.size, 0, "no slot stays reserved");
 });
+
+test("an execution's start is durable before its first tool call takes effect, and needs no commit before that", async t => {
+  const f = await fixture(t);
+  const durable = async (id: string) => (await readFile(join(f.root, "sessions", `${id}.journal.jsonl`), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  const seen: any[][] = [];
+  const agent = await f.start({ echo: echo(async ({ value }) => { seen.push(await durable(agent.session.id)); return value; }) });
+  const run = agent.execute('const started = Date.now(); while (Date.now() - started < 600) {} return await tools.echo({value:"x"})', { idempotencyKey: "slow-start" });
+  await sleep(300);
+  // Computing in its sandbox: a crash now leaves the run queued, and it runs again.
+  const computing = (await durable(agent.session.id)).filter(entry => entry.t === "request" && entry.record.id === "slow-start");
+  assert.deepEqual(computing.map(entry => [entry.record.state, entry.record.began]), [["running", undefined]]);
+  assert.equal((await run).output[0], "x");
+  // The application ran the tool only once the start and its claim were durable, in that order.
+  const [atEffect] = seen;
+  const began = atEffect.findIndex(entry => entry.t === "request" && entry.record.id === "slow-start" && entry.record.began);
+  const claimed = atEffect.findIndex(entry => entry.t === "call" && entry.record.state === "started");
+  assert.ok(began >= 0 && claimed > began, JSON.stringify(atEffect));
+});

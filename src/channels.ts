@@ -633,12 +633,13 @@ export class Channels {
       if (record.method !== "prompt") return;
       void this.settle(agent, record).catch(error => console.error(JSON.stringify({ type: "channel_reply_failed", agent: agent.id, request: record.id, error: errorText(error) })));
     },
-    tool: async (agent, name, args) => {
+    tool: async (agent, name, args, _requestId, beforeEffect) => {
       if (name !== SEND_MESSAGE.name) return undefined;
       const binding = await this.binding(agent.id);
       if (!binding) return undefined;
       const text = typeof args.text === "string" ? args.text.trim() : "";
       if (!text) throw new Error("send_message needs text");
+      await beforeEffect();
       await this.enqueue(binding, `msg_${randomUUID().replaceAll("-", "")}`, text);
       return { result: { sent: true } };
     },
