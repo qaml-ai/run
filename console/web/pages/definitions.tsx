@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { CodeBlock, ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
+import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
 import { api, formatTime, useApi, type Definition } from "@/lib/api";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -24,22 +24,6 @@ const pretty = (value: unknown) => value === undefined ? "" : JSON.stringify(val
 /** A list's entries without what the API shows of stored credentials, which it keeps when they are left out. */
 const withoutCredentials = <T extends { headerNames?: string[]; auth?: unknown }>(list?: T[]) => list?.map(({ headerNames: _names, auth: _auth, ...entry }) => entry);
 
-/** Shows a signing secret, which the API returns only once. */
-function SigningSecret({ secret, onClose }: { secret: string; onClose: () => void }) {
-  return (
-    <Dialog open onOpenChange={value => { if (!value) onClose(); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Copy the signing secret now</DialogTitle>
-          <DialogDescription>It won't be shown again. Your HTTP tools' receivers use it to verify that requests come from this runtime (Standard Webhooks: webhook-id, webhook-timestamp and webhook-signature headers).</DialogDescription>
-        </DialogHeader>
-        <CodeBlock code={secret} />
-        <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 /** A JSON list typed into a textarea: undefined when empty, or an error message. */
 function parseList(label: string, text: string): { value?: unknown[]; error?: string } {
   if (!text.trim()) return {};
@@ -49,46 +33,42 @@ function parseList(label: string, text: string): { value?: unknown[]; error?: st
   } catch { return { error: `${label} is not valid JSON` }; }
 }
 
-function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Definition; onClose: () => void; onSaved: (signingSecret?: string) => void }) {
+function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Definition; onClose: () => void; onSaved: () => void }) {
   const [name, setName] = useState(definition?.name ?? "");
   const [model, setModel] = useState(definition?.model ?? "");
   const [thinking, setThinking] = useState(definition?.thinkingLevel ?? DEFAULT);
   const [systemPrompt, setSystemPrompt] = useState(definition?.systemPrompt ?? "");
   const [ttl, setTtl] = useState(definition?.limits?.ttlSeconds === null ? "never" : String(definition?.limits?.ttlSeconds ?? ""));
-  const [tools, setTools] = useState(pretty(definition?.tools));
   const [builtins, setBuiltins] = useState(definition?.builtins ?? []);
   // Stored credentials are never shown; a server edited without headers or auth keeps them.
   const [servers, setServers] = useState(pretty(withoutCredentials(definition?.mcpServers)));
-  const [httpTools, setHttpTools] = useState(pretty(withoutCredentials(definition?.httpTools)));
-  const secured = [...definition?.mcpServers ?? [], ...definition?.httpTools ?? []].filter(entry => entry.headerNames || entry.auth).map(entry => entry.name);
+  const secured = (definition?.mcpServers ?? []).filter(entry => entry.headerNames || entry.auth).map(entry => entry.name);
   const [apply, setApply] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [applied, setApplied] = useState<{ accepted: string[]; failed: { agent: string; error: string }[] }>();
   async function save(event: FormEvent) {
     event.preventDefault();
-    const parsedTools = parseList("Tools", tools), parsedServers = parseList("MCP servers", servers), parsedHttp = parseList("HTTP tools", httpTools);
-    const invalid = parsedTools.error ?? parsedServers.error ?? parsedHttp.error;
-    if (invalid) { setError(invalid); return; }
+    const parsedServers = parseList("MCP servers", servers);
+    if (parsedServers.error) { setError(parsedServers.error); return; }
     const ttlSeconds = ttl.trim() === "never" ? null : ttl.trim() ? Number(ttl) : undefined;
     // On edit, a cleared field is null: the definition drops it.
     const clear = definition ? null : undefined;
     const body = {
       name: name.trim(), model: model.trim() || clear, systemPrompt: systemPrompt.trim() || clear,
-      thinkingLevel: thinking === DEFAULT ? clear : thinking, tools: parsedTools.value ?? clear, mcpServers: parsedServers.value ?? clear, httpTools: parsedHttp.value ?? clear, builtins: builtins.length ? builtins : clear,
+      thinkingLevel: thinking === DEFAULT ? clear : thinking, mcpServers: parsedServers.value ?? clear, builtins: builtins.length ? builtins : clear,
       limits: ttlSeconds === undefined ? clear : { ttlSeconds },
       ...(definition ? { revision: definition.revision, ...(apply ? { apply: "all" } : {}) } : {}),
     };
     setBusy(true); setError(undefined);
     try {
       if (definition) {
-        const updated = await api<Definition & { applied?: typeof applied; signingSecret?: string }>(`/v1/definitions/${definition.id}`, { method: "PATCH", body });
-        onSaved(updated.signingSecret);
+        const updated = await api<Definition & { applied?: typeof applied }>(`/v1/definitions/${definition.id}`, { method: "PATCH", body });
+        onSaved();
         if (updated.applied) { setApplied(updated.applied); return; }
       } else {
-        // Without HTTP tools nothing is signed yet; "New signing secret" shows one when it is needed.
-        const created = await api<Definition & { signingSecret?: string }>("/v1/definitions", { body });
-        onSaved(parsedHttp.value?.length ? created.signingSecret : undefined);
+        await api<Definition>("/v1/definitions", { body });
+        onSaved();
       }
       onClose();
     } catch (caught) { setError((caught as Error).message); }
@@ -148,10 +128,6 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
             <Textarea id="definition-prompt" rows={5} value={systemPrompt} onChange={event => setSystemPrompt(event.target.value)} />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="definition-tools">Client tools <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, description, parameters{"}"}], answered by your connected app)</span></Label>
-            <Textarea id="definition-tools" rows={4} className="font-mono text-xs" placeholder="[]" value={tools} onChange={event => setTools(event.target.value)} />
-          </div>
-          <div className="flex flex-col gap-2">
             <Label>Built-in tools</Label>
             {BUILTINS.map(builtin => (
               <label key={builtin.id} className="flex items-center gap-2 text-sm">
@@ -163,10 +139,6 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
           <div className="flex flex-col gap-2">
             <Label htmlFor="definition-servers">MCP servers <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, url, auth?: {"{"}type: "bearer", token{"}"}, headers?, allowTools?, exposure?{"}"}], called by the runtime)</span></Label>
             <Textarea id="definition-servers" rows={4} className="font-mono text-xs" placeholder='[{"name": "kb", "url": "https://…/mcp", "auth": {"type": "bearer", "token": "…"}}]' value={servers} onChange={event => setServers(event.target.value)} />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="definition-http">HTTP tools <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, description, inputSchema, url, method?, headers?, exposure?{"}"}]; the runtime POSTs the arguments, signed)</span></Label>
-            <Textarea id="definition-http" rows={4} className="font-mono text-xs" placeholder='[{"name": "create_ticket", "description": "…", "inputSchema": {"type": "object"}, "url": "https://…"}]' value={httpTools} onChange={event => setHttpTools(event.target.value)} />
           </div>
           {secured.length > 0 && <p className="text-muted-foreground -mt-2 text-xs">Credentials stored for {secured.join(", ")} are kept unless you give headers or auth for it.</p>}
           {definition && (
@@ -188,7 +160,6 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
 export function DefinitionsPage() {
   const definitions = useApi<Definition[]>("/v1/definitions");
   const [editing, setEditing] = useState<Definition | "new">();
-  const [secret, setSecret] = useState<string>();
   const [error, setError] = useState<string>();
   return (
     <>
@@ -210,8 +181,6 @@ export function DefinitionsPage() {
                   <TableCell className="text-muted-foreground hidden text-xs lg:table-cell">{formatTime(definition.updatedAt)}</TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Button size="xs" variant="outline" className="mr-2" onClick={() => setEditing(definition)}>Edit</Button>
-                    <span className="mr-2"><ConfirmButton size="xs" label="New signing secret" title={`Replace the signing secret of “${definition.name}”?`} description="Receivers of its HTTP tools must accept the new secret. Existing agents sign with the old one until you apply the definition to them." confirm="Replace secret"
-                      onConfirm={async () => { try { setSecret((await api<{ signingSecret: string }>(`/v1/definitions/${definition.id}/signing-secret`, { method: "POST" })).signingSecret); await definitions.reload(); } catch (caught) { setError((caught as Error).message); } }} /></span>
                     <ConfirmButton size="xs" label="Delete" title={`Delete “${definition.name}”?`} description="Agents already made from it keep their configuration. A channel that uses it must be pointed at another first." confirm="Delete definition"
                       onConfirm={async () => { try { await api(`/v1/definitions/${definition.id}`, { method: "DELETE" }); await definitions.reload(); } catch (caught) { setError((caught as Error).message); } }} />
                   </TableCell>
@@ -221,8 +190,7 @@ export function DefinitionsPage() {
           </Table>
         </div>
       )}
-      {editing && <DefinitionDialog definition={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={signingSecret => { void definitions.reload(); if (signingSecret) setSecret(signingSecret); }} />}
-      {secret && <SigningSecret secret={secret} onClose={() => setSecret(undefined)} />}
+      {editing && <DefinitionDialog definition={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={() => void definitions.reload()} />}
     </>
   );
 }

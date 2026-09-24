@@ -116,7 +116,7 @@ const github = secrets.github && {
 const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 
-// Every call to a URL a tenant configured (MCP servers, HTTP tools, web_fetch) goes through one guard: public addresses only.
+// Every call to a URL a tenant configured (MCP servers, web_fetch) goes through one guard: public addresses only.
 const outbound = outboundFromEnvironment();
 const mcp = new McpConnections({ outbound });
 const toolSources = new ToolSources({ accounts, mcp, outbound, get scheduler() { return scheduler; } });
@@ -124,13 +124,9 @@ const definitions = new Definitions({ db, accounts, outbound });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
-  // An application attaching an MCP server declares its tools/list; they become the agent's application tools.
-  let attached: "mcp" | undefined;
-  if (params?.mcp !== undefined) {
-    const { mcp: _mcp, ...rest } = params;
-    try { ({ tools: rest.tools, attached } = applicationTools(params)); } catch (error) { throw new HttpError(400, errorText(error)); }
-    params = rest;
-  }
+  // The application's tools are its attached MCP server's: the tools/list it declares.
+  const { mcp: _mcp, ...rest } = params ?? {};
+  try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
   const config = sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
@@ -141,7 +137,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
-    made && { definition: made.ref, provision: made.provision, sources: made.sources }, attached);
+    made && { definition: made.ref, provision: made.provision, sources: made.sources });
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
@@ -280,7 +276,7 @@ const clients = new ClientSessions(supervisor, {
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
     const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
-    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off" }, tools: spec.tools ?? [], sources: sources(spec) };
+    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off" }, sources: sources(spec) };
   },
   sources: toolSources,
 });
@@ -302,6 +298,7 @@ const channels = new Channels({
     discord: discord({ apiUrl: process.env.AGENT_DISCORD_API_URL }),
   },
   createAgent: (tenant, params, key) => createAgent(tenant, params, key) as Promise<{ id: string }>,
+  agentId: (tenant, key) => clients.agentId(tenant, key),
   live: (agent, tenant) => clients.owns(agent, tenant),
   submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
   ...(process.env.AGENT_CHANNEL_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_CHANNEL_RETRY_MS) } : {}),

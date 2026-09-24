@@ -8,9 +8,8 @@ import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
-import type { Sealed } from "./accounts.ts";
-import { BUILTINS, builtinNames } from "./builtins.ts";
-import { httpToolsInput, httpToolView, mcpServersInput, mcpServerView, newSigningSecret, signingAad, type HttpToolSpec, type McpServerSpec, type Sources } from "./tool-sources.ts";
+import { BUILTINS } from "./builtins.ts";
+import { mcpServersInput, mcpServerView, type McpServerSpec, type Sources } from "./tool-sources.ts";
 
 /**
  * Agent definitions: reusable, tenant-level agent configurations (`definitions`).
@@ -22,36 +21,30 @@ export interface DefinitionSpec {
   model?: string;
   systemPrompt?: string;
   thinkingLevel?: string;
-  /** Client tools, answered by an application connected to the agent. */
-  tools?: ToolDefinition[];
   limits?: { ttlSeconds?: number | null };
   mounts?: unknown[];
   /** Remote MCP servers whose tools the runtime calls; credentials sealed. */
   mcpServers?: McpServerSpec[];
   /** Built-in tools to enable: web_fetch, schedule. */
   builtins?: string[];
-  /** Tools the runtime answers by sending their arguments to a URL; headers sealed. */
-  httpTools?: HttpToolSpec[];
-  /** The secret HTTP tool requests are signed with, sealed; shown once, when made. */
-  signing?: Sealed;
   /** Made from this channel's inline template, so that channel may rewrite it. */
   channel?: string;
 }
 export interface Definition { id: string; tenant: string; name: string; revision: number; spec: DefinitionSpec; createdAt: number; updatedAt: number }
 /** Top-level fields replace the stored ones; null removes one. Secrets go in as plain values and are sealed. */
 export type DefinitionInput = { name?: string; revision?: number } & { [K in keyof DefinitionSpec]?: unknown };
-/** What an agent records about the definition it was made from. `extraTools` were added at creation and survive an apply. */
-export interface DefinitionRef { id: string; revision: number; extraTools?: string[] }
+/** What an agent records about the definition it was made from. */
+export interface DefinitionRef { id: string; revision: number }
 /** Agent parameters from a definition, as `createAgent` takes them. */
-export type AgentParams = Record<string, unknown> & { tools: ToolDefinition[] };
+export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["model", "systemPrompt", "thinkingLevel", "tools", "limits", "mounts", "builtins", "mcpServers", "httpTools"] as const;
+const FIELDS = ["model", "systemPrompt", "thinkingLevel", "limits", "mounts", "builtins", "mcpServers"] as const;
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 /** The server-side tool sources an agent takes from a definition, if it has any. */
 export function sources(spec: DefinitionSpec): Sources | undefined {
-  if (!spec.builtins?.length && !spec.mcpServers?.length && !spec.httpTools?.length) return undefined;
-  return { ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}), ...(spec.httpTools?.length ? { httpTools: spec.httpTools, ...(spec.signing ? { signing: spec.signing } : {}) } : {}) };
+  if (!spec.builtins?.length && !spec.mcpServers?.length) return undefined;
+  return { ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}) };
 }
 
 export function validTtl(ttl: unknown) {
@@ -79,8 +72,8 @@ export class Definitions {
 
   /** What callers see: the spec's fields, with secrets left out. */
   view({ tenant: _tenant, spec, ...definition }: Definition) {
-    const { channel: _channel, signing: _signing, mcpServers, httpTools, ...visible } = spec;
-    return { ...definition, ...visible, ...(mcpServers ? { mcpServers: mcpServers.map(mcpServerView) } : {}), ...(httpTools ? { httpTools: httpTools.map(httpToolView) } : {}) };
+    const { channel: _channel, mcpServers, ...visible } = spec;
+    return { ...definition, ...visible, ...(mcpServers ? { mcpServers: mcpServers.map(mcpServerView) } : {}) };
   }
 
   async list(tenant: string) {
@@ -89,43 +82,27 @@ export class Definitions {
   }
   async get(tenant: string, id: string) { return this.view(await this.read(tenant, id)); }
 
-  /** A new definition, at revision 1, with the signing secret for its HTTP tools, returned this once. */
-  async create(tenant: string, input: DefinitionInput, internal: Pick<DefinitionSpec, "channel"> = {}): Promise<Definition & { signingSecret?: string }> {
+  /** A new definition, at revision 1. */
+  async create(tenant: string, input: DefinitionInput, internal: Pick<DefinitionSpec, "channel"> = {}): Promise<Definition> {
     const name = this.name(input.name);
     if (!name) throw new HttpError(400, "A definition needs a name");
     if ((await this.db.query("select count(*) as count from definitions where tenant = $1", [tenant])).rows[0].count >= MAX_DEFINITIONS) throw new HttpError(400, `A tenant can have at most ${MAX_DEFINITIONS} definitions`);
     const id = `def_${randomBytes(10).toString("hex")}`;
     const spec: DefinitionSpec = { ...this.merge(id, {}, input), ...internal };
-    const signingSecret = this.accounts?.canStoreKeys ? newSigningSecret() : undefined;
-    if (signingSecret) spec.signing = this.accounts!.seal(signingAad(id), signingSecret);
     const now = Date.now();
     const definition: Definition = { id, tenant, name, revision: 1, spec, createdAt: now, updatedAt: now };
     await this.db.query("insert into definitions (id, tenant, name, revision, spec, created_at, updated_at) values ($1, $2, $3, $4, $5, $6, $7)",
       [definition.id, tenant, name, 1, JSON.stringify(spec), now, now]);
-    return { ...definition, ...(signingSecret ? { signingSecret } : {}) };
+    return definition;
   }
 
-  /**
-   * Replace the given fields; with `revision`, only if the definition is still at that revision.
-   * A definition made before it had a signing secret gets one with its first HTTP tool, returned this once.
-   */
-  async update(tenant: string, id: string, input: DefinitionInput): Promise<Definition & { signingSecret?: string }> {
+  /** Replace the given fields; with `revision`, only if the definition is still at that revision. */
+  async update(tenant: string, id: string, input: DefinitionInput): Promise<Definition> {
     const current = await this.read(tenant, id);
     if (input.revision !== undefined && input.revision !== current.revision) throw new HttpError(409, `The definition is at revision ${current.revision}, not ${input.revision}`);
     if (input.name === undefined && FIELDS.every(key => input[key] === undefined)) return current;
     const spec = this.merge(id, current.spec, input);
-    if (spec.tools?.some(tool => tool.name === "send_message") && await this.channelsUsing(tenant, id)) throw new HttpError(400, "send_message is the channel's own tool; a definition a channel uses cannot declare it");
-    const signingSecret = spec.httpTools?.length && !spec.signing ? newSigningSecret() : undefined;
-    if (signingSecret) spec.signing = this.accounts!.seal(signingAad(id), signingSecret);
-    return { ...await this.write(current, this.name(input.name) ?? current.name, spec), ...(signingSecret ? { signingSecret } : {}) };
-  }
-
-  /** Replace the signing secret. Agents keep signing with the old one until the new revision is applied to them. */
-  async rotateSigningSecret(tenant: string, id: string) {
-    const current = await this.read(tenant, id);
-    if (!this.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store signing secrets");
-    const signingSecret = newSigningSecret();
-    return { ...await this.write(current, current.name, { ...current.spec, signing: this.accounts.seal(signingAad(id), signingSecret) }), signingSecret };
+    return this.write(current, this.name(input.name) ?? current.name, spec);
   }
 
   private async write(current: Definition, name: string, spec: DefinitionSpec) {
@@ -177,8 +154,8 @@ export class Definitions {
 
   /**
    * The parameters to create an agent from `params.definition`: the definition's, with
-   * the per-agent fields given alongside it (name, type, ttlSeconds, mounts, tools to add,
-   * initialMessages). `provision` identifies the request for idempotency, whatever the
+   * the per-agent fields given alongside it (name, type, ttlSeconds, mounts, its attached
+   * server's tools, initialMessages). `provision` identifies the request for idempotency, whatever the
    * definition's revision.
    */
   async provision(tenant: string, params: any): Promise<{ params: AgentParams; ref: DefinitionRef; provision: unknown; sources?: Sources }> {
@@ -186,21 +163,18 @@ export class Definitions {
     for (const key of ["model", "systemPrompt", "thinkingLevel"]) if (params[key] !== undefined) throw new HttpError(400, `${key} comes from the definition; change the definition instead`);
     const definition = await this.read(tenant, params.definition);
     const { spec } = definition;
-    if (params.tools !== undefined && !Array.isArray(params.tools)) throw new HttpError(400, "tools must be an array");
-    // An application answering the definition's own tools declares them too; only the others are added.
-    const extra: ToolDefinition[] = (params.tools ?? []).filter((tool: ToolDefinition) => !spec.tools?.some(own => own.name === tool?.name));
     validTtl(params.ttlSeconds);
     const ttlSeconds = params.ttlSeconds !== undefined ? params.ttlSeconds : spec.limits?.ttlSeconds;
     const mounts = params.mounts !== undefined ? params.mounts : spec.mounts;
     return {
       params: {
         ...(spec.model !== undefined ? { model: spec.model } : {}), ...(spec.systemPrompt !== undefined ? { systemPrompt: spec.systemPrompt } : {}),
-        ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}), tools: [...spec.tools ?? [], ...extra],
+        ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}), tools: params.tools ?? [],
         name: params.name ?? definition.name, ...(params.type !== undefined ? { type: params.type } : {}),
         ...(ttlSeconds !== undefined ? { ttlSeconds } : {}), ...(mounts !== undefined ? { mounts } : {}),
         ...(params.initialMessages !== undefined ? { initialMessages: params.initialMessages } : {}),
       },
-      ref: { id: definition.id, revision: definition.revision, ...(extra.length ? { extraTools: extra.map(tool => tool.name) } : {}) },
+      ref: { id: definition.id, revision: definition.revision },
       ...(sources(spec) ? { sources: sources(spec) } : {}),
       provision: { definition: definition.id, ...Object.fromEntries(["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages"].filter(key => params[key] !== undefined).map(key => [key, params[key]])) },
     };
@@ -220,12 +194,11 @@ export class Definitions {
     for (const key of FIELDS) {
       if (input[key] === null) delete spec[key];
       else if (key === "mcpServers" && input[key] !== undefined) spec.mcpServers = mcpServersInput(input[key], current.mcpServers, id, { accounts: this.accounts, outbound: this.outbound! });
-      else if (key === "httpTools" && input[key] !== undefined) spec.httpTools = httpToolsInput(input[key], current.httpTools, id, { accounts: this.accounts, outbound: this.outbound! });
       else if (input[key] !== undefined) (spec as Record<string, unknown>)[key] = input[key];
     }
     try {
       if (spec.model !== undefined) resolveModel(spec.model);
-      configurationUpdate({ ...(spec.systemPrompt !== undefined ? { systemPrompt: spec.systemPrompt } : {}), ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}), ...(spec.tools !== undefined ? { tools: spec.tools } : {}) });
+      configurationUpdate({ ...(spec.systemPrompt !== undefined ? { systemPrompt: spec.systemPrompt } : {}), ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}) });
     } catch (error) { throw new HttpError(400, errorText(error)); }
     if (spec.limits !== undefined) {
       if (!spec.limits || typeof spec.limits !== "object" || Object.keys(spec.limits).some(key => key !== "ttlSeconds")) throw new HttpError(400, "limits is { ttlSeconds }");
@@ -235,10 +208,6 @@ export class Definitions {
     if (spec.builtins !== undefined && (!Array.isArray(spec.builtins) || new Set(spec.builtins).size !== spec.builtins.length || spec.builtins.some(name => !Object.hasOwn(BUILTINS, name)))) {
       throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);
     }
-    const names = [...spec.tools ?? [], ...spec.httpTools ?? []].map(tool => tool.name);
-    const clash = names.find((name, index) => names.indexOf(name) !== index) ?? builtinNames(spec.builtins).find(name => names.includes(name));
-    if (clash) throw new HttpError(400, `${clash} is the name of two tools`);
-    if (spec.httpTools?.length && !spec.signing && !this.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot sign HTTP tool requests");
     try { jsonWithinLimit(spec, 512 * 1024, "Definition"); } catch (error) { throw new HttpError(413, errorText(error)); }
     return spec;
   }

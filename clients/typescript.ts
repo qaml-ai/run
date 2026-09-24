@@ -84,8 +84,8 @@ export interface CreateAgentOptions extends AgentOptions {
   idempotencyKey?: string;
   /**
    * Make the agent from a definition (GET /v1/definitions): it supplies the model, system
-   * prompt, thinking level and tools, so leave those out. `tools` here answer the tools it
-   * declares, and any others are added to the agent.
+   * prompt, thinking level and tool sources, so leave those out. `tools` (or `mcp`) are added
+   * as the agent's attached server.
    */
   definition?: string;
   /** Agent lifetime in seconds (60 to 366 days), or null to keep the agent until it is deleted. Default one day. */

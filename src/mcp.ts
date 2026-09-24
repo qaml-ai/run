@@ -104,9 +104,9 @@ export class McpConnections {
     }).finally(() => { connection.listing = undefined; });
   }
 
-  async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, timeoutMs: number) {
+  async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, timeoutMs: number, meta?: Record<string, unknown>) {
     const connection = this.connection(tenant, server);
-    return this.retrying(connection, client => client.callTool({ name, arguments: args }, undefined, { signal, timeout: timeoutMs, maxTotalTimeout: timeoutMs }));
+    return this.retrying(connection, client => client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) }, undefined, { signal, timeout: timeoutMs, maxTotalTimeout: timeoutMs }));
   }
 
   /**

@@ -14,14 +14,14 @@ const systemText = (body: any) => body.messages.find((message: any) => message.r
 
 test("definitions are the tenant's own, validated, and revised", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
-  const created = await r.call("/v1/definitions", { body: { name: "Support", systemPrompt: "You are support.", tools: [lookup], limits: { ttlSeconds: 3600 } } });
+  const created = await r.call("/v1/definitions", { body: { name: "Support", systemPrompt: "You are support.", builtins: ["web_fetch"], limits: { ttlSeconds: 3600 } } });
   assert.equal(created.status, 201, created.text);
   const id = created.json.id;
   assert.match(id, /^def_[a-f0-9]{20}$/);
   assert.equal(created.json.revision, 1);
-  assert.deepEqual(created.json.tools, [lookup]);
+  assert.deepEqual(created.json.builtins, ["web_fetch"]);
 
-  for (const body of [{ name: "" }, { systemPrompt: "no name" }, { name: "x", model: "nope/nope" }, { name: "x", tools: [{ ...lookup, name: "js_exec" }] }, { name: "x", limits: { ttlSeconds: 5 } }, { name: "x", thinkingLevel: "huge" }]) {
+  for (const body of [{ name: "" }, { systemPrompt: "no name" }, { name: "x", model: "nope/nope" }, { name: "x", limits: { ttlSeconds: 5 } }, { name: "x", thinkingLevel: "huge" }]) {
     assert.equal((await r.call("/v1/definitions", { body })).status, 400, JSON.stringify(body));
   }
   assert.equal((await r.call("/v1/definitions", { body: { name: "Catalog model", model: "anthropic/claude-sonnet-5" } })).status, 201);
@@ -36,11 +36,11 @@ test("definitions are the tenant's own, validated, and revised", async t => {
   const revised = await r.call(`/v1/definitions/${id}`, { method: "PATCH", body: { systemPrompt: "You are support, v2.", revision: 1 } });
   assert.equal(revised.status, 200, revised.text);
   assert.equal(revised.json.revision, 2);
-  assert.deepEqual(revised.json.tools, [lookup], "fields not given are kept");
+  assert.deepEqual(revised.json.builtins, ["web_fetch"], "fields not given are kept");
   assert.equal((await r.call(`/v1/definitions/${id}`, { method: "PATCH", body: { name: "stale", revision: 1 } })).status, 409);
-  const cleared = await r.call(`/v1/definitions/${id}`, { method: "PATCH", body: { tools: null } });
+  const cleared = await r.call(`/v1/definitions/${id}`, { method: "PATCH", body: { builtins: null } });
   assert.equal(cleared.json.revision, 3);
-  assert.equal("tools" in cleared.json, false, "null removes a field");
+  assert.equal("builtins" in cleared.json, false, "null removes a field");
   assert.equal((await r.call(`/v1/definitions/${id}`, { method: "PATCH", body: {} })).json.revision, 3, "an empty update changes nothing");
   assert.equal((await r.call(`/v1/definitions/${id}`)).json.systemPrompt, "You are support, v2.");
   assert.equal((await r.call(`/v1/definitions/${id}`, { method: "DELETE" })).status, 200);
@@ -50,7 +50,7 @@ test("definitions are the tenant's own, validated, and revised", async t => {
 
 test("agents are made from a definition, record its revision, and take a new one when it is applied", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
-  const definition = (await r.call("/v1/definitions", { body: { name: "Support", systemPrompt: "You are support v1.", tools: [lookup], limits: { ttlSeconds: 3600 } } })).json;
+  const definition = (await r.call("/v1/definitions", { body: { name: "Support", systemPrompt: "You are support v1.", limits: { ttlSeconds: 3600 } } })).json;
   const created = await r.call("/v1/agents", { body: { definition: definition.id }, headers: { "Idempotency-Key": "first" } });
   assert.equal(created.status, 201, created.text);
   assert.ok(Math.abs(created.json.expiresAt - (Date.now() + 3_600_000)) < 60_000, "the definition's ttl applies");
@@ -59,7 +59,7 @@ test("agents are made from a definition, record its revision, and take a new one
   assert.deepEqual(detail.definition, { id: definition.id, revision: 1 });
   assert.equal(detail.name, "Support");
   assert.equal(detail.systemPrompt, "You are support v1.");
-  assert.deepEqual(detail.tools.map((tool: any) => tool.name), ["lookup"]);
+  assert.deepEqual(detail.tools, [], "application tools come only from an attached server");
   for (const key of ["model", "systemPrompt", "thinkingLevel"]) {
     assert.equal((await r.call("/v1/agents", { body: { definition: definition.id, [key]: key === "model" ? "anthropic/claude-sonnet-5" : key === "thinkingLevel" ? "low" : "x" } })).status, 400, key);
   }
@@ -101,21 +101,20 @@ test("agents are made from a definition, record its revision, and take a new one
   assert.equal((await r.prompt(first, "still here")).outcome.result.reply, "ok");
 });
 
-test("the SDK makes an agent from a definition; tools it answers are the definition's, others are added", async t => {
+test("the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
-  const definition = (await r.call("/v1/definitions", { body: { name: "Desk", tools: [lookup] } })).json;
+  const definition = (await r.call("/v1/definitions", { body: { name: "Desk", systemPrompt: "v1" } })).json;
   const runtimeClient = new AgentRuntime({ url: r.base, apiKey: "fixture-operator-token-at-least-24-chars" });
   const tool = (description: string) => ({ description, input: { type: "object", properties: {} } as const, execute: async () => ({ ok: true }) });
   const agent = await runtimeClient.createAgent({ definition: definition.id, tools: { lookup: tool("App's lookup"), extra: tool("Something else") } });
   t.after(() => agent.close());
-  const detail = (await r.call(`/v1/agents/${agent.session.id}`)).json;
-  assert.deepEqual(detail.tools.map((entry: any) => [entry.name, entry.description]), [["lookup", "Look something up"], ["extra", "Something else"]]);
-  assert.deepEqual(detail.definition, { id: definition.id, revision: 1 });
+  const names = async () => (await r.call(`/v1/agents/${agent.session.id}`)).json.tools.map((entry: any) => [entry.name, entry.description]);
+  assert.deepEqual(await names(), [["lookup", "App's lookup"], ["extra", "Something else"]]);
+  assert.deepEqual((await r.call(`/v1/agents/${agent.session.id}`)).json.definition, { id: definition.id, revision: 1 });
 
-  // Tools added at creation survive an apply.
-  await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { tools: [{ ...lookup, description: "Look it up (v2)" }], apply: "all" } });
+  await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { systemPrompt: "v2", apply: "all" } });
   await until(async () => (await r.call(`/v1/agents/${agent.session.id}`)).json.definition.revision === 2, "the apply");
-  assert.deepEqual((await r.call(`/v1/agents/${agent.session.id}`)).json.tools.map((entry: any) => [entry.name, entry.description]), [["lookup", "Look it up (v2)"], ["extra", "Something else"]]);
+  assert.deepEqual(await names(), [["lookup", "App's lookup"], ["extra", "Something else"]]);
 });
 
 test("the migration gives each existing channel a definition made from its template", async () => {

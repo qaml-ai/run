@@ -197,7 +197,7 @@ aws logs filter-log-events --region us-west-2 --log-group-name /ecs/camelai-agen
   compiled to WebAssembly, in a per-execution child process; a separate
   isolation tier (gVisor/Firecracker) is only warranted if agents ever run
   native code.
-- Tool sources a tenant configures (MCP servers, HTTP tools, `web_fetch`) are called from the task,
+- Tool sources a tenant configures (MCP servers, `web_fetch`) are called from the task,
   only on public addresses: the runtime refuses private, link-local (including
   the metadata and ECS credential endpoints) and reserved ranges itself, and
   `AGENT_OUTBOUND_BLOCK_CIDRS` (the VPC's CIDR, set in `ecs.tf`) adds the VPC.

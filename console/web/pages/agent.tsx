@@ -98,7 +98,7 @@ function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
       <p className="text-muted-foreground text-sm">
-        Sends a prompt to this agent. If it calls one of your application's tools, the call waits until your app is connected to handle it.
+        Sends a prompt to this agent. If it calls one of your application's tools while your app is not connected, that call fails without running.
       </p>
       <ErrorAlert error={error} title="The prompt failed" />
       <Textarea rows={4} value={draft} onChange={event => setDraft(event.target.value)} placeholder="Ask the agent something…" />

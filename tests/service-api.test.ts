@@ -40,7 +40,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: 
 test('operator provisioning imports native history once; scoped reads do not journal transcript copies', async t => {
   const f = await fixture(t);
   const initialMessages = [{ role: 'user', content: 'preserve-native-history', timestamp: 1 }];
-  const response = await f.post('/client-sessions', { tools: [], model: configuredModel(), thinkingLevel: 'low', initialMessages });
+  const response = await f.post('/client-sessions', { model: configuredModel(), thinkingLevel: 'low', initialMessages });
   assert.equal(response.status, 201);
   const session = await response.json() as any;
   const path = `/clients/${session.id}`;
@@ -58,13 +58,14 @@ test('operator provisioning imports native history once; scoped reads do not jou
 
 test('scoped configuration persists allowed fields and rejects provider credentials or endpoints', async t => {
   const f = await fixture(t);
-  const response = await f.post('/client-sessions', { tools: [] });
+  const response = await f.post('/client-sessions', {});
   const session = await response.json() as any;
   const path = `/clients/${session.id}`;
   for (const params of [{ model: configuredModel() }, { apiKey: 'secret' }, { initialMessages: [] }]) {
     assert.equal((await f.post(path + '/requests', { id: 'invalid', method: 'configure', params }, session.token)).status, 400);
   }
-  const params = { systemPrompt: 'You inspect test fixtures.', thinkingLevel: 'high', tools: [{ name: 'inspect', description: 'Inspect a fixture', parameters: { type: 'object', properties: {} }, exposure: 'direct' }] };
+  const inspect = { name: 'inspect', description: 'Inspect a fixture', inputSchema: { type: 'object', properties: {} }, _meta: { 'agent-runtime/exposure': 'direct' } };
+  const params = { systemPrompt: 'You inspect test fixtures.', thinkingLevel: 'high', mcp: { tools: [inspect] } };
   assert.equal((await f.post(path + '/requests', { id: 'config', method: 'configure', params }, session.token)).status, 202);
   let record: any;
   for (let i = 0; i < 100; i++) {
@@ -76,7 +77,7 @@ test('scoped configuration persists allowed fields and rejects provider credenti
   const saved = await f.header(session.id);
   assert.equal(saved.config.systemPrompt, params.systemPrompt);
   assert.equal(saved.config.thinkingLevel, 'high');
-  assert.deepEqual(saved.definitions, params.tools);
+  assert.deepEqual(saved.definitions, [{ name: 'inspect', description: 'Inspect a fixture', parameters: inspect.inputSchema, exposure: 'direct' }]);
 });
 
 test('operator model configuration accepts endpoints but never persists supplied credentials', async t => {
@@ -90,7 +91,7 @@ test('operator model configuration accepts endpoints but never persists supplied
     { model: { ...configuredModel(), baseUrl: 'https://collector.example.test/v1' } },
     { model: { ...configuredModel(), maxTokens: -1 } },
     { thinkingLevel: 'invalid' },
-  ]) assert.equal((await f.post('/client-sessions', { tools: [], ...extra })).status, 400);
+  ]) assert.equal((await f.post('/client-sessions', { ...extra })).status, 400);
 });
 
 test('trusted endpoints are the default model, Pi published endpoints, and the operator allowlist', () => {
@@ -117,11 +118,11 @@ test('tenants provision and see only their own agents, billed to their own provi
     return { AGENT_TENANTS_FILE: path, AGENT_RUNTIME_TOKEN: '', AGENT_SESSION_SECRET: 'fixture-session-secret-with-32-characters!' };
   });
   assert.equal((await fetch(new URL('/healthz', (await f.get('/registry', alice)).url))).status, 200);
-  assert.equal((await f.post('/client-sessions', { tools: [] }, 'operator-fixture-secret-at-least-24-chars')).status, 401, 'legacy token is not a tenant');
-  const created = await f.post('/client-sessions', { tools: [], name: 'Alice agent' }, alice);
+  assert.equal((await f.post('/client-sessions', {}, 'operator-fixture-secret-at-least-24-chars')).status, 401, 'legacy token is not a tenant');
+  const created = await f.post('/client-sessions', { name: 'Alice agent' }, alice);
   assert.equal(created.status, 201);
   const agent = await created.json() as any;
-  const missingKey = await f.post('/client-sessions', { tools: [] }, bob);
+  const missingKey = await f.post('/client-sessions', {}, bob);
   assert.equal(missingKey.status, 400);
   assert.match((await missingKey.json() as any).error, /No .* API key is configured for tenant bob/);
   assert.deepEqual((await (await f.get('/registry', alice)).json() as any[]).map(a => a.name), ['Alice agent']);
@@ -130,7 +131,7 @@ test('tenants provision and see only their own agents, billed to their own provi
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'cross', method: 'status', params: {} }, bob)).status, 401);
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'own', method: 'status', params: {} }, alice)).status, 202);
   // The same idempotency key in another tenant is a different agent.
-  const sameKey = (token: string) => fetch(new URL('/client-sessions', (created as Response).url), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'shared-key' }, body: JSON.stringify({ tools: [] }) });
+  const sameKey = (token: string) => fetch(new URL('/client-sessions', (created as Response).url), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'shared-key' }, body: JSON.stringify({}) });
   await writeFile(path, tenants({ carol: { tokenSha256: sha(carol), apiKeys: { '*': 'carol-provider-key' } } }));
   f.child.kill('SIGHUP');
   let carolAgent: Response | undefined;

@@ -163,7 +163,7 @@ class AgentRuntime:
     async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
-        thinking level and tools: `tools` then answer the tools it declares, and any others are added.
+        thinking level and tool sources; `tools` are added as the agent's attached MCP server.
         `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: one day).
         `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
         file tools see; by default it gets its own workspace volume at /workspace."""

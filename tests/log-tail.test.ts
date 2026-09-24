@@ -315,8 +315,8 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
     const body = await req.json() as any;
-    const { tools, attached } = applicationTools(body);
-    return Response.json(await sessions.create(tools, { model }, req.headers.get("idempotency-key") ?? undefined, undefined, undefined, undefined, undefined, undefined, attached), { status: 201 });
+    const tools = applicationTools(body);
+    return Response.json(await sessions.create(tools, { model }, req.headers.get("idempotency-key") ?? undefined, undefined), { status: 201 });
   }));
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(async () => {

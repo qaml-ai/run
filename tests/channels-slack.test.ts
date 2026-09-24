@@ -66,7 +66,7 @@ async function setup(t: T) {
   const channels: Channels = new Channels({
     db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test",
     providers: { slack: slack({ apiUrl: api.url }) },
-    createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), live: async () => true,
+    createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), agentId: (_tenant, key) => `client_${sha(key).slice(0, 40)}`, live: async () => true,
     // Each prompt's turn ends at once, answering with what it was asked.
     submit: async (agent, tenant, request) => {
       const params = request.params as { text: string; images?: unknown[] };

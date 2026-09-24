@@ -48,7 +48,7 @@ export function attachedTools(tools: unknown): ToolDefinition[] {
     const meta = tool._meta ?? {};
     const exposure = meta[`${META}exposure`], executionMode = meta[`${META}executionMode`];
     return {
-      name: tool.name, description: tool.description || tool.title || tool.name, parameters: tool.inputSchema, resultFormat: "content",
+      name: tool.name, description: tool.description || tool.title || tool.name, parameters: tool.inputSchema,
       ...(exposure !== undefined ? { exposure: exposure as ToolDefinition["exposure"] } : {}), ...(executionMode !== undefined ? { executionMode: executionMode as ToolDefinition["executionMode"] } : {}),
     };
   });
@@ -56,9 +56,8 @@ export function attachedTools(tools: unknown): ToolDefinition[] {
   return definitions;
 }
 
-/** An application's tools from a create request: an attached server's `mcp.tools`, or plain `tools`. */
-export function applicationTools(params: { tools?: unknown; mcp?: { tools?: unknown } }): { tools: ToolDefinition[]; attached?: "mcp" } {
-  if (params.mcp === undefined) return { tools: (params.tools ?? []) as ToolDefinition[] };
-  if (params.tools !== undefined) throw new Error("Give tools or mcp, not both");
-  return { tools: attachedTools(params.mcp?.tools), attached: "mcp" };
+/** An application's tools from a create request: its attached server's tools/list, `mcp.tools`. */
+export function applicationTools(params: { tools?: unknown; mcp?: { tools?: unknown } }): ToolDefinition[] {
+  if (params.tools !== undefined) throw new Error("An application's tools come from its MCP server: send mcp: { tools }, its tools/list");
+  return params.mcp === undefined ? [] : attachedTools(params.mcp.tools);
 }

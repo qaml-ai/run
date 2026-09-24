@@ -299,8 +299,8 @@ test("the OpenAPI document is served without credentials", async t => {
 
 test("a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees", async t => {
   const { db, base, call } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "4", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "3000" });
-  const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
-  const busy = await call("/client-sessions", { token: bob, body: { tools: [hold] }, headers: { "Idempotency-Key": "busy" } });
+  const hold = { name: "hold", description: "Never answered", inputSchema: { type: "object", properties: {}, additionalProperties: false } };
+  const busy = await call("/client-sessions", { token: bob, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": "busy" } });
   assert.equal(busy.status, 201);
   // A call delivered to an application that never answers keeps the agent busy until the tool timeout, so it cannot be evicted.
   const stream = new AbortController();
@@ -339,8 +339,8 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
   });
   // The held calls are never answered: shut down without draining them for the tool timeout.
   const { root, base, call, child, logged } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "20000", AGENT_DRAIN_TIMEOUT_MS: "0" }, tenants(2));
-  const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
-  const create = (token: string, key: string) => call("/client-sessions", { token, body: { tools: [hold] }, headers: { "Idempotency-Key": key } });
+  const hold = { name: "hold", description: "Never answered", inputSchema: { type: "object", properties: {}, additionalProperties: false } };
+  const create = (token: string, key: string) => call("/client-sessions", { token, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": key } });
   const statuses = (results: { status: number }[]) => results.map(result => result.status).sort();
 
   // Three concurrent starts for bob (his own limit, 2), two for alice (the default, 1).

@@ -322,7 +322,7 @@
         "properties": {
           "definition": {
             "type": "string",
-            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tools; name, type, ttlSeconds, mounts and initialMessages given here override its defaults, and tools given here are added"
+            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults"
           },
           "name": {
             "type": "string"
@@ -349,13 +349,6 @@
               "max"
             ]
           },
-          "tools": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ToolDefinition"
-            },
-            "description": "Client tools; REST-created agents usually have none"
-          },
           "initialMessages": {
             "type": "array",
             "items": {}
@@ -375,49 +368,6 @@
             "description": "Volumes for the agent's file tools; default: a new workspace volume at /workspace"
           }
         }
-      },
-      "ToolDefinition": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "parameters": {
-            "type": "object",
-            "additionalProperties": {},
-            "description": "JSON Schema of the arguments"
-          },
-          "resultFormat": {
-            "type": "string",
-            "enum": [
-              "json",
-              "content"
-            ]
-          },
-          "exposure": {
-            "type": "string",
-            "enum": [
-              "direct",
-              "codemode",
-              "both"
-            ]
-          },
-          "executionMode": {
-            "type": "string",
-            "enum": [
-              "sequential",
-              "parallel"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "description",
-          "parameters"
-        ]
       },
       "Mount": {
         "type": "object",
@@ -531,6 +481,42 @@
               "calls"
             ]
           }
+        ]
+      },
+      "ToolDefinition": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "JSON Schema of the arguments"
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "codemode",
+              "both"
+            ]
+          },
+          "executionMode": {
+            "type": "string",
+            "enum": [
+              "sequential",
+              "parallel"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "parameters"
         ]
       },
       "RequestRecord": {
@@ -1352,14 +1338,6 @@
               "xhigh",
               "max"
             ]
-          },
-          "tools": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ToolDefinition"
-            },
-            "maxItems": 64,
-            "description": "Client tools, answered by an application connected to each agent"
           }
         },
         "description": "Deprecated: give a definition instead. An inline template becomes a definition of the channel's own"
@@ -1465,14 +1443,6 @@
               "max"
             ]
           },
-          "tools": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ToolDefinition"
-            },
-            "maxItems": 128,
-            "description": "Client tools, answered by an application connected to the agent"
-          },
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
           },
@@ -1500,12 +1470,6 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/McpServer"
-            }
-          },
-          "httpTools": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/HttpTool"
             }
           },
           "createdAt": {
@@ -1604,100 +1568,6 @@
           "url"
         ]
       },
-      "HttpTool": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "The tool's name: letters and digits, single underscores between them"
-          },
-          "description": {
-            "type": "string"
-          },
-          "inputSchema": {
-            "type": "object",
-            "additionalProperties": {},
-            "description": "JSON Schema of the arguments, an object"
-          },
-          "url": {
-            "type": "string",
-            "description": "Where the arguments are sent as JSON; https, on a public address. Redirects are not followed"
-          },
-          "method": {
-            "type": "string",
-            "enum": [
-              "POST",
-              "PUT",
-              "PATCH"
-            ],
-            "description": "Default POST"
-          },
-          "timeoutMs": {
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 300000,
-            "description": "Default 30000"
-          },
-          "exposure": {
-            "type": "string",
-            "enum": [
-              "direct",
-              "codemode",
-              "both"
-            ],
-            "description": "How the model calls it: directly, from js_exec (the default), or both"
-          },
-          "executionMode": {
-            "type": "string",
-            "enum": [
-              "sequential",
-              "parallel"
-            ]
-          },
-          "headerNames": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "auth": {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "bearer"
-                ]
-              }
-            },
-            "required": [
-              "type"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "description",
-          "inputSchema",
-          "url"
-        ]
-      },
-      "DefinitionCreated": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Definition"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "signingSecret": {
-                "type": "string",
-                "description": "The secret HTTP tool requests are signed with (whsec_…, Standard Webhooks); shown only this once"
-              }
-            }
-          }
-        ]
-      },
       "DefinitionInput": {
         "type": "object",
         "properties": {
@@ -1726,14 +1596,6 @@
               "xhigh",
               "max"
             ]
-          },
-          "tools": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ToolDefinition"
-            },
-            "maxItems": 128,
-            "description": "Client tools, answered by an application connected to the agent"
           },
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
@@ -1765,14 +1627,6 @@
             },
             "maxItems": 16,
             "description": "Remote MCP servers whose tools the runtime calls for the agent"
-          },
-          "httpTools": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/HttpToolInput"
-            },
-            "maxItems": 64,
-            "description": "Tools the runtime answers by sending their arguments to a URL, signed with the definition's signing secret (Standard Webhooks)"
           }
         },
         "required": [
@@ -1853,89 +1707,6 @@
           "url"
         ]
       },
-      "HttpToolInput": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "The tool's name: letters and digits, single underscores between them"
-          },
-          "description": {
-            "type": "string"
-          },
-          "inputSchema": {
-            "type": "object",
-            "additionalProperties": {},
-            "description": "JSON Schema of the arguments, an object"
-          },
-          "url": {
-            "type": "string",
-            "description": "Where the arguments are sent as JSON; https, on a public address. Redirects are not followed"
-          },
-          "method": {
-            "type": "string",
-            "enum": [
-              "POST",
-              "PUT",
-              "PATCH"
-            ],
-            "description": "Default POST"
-          },
-          "timeoutMs": {
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 300000,
-            "description": "Default 30000"
-          },
-          "exposure": {
-            "type": "string",
-            "enum": [
-              "direct",
-              "codemode",
-              "both"
-            ],
-            "description": "How the model calls it: directly, from js_exec (the default), or both"
-          },
-          "executionMode": {
-            "type": "string",
-            "enum": [
-              "sequential",
-              "parallel"
-            ]
-          },
-          "headers": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Sent with each request; stored encrypted and never returned. Leave out with auth to keep the ones stored for a tool of this name and origin"
-          },
-          "auth": {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "bearer"
-                ]
-              },
-              "token": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "token"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "description",
-          "inputSchema",
-          "url"
-        ]
-      },
       "DefinitionUpdated": {
         "allOf": [
           {
@@ -1944,10 +1715,6 @@
           {
             "type": "object",
             "properties": {
-              "signingSecret": {
-                "type": "string",
-                "description": "Set when this update gave the definition its first signing secret (its first HTTP tool)"
-              },
               "applied": {
                 "type": "object",
                 "properties": {
@@ -2025,17 +1792,6 @@
               null
             ]
           },
-          "tools": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "$ref": "#/components/schemas/ToolDefinition"
-            },
-            "maxItems": 128,
-            "description": "Client tools, answered by an application connected to the agent"
-          },
           "limits": {
             "allOf": [
               {
@@ -2086,17 +1842,6 @@
             "maxItems": 16,
             "description": "Remote MCP servers whose tools the runtime calls for the agent"
           },
-          "httpTools": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "$ref": "#/components/schemas/HttpToolInput"
-            },
-            "maxItems": 64,
-            "description": "Tools the runtime answers by sending their arguments to a URL, signed with the definition's signing secret (Standard Webhooks)"
-          },
           "revision": {
             "type": "integer",
             "description": "Only update the definition if it is still at this revision"
@@ -2110,26 +1855,6 @@
           }
         },
         "description": "Fields given replace the stored ones; null removes one"
-      },
-      "SigningSecret": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "revision": {
-            "type": "number"
-          },
-          "signingSecret": {
-            "type": "string",
-            "description": "The secret HTTP tool requests are signed with (whsec_…, Standard Webhooks); shown only this once"
-          }
-        },
-        "required": [
-          "id",
-          "revision",
-          "signingSecret"
-        ]
       },
       "DefinitionAgent": {
         "type": "object",
@@ -3561,11 +3286,11 @@
         },
         "responses": {
           "201": {
-            "description": "The definition, at revision 1, with its signing secret",
+            "description": "The definition, at revision 1",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DefinitionCreated"
+                  "$ref": "#/components/schemas/Definition"
                 }
               }
             }
@@ -3690,42 +3415,6 @@
                   "required": [
                     "deleted"
                   ]
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/definitions/{id}/signing-secret": {
-      "post": {
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "A new signing secret, shown only this once; agents sign with the old one until the new revision is applied to them",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SigningSecret"
                 }
               }
             }

@@ -87,9 +87,8 @@ export const formatCost = (value: number) => `$${value === 0 || value >= 1 ? val
 export const formatTime = (value?: number) => value ? new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
 export interface Definition {
   id: string; name: string; revision: number; model?: string; systemPrompt?: string; thinkingLevel?: string;
-  tools?: unknown[]; limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; createdAt: number; updatedAt: number; builtins?: string[];
+  limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; createdAt: number; updatedAt: number; builtins?: string[];
   mcpServers?: { name: string; url: string; headerNames?: string[]; auth?: { type: "bearer" } }[];
-  httpTools?: { name: string; url: string; headerNames?: string[]; auth?: { type: "bearer" } }[];
 }
 export interface Channel {
   id: string; type: string; name: string; webhookUrl?: string; definition?: string;

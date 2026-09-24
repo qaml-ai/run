@@ -19,13 +19,13 @@ import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
-import { volumeToolDefinitions } from "./volume-tools.ts";
 import { databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
 import type { DefinitionRef } from "./definitions.ts";
 import type { Sources, ToolSources } from "./tool-sources.ts";
 import { contentResult, type McpResult } from "./mcp-results.ts";
+import { compose, valueServer, type ToolCall, type ToolServer } from "./tool-servers.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -48,8 +48,6 @@ interface SessionHeader {
   definition?: DefinitionRef;
   /** That revision's server-side tool sources, their secrets sealed under the definition. */
   sources?: Sources;
-  /** The application's tools come from its attached MCP server: its calls answer with MCP results. */
-  attached?: "mcp";
 }
 /** Upserts of request and tool-call records, appended as their state changes. */
 type JournalRecord = { t: "request"; record: RequestRecord } | { t: "call"; record: CallRecord };
@@ -70,6 +68,8 @@ type Session = {
   response?: ServerResponse; starting?: Promise<unknown>;
   /** The client whose stream `response` is: calls delivered on it are that client's alone. */
   client?: string;
+  /** Which tool server answers each of the running agent's tools. */
+  route?: Map<string, ToolServer>;
   pending: Map<string, (outcome: Outcome) => void>;
   /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
   runs: Promise<void>;
@@ -97,7 +97,6 @@ const has = (object: object, key: string) => Object.hasOwn(object, key);
 const RUN_METHODS = ["prompt", "execute", "continue"];
 /** Runs that call the model; code executions do not, so spend limits leave them alone. */
 const MODEL_RUNS = ["prompt", "continue"];
-const FILE_TOOL_NAMES = new Set(volumeToolDefinitions([]).map(tool => tool.name));
 /** A running run's active time is reported at least this often. */
 const ACTIVE_REPORT_MS = 60_000;
 /** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. */
@@ -182,7 +181,7 @@ export interface ClientSessionOptions {
   sources?: ToolSources;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
-export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; tools: ToolDefinition[]; sources?: Sources };
+export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean };
 /** Why runs are refused: a message (402), or an error with its own status. */
@@ -196,12 +195,9 @@ export interface SessionHooks {
   runStarted?(agent: AgentRef, record: RequestRecord): void;
   /** After the run's outcome is durable, on the node that ran it. */
   runEnded?(agent: AgentRef, record: RequestRecord): void;
-  /**
-   * Answer a tool call in the runtime; undefined leaves it to the application.
-   * A hook that acts awaits `beforeEffect` first: it makes the run's start durable.
-   */
-  tool?(agent: AgentRef, name: string, args: Record<string, unknown>, requestId: string | undefined, beforeEffect: () => Promise<void>): Promise<{ result: unknown } | undefined>;
-  /** Trusted context attached to calls the application answers. */
+  /** Tools the feature answers for the agent (a channel's send_message); they take precedence over all others. */
+  server?(agent: AgentRef): Promise<ToolServer | undefined>;
+  /** Where a run's turn came from, passed to every tool it calls (as `_meta` to MCP servers). */
   origin?(agent: AgentRef, requestId?: string): Promise<Record<string, unknown> | undefined>;
 }
 
@@ -498,23 +494,12 @@ export class ClientSessions {
       const { key: apiKey, platform } = await this.apiKey(session, session.header.config.model.provider);
       session.platformKey = platform;
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
-        definitions: await this.toolset(session, session.header.definitions),
+        definitions: await this.toolset(session),
         spendLimit: async () => {
           const limited = await this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT);
           return typeof limited === "string" ? limited : limited?.message;
         },
-        // File tools run here against the agent's current mounts, and source tools against its sources; every other tool goes to the application.
-        call: async (name, args, signal, context) => {
-          if (this.isFileTool(session, name)) {
-            await this.beforeEffect(session);
-            return this.options.volumes!.tool({ tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, mounts: session.header.mounts ?? [] }, name, args, signal);
-          }
-          if (this.isSourceTool(session, name)) {
-            await this.beforeEffect(session);
-            return this.options.sources!.call(this.sourceContext(session), session.header.sources, name, args, signal);
-          }
-          return this.call(session, name, args, signal, context);
-        },
+        call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...(context ? { toolCallId: context.toolCallId } : {}) }),
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
@@ -530,25 +515,41 @@ export class ClientSessions {
     })().finally(() => { session.starting = undefined; this.supervisor.unreserve(id); });
   }
 
-  /** The runtime's file tools for a session with mounts; application tools of the same name take precedence. */
-  /** Whether `name` is one of the file tools `fileTools` gives the session now, without building their definitions. */
-  private isFileTool(session: Session, name: string) {
-    return FILE_TOOL_NAMES.has(name) && !!this.options.volumes && !!session.header.mounts?.length && !session.header.definitions.some(tool => tool.name === name);
+  /**
+   * The agent's tools, from its tool servers in order of precedence: the runtime feature's
+   * (a channel's send_message), the application's attached server, file tools over its
+   * mounts, then its definition's built-ins and remote MCP servers. Records the route.
+   */
+  private async toolset(session: Session, tools = session.header.definitions, sources = session.header.sources) {
+    const header = session.header;
+    const tenant = header.tenant ?? DEFAULT_TENANT;
+    const agent: AgentRef = { id: header.id, tenant, claim: session.claim };
+    const feature = await this.options.hooks?.server?.(agent);
+    const volumes = this.options.volumes;
+    const servers: ToolServer[] = [
+      ...feature ? [feature] : [],
+      { tools: () => tools, call: call => this.offer(session, call) },
+      ...volumes && header.mounts?.length ? [valueServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool({ tenant, agent: header.id, mounts: header.mounts ?? [] }, name, args, signal))] : [],
+      ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim }, sources)] : [],
+    ];
+    const { tools: definitions, route } = await compose(servers);
+    session.route = route;
+    return definitions;
   }
-  private fileTools(session: Session, definitions: ToolDefinition[]) {
-    return this.options.volumes && session.header.mounts?.length ? this.options.volumes.definitions(session.header.mounts, definitions) : [];
+
+  /** Answer one of the agent's tool calls through the server that lists it, once the run's start is durable. */
+  private async callTool(session: Session, call: ToolCall) {
+    const server = session.route?.get(call.name);
+    if (!server) throw new Error(`Unknown tool ${call.name}`);
+    const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
+    const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT, claim: session.claim }, request?.id);
+    await this.beforeEffect(session);
+    return contentResult(await server.call({ ...call, ...(origin ? { origin } : {}) }));
   }
-  private isSourceTool(session: Session, name: string) {
-    return !!this.options.sources?.handles(session.header.sources, name) && !session.header.definitions.some(tool => tool.name === name);
-  }
-  private sourceContext(session: Session) {
-    return { tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, definition: session.header.definition!.id, claim: session.claim };
-  }
-  /** Everything the agent can call: file tools, its sources' tools, then the application's `tools`, which win a clash of names. */
-  private async toolset(session: Session, tools: ToolDefinition[], sources = session.header.sources) {
-    const files = this.fileTools(session, tools);
-    const served = sources && session.header.definition && this.options.sources ? await this.options.sources.definitions(this.sourceContext(session), sources, [...files, ...tools]) : [];
-    return [...files, ...served, ...tools];
+
+  /** The id of the agent `create` makes for a tenant's idempotency key. */
+  agentId(tenant: string, key: string) {
+    return `client_${hash(tenant === DEFAULT_TENANT ? key : `${tenant}:${key}`).slice(0, 40)}`;
   }
 
   /**
@@ -556,13 +557,13 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }, attached?: "mcp"): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
     // Idempotency keys are per tenant; the default tenant keeps its pre-tenant IDs and tokens.
     const scoped = tenant === DEFAULT_TENANT ? key : `${tenant}:${key}`;
-    const id = `client_${hash(scoped).slice(0, 40)}`;
+    const id = this.agentId(tenant, key);
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
     const provisionHash = hash(canonical(origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }));
@@ -603,7 +604,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(attached ? { attached } : {}) },
+          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}) },
           claim, requests: new Map(), running: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -618,7 +619,7 @@ export class ClientSessions {
         if (!created) {
           this.supervisor.unreserve(id);
           if (claim) await this.options.ownership!.release(claim).catch(() => {});
-          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, attached);
+          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin);
           throw error;
         }
         await this.discard(session!);
@@ -952,7 +953,6 @@ export class ClientSessions {
       const { tools, ...config } = update;
       if (resolved && live) session.platformKey = resolved.platform;
       if (tools !== undefined) session.header.definitions = tools;
-      if (params.mcp !== undefined) session.header.attached = "mcp";
       session.header.config = { ...session.header.config, ...config };
       if (applied) {
         session.header.definition = applied.definition;
@@ -977,10 +977,8 @@ export class ClientSessions {
     const current = session.header.definition;
     if (!current) throw new Error("This agent was not made from a definition");
     const resolved = await this.options.definitionFor!(session.header.tenant ?? DEFAULT_TENANT, current.id);
-    const extra = session.header.definitions.filter(tool => current.extraTools?.includes(tool.name));
-    const tools = [...resolved.tools, ...extra];
-    validateDefinitions(tools);
-    return { update: { ...resolved.config, tools }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };
+    // The attached server's tools stay; the tools list is rebuilt with the definition's sources.
+    return { update: { ...resolved.config, tools: session.header.definitions }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };
   }
 
   /** Finish a run whose node was lost: continue its turn, or take the answer it had already reached. */
@@ -1089,20 +1087,6 @@ export class ClientSessions {
     catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: errorText(error) })); }
   }
 
-  private async call(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown> {
-    const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
-    const hooks = this.options.hooks;
-    const agent = { id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT, claim: session.claim };
-    const handled = await hooks?.tool?.(agent, name, args, request?.id, () => this.beforeEffect(session));
-    if (handled) return handled.result;
-    const origin = await hooks?.origin?.(agent, request?.id);
-    const result = await this.offer(session, name, args, signal, context, request, origin);
-    if (session.header.attached !== "mcp") return result;
-    const value = result as McpResult | null;
-    if (!value || typeof value !== "object" || !Array.isArray(value.content)) throw new Error("The attached MCP server answered without a CallToolResult");
-    return contentResult(value);
-  }
-
   /**
    * Hand a call to the connected application. Like a call sent to a remote MCP server, it
    * counts as started once delivered: recorded durably first (with the run's start, appended
@@ -1116,11 +1100,12 @@ export class ClientSessions {
     return live();
   }
 
-  private async offer(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }, request?: RequestRecord, origin?: Record<string, unknown>): Promise<unknown> {
+  private async offer(session: Session, { name, args, signal, toolCallId, origin }: ToolCall): Promise<McpResult> {
     signal.throwIfAborted();
+    const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
     if (this.closed || session.fault || session.header.revoked) throw new Error("Client session unavailable");
     if (session.pending.size >= 32) throw new Error("Too many pending client tools");
-    const record = { ...(context ? { toolCallId: context.toolCallId } : {}), ...(request ? { requestId: request.id } : {}), ...(origin ? { origin } : {}), createdAt: Date.now(), id: randomUUID(), name, args, deadline: Date.now() + (this.options.toolTimeoutMs ?? 15_000) };
+    const record = { ...(toolCallId ? { toolCallId } : {}), ...(request ? { requestId: request.id } : {}), ...(origin ? { origin } : {}), createdAt: Date.now(), id: randomUUID(), name, args, deadline: Date.now() + (this.options.toolTimeoutMs ?? 15_000) };
     if (!await this.connected(session, signal)) {
       // Recorded all the same, so the attempt (and who asked) shows in the agent's calls.
       const error = "No application is connected to answer this tool call; it did not run";
@@ -1136,7 +1121,7 @@ export class ClientSessions {
       this.commitLater(session);
       signal.throwIfAborted();
     }
-    return new Promise((resolve, reject) => {
+    const result = await new Promise<unknown>((resolve, reject) => {
       const finish = (value: Outcome) => {
         if (!session.pending.delete(call.id)) return;
         clearTimeout(timer); signal.removeEventListener("abort", abort);
@@ -1157,6 +1142,9 @@ export class ClientSessions {
       signal.addEventListener("abort", abort, { once: true });
       this.publish(session, { type: "tool_call", call: { ...call } });
     });
+    const value = result as McpResult | null;
+    if (!value || typeof value !== "object" || !Array.isArray(value.content)) throw new Error("The application's MCP server answered without a CallToolResult");
+    return value;
   }
 
   async remove(id: string) {

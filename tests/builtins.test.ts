@@ -32,7 +32,6 @@ test("web_fetch reads public pages as text, from the model and js_exec, and neve
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
   assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_search"] } })).status, 400);
   assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["schedule", "schedule"] } })).status, 400);
-  assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_fetch"], tools: [{ name: "web_fetch", description: "x", parameters: { type: "object" } }] } })).status, 400);
   const definition = (await r.call("/v1/definitions", { body: { name: "Reader", builtins: ["web_fetch"] } })).json;
   assert.deepEqual(definition.builtins, ["web_fetch"]);
   await r.prompt((await r.call("/v1/agents", { body: { definition: definition.id } })).json.id, "read it");

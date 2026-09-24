@@ -34,8 +34,8 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
     if (req.headers.get("authorization") !== `Bearer ${token}`) return new Response(null, { status: 401 });
     try {
       const body = await readJson(req.body, FRAME_BYTES);
-      const { tools, attached } = applicationTools(body);
-      const result = await sessions.create(tools, { model, ...(body.systemPrompt !== undefined ? { systemPrompt: body.systemPrompt } : {}) }, req.headers.get("idempotency-key") ?? undefined, { name: body.name, type: body.type }, undefined, undefined, undefined, undefined, attached);
+      const tools = applicationTools(body);
+      const result = await sessions.create(tools, { model, ...(body.systemPrompt !== undefined ? { systemPrompt: body.systemPrompt } : {}) }, req.headers.get("idempotency-key") ?? undefined, { name: body.name, type: body.type });
       return Response.json(result, { status: 201 });
     } catch (error) { return Response.json({ error: String(error) }, { status: 400 }); }
   }));
@@ -100,7 +100,6 @@ test("an application's tools are an attached MCP server: code gets their data, a
   const f = await fixture(t);
   const failing = tool({ description: "Always fails", input: schema.Object({}), execute: () => { throw new Error("no stock data"); } });
   const own = await f.start({ echo: echo(({ value }) => [value, value.length]), failing });
-  assert.equal((await f.header(own.session.id)).attached, "mcp");
   assert.deepEqual((await own.execute('return await tools.echo({value:"hi"})')).output, ['["hi",2]'], "a JSON result reaches code as data");
   await assert.rejects(own.execute("return await tools.failing({})"), /no stock data/, "a tool's failure is an MCP error result, thrown in code");
 
@@ -124,8 +123,12 @@ test("an application's tools are an attached MCP server: code gets their data, a
 test("parallel calls correlate reversed replies and schemas reject invalid arguments", async t => {
   const f = await fixture(t);
   const invoked: string[] = [];
+  // The first call finishes only after the second has: its reply comes back last.
+  const secondDone = Promise.withResolvers<void>();
   const agent = await f.start({ echo: echo(async ({ value }) => {
-    await sleep(value === "first" ? 50 : 1); invoked.push(value);
+    if (value === "first") await secondDone.promise;
+    invoked.push(value);
+    if (value === "second") secondDone.resolve();
     return value;
   }) });
   const result = await agent.execute('return await Promise.all([tools.echo({value:"first"}),tools.echo({value:"second"})])');

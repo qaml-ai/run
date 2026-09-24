@@ -92,7 +92,7 @@ async function node(t: T, api: { url: string }, db: Awaited<ReturnType<typeof te
     db, definitions: new Definitions({ db }), accounts: new Accounts({ tenants: new Tenants({ legacyToken: "discord-operator-token-at-least-24-chars" }), db, secretsKey }),
     node: name, publicUrl: "https://agents.example.test", ownership,
     providers: { discord: discord({ apiUrl: api.url }) },
-    createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), live: async () => true,
+    createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), agentId: (_tenant, key) => `client_${sha(key).slice(0, 40)}`, live: async () => true,
     submit: async (agent, tenant, request) => {
       const text = (request.params as { text: string }).text;
       prompts.push({ agent, text });

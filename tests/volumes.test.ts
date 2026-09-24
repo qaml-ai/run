@@ -279,8 +279,8 @@ async function agents(t: Context) {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
     try {
       const body = await readJson(req.body, FRAME_BYTES);
-      const { tools, attached } = applicationTools(body);
-      return Response.json(await sessions.create(tools, { model }, req.headers.get("idempotency-key") ?? undefined, {}, "default", undefined, mountsFor.shift(), undefined, attached), { status: 201 });
+      const tools = applicationTools(body);
+      return Response.json(await sessions.create(tools, { model }, req.headers.get("idempotency-key") ?? undefined, {}, "default", undefined, mountsFor.shift()), { status: 201 });
     } catch (error) { return Response.json({ error: String(error) }, { status: (error as any).status ?? 400 }); }
   }));
   const mountsFor: unknown[] = [];

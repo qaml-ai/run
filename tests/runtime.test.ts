@@ -213,12 +213,12 @@ test("HTTP control plane authenticates, streams codemode output, and stops agent
   assert.equal((await fetch(base)).status, 401);
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   const clientBase = base.replace("/agents/demo", "/client-sessions");
-  assert.equal((await fetch(clientBase, { method: "POST", body: JSON.stringify({ tools: [] }) })).status, 401);
+  assert.equal((await fetch(clientBase, { method: "POST", body: JSON.stringify({}) })).status, 401);
   assert.equal((await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ tools: [{}] }) })).status, 400);
   for (const systemPrompt of [null, 123, "", "x".repeat(32001)]) {
-    assert.equal((await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ tools: [], systemPrompt }) })).status, 400);
+    assert.equal((await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ systemPrompt }) })).status, 400);
   }
-  const clientSessionResponse = await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ tools: [], name: "Test agent", type: "reviewer", systemPrompt: "You are a test assistant." }) });
+  const clientSessionResponse = await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ name: "Test agent", type: "reviewer", systemPrompt: "You are a test assistant." }) });
   assert.equal(clientSessionResponse.status, 201);
   const clientSession = await clientSessionResponse.json() as { id: string; token: string };
   assert.equal((await db.query("select header from agents where id = $1", [clientSession.id])).rows[0].header.config.systemPrompt, "You are a test assistant.");
@@ -229,7 +229,7 @@ test("HTTP control plane authenticates, streams codemode output, and stops agent
   assert.equal(listing[0].name, "Test agent"); assert.equal(listing[0].type, "reviewer");
   const detail = await (await fetch(`${registryUrl}/${clientSession.id}`, { headers })).json() as any;
   assert.equal(detail.token, undefined); assert.equal(detail.digest, undefined); assert.equal(detail.config, undefined);
-  for (const name of [null, "", 42, "x".repeat(121)]) assert.equal((await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ tools: [], name }) })).status, 400);
+  for (const name of [null, "", 42, "x".repeat(121)]) assert.equal((await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ name }) })).status, 400);
   assert.equal((await fetch(base, { headers: { Authorization: `Bearer ${clientSession.token}` } })).status, 401);
   assert.equal((await fetch(base.replace("/agents/demo", `/agents/${clientSession.id}`), { method: "DELETE", headers })).status, 200);
   const created = await fetch(base, { method: "POST", headers });

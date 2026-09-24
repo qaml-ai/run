@@ -1,16 +1,15 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { HttpError } from "./http.ts";
-import { compiles, validateDefinitions } from "./tool-policy.ts";
 import type { McpConnections, McpServer } from "./mcp.ts";
 import type { Outbound } from "./outbound.ts";
 import type { Claim } from "./ownership.ts";
 import type { Scheduler } from "./scheduler.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
-import { contentResult, type McpResult } from "./mcp-results.ts";
+import type { McpResult } from "./mcp-results.ts";
+import { jsonResult, type ToolServer } from "./tool-servers.ts";
 
 /**
  * Server-side tool sources: tools the runtime calls itself, configured in a
@@ -30,20 +29,8 @@ export interface McpServerSpec {
   exposure?: Exposure;
   timeoutMs?: number;
 }
-/** A tool the runtime answers by sending its arguments to a URL, signed with the definition's secret. */
-export interface HttpToolSpec {
-  name: string; description: string; inputSchema: Record<string, unknown>;
-  url: string; method: "POST" | "PUT" | "PATCH";
-  headerNames?: string[];
-  auth?: { type: "bearer" };
-  /** Its headers, sealed under `definition:<id>:http:<name>`. */
-  sealed?: Sealed;
-  timeoutMs?: number;
-  exposure?: Exposure;
-  executionMode?: "sequential" | "parallel";
-}
-/** `signing` is the definition's HTTP tool signing secret, sealed under `definition:<id>:signing`. */
-export interface Sources { builtins?: string[]; mcpServers?: McpServerSpec[]; httpTools?: HttpToolSpec[]; signing?: Sealed }
+/** Built-in tools a definition enables, and its remote MCP servers. */
+export interface Sources { builtins?: string[]; mcpServers?: McpServerSpec[] }
 /** The agent a tool call is for, its owner's claim on it, and the definition whose secrets it may unseal. */
 export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim };
 
@@ -51,19 +38,12 @@ const SERVER_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
 // Headers the transport sets itself, or that would change how the request is framed or routed.
 const RESERVED_HEADERS = new Set(["host", "content-length", "content-type", "accept", "connection", "transfer-encoding", "upgrade", "te", "trailer", "keep-alive",
-  "proxy-authorization", "proxy-connection", "mcp-session-id", "mcp-protocol-version", "last-event-id", "cookie", "user-agent", "webhook-id", "webhook-timestamp", "webhook-signature"]);
-const TOOL_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
+  "proxy-authorization", "proxy-connection", "mcp-session-id", "mcp-protocol-version", "last-event-id", "cookie", "user-agent"]);
 const DEFAULT_TIMEOUT_MS = 60_000;
-const HTTP_TIMEOUT_MS = 30_000;
-const HTTP_RESULT_BYTES = 1024 * 1024;
 const LIST_TIMEOUT_MS = 10_000;
 const MAX_DESCRIPTION = 4_000;
-const TOOL_BUDGET = { count: 128, bytes: 256 * 1024 };
 
-const sealedAad = (definition: string, name: string, kind: "mcp" | "http" = "mcp") => `definition:${definition}:${kind}:${name}`;
-export const signingAad = (definition: string) => `definition:${definition}:signing`;
-/** A new signing secret, in the Standard Webhooks format (`whsec_` and base64 key bytes). */
-export const newSigningSecret = () => `whsec_${randomBytes(32).toString("base64")}`;
+const sealedAad = (definition: string, name: string) => `definition:${definition}:mcp:${name}`;
 type Context = { accounts?: Accounts; outbound: Outbound };
 const bad = (message: string) => new HttpError(400, message);
 const strings = (value: unknown, label: string, max: number) => {
@@ -121,7 +101,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
 }
 
 /**
- * Sealed credentials for a server or tool at `url`. Sent without `headers` and `auth`, it keeps
+ * Sealed credentials for a server at `url`. Sent without `headers` and `auth`, it keeps
  * those of its namesake in `previous`, but only at the same origin: credentials belong to it.
  */
 function sealCredentials(headers: unknown, auth: unknown, previous: { url: string; headerNames?: string[]; auth?: { type: "bearer" }; sealed?: Sealed } | undefined, url: URL, aad: string, context: Context) {
@@ -134,41 +114,6 @@ function sealCredentials(headers: unknown, auth: unknown, previous: { url: strin
     ...(headers && Object.keys(headers).length ? { headerNames: Object.keys(headers) } : {}), ...(auth ? { auth: { type: "bearer" as const } } : {}),
     sealed: context.accounts.seal(aad, JSON.stringify(credentials)),
   };
-}
-
-/** A definition's `httpTools` from what a tenant sent: validated, headers sealed as for MCP servers. */
-export function httpToolsInput(input: unknown, previous: HttpToolSpec[] | undefined, definition: string, context: Context): HttpToolSpec[] {
-  if (!Array.isArray(input) || input.length > 64) throw bad("httpTools must be a list of at most 64 tools");
-  const names = new Set<string>();
-  return input.map((tool: any) => {
-    if (!tool || typeof tool !== "object" || Array.isArray(tool)) throw bad("An HTTP tool is { name, description, inputSchema, url, method?, headers?, auth?, timeoutMs?, exposure?, executionMode? }");
-    const { name, description, inputSchema, url, method = "POST", headers, auth, timeoutMs, exposure, executionMode } = tool;
-    if (typeof name !== "string" || name.length > 80 || !TOOL_NAME.test(name)) throw bad("An HTTP tool's name is letters and digits, single underscores between them, starting with a letter");
-    if (names.has(name)) throw bad(`Two HTTP tools are named ${name}`);
-    names.add(name);
-    if (typeof description !== "string" || !description.trim() || description.length > MAX_DESCRIPTION) throw bad(`HTTP tool ${name} needs a description of at most ${MAX_DESCRIPTION} characters`);
-    try { validateDefinitions([{ name, description, parameters: inputSchema, ...(exposure !== undefined ? { exposure } : {}), ...(executionMode !== undefined ? { executionMode } : {}) }]); }
-    catch (error) { throw bad(`HTTP tool ${name}: ${errorText(error)}`); }
-    if (!compiles(inputSchema) || inputSchema.type !== "object") throw bad(`HTTP tool ${name}: inputSchema must be a JSON Schema for an object`);
-    if (!["POST", "PUT", "PATCH"].includes(method)) throw bad("method is POST, PUT or PATCH");
-    if (typeof url !== "string" || url.length > 2048) throw bad(`HTTP tool ${name} needs a url`);
-    let checked: URL;
-    try { checked = context.outbound.check(url); } catch (error) { throw bad(`HTTP tool ${name}: ${errorText(error)}`); }
-    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 300_000)) throw bad("timeoutMs is an integer from 1000 to 300000");
-    return {
-      name, description, inputSchema, url: checked.toString(), method, ...(timeoutMs ? { timeoutMs } : {}), ...(exposure ? { exposure } : {}), ...(executionMode ? { executionMode } : {}),
-      ...sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name, "http"), context),
-    };
-  });
-}
-
-/** What callers see of an HTTP tool: never its credentials. */
-export const httpToolView = ({ sealed: _sealed, ...tool }: HttpToolSpec) => tool;
-
-/** Standard Webhooks signature headers for `body`, so a receiver can check the request came from this runtime, unchanged and recently. */
-export function signatureHeaders(secret: string, body: string, id = `call_${randomUUID()}`, timestamp = Math.floor(Date.now() / 1000)) {
-  const signature = createHmac("sha256", Buffer.from(secret.slice("whsec_".length), "base64")).update(`${id}.${timestamp}.${body}`).digest("base64");
-  return { "webhook-id": id, "webhook-timestamp": String(timestamp), "webhook-signature": `v1,${signature}` };
 }
 
 /** What callers see of a server: never its credentials. */
@@ -194,7 +139,7 @@ export class ToolSources {
   private headers(aad: string, sealed: Sealed | undefined): Record<string, string> {
     return sealed ? JSON.parse(this.accounts!.unseal(aad, sealed)) : {};
   }
-  private server(context: SourceContext, spec: McpServerSpec): McpServer {
+  private endpoint(context: SourceContext, spec: McpServerSpec): McpServer {
     return { url: spec.url, headers: this.headers(sealedAad(context.definition, spec.name), spec.sealed) };
   }
 
@@ -202,76 +147,39 @@ export class ToolSources {
     return (!spec.allowTools || spec.allowTools.includes(tool.name)) && !spec.denyTools?.includes(tool.name);
   }
 
-  /** Whether `name` is one of these sources' tools (by name alone: its source says whether it still exists). */
-  handles(sources: Sources | undefined, name: string) {
-    return !!sources?.mcpServers?.some(server => name.startsWith(`${server.name}__`)) || !!sources?.httpTools?.some(tool => tool.name === name) || builtinNames(sources?.builtins).includes(name);
-  }
-
   /**
-   * The sources' tools, leaving out names `taken` by other tools and anything past the
-   * catalog's limits. A server that cannot be reached contributes nothing this time.
+   * The tool server for an agent's sources: its built-ins, and its remote MCP servers' tools as
+   * `<server>__<tool>`. A server that cannot be reached contributes no tools this time.
    */
-  async definitions(context: SourceContext, sources: Sources | undefined, taken: ToolDefinition[]): Promise<ToolDefinition[]> {
-    const lists = await Promise.all((sources?.mcpServers ?? []).map(async spec => {
-      try {
-        const tools = await withTimeout(this.mcp.tools(context.tenant, this.server(context, spec)), LIST_TIMEOUT_MS);
-        return tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => ({
-          name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
-          parameters: tool.inputSchema as Record<string, unknown>, resultFormat: "content", exposure: spec.exposure ?? "codemode",
+  server(context: SourceContext, sources: Sources | undefined): ToolServer {
+    const builtins = builtinNames(sources?.builtins);
+    const mcpServer = (name: string) => sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));
+    return {
+      tools: async () => {
+        const lists = await Promise.all((sources?.mcpServers ?? []).map(async spec => {
+          try {
+            const tools = await withTimeout(this.mcp.tools(context.tenant, this.endpoint(context, spec)), LIST_TIMEOUT_MS);
+            return tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => ({
+              name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
+              parameters: tool.inputSchema as Record<string, unknown>, exposure: spec.exposure ?? "codemode",
+            }));
+          } catch (error) {
+            console.error(JSON.stringify({ type: "mcp_tools_unavailable", tenant: context.tenant, agent: context.agent, server: spec.name, error: errorText(error) }));
+            return [];
+          }
         }));
-      } catch (error) {
-        console.error(JSON.stringify({ type: "mcp_tools_unavailable", tenant: context.tenant, agent: context.agent, server: spec.name, error: errorText(error) }));
-        return [];
-      }
-    }));
-    const http = (sources?.httpTools ?? []).map((tool): ToolDefinition => ({
-      name: tool.name, description: tool.description, parameters: tool.inputSchema, exposure: tool.exposure ?? "codemode", ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
-    }));
-    const chosen: ToolDefinition[] = [];
-    const names = new Set(taken.map(tool => tool.name));
-    let bytes = Buffer.byteLength(JSON.stringify(taken));
-    for (const tool of [...builtinDefinitions(sources?.builtins), ...http, ...lists.flat()]) {
-      const size = Buffer.byteLength(JSON.stringify(tool)) + 1;
-      if (names.has(tool.name) || names.size >= TOOL_BUDGET.count || bytes + size > TOOL_BUDGET.bytes) continue;
-      try { validateDefinitions([tool]); } catch { continue; }
-      if (!compiles(tool.parameters)) continue;
-      names.add(tool.name);
-      bytes += size;
-      chosen.push(tool);
-    }
-    return chosen;
-  }
-
-  async call(context: SourceContext, sources: Sources | undefined, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-    if (builtinNames(sources?.builtins).includes(name)) return runBuiltin({ outbound: this.outbound, scheduler: this.options.scheduler }, context, name, args, signal);
-    const http = sources?.httpTools?.find(tool => tool.name === name);
-    if (http) return this.send(context, sources!, http, args, signal);
-    const spec = sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));
-    if (!spec) throw new Error(`Unknown tool ${name}`);
-    const server = this.server(context, spec);
-    const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
-    if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
-    const result = await this.mcp.call(context.tenant, server, tool.name, args, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    return contentResult(result as McpResult);
-  }
-
-  /** Send an HTTP tool's arguments as signed JSON; its answer is the JSON (or text) it responds with. */
-  private async send(context: SourceContext, sources: Sources, tool: HttpToolSpec, args: Record<string, unknown>, signal: AbortSignal) {
-    if (!sources.signing) throw new Error("This agent's definition has no signing secret for HTTP tools");
-    const body = JSON.stringify(args);
-    const response = await this.outbound.fetch(tool.url, {
-      method: tool.method, body, signal, timeoutMs: tool.timeoutMs ?? HTTP_TIMEOUT_MS, maxBytes: HTTP_RESULT_BYTES,
-      headers: {
-        "Content-Type": "application/json", "User-Agent": "agent-runtime", "X-Agent-Runtime-Agent": context.agent, "X-Agent-Runtime-Tool": tool.name,
-        ...signatureHeaders(this.accounts!.unseal(signingAad(context.definition), sources.signing), body),
+        return [...builtinDefinitions(sources?.builtins), ...lists.flat()];
       },
-      secrets: this.headers(sealedAad(context.definition, tool.name, "http"), tool.sealed),
-    });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`${tool.name} answered HTTP ${response.status}${text ? `: ${text.slice(0, 1000)}` : ""}`);
-    if (!/[/+]json\b/i.test(response.headers.get("content-type") ?? "")) return text;
-    try { return text ? JSON.parse(text) : null; }
-    catch { throw new Error(`${tool.name} answered with invalid JSON`); }
+      call: async ({ name, args, signal, origin }) => {
+        if (builtins.includes(name)) return jsonResult(await runBuiltin({ outbound: this.outbound, scheduler: this.options.scheduler }, context, name, args, signal));
+        const spec = mcpServer(name);
+        if (!spec) throw new Error(`Unknown tool ${name}`);
+        const server = this.endpoint(context, spec);
+        const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
+        if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
+        return await this.mcp.call(context.tenant, server, tool.name, args, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, origin && { "agent-runtime/origin": origin }) as McpResult;
+      },
+    };
   }
 }
 

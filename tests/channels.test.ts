@@ -12,11 +12,13 @@ import { fileURLToPath } from "node:url";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Definitions } from "../src/definitions.ts";
-import { Channels, chunks, SEND_MESSAGE } from "../src/channels.ts";
+import { Channels, chunks } from "../src/channels.ts";
 import { LostClaim, Ownership } from "../src/ownership.ts";
 import { telegram } from "../src/channels-telegram.ts";
 import pg from "pg";
 import { testDatabase } from "./database.ts";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 type T = { after(fn: () => Promise<void> | void): void };
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -284,36 +286,40 @@ test("a photo reaches the model as an image", async t => {
 });
 
 test("send_message reaches the chat mid-turn, and tools see who is asking", async t => {
+  // A remote MCP server whose tool records the runtime's _meta: the channel and sender of the turn.
+  const seen: unknown[] = [];
+  const mcpUrl = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const server = new McpServer({ name: "orders", version: "1.0.0" });
+    server.registerTool("lookup", { description: "Look up an order" }, async extra => {
+      seen.push(extra._meta?.["agent-runtime/origin"]);
+      return { content: [{ type: "text", text: "shipped" }] };
+    });
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => { void transport.close(); void server.close(); });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, text ? JSON.parse(text) : undefined);
+  });
   const r = await runtime(t, (body, index) => {
     if (index === 0) return { role: "assistant", tool_calls: [{ index: 0, id: "call_update", type: "function", function: { name: "send_message", arguments: JSON.stringify({ text: "Working on it…" }) } }] };
-    if (index === 1) return { role: "assistant", tool_calls: [{ index: 0, id: "call_lookup", type: "function", function: { name: "lookup", arguments: JSON.stringify({ key: "order" }) } }] };
+    if (index === 1) return { role: "assistant", tool_calls: [{ index: 0, id: "call_lookup", type: "function", function: { name: "orders__lookup", arguments: "{}" } }] };
     return { role: "assistant", content: "All done." };
-  }, { AGENT_TOOL_TIMEOUT_MS: "300" });
-  const lookup = { name: "lookup", description: "Look something up", parameters: { type: "object", properties: { key: { type: "string" } } }, exposure: "direct" };
-  const { channel, secret } = await r.createChannel({ access: { allow: ["@ada"] }, template: { tools: [lookup] } });
-  assert.equal((await r.call("/v1/channels", { body: { type: "telegram", credentials: { botToken: BOT_TOKEN }, template: { tools: [{ ...lookup, name: "send_message" }] } } })).status, 400);
+  }, { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" });
+  const definition = (await r.call("/v1/definitions", { body: { name: "Orders", mcpServers: [{ name: "orders", url: `${mcpUrl}/mcp`, exposure: "direct" }] } })).json;
+  const { channel, secret } = await r.createChannel({ access: { allow: ["@ada"] }, definition: definition.id });
   await r.deliver(channel, secret, from(ada, "check my order"));
   await until(() => r.tg.sent(ada.id).includes("All done."), "the final reply");
   assert.deepEqual(r.tg.sent(ada.id), ["Working on it…", "All done."]);
   assert.equal(r.model.bodies[0].tools.some((tool: any) => tool.function.name === "send_message"), true);
   const tool = r.model.bodies[1].messages.find((message: any) => message.role === "tool");
   assert.match(tool.content, /sent/);
-
-  // No application answered `lookup`, but its call carried the channel and sender for one to check.
-  const [agent] = (await r.call("/v1/agents")).json;
-  const call = (await r.call(`/v1/agents/${agent.id}`)).json.calls.find((entry: any) => entry.name === "lookup");
-  assert.deepEqual(call.origin, { channel: { id: channel.id, type: "telegram" }, conversationId: "42", sender: { id: "42", username: "ada", name: "Ada" } });
-
-  // Agents created any other way have no send_message.
-  const plain = await r.call("/v1/agents", { body: { name: "plain" } });
-  assert.equal((await r.call(`/v1/agents/${plain.json.id}`)).json.tools.some((entry: any) => entry.name === "send_message"), false);
+  assert.deepEqual(seen, [{ channel: { id: channel.id, type: "telegram" }, conversationId: "42", sender: { id: "42", username: "ada", name: "Ada" } }]);
 });
 
 test("a channel's agents are made from its definition; an inline template becomes the channel's own", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `system: ${body.messages[0].content.includes("Pirate") ? "pirate" : "plain"}` }));
   const pirate = (await r.call("/v1/definitions", { body: { name: "Pirate", systemPrompt: "Pirate talk only." } })).json;
-  const clash = (await r.call("/v1/definitions", { body: { name: "Clash", tools: [{ ...SEND_MESSAGE }] } })).json;
-  assert.equal((await r.call("/v1/channels", { body: { type: "telegram", credentials: { botToken: BOT_TOKEN }, definition: clash.id } })).status, 400, "send_message is the channel's");
   assert.equal((await r.call("/v1/channels", { body: { type: "telegram", credentials: { botToken: BOT_TOKEN }, definition: pirate.id, template: {} } })).status, 400);
   const { channel, secret } = await r.createChannel({ access: { allow: ["@ada"] }, definition: pirate.id });
   assert.equal(channel.definition, pirate.id);
@@ -323,9 +329,7 @@ test("a channel's agents are made from its definition; an inline template become
   const [agent] = (await r.call("/v1/agents")).json;
   const detail = (await r.call(`/v1/agents/${agent.id}`)).json;
   assert.deepEqual(detail.definition, { id: pirate.id, revision: 1 });
-  assert.deepEqual(detail.tools.map((tool: any) => tool.name), ["send_message"]);
   assert.equal((await r.call(`/v1/definitions/${pirate.id}`, { method: "DELETE" })).status, 409, "a channel uses it");
-  assert.equal((await r.call(`/v1/definitions/${pirate.id}`, { method: "PATCH", body: { tools: [{ ...SEND_MESSAGE }] } })).status, 400);
 
   // The older form: an inline template is kept as a definition of the channel's own, rewritten in place.
   const legacy = await r.createChannel({ name: "Legacy", access: { allow: ["@bob"] }, template: { systemPrompt: "Be brief." } });
@@ -354,7 +358,7 @@ test("an outbound message that fails is retried, and delivered exactly once acro
   const node = (name: string) => new Channels({
     db, definitions: new Definitions({ db }), accounts, node: name, publicUrl: "https://agents.example.test", retryBaseMs: 50,
     providers: { telegram: telegram({ apiUrl: tg.url }) },
-    createAgent: async () => { throw new Error("unused"); }, live: async () => true, submit: async () => { throw new Error("unused"); },
+    createAgent: async () => { throw new Error("unused"); }, agentId: () => "unused", live: async () => true, submit: async () => { throw new Error("unused"); },
   });
   const [a, b] = [node("a"), node("b")];
   const channel = await a.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
@@ -382,7 +386,7 @@ test("a node whose claim on a message lapsed, and whose send then fails for good
   const node = (name: string) => new Channels({
     db, definitions: new Definitions({ db }), accounts, node: name, publicUrl: "https://agents.example.test", retryBaseMs: 50,
     providers: { telegram: telegram({ apiUrl: tg.url }) },
-    createAgent: async () => { throw new Error("unused"); }, live: async () => true, submit: async () => { throw new Error("unused"); },
+    createAgent: async () => { throw new Error("unused"); }, agentId: () => "unused", live: async () => true, submit: async () => { throw new Error("unused"); },
   });
   const [a, b] = [node("a"), node("b")];
   const channel = await a.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
@@ -418,16 +422,19 @@ test("a node that lost an agent sends nothing more for it", async t => {
   const channels = new Channels({
     db, definitions: new Definitions({ db }), accounts, node: "http://a", publicUrl: "https://agents.example.test", ownership,
     providers: { telegram: telegram({ apiUrl: tg.url }) },
-    createAgent: async () => { throw new Error("unused"); }, live: async () => true, submit: async () => { throw new Error("unused"); },
+    createAgent: async () => { throw new Error("unused"); }, agentId: () => "unused", live: async () => true, submit: async () => { throw new Error("unused"); },
   });
   const channel = await channels.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
   await db.query("insert into channel_agents (agent, channel, tenant, conversation) values ('client_x', $1, 'default', '42')", [channel.id]);
   const agent = { id: "client_x", tenant: "default", claim: taken.claim };
-  assert.deepEqual(await channels.hooks.tool!(agent, "send_message", { text: "first" }, undefined, async () => {}), { result: { sent: true } });
+  assert.equal(await channels.hooks.server!({ id: "client_elsewhere", tenant: "default" }), undefined, "agents no channel made have no send_message");
+  const server = (await channels.hooks.server!(agent))!;
+  const send = (text: string) => server.call({ name: "send_message", args: { text }, signal: new AbortController().signal });
+  assert.deepEqual((await send("first")).structuredContent, { sent: true });
 
   // A peer took the agent; this node's turn is still running and tries to talk.
   await db.query("update actor_owners set node = 'http://b', session = gen_random_uuid(), epoch = epoch + 1 where actor = 'client_x'");
-  await assert.rejects(channels.hooks.tool!(agent, "send_message", { text: "stale" }, undefined, async () => {}), LostClaim);
+  await assert.rejects(send("stale"), LostClaim);
   channels.hooks.runEnded!(agent, { id: "schedule-2", method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: "stale reply" } } });
   await sleep(200);
   assert.deepEqual(tg.sent("42"), ["first"]);
@@ -444,7 +451,7 @@ test("a backlog of outbound messages is sent exactly once when two nodes on sepa
     return new Channels({ definitions: new Definitions({ db: pool }),
       db: pool, accounts: new Accounts({ tenants: new Tenants({ legacyToken: operator }), db: pool, secretsKey }), node: name, publicUrl: "https://agents.example.test",
       providers: { telegram: telegram({ apiUrl: tg.url }) },
-      createAgent: async () => { throw new Error("unused"); }, live: async () => true, submit: async () => { throw new Error("unused"); },
+      createAgent: async () => { throw new Error("unused"); }, agentId: () => "unused", live: async () => true, submit: async () => { throw new Error("unused"); },
     });
   };
   const [a, b] = [node("a"), node("b")];
@@ -468,7 +475,7 @@ test("a turn whose end no node saw (a crash) is re-checked and answered once", a
   const channels = new Channels({
     db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test",
     providers: { telegram: telegram({ apiUrl: tg.url }) },
-    createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), live: async () => true,
+    createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), agentId: (_tenant, key) => `client_${sha(key).slice(0, 40)}`, live: async () => true,
     // The agent's journal answers a repeated request id with the same record.
     submit: async (_agent, _tenant, request) => {
       submitted.push(request.id);

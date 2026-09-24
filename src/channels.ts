@@ -5,7 +5,7 @@ import type { Accounts, Sealed } from "./accounts.ts";
 import type { AgentRef, SessionHooks } from "./client-sessions.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
-import { validateDefinitions } from "./tool-policy.ts";
+import { valueServer } from "./tool-servers.ts";
 import type { Definitions } from "./definitions.ts";
 import { HttpError, readText } from "./http.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
@@ -83,7 +83,7 @@ export class SendError extends Error {
 }
 
 /** How channels described their agents before definitions; the API still takes one, as a definition of the channel's own. */
-export interface Template { model?: string; systemPrompt?: string; thinkingLevel?: string; tools?: ToolDefinition[] }
+export interface Template { model?: string; systemPrompt?: string; thinkingLevel?: string }
 export interface Channel {
   id: string; tenant: string; type: string; name: string;
   /** Where the service delivers messages; channels that receive over a socket have none. */
@@ -166,6 +166,8 @@ export interface ChannelsOptions {
   /** Decides which node holds each gateway channel's connection; without it no gateway connects. */
   ownership?: Ownership;
   createAgent(tenant: string, params: any, key: string): Promise<{ id: string }>;
+  /** The id `createAgent` gives the agent for a key, so the conversation is bound before the agent starts. */
+  agentId(tenant: string, key: string): string;
   /** Whether the agent still exists and is the tenant's. */
   live(agent: string, tenant: string): Promise<boolean>;
   /** Submit a request to an agent on whichever node serves it. */
@@ -298,15 +300,11 @@ export class Channels {
   private async definition(tenant: string, id: string, name: string, input: ChannelInput, current?: string): Promise<string | undefined> {
     if (input.definition !== undefined && input.template !== undefined) throw new HttpError(400, "Give a definition or a template, not both");
     if (input.definition !== undefined) {
-      const definition = await this.options.definitions.read(tenant, input.definition);
-      if (definition.spec.tools?.some(tool => tool.name === SEND_MESSAGE.name)) throw new HttpError(400, "send_message is the channel's own tool; its definition cannot declare it");
-      return definition.id;
+      return (await this.options.definitions.read(tenant, input.definition)).id;
     }
     const template = input.template;
     if (template === undefined) return current;
-    try { validateDefinitions([...template.tools ?? [], SEND_MESSAGE]); }
-    catch (error) { throw new HttpError(400, errorText(error)); }
-    const fields = { model: template.model ?? null, systemPrompt: template.systemPrompt ?? null, thinkingLevel: template.thinkingLevel ?? null, tools: template.tools ?? null };
+    const fields = { model: template.model ?? null, systemPrompt: template.systemPrompt ?? null, thinkingLevel: template.thinkingLevel ?? null };
     const owned = current && await this.options.definitions.read(tenant, current).catch(() => undefined);
     if (owned && owned.spec.channel === id) return (await this.options.definitions.update(tenant, owned.id, fields)).id;
     return (await this.options.definitions.create(tenant, { name: name.slice(0, 120), ...fields }, { channel: id })).id;
@@ -606,17 +604,20 @@ export class Channels {
     const generation = stored ? stored.generation + 1 : 0;
     const label = sender.username ? `@${sender.username}` : sender.name ?? sender.id;
     const params = {
-      ...channel.definition ? { definition: channel.definition, tools: [SEND_MESSAGE] } : { ...channel.template, tools: [...channel.template?.tools ?? [], SEND_MESSAGE] },
+      ...channel.definition ? { definition: channel.definition } : channel.template,
       name: `${this.provider(channel.type).label}: ${label}`.slice(0, 120), type: "channel",
       // A conversation outlives any session TTL: its agent lives until deleted (DELETE /v1/agents/:id).
       ttlSeconds: null,
     };
-    const created = await this.options.createAgent(channel.tenant, params, `${channel.type}-${channel.id}-${conversationId}${generation ? `-${generation}` : ""}`);
+    const key = `${channel.type}-${channel.id}-${conversationId}${generation ? `-${generation}` : ""}`;
+    // Bound first: the agent lists its tools (send_message among them) as it starts.
+    const id = this.options.agentId(channel.tenant, key);
     const binding: Binding = { channel: channel.id, tenant: channel.tenant, conversationId };
     await this.db.query(`
       insert into channel_agents (agent, channel, tenant, conversation) values ($1, $2, $3, $4)
-      on conflict (agent) do update set channel = excluded.channel, tenant = excluded.tenant, conversation = excluded.conversation`, [created.id, channel.id, channel.tenant, conversationId]);
-    this.bindings.set(created.id, Promise.resolve(binding));
+      on conflict (agent) do update set channel = excluded.channel, tenant = excluded.tenant, conversation = excluded.conversation`, [id, channel.id, channel.tenant, conversationId]);
+    this.bindings.set(id, Promise.resolve(binding));
+    const created = await this.options.createAgent(channel.tenant, params, key);
     await this.db.query(`
       insert into channel_conversations (channel, conversation, agent, generation) values ($1, $2, $3, $4)
       on conflict (channel, conversation) do update set agent = excluded.agent, generation = excluded.generation`, [channel.id, conversationId, created.id, generation]);
@@ -660,15 +661,15 @@ export class Channels {
       if (record.method !== "prompt") return;
       void this.settle(agent, record).catch(error => console.error(JSON.stringify({ type: "channel_reply_failed", agent: agent.id, request: record.id, error: errorText(error) })));
     },
-    tool: async (agent, name, args, _requestId, beforeEffect) => {
-      if (name !== SEND_MESSAGE.name) return undefined;
+    // A channel's agents get send_message, for updates before the final reply.
+    server: async agent => {
       const binding = await this.binding(agent.id);
-      if (!binding) return undefined;
-      const text = typeof args.text === "string" ? args.text.trim() : "";
-      if (!text) throw new Error("send_message needs text");
-      await beforeEffect();
-      await this.enqueue(agent, binding, `msg_${randomUUID().replaceAll("-", "")}`, text);
-      return { result: { sent: true } };
+      return binding && valueServer([SEND_MESSAGE], async ({ args }) => {
+        const text = typeof args.text === "string" ? args.text.trim() : "";
+        if (!text) throw new Error("send_message needs text");
+        await this.enqueue(agent, binding, `msg_${randomUUID().replaceAll("-", "")}`, text);
+        return { sent: true };
+      });
     },
     origin: async (agent, requestId) => {
       const binding = await this.binding(agent.id);

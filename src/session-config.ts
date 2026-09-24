@@ -62,10 +62,9 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  */
 export function configurationUpdate(input: any): Pick<AgentConfig, 'systemPrompt' | 'thinkingLevel'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model'] } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'thinkingLevel', 'tools', 'mcp', 'model'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
-  // An attached MCP server's tools/list replaces the application's tools.
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'thinkingLevel', 'mcp', 'model'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  // The application's attached MCP server's tools/list replaces its tools.
   if (input.mcp !== undefined) {
-    if (input.tools !== undefined) throw new Error('Give tools or mcp, not both');
     const { mcp, ...rest } = input;
     input = { ...rest, tools: attachedTools(mcp?.tools) };
   }
