@@ -1,6 +1,7 @@
 import { readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { createCompactionSummaryMessage, type AgentMessage } from "@earendil-works/pi-agent-core";
+import type { SystemMessage } from "@earendil-works/pi-ai";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 
 export const transcriptPath = (directory: string) => join(directory, "transcript.jsonl");
@@ -23,8 +24,16 @@ export type TranscriptRecord =
   | { t: "turn"; active: boolean }
   /** Replaces all earlier messages (import, or folding the log). */
   | { t: "reset"; messages: AgentMessage[]; compaction?: CompactionState }
-  /** The model's context from now on is `summary` plus messages from index `cut`. */
-  | ({ t: "compaction" } & CompactionState);
+  /**
+   * The runtime's system messages, never a tenant's. `leading` pins the context's first one, the
+   * provider's cached prefix; any other changes the prompt or tools from this point in the conversation.
+   */
+  | { t: "system"; message: SystemMessage; leading?: true }
+  /**
+   * The model's context from now on is `summary` plus messages from index `cut`. `system` is the
+   * leading system message with every change before the cut folded in.
+   */
+  | ({ t: "compaction"; system?: SystemMessage } & CompactionState);
 
 /** Read an agent's full history from a single-host directory, including a legacy snapshot. */
 export async function readTranscript(directory: string): Promise<AgentMessage[]> {
@@ -62,6 +71,10 @@ export class Transcript {
   /** Messages ever recorded (after retractions); absolute indexes run 0 .. total - 1. */
   total = 0;
   compaction?: CompactionState;
+  /** The pinned leading system message; until a change needs one, it is built from configuration. */
+  system?: SystemMessage;
+  /** Later system messages, each placed before the message at absolute index `at`. */
+  updates: { at: number; message: SystemMessage }[] = [];
   /** A turn was running when the log was last written. */
   active = false;
   /** `total` when the running turn started. */
@@ -71,10 +84,16 @@ export class Transcript {
 
   get offset() { return this.total - this.context.length; }
 
-  /** What the model sees: the summary (as Pi's compaction summary message) and the kept messages. */
+  /** What the model sees after the leading system message: the summary, and the kept messages with later system messages in place. */
   view(): AgentMessage[] {
-    if (!this.compaction) return [...this.context];
-    return [summaryMessage(this.compaction), ...this.context];
+    const view: AgentMessage[] = this.compaction ? [summaryMessage(this.compaction)] : [];
+    let next = 0;
+    this.context.forEach((message, index) => {
+      for (; next < this.updates.length && this.updates[next].at <= this.offset + index; next++) view.push(this.updates[next].message);
+      view.push(message);
+    });
+    for (; next < this.updates.length; next++) view.push(this.updates[next].message);
+    return view;
   }
 
   async load(legacySnapshotPath?: string) {
@@ -96,17 +115,27 @@ export class Transcript {
 
   apply(record: TranscriptRecord) {
     if (record.t === "message") { this.context.push(record.message); this.total++; }
-    else if (record.t === "retract") { if (this.context.pop()) this.total--; }
+    else if (record.t === "retract") {
+      if (this.context.pop()) this.total--;
+      for (const update of this.updates) update.at = Math.min(update.at, this.total);
+    }
     else if (record.t === "turn") { this.active = record.active; if (record.active) this.turnStart = this.total; }
     else if (record.t === "reset") {
       this.total = record.messages.length;
       this.compaction = record.compaction;
       this.context = record.messages.slice(record.compaction?.cut ?? 0);
+      this.system = undefined;
+      this.updates = [];
+    } else if (record.t === "system") {
+      if (record.leading) { this.system = record.message; this.updates = []; }
+      else this.updates.push({ at: this.total, message: record.message });
     } else if (record.t === "compaction") {
-      const { t: _type, ...state } = record;
+      const { t: _type, system, ...state } = record;
       if (state.cut < this.offset || state.cut > this.total) throw new Error(`Compaction cut ${state.cut} is outside the working set (${this.offset}..${this.total})`);
       this.context = this.context.slice(state.cut - this.offset);
       this.compaction = state;
+      if (system) this.system = system;
+      this.updates = this.updates.filter(update => update.at > state.cut);
     } else throw new Error(`Unknown transcript record: ${(record as { t: string }).t}`);
   }
 
@@ -119,7 +148,9 @@ export class Transcript {
   push(message: AgentMessage) { return this.write({ t: "message", message }); }
   retract() { return this.write({ t: "retract" }); }
   setActive(active: boolean) { return this.write({ t: "turn", active }); }
-  compact(state: CompactionState) { return this.write({ t: "compaction", ...state }); }
+  compact(state: CompactionState, system?: SystemMessage) { return this.write({ t: "compaction", ...state, ...(system ? { system } : {}) }); }
+  /** Pin the leading system message, or (without `leading`) change the prompt or tools from here on. */
+  declareSystem(message: SystemMessage, leading = false) { return this.write({ t: "system", message, ...(leading ? { leading: true as const } : {}) }); }
 
   async append(messages: AgentMessage[]) {
     for (const message of messages) { this.log.append({ t: "message", message }); this.apply({ t: "message", message }); }
