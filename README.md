@@ -14,7 +14,7 @@ Live at <https://agents.camelai.dev> (REST API under `/v1`, described by
 app (TypeScript / Python SDK, HTTP + SSE)
   -> any runtime node --forwarded to--> the node that owns the agent
       -> agent host (Pi loop, working-set transcript, compaction, retries)
-          -> QuickJS/WASM sandbox (a child process per execution)
+          -> QuickJS/WASM sandbox (a fresh instance per execution, on a pool of worker threads)
               -> JSON tool calls -> back to the app's SDK callbacks
   control plane: Postgres (ownership, headers, accounts, schedules, channels, volume metadata)
   data plane: Storage (append logs and blobs, S3 in production)
@@ -168,9 +168,10 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?}}}`), re-read on SIGHUP |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, for development |
-| `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which sandbox children (same uid) could read from `/proc` |
+| `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
+| `AGENT_CODE_WORKERS_MIN`, `AGENT_CODE_WORKERS_MAX` | codemode worker threads kept warm (default min(4, cores); none in each agent process under `process` hosting, which starts one on demand) and the most there may be (default 32); workers beyond the minimum stop after 30 s idle, and executions beyond the maximum queue within their own timeout |
 
 Start the HTTP supervisor on a VM using a trusted terminal:
 
@@ -216,7 +217,7 @@ curl -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" -X DELETE \
 | `POST /agents/:id/prompt` | `{text}`; stream Pi events and a final result as NDJSON |
 | `POST /agents/:id/execute` | `{code, timeoutMs?, maxOutputCharacters?}`; diagnostic codemode execution, outside the Pi transcript |
 | `POST /agents/:id/abort` | Abort the current prompt/script and signal pending tools |
-| `DELETE /agents/:id` | Kill the agent process group; keep its saved session/files |
+| `DELETE /agents/:id` | Stop the agent (killing its process under `process` hosting); keep its saved session/files |
 
 Each agent admits one prompt or diagnostic execution at a time. The supervisor
 admits eight agents by default (`maxAgents` in the SDK). There is no request
@@ -238,9 +239,10 @@ Scripts default to a 30-second external deadline, capped at 120 seconds. The
 QuickJS interrupt handler separately allows 2 seconds spent executing guest code
 (elapsed execution time, excluding time waiting for tools). Expensive built-ins
 that do not invoke the interrupt handler are still bounded by the external
-process deadline. Every invocation has fixed 32 MiB WebAssembly memory, a 16 MiB
+deadline: a guest that has not unwound 250 ms after it is cancelled has its
+worker thread terminated and replaced. Every invocation has fixed 32 MiB WebAssembly memory, a 16 MiB
 QuickJS allocation limit and a 256 KiB interpreter stack limit. These are guest
-limits, not a limit on the entire Node/Bun process's resident memory.
+limits; each worker thread's own JavaScript heap is capped at 128 MiB.
 
 Output defaults to 32,000 characters, capped at 128,000 and 1,024 emitted chunks.
 Each script permits 256 tool calls with at most 32 in flight; arguments are
@@ -252,7 +254,7 @@ pending calls are cancelled. Cancellation cannot undo effects already dispatched
 Guest requests cannot change the executable, memory limits, workspace or tools.
 Script failures, timeouts and cancellation leave the agent process available.
 Tool RPCs are correlated by unique IDs, so reverse completion order is safe.
-External side effects cannot be rolled back by a process kill or AbortSignal.
+External side effects cannot be rolled back by a worker termination or AbortSignal.
 Adapters must honor cancellation and must implement idempotency for writes.
 
 ## Persistence
@@ -424,13 +426,41 @@ The guest has ECMAScript built-ins plus `tools`, `text` and captured `console`
 methods. There is no `process`, `Bun`, `require`, filesystem, `fetch`, sockets,
 workers, timers, shared memory or nested WebAssembly. Every module import is
 denied, including `node:`, `file:`, `data:` and HTTP URLs. `eval` and function
-constructors stay inside QuickJS; they never create host functions. Each
-invocation gets a separate WASM instance and interpreter heap.
+constructors stay inside QuickJS; they never create host functions.
 
-Code runs in QuickJS compiled to WebAssembly, in a per-execution child process;
-a separate isolation tier (gVisor/Firecracker) is only warranted if agents ever
-run native code. The child gets a fixed `PATH`/`HOME`/`TMPDIR` environment and
-is killed at its deadline or on abort.
+QuickJS compiled to WebAssembly is the only sandbox boundary; a separate
+isolation tier (gVisor/Firecracker) is only warranted if agents ever run native
+code. Executions run on a pool of `worker_threads` workers in the hosting
+process (`src/codemode.ts`, `src/code-worker.ts`). A worker compiles the QuickJS
+module once; every execution instantiates it with its own fixed WASM memory,
+then creates a new runtime and context, and drops all three when it ends. No
+guest state survives an execution, and one worker runs one execution at a time.
+The worker is resource control, not isolation: it shares the process, but guest
+code only ever sees the QuickJS heap, never the worker's Node globals,
+`process.env`, modules or the filesystem (the worker also gets an empty `env`).
+Cancellation reaches a guest spinning in QuickJS through a shared flag its
+interrupt handler polls, and one awaiting a tool through the closed message
+port. Tool calls cross a per-execution `MessagePort`; schema validation, call
+count, concurrency, and result and transfer size limits are enforced on the main
+thread, which also streams output events.
+
+What guest code can reach on the host, all through the trusted bootstrap
+(`src/sandbox-bootstrap.ts`) and never as globals:
+
+- `call(name, argsJson)`: a string name of at most 80 characters and a JSON
+  string of at most 128 KiB. It returns a promise settled with the result as a
+  JSON string, or rejected with an error carrying only a message of at most
+  2,048 characters (tool errors keep the message the application's tool threw).
+- `emit(text, truncated)`: a string of at most 128,000 characters, returning
+  nothing.
+- The tool catalog (names, descriptions and parameter schemas), as one JSON
+  string at start.
+
+Arguments cross as strings the host copies out after checking their length;
+guest objects are never read from the host, so getters, proxies and `toJSON`
+run inside QuickJS under its limits. Host errors surface as plain guest
+`Error`s whose stacks are guest frames only. The module loader rejects every
+import. The interrupt handler and memory limits are not guest-callable.
 
 The WASM linear memory has equal initial and maximum sizes, and initialization
 checks that QuickJS actually uses that memory. This matters because the pinned
@@ -451,8 +481,8 @@ The tests cover known escape patterns and limits; they are not a security audit
 or proof against engine vulnerabilities. Production shared-VM operation still
 needs OS/container containment and resource quotas around the sandbox, tenant
 authentication, tool-specific authorization, controlled egress for tool hosts,
-and a maintained engine/security update process. Agent shutdown reaps its Unix
-process group. No deployed environment has been changed.
+and a maintained engine/security update process. No deployed environment has
+been changed.
 
 ## Integration seam and next extraction
 
