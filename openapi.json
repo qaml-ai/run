@@ -1698,7 +1698,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The agent is revoked",
+            "description": "The agent is deleted: it stops at once, and its stored data is purged shortly after",
             "content": {
               "application/json": {
                 "schema": {

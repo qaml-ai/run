@@ -105,8 +105,23 @@ Readers take the tail first, then Storage, then only rows above the highest
 sequence Storage covers, so a crash between the object write and the delete
 repeats nothing, and a compaction between the two reads loses nothing. A turn
 writes nothing to Storage; unloading writes one object per log with new records.
+A compaction that would leave more than 8 segments after the latest snapshot, or
+segments larger in all than the snapshot (and 4 MiB), writes a snapshot of the
+whole log instead and deletes what it replaces, so an agent that wakes often
+keeps at most a snapshot and 8 segments per log; reads fetch them 8 at a time.
 Tail rows of revoked agents and deleted volumes are dropped with them, and an
-hourly sweep drops any a dead node left. Logs written before the tail existed are
+hourly sweep drops any a dead node left.
+
+**Deleting agents.** `DELETE /v1/agents/:id` (or `/clients/:id`) revokes the
+agent, stops it and unloads it at once. A sweep every node runs
+(`AGENT_PURGE_INTERVAL_MS`, default a minute; started at once after a delete)
+then purges every revoked or expired agent no live node holds: its journal and
+transcript objects (segments, snapshots, blobs), tail rows, local directory,
+schedules, channel bindings and volume watches. Nodes claim agents with
+`FOR UPDATE SKIP LOCKED` and a five-minute lease, and every step is idempotent,
+so a purge that fails or whose node dies is retried. The row stays as a tombstone
+holding only the agent's identity: its id and idempotency key are never reused,
+`/v1/agents/:id` answers 404 and `/clients/:id` 410. Logs written before the tail existed are
 read unchanged: their segments are ordinary segments.
 
 **Database outages.** The default 90-second lease outlasts most of an RDS

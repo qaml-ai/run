@@ -135,7 +135,7 @@ export function api(context: ApiContext) {
   });
   route(createRoute({ method: "get", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent", schema.AgentDetail) } }),
     async c => json(c, 200, await clients.inspect(c.req.param("id")!, c.var.principal.tenant)));
-  route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is revoked", schema.Deleted) } }), async c => {
+  route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is deleted: it stops at once, and its stored data is purged shortly after", schema.Deleted) } }), async c => {
     await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, { deleted: true });
   });

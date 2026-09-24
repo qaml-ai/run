@@ -6,7 +6,7 @@ import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
-import type { AgentSupervisor } from "./supervisor.ts";
+import { AgentSupervisor } from "./supervisor.ts";
 import { configurationUpdate } from "./session-config.ts";
 import { validateDefinitions } from "./tool-policy.ts";
 import { validateUserMessages } from "./history.ts";
@@ -38,6 +38,8 @@ interface SessionHeader {
   metadata?: AgentMetadata; definitions: ToolDefinition[]; provisionHash: string; config: SessionConfig;
   /** Volumes the agent's file tools can reach; absent on sessions created before volumes existed. */
   mounts?: Mount[];
+  /** A purged agent's tombstone keeps only its identity (see `purge`): nothing loads it again. */
+  purged?: true;
 }
 /** Upserts of request and tool-call records, appended as their state changes. */
 type JournalRecord = { t: "request"; record: RequestRecord } | { t: "call"; record: CallRecord };
@@ -233,7 +235,7 @@ export class ClientSessions {
 
   private async read(id: string): Promise<Session | undefined> {
     const stored = await this.readHeader(id);
-    if (!stored) return undefined;
+    if (!stored || stored.value.purged) return undefined;
     // Take ownership before reading the journal, so no other node appends meanwhile.
     const ownership = this.options.ownership;
     let claim: Claim | undefined;
@@ -249,7 +251,7 @@ export class ClientSessions {
   private async loadOwned(id: string, claim?: Claim): Promise<Session | undefined> {
     // Re-read after acquiring: the previous owner may have written since.
     const stored = await this.readHeader(id);
-    if (!stored) return undefined;
+    if (!stored || stored.value.purged) return undefined;
     const header = stored.value;
     const log = this.storage.log<JournalRecord>(this.journalKey(id), claim);
     const session: Session = {
@@ -459,15 +461,13 @@ export class ClientSessions {
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
     const provisionHash = hash(canonical({ definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }));
-    // Re-provisioning an agent another node serves only needs its header: nothing to start here.
-    if (await this.ownerElsewhere(id)) {
-      const stored = await this.readHeader(id);
-      if (stored) {
-        if ((stored.value.tenant ?? DEFAULT_TENANT) !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
-        if (stored.value.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
-        if (stored.value.revoked || expired(stored.value.expiresAt)) throw new HttpError(410, "Session expired or revoked");
-        return { id, token, expiresAt: stored.value.expiresAt, running: true };
-      }
+    // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
+    const existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
+    if (existing) {
+      if ((existing.value.tenant ?? DEFAULT_TENANT) !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
+      if (existing.value.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
+      if (existing.value.revoked || expired(existing.value.expiresAt)) throw new HttpError(410, "Session expired or revoked");
+      if (await this.ownerElsewhere(id)) return { id, token, expiresAt: existing.value.expiresAt, running: true };
     }
     let session = await this.load(id);
     let created = false;
@@ -547,7 +547,7 @@ export class ClientSessions {
   private async purgeData(id: string) {
     await this.storage.removeLog(this.journalKey(id));
     await this.supervisor.purge(id);
-    await deleteTail(this.db, id);
+    await deleteTail(this.db, id, [this.journalKey(id), AgentSupervisor.transcriptKey(id)]);
   }
 
   /** A tenant's live agents. `running` covers agents served by any node. */
@@ -621,12 +621,19 @@ export class ClientSessions {
     return mounts;
   }
 
-  /** Revoke a tenant's agent and stop its process. Its files stay on disk. */
+  /** Revoke a tenant's agent, stop it and unload it; the purge sweep, started now, then deletes its data. */
   async destroyAgent(id: string, tenant: string) {
     if (!await this.owns(id, tenant)) return false;
+    await this.delete(id);
+    return true;
+  }
+
+  private async delete(id: string) {
     await this.remove(id);
     await this.supervisor.stop(id);
-    return true;
+    const session = this.sessions.get(id);
+    if (session?.header.revoked && !session.unsettled) await this.unload(session);
+    this.purgeSoon();
   }
 
   /** The transcript, from the live agent when it runs, otherwise straight from its log. */
@@ -667,8 +674,7 @@ export class ClientSessions {
       return json(c, 200, session.header.metadata);
     });
     app.delete(agent, async c => {
-      await this.remove(c.var.session.header.id);
-      await this.supervisor.stop(c.var.session.header.id);
+      await this.delete(c.var.session.header.id);
       return json(c, 200, { stopped: true });
     });
     // SSE is written straight to the socket: backpressure and replacement need the raw response.
@@ -945,6 +951,11 @@ export class ClientSessions {
   }
 
   async remove(id: string) {
+    // An agent already revoked, and not held here to write it again, is never loaded.
+    if (!this.sessions.has(id) && !this.loading.has(id)) {
+      const stored = await this.readHeader(id);
+      if (!stored || stored.value.revoked) return;
+    }
     const session = await this.load(id);
     // A revocation whose write may not have landed is written again.
     if (!session || (session.header.revoked && !session.unsettled)) return;
@@ -952,15 +963,15 @@ export class ClientSessions {
     await this.writeHeader(session);
     await this.interrupt(session, "Session revoked");
     session.response?.end();
-    await this.releaseVolumes(session);
+    await this.releaseVolumes(session.header);
   }
 
   /** A deleted agent stops watching its mounts, and its own workspace goes with it; shared volumes stay. */
-  private async releaseVolumes(session: Session) {
+  private async releaseVolumes(header: SessionHeader) {
     const volumes = this.options.volumes;
-    const mounts = session.header.mounts ?? [];
+    const mounts = header.mounts ?? [];
     if (!volumes || !mounts.length) return;
-    const id = session.header.id, tenant = session.header.tenant ?? DEFAULT_TENANT;
+    const id = header.id, tenant = header.tenant ?? DEFAULT_TENANT;
     try {
       await volumes.watch(id, tenant, mounts, []);
       const workspace = VolumeService.workspaceOf(id);
@@ -987,6 +998,79 @@ export class ClientSessions {
     }
     for (const [id, finish] of session.pending) finish(session.calls.get(id)!.outcome!);
     await this.commit(session, true);
+  }
+
+  /**
+   * Purge deleted and expired agents that no live node holds, `limit` at a time;
+   * returns how many were purged. Everything the agent stored goes: its journal and
+   * transcript (segments, snapshots, blobs), tail rows, local directory, schedules,
+   * channel bindings and volume watches. The row stays as a tombstone with only the
+   * agent's identity, so its id and idempotency key are never reused and requests
+   * for it get 404 or 410. Nodes claim agents with FOR UPDATE SKIP LOCKED and a
+   * lease, so they share the work; every step is idempotent, and an agent whose
+   * purge failed or whose node died is claimed again once the lease lapses.
+   */
+  async purge(limit = 50): Promise<number> { return (await this.purgeBatch(limit)).purged; }
+
+  private async purgeBatch(limit: number) {
+    const { rows } = await this.db.query(`
+      update agents set purge_claimed_until = now() + interval '5 minutes'
+      where id in (
+        select a.id from agents a
+        where a.purged_at is null and (a.revoked or a.expires_at <= $1)
+          and (a.purge_claimed_until is null or a.purge_claimed_until < now())
+          and not exists (select 1 from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = a.id)
+        order by a.id limit $2 for update skip locked)
+      returning id, header`, [Date.now(), limit]);
+    let purged = 0;
+    const queue = [...rows] as { id: string; header: SessionHeader }[];
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+      for (let row; (row = queue.shift());) {
+        try { if (await this.purgeAgent(row.id, row.header)) purged++; }
+        catch (error) { console.error(JSON.stringify({ type: "agent_purge_failed", agent: row.id, error: errorText(error) })); }
+      }
+    }));
+    if (purged) console.log(JSON.stringify({ type: "agents_purged", count: purged }));
+    return { claimed: rows.length, purged };
+  }
+
+  /** Run the sweep until nothing is left to purge; a sweep already running here picks up new work itself. */
+  sweep(): Promise<void> {
+    return this.sweeping ??= (async () => {
+      try { while (!this.closed && (await this.purgeBatch(50)).claimed > 0); }
+      catch (error) { console.error(JSON.stringify({ type: "agent_purge_sweep_failed", error: errorText(error) })); }
+      finally { this.sweeping = undefined; }
+    })();
+  }
+  private sweeping?: Promise<void>;
+  private purgeSoon() { if (!this.closed) void this.sweep(); }
+
+  private async purgeAgent(id: string, header: SessionHeader): Promise<boolean> {
+    // Held here (a single host without ownership, or a revocation not yet unloaded) or taken by
+    // another node since: the claim's lease lapses and a later sweep tries again.
+    if (this.sessions.has(id) || this.loading.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) return false;
+    const ownership = this.options.ownership;
+    let claim: Claim | undefined;
+    if (ownership) {
+      const acquired = await ownership.acquire(id).catch(() => undefined);
+      if (!acquired || "owner" in acquired) return false;
+      claim = acquired.claim;
+    }
+    try {
+      // Revoking released the agent's volumes; one that expired unrevoked still holds them.
+      if (!header.revoked) await this.releaseVolumes(header);
+      await this.purgeData(id);
+      await this.db.query("delete from schedules where agent = $1", [id]);
+      await this.db.query("delete from channel_agents where agent = $1", [id]);
+      await this.db.query("delete from channel_conversations where agent = $1", [id]);
+      await this.db.query("delete from volume_watchers where agent = $1", [id]);
+      const tombstone = { version: 3, id, ...(header.tenant ? { tenant: header.tenant } : {}), digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
+      await this.db.query("update agents set header = $2, name = $1, type = 'general', revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
+        [id, JSON.stringify(tombstone), Date.now()]);
+      return true;
+    } finally {
+      if (claim) await ownership!.release(claim).catch(() => {});
+    }
   }
 
   /** Requests being worked on: runs that began, until their outcome is published, and other open requests; not queued runs or resumes. */
@@ -1061,6 +1145,8 @@ export class ClientSessions {
   async close() {
     this.closed = true;
     clearInterval(this.heartbeat);
+    // A sweep stops after its batch; agents it claimed but did not reach are taken again once the lease lapses.
+    await this.sweeping;
     for (const session of [...this.sessions.values()]) {
       // Stopped first, so no turn advances past what is handed off, and the next owner never shares the transcript with a live process.
       await this.supervisor.stop(session.header.id).catch(() => {});

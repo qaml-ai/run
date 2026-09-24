@@ -78,9 +78,9 @@ function columns(rows: TailRow[]) {
   return [rows.map(row => row.seq), rows.map(row => row.snapshot), rows.map(row => row.body), rows.map(row => row.blob)];
 }
 
-/** Drop a deleted actor's tail rows; nothing reads its logs again. */
-export async function deleteTail(db: Db, actor: string) {
-  await db.query("delete from log_records where actor = $1", [actor]);
+/** Drop a deleted actor's tail rows (and those of `keys`, its logs, written without a claim); nothing reads its logs again. */
+export async function deleteTail(db: Db, actor: string, keys: string[] = []) {
+  await db.query("delete from log_records where actor = $1 or log_key = any($2::text[])", [actor, keys]);
 }
 
 /**

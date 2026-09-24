@@ -377,6 +377,11 @@ loadTimer.unref();
 // Tail rows a dead node left for agents and volumes that are gone since.
 const sweepTimer = setInterval(() => void sweepTails(db).catch(error => console.error(JSON.stringify({ type: "tail_sweep_failed", error: errorText(error) }))), 60 * 60_000);
 sweepTimer.unref();
+// Deleted and expired agents' data, purged by whichever nodes get to it first.
+const purgeMs = Number(process.env.AGENT_PURGE_INTERVAL_MS ?? 60_000);
+if (!Number.isInteger(purgeMs) || purgeMs < 1000) throw new Error("AGENT_PURGE_INTERVAL_MS must be an integer of at least 1000");
+const purgeTimer = setInterval(() => void clients.sweep(), purgeMs);
+purgeTimer.unref();
 
 /**
  * Deploys and scale-in on ECS. While a turn runs the task is protected, so ECS
@@ -429,6 +434,7 @@ async function drain(signal: string) {
   clearInterval(tenantsTimer);
   clearInterval(loadTimer);
   clearInterval(sweepTimer);
+  clearInterval(purgeTimer);
   clearInterval(workTimer);
   if (retireTimer) clearInterval(retireTimer);
   clients.draining = true;
