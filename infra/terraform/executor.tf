@@ -5,6 +5,10 @@
 # routes to healthy hosts. The AMI (Packer, infra/executor) carries Docker and
 # gVisor; user data (infra/executor/user-data.sh) pulls the image and reads the
 # executor token from Secrets Manager at boot, so no secret is in the template.
+#
+# Enabling needs sign-off: the interface endpoints' private DNS is VPC-wide, so
+# every workload in the default VPC (the django-app ECS services too) reaches
+# ECR, Secrets Manager and CloudWatch Logs through them. See README.md.
 
 locals {
   executor_subnet_ids   = [for az in sort(keys(var.executor_private_subnets)) : aws_subnet.executor[az].id if local.executor_enabled]

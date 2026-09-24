@@ -78,7 +78,7 @@ variable "noncurrent_version_days" {
 # --- Executor tier (executor.tf) ---
 
 variable "executor_enabled" {
-  description = "Create the code executor tier: private subnets, VPC endpoints, the executor Auto Scaling group and its security rules."
+  description = "Create the code executor tier: private subnets, VPC endpoints, the internal NLB, the executor Auto Scaling group and its security rules. NEEDS SIGN-OFF: the ecr.api/ecr.dkr/secretsmanager/logs endpoints use private DNS, which applies VPC-wide, so every workload in the default VPC (including the django-app ECS services) then reaches those services through this stack's endpoints. See README.md, Executor tier (and the dedicated-VPC alternative)."
   type        = bool
   default     = false
 }

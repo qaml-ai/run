@@ -195,23 +195,64 @@ registers a revision.
 
 ## Cutover from the EC2 host
 
-Each step is a separate, reviewed apply. The old host keeps serving until step 4.
+The old host and the ECS tasks must never both serve real traffic. The old host
+advertises `127.0.0.1` as its node URL and cannot reach the tasks on 8790, so
+requests forwarded between them fail. Coexisting is safe, but agents owned by
+the other side are unavailable. So the old runtime keeps all real traffic until
+step 3, stops at step 3, and from then on ECS serves everything.
 
-1. **Create alongside.** Run `tofu plan` with default vars
+0. **Create alongside.** Run `tofu plan` with default vars
    (`dns_target = "host"`). It adds only new resources, plus one new rule on the
    RDS security group. Review it, then apply. ACM validation takes a few minutes,
-   and the service starts `service_min_count` tasks.
-2. **Verify through the ALB**, without touching DNS:
+   and the service starts `service_min_count` tasks. The image
+   (`runtime_image_tag`) must include the ECS runtime changes (tenants from
+   `AGENT_TENANTS_SECRET_ARN`, node URL from ECS metadata, drain on SIGTERM).
+1. **Verify ECS through the ALB** while the old runtime still serves. Use test
+   agents only. An agent the old host owns is unavailable through the ALB, and
+   the reverse is also true.
    ```sh
    alb=$(tofu output -raw alb_dns_name)
    curl -fsS --connect-to agents.camelai.dev:443:$alb:443 https://agents.camelai.dev/healthz
    ```
-   Also exercise the console and an agent turn. For example, add
-   `<ALB IP> agents.camelai.dev` to `/etc/hosts` (`dig +short $alb` gives the
-   IPs). Check the task logs in `/ecs/camelai-agent-runtime`, and check that
-   `aws ecs describe-services` shows 2 running tasks, healthy in the target group.
-3. **Lower the TTL.** Apply with `dns_ttl = 60`, then wait at least the old TTL
+   To use the console and run a test agent's turns, add `<ALB IP>
+   agents.camelai.dev` to `/etc/hosts` (`dig +short $alb` gives the IPs). Check
+   the task logs in `/ecs/camelai-agent-runtime`, and check that
+   `aws ecs describe-services` shows `service_min_count` running tasks, healthy
+   in the target group.
+2. **Lower the TTL.** Apply with `dns_ttl = 60`, then wait at least the old TTL
    (300 s).
+3. **Proxy the old host to the ALB, then stop its runtime.** Install
+   `infra/instance/Caddyfile.alb-proxy.template` as the host's Caddyfile, and
+   restart Caddy (its admin API is off, so it can't reload). Then stop the
+   runtime container. Its shutdown deletes its heartbeat, so the ECS tasks take
+   over its agents. From here, clients that still resolve the Elastic IP are
+   proxied through the ALB, and nothing is refused while DNS propagates.
+   ```sh
+   cd infra
+   source config.sh
+   alb=$(tofu -chdir=terraform output -raw alb_dns_name)
+   caddyfile=$(sed "s/RUNTIME_HOSTNAME/$HOSTNAME/g; s/ALB_DNS_NAME/$alb/g" instance/Caddyfile.alb-proxy.template | base64 | tr -d '\n')
+   remote="set -euo pipefail
+   echo '$caddyfile' | base64 -d > /opt/agent-runtime/Caddyfile
+   systemctl restart agent-runtime-caddy.service
+   systemctl disable --now agent-runtime.service
+   docker ps --format '{{.Names}} {{.Status}}'"
+   params=$(python3 -c 'import json,sys; print(json.dumps({"commands": [sys.argv[1]]}))' "$remote")
+   id=$(aws ssm send-command --region $REGION --instance-ids i-0f27dc58911079f90 \
+     --document-name AWS-RunShellScript --comment "cutover: proxy to ALB" \
+     --parameters "$params" --query Command.CommandId --output text)
+   aws ssm wait command-executed --region $REGION --command-id $id --instance-id i-0f27dc58911079f90
+   aws ssm get-command-invocation --region $REGION --command-id $id --instance-id i-0f27dc58911079f90 \
+     --query '[Status,StandardOutputContent,StandardErrorContent]' --output text
+   curl -fsS https://agents.camelai.dev/healthz   # still via the Elastic IP, now served by ECS
+   ```
+   - `systemctl disable --now` stops the container gracefully, with
+     `docker stop --time 30`, and keeps it stopped across reboots.
+   - Only `agent-runtime-caddy` keeps running, and it keeps its Let's Encrypt
+     certificate.
+   - **Rollback:** restore the normal Caddyfile and restart, with
+     `infra/deploy.sh`. It reinstalls `Caddyfile.template` and restarts both
+     services.
 4. **Flip DNS.** Apply with `dns_target = "alb"` (and `dns_ttl = 60`). The plan
    shows `cloudflare_dns_record.runtime must be replaced`. The Cloudflare provider
    cannot change a record's type in place, so the apply deletes the A record and
@@ -219,19 +260,18 @@ Each step is a separate, reviewed apply. The old host keeps serving until step 4
    asks in exactly that instant caches NXDOMAIN for the zone's negative TTL (SOA
    minimum, 1800 s). To shrink that risk, apply at low traffic. If your
    Cloudflare plan allows a custom SOA, you can also lower the zone's SOA minimum
-   TTL to 60 for the window.
-5. **Watch** for at least a TTL plus the longest SSE connection:
+   TTL to 60 for the window. Clients that still have the A record keep going
+   through the proxy.
+   **Rollback:** apply `dns_target = "host"`. It still points at the proxy,
+   which is harmless.
+5. **Watch, then retire the host.** Watch for the TTL window, then a day:
    - `dig +short agents.camelai.dev` returns the ALB;
-   - the Route 53 health check (below) stays green;
+   - the Route 53 health check stays green;
    - the new alarms stay OK;
-   - the old host's traffic falls to zero (Caddy access logs are off, so use the
-     CloudWatch `NetworkIn` of `i-0f27dc58911079f90`).
+   - the old host's proxied traffic falls to zero (use the CloudWatch
+     `NetworkIn` of `i-0f27dc58911079f90`).
 
-   **Rollback:** apply `dns_target = "host"`. The old host is untouched until step 6.
-6. **Stop the old runtime.** On the host, run `systemctl stop agent-runtime
-   agent-runtime-caddy` over SSM, so it stops taking leases. Leave the instance
-   for a day.
-7. **Remove the host.** This is a separate change to this config:
+   Then remove the host, in a separate change to this config:
    - remove `disable_api_termination` and `prevent_destroy` from
      `aws_instance.runtime` and `aws_eip.runtime`, and apply that;
    - delete `aws_instance.runtime`, `aws_eip.runtime`,
@@ -260,6 +300,11 @@ The recover/reboot alarms are EC2-only and go with the host.
 
 ## Executor tier
 
+`executor_enabled` stays `false` by default. **Enabling it needs sign-off from
+the owners of the other workloads in the default VPC** (the django-app ECS
+services, staging and production). See "VPC-wide effect" below: turning it on
+changes how those services reach ECR, Secrets Manager and CloudWatch Logs.
+
 Set `executor_enabled = true` and `executor_ami_id` (the Packer AMI from
 `infra/executor`, with Docker and gVisor preinstalled: the subnets have no
 internet). That creates:
@@ -282,6 +327,25 @@ internet). That creates:
     and CloudWatch Logs to them, including other stacks' ECS services and this
     runtime. That's why the endpoint SG admits 443 from the VPC CIDR. Tightening
     it would break those workloads.
+    - Their image pulls, secret reads and log shipping then go through
+      endpoints this stack owns.
+    - Destroying the tier, or an endpoint outage, affects them too. Private DNS
+      reverts to the public endpoints when the endpoints are deleted.
+    - Their traffic to these services is billed at $0.01/GB through the
+      endpoints.
+  - **Alternative (not built):** a dedicated VPC for the runtime and executors.
+    - It would hold its own public subnets (ALB, tasks), private executor
+      subnets and endpoints, so private DNS affects only this stack, and the
+      `ssm*` endpoints are its own rather than borrowed from django-app staging.
+    - The control-plane RDS either moves into it (a snapshot restore or blue/green
+      into a new subnet group, with a short write outage), or stays in the
+      default VPC and is reached over VPC peering or a Transit Gateway. Peering
+      needs non-overlapping CIDRs (for example 10.60.0.0/16), routes on both
+      sides, and the RDS SG admitting the new task CIDRs; SG references don't
+      cross peering in the same way.
+    - The cost is the same endpoints and NLB plus a re-cut of the ALB and
+      service networking. It's the cleaner design if the executor tier is
+      going to production.
 - **Internal NLB** `camelai-agent-executor` on :8790, with client IPs
   preserved. It health-checks `/healthz`, and the runtime's `AGENT_EXECUTOR_URL`
   points at it (with `AGENT_EXECUTOR_TOKEN` from `secrets`).
