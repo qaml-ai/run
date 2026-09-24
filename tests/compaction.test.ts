@@ -5,9 +5,10 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
-import { explicitKeyStream } from "../src/compaction.ts";
+import { explicitKeyStream, runCompaction } from "../src/compaction.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
@@ -126,7 +127,44 @@ test("model calls require the agent's explicit key and never read provider keys 
   try {
     const stream = explicitKeyStream();
     const model = { id: "gpt-4o", provider: "openai", api: "openai-completions", baseUrl: "http://127.0.0.1:9" } as Model<Api>;
-    assert.throws(() => stream(model, { messages: [] }, {}), /No openai API key/);
-    assert.throws(() => stream(model, { messages: [] }, { apiKey: "  " }), /No openai API key/);
+    assert.throws(() => stream(model, normalizeContext({ messages: [] }), {}), /No openai API key/);
+    assert.throws(() => stream(model, normalizeContext({ messages: [] }), { apiKey: "  " }), /No openai API key/);
   } finally { delete process.env.OPENAI_API_KEY; }
+});
+
+test("model and summarization requests carry only the tenant's key, whatever provider credentials the host has", async t => {
+  const hostEnv = {
+    OPENAI_API_KEY: "host-openai", OPENROUTER_API_KEY: "host-openrouter",
+    ANTHROPIC_API_KEY: "host-anthropic", ANTHROPIC_OAUTH_TOKEN: "host-anthropic-oauth", ANTHROPIC_AUTH_TOKEN: "host-anthropic-bearer",
+  };
+  const headers: Record<string, string | string[] | undefined>[] = [];
+  const server = createServer(async (req, res) => {
+    for await (const _ of req);
+    headers.push(req.headers);
+    res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "fixture", type: "authentication_error" } }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  Object.assign(process.env, hostEnv);
+  try {
+    // Catalog models, so requests take pi-ai's built-in provider path.
+    const models = [
+      ["anthropic", "claude-sonnet-5", base], ["openrouter", "anthropic/claude-sonnet-5", base],
+      ["openrouter", "openai/gpt-5.6-luna", `${base}/v1`], ["openai", "gpt-5.5", `${base}/v1`],
+    ].map(([provider, id, baseUrl]) => ({ ...(getModel as (provider: string, id: string) => Model<Api>)(provider, id), baseUrl }));
+    const context = normalizeContext({ systemPrompt: "fixture", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] });
+    for (const model of models) await (await explicitKeyStream()(model, context, { apiKey: `tenant-${model.provider}`, maxRetries: 0 })).result();
+    // Compaction's summaries go through a separate pi-ai path.
+    const turns = Array.from({ length: 6 }, (_, index) => ({ role: index % 2 ? "assistant" : "user", content: index % 2 ? [{ type: "text", text: "x".repeat(4000) }] : "y".repeat(4000), timestamp: Date.now(), ...(index % 2 ? { api: models[0].api, provider: models[0].provider, model: models[0].id, stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } : {}) })) as any[];
+    await assert.rejects(runCompaction({ context: turns, offset: 0, model: models[0], apiKey: "tenant-anthropic", keepRecentTokens: 1_000 }), /fixture|401/);
+    assert.equal(headers.length, models.length + 1);
+    const sent = JSON.stringify(headers);
+    for (const secret of Object.values(hostEnv)) assert.ok(!sent.includes(secret), `a request carried the host's ${secret}`);
+    for (const [index, model] of [...models, models[0]].entries()) {
+      const key = headers[index]["x-api-key"] ?? String(headers[index].authorization).replace(/^Bearer /, "");
+      assert.equal(key, `tenant-${model.provider}`, `${model.provider}/${model.id}`);
+    }
+  } finally { for (const name of Object.keys(hostEnv)) delete process.env[name]; }
 });

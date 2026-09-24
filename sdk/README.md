@@ -18,7 +18,7 @@ Upgrade with `npm update @camelai/agent-runtime`.
 
 The SDK has one runtime dependency (`typebox`). Its message and model types come
 from Pi; for full typing of history and events, also install
-`@earendil-works/pi-agent-core@0.80.6` and `@earendil-works/pi-ai@0.80.6` as dev
+`@earendil-works/pi-agent-core@0.87.1` and `@earendil-works/pi-ai@0.87.1` as dev
 dependencies. Without them those types resolve to `any` (with `skipLibCheck`).
 
 ## Use

@@ -1,5 +1,5 @@
 import {
-  compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact,
+  BACKGROUND_CONTEXT, compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact, withAbortSignal,
   type AgentMessage, type CompactionSettings, type StreamFn,
 } from "@earendil-works/pi-agent-core";
 import { completeSimple, streamSimple, type Api, type Model, type Models } from "@earendil-works/pi-ai/compat";
@@ -47,9 +47,10 @@ export function needsCompaction(messages: AgentMessage[], model: Model<Api>, fix
 }
 
 /**
- * The only way this runtime calls a model: with the tenant's explicit key. Pi's
- * default stream function falls back to provider keys in the process environment,
- * which in a shared worker could serve one tenant with another's (or the host's) key.
+ * The only way this runtime calls a model: with the tenant's explicit key. Pi-ai
+ * falls back to provider keys in the process environment whenever no key is passed
+ * (an `env` option only overrides those, it never hides them), which in a shared
+ * worker could serve one tenant with another's (or the host's) key.
  */
 export function explicitKeyStream(): StreamFn {
   return (model, context, options) => {
@@ -63,17 +64,20 @@ function summarizer(apiKey: string): Models {
   return { completeSimple: (model: Model<Api>, context: any, options: any) => completeSimple(model, context, { ...options, apiKey, env: {} }) } as unknown as Models;
 }
 
-/** Our working set as pi session entries: message ids are absolute indexes, so a cut maps back directly. */
+/**
+ * Our working set as pi session entries. The previous summary retains nothing itself:
+ * the working set is exactly what follows it, so entry ids stay absolute indexes.
+ */
 function entries(context: AgentMessage[], offset: number, previous?: CompactionState) {
   const list: any[] = [];
   let parentId: string | null = null;
   if (previous) {
-    list.push({ type: "compaction", id: "previous", parentId, timestamp: new Date(previous.at).toISOString(), summary: previous.summary, firstKeptEntryId: String(offset), tokensBefore: previous.tokensBefore, details: previous.details });
+    list.push({ type: "compaction", id: "previous", parentId, seq: 0, timestamp: previous.at, summary: previous.summary, retainedTail: [], tokensBefore: previous.tokensBefore, details: previous.details, fromHook: false });
     parentId = "previous";
   }
   context.forEach((message, index) => {
     const id = String(offset + index);
-    list.push({ type: "message", id, parentId, timestamp: new Date((message as { timestamp?: number }).timestamp ?? Date.now()).toISOString(), message });
+    list.push({ type: "message", id, parentId, seq: offset + index + 1, timestamp: (message as { timestamp?: number }).timestamp ?? Date.now(), message });
     parentId = id;
   });
   return list;
@@ -100,6 +104,7 @@ export async function runCompaction(options: {
   const preparation = prepared.value;
   if (!preparation) return { skipped: "Nothing before the recent context to summarize" };
   const models = summarizer(apiKey);
+  const scope = signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT;
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
   let tokens = 0;
@@ -107,16 +112,18 @@ export async function runCompaction(options: {
   for (let index = 0; index < preparation.messagesToSummarize.length; index++) {
     tokens += estimateTokens(preparation.messagesToSummarize[index]);
     if (tokens <= chunkBudget || index === chunkStart) continue;
-    const summary = await generateSummary(preparation.messagesToSummarize.slice(chunkStart, index), models, model, settings.reserveTokens, signal, undefined, preparation.previousSummary);
+    const summary = await generateSummary(preparation.messagesToSummarize.slice(chunkStart, index), models, model, settings.reserveTokens, undefined, preparation.previousSummary, undefined, undefined, undefined, scope);
     if (!summary.ok) throw summary.error;
     preparation.previousSummary = summary.value;
     chunkStart = index;
     tokens = estimateTokens(preparation.messagesToSummarize[index]);
   }
   preparation.messagesToSummarize = preparation.messagesToSummarize.slice(chunkStart);
-  const result = await compact(preparation, models, model, undefined, signal);
+  const result = await compact(preparation, models, model, undefined, undefined, undefined, undefined, scope);
   if (!result.ok) throw result.error;
-  const cut = Number(result.value.firstKeptEntryId);
-  if (!Number.isInteger(cut) || cut < offset) throw new Error(`Compaction chose an invalid cut: ${result.value.firstKeptEntryId}`);
+  // Pi returns the kept messages themselves; they are the working set's tail.
+  const kept = result.value.retainedTail;
+  const cut = offset + context.length - kept.length;
+  if (cut < offset || kept.some((message, index) => message !== context[cut - offset + index])) throw new Error("Compaction kept messages that are not the working set's tail");
   return { state: { summary: result.value.summary, cut, tokensBefore: result.value.tokensBefore, details: result.value.details, at: Date.now() } };
 }
