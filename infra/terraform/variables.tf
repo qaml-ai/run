@@ -102,7 +102,7 @@ variable "executor_image" {
 
 variable "executor_instance_type" {
   type    = string
-  default = "t4g.small"
+  default = "t4g.medium"
 }
 
 variable "executor_min_size" {
@@ -122,9 +122,9 @@ variable "executor_cpu_target" {
 }
 
 variable "executor_max_concurrency" {
-  description = "Concurrent executions per executor host (AGENT_EXECUTOR_MAX_CONCURRENCY)."
+  description = "Concurrent executions per executor host (AGENT_EXECUTOR_MAX_CONCURRENCY). Each gVisor sandbox is capped at 512 MiB, so keep this at about (host memory - 1 GiB) / 512 MiB."
   type        = number
-  default     = 8
+  default     = 6
 }
 
 variable "executor_port" {
