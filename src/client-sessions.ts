@@ -13,7 +13,7 @@ import { validateUserMessages } from "./history.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
-import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord } from "../shared/client-protocol.ts";
+import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
@@ -25,6 +25,8 @@ import { deleteTail } from "./log-tail.ts";
 import type { DefinitionRef } from "./definitions.ts";
 import type { Sources, ToolSources } from "./tool-sources.ts";
 import { contentResult, type McpResult } from "./mcp-results.ts";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { AttachedServer } from "./attached.ts";
 import { compose, valueServer, type ToolCall, type ToolServer } from "./tool-servers.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
@@ -49,8 +51,8 @@ interface SessionHeader {
   /** That revision's server-side tool sources, their secrets sealed under the definition. */
   sources?: Sources;
 }
-/** Upserts of request and tool-call records, appended as their state changes. */
-type JournalRecord = { t: "request"; record: RequestRecord } | { t: "call"; record: CallRecord };
+/** Upserts of request records, appended as their state changes. Journals from before tool calls were MCP also hold call records, which are skipped. */
+type JournalRecord = { t: "request"; record: RequestRecord };
 type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; Variables: { session: Session } };
 type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
 type Session = {
@@ -61,16 +63,16 @@ type Session = {
   requests: Map<string, RequestRecord>;
   /** The requests still running, so nothing scans every retained record. */
   running: Map<string, RequestRecord>;
-  calls: Map<string, CallRecord>;
   log: AppendLog<JournalRecord>;
   /** Streamed events live only in memory; durable state is recovered through /state. */
   cursor: number; events: BufferedEvent[]; eventBytes: number;
   response?: ServerResponse; starting?: Promise<unknown>;
-  /** The client whose stream `response` is: calls delivered on it are that client's alone. */
-  client?: string;
+  /** The application's attached MCP server, over the connection `response` is. */
+  attached?: AttachedServer;
+  /** Tool calls to the application in flight: the agent is busy until they settle. */
+  inflight: number;
   /** Which tool server answers each of the running agent's tools. */
   route?: Map<string, ToolServer>;
-  pending: Map<string, (outcome: Outcome) => void>;
   /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
   runs: Promise<void>;
   /** Runs that began on a lost node, queued here to resume their turn. */
@@ -112,6 +114,7 @@ const FOLD_AFTER_RECORDS = 2048;
 const MAX_BUFFERED_EVENTS = 512;
 /** How long a tool call waits for an application to reconnect before failing as not run. */
 const RECONNECT_GRACE_MS = 3_000;
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * A request's body straight from Node's request stream: reaching it through the Fetch
@@ -120,18 +123,9 @@ const RECONNECT_GRACE_MS = 3_000;
  */
 const body = (c: Context<ClientEnv>) => c.env.operatorTenant === undefined && c.env.incoming ? c.env.incoming : c.req.raw.body;
 const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });
-function outcome(value: any): Outcome {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "Invalid outcome");
-  if (typeof value.error === "string" && !has(value, "result")) return { error: value.error.slice(0, 2048), ...(value.uncertain ? { uncertain: true } : {}) };
-  if (has(value, "result") && !has(value, "error") && !value.uncertain) {
-    if (Buffer.byteLength(JSON.stringify(value.result)) > 1024 * 1024) throw new HttpError(413, "Tool result too large");
-    return { result: value.result };
-  }
-  throw new HttpError(400, "Supply either result or error");
-}
 /** Never-expiring agents have `expiresAt: null`; a bare `<=` would treat null as 0, long expired. */
 const expired = (expiresAt: number | null, now = Date.now()) => expiresAt !== null && expiresAt <= now;
-const settled = (state: string) => !["running", "offered", "started"].includes(state);
+const settled = (state: string) => state !== "running";
 /** A request as callers see it: queued parameters stay internal. */
 const visible = ({ params: _params, ...record }: RequestRecord): RequestRecord => record;
 
@@ -313,9 +307,9 @@ export class ClientSessions {
     const header = stored.value;
     const log = this.storage.log<JournalRecord>(this.journalKey(id), claim);
     const session: Session = {
-      header, revision: stored.revision, claim, requests: new Map(), running: new Map(), calls: new Map(), log,
+      header, revision: stored.revision, claim, requests: new Map(), running: new Map(), log,
       // Cursors restart above any cursor from an earlier process, so clients see a gap, never a repeat.
-      cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
+      cursor: Date.now() * 1000, events: [], eventBytes: 0, inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
     };
     for (const record of await log.read()) this.apply(session, record);
     if (header.version !== 3 || header.id !== id) throw new Error("Invalid client session header");
@@ -330,11 +324,6 @@ export class ClientSessions {
         resumed.push(this.upsertRequest(session, { ...request, resumes: (request.resumes ?? 0) + 1 }));
       } else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true } });
     }
-    for (const call of session.calls.values()) {
-      if (call.state === "started") this.upsertCall(session, { ...call, state: "uncertain", outcome: { error: "The runtime restarted during this tool call; its outcome is unknown", uncertain: true } });
-      // Only journals from before delivery counted as starting have offered calls.
-      else if (call.state === "offered") this.upsertCall(session, { ...call, state: "cancelled", outcome: { error: "The runtime restarted before this tool call was delivered" } });
-    }
     await log.flush(true);
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
     this.sessions.set(id, session);
@@ -345,13 +334,11 @@ export class ClientSessions {
 
   private apply(session: Session, entry: JournalRecord) {
     if (entry.t === "request") this.track(session, entry.record);
-    else if (entry.t === "call") session.calls.set(entry.record.id, entry.record);
   }
 
   private snapshot(session: Session): JournalRecord[] {
     return [
       ...[...session.requests.values()].map(record => ({ t: "request" as const, record })),
-      ...[...session.calls.values()].map(record => ({ t: "call" as const, record })),
     ];
   }
 
@@ -363,11 +350,6 @@ export class ClientSessions {
   private upsertRequest(session: Session, record: RequestRecord) {
     this.track(session, record);
     session.log.append({ t: "request", record });
-    return record;
-  }
-  private upsertCall(session: Session, record: CallRecord) {
-    session.calls.set(record.id, record);
-    session.log.append({ t: "call", record });
     return record;
   }
 
@@ -384,7 +366,7 @@ export class ClientSessions {
     // A failed disk commit must never turn into a successful retry from memory.
     session.fault = new Error(`Session persistence failed: ${errorText(error)}`);
     session.response?.destroy();
-    for (const finish of session.pending.values()) finish({ error: session.fault.message, uncertain: true });
+    void session.attached?.close();
   }
 
   /**
@@ -393,13 +375,12 @@ export class ClientSessions {
    * folded by how many records it holds.
    */
   private async fold(session: Session) {
-    if (session.log.appendedSinceRewrite < FOLD_AFTER_RECORDS && session.requests.size + session.calls.size < 4 * RETAINED_SETTLED) return;
+    if (session.log.appendedSinceRewrite < FOLD_AFTER_RECORDS && session.requests.size < 4 * RETAINED_SETTLED) return;
     const prune = <T extends { id: string; state: string }>(records: Map<string, T>, at: (record: T) => number) => {
       const old = [...records.values()].filter(record => settled(record.state)).sort((a, b) => at(a) - at(b));
       for (const record of old.slice(0, Math.max(0, old.length - RETAINED_SETTLED))) records.delete(record.id);
     };
     prune(session.requests, record => record.endedAt ?? record.startedAt ?? 0);
-    prune(session.calls, record => record.createdAt ?? 0);
     try { await session.log.rewrite(() => this.snapshot(session)); }
     catch (error) { this.fail(session, error); }
   }
@@ -427,7 +408,7 @@ export class ClientSessions {
   }
 
   private busy(session: Session) {
-    return !!session.starting || session.settling > 0 || session.pending.size > 0 || session.running.size > 0;
+    return !!session.starting || session.settling > 0 || session.inflight > 0 || session.running.size > 0;
   }
 
   /**
@@ -528,7 +509,7 @@ export class ClientSessions {
     const volumes = this.options.volumes;
     const servers: ToolServer[] = [
       ...feature ? [feature] : [],
-      { tools: () => tools, call: call => this.offer(session, call) },
+      { tools: () => tools, call: call => this.callAttached(session, call) },
       ...volumes && header.mounts?.length ? [valueServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool({ tenant, agent: header.id, mounts: header.mounts ?? [] }, name, args, signal))] : [],
       ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim }, sources)] : [],
     ];
@@ -605,8 +586,8 @@ export class ClientSessions {
         }
         session = {
           header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}) },
-          claim, requests: new Map(), running: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
-          cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
+          claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
+          cursor: Date.now() * 1000, events: [], eventBytes: 0, inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
         // A conditional create: if a concurrent request made this agent first, retry as a load.
         await this.writeHeader(session);
@@ -698,7 +679,7 @@ export class ClientSessions {
     if (!metadata || !session) throw new HttpError(404, "Agent not found");
     const definition = session.header.definition && { id: session.header.definition.id, revision: session.header.definition.revision };
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "", mounts: session.header.mounts ?? [],
-      cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible), calls: [...session.calls.values()] };
+      cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
   /** A tenant's view of one agent's history; undefined when the agent is not theirs. */
@@ -808,20 +789,16 @@ export class ClientSessions {
       // Cursor 0 means a new client: it takes whatever is buffered. Anything else must be contiguous.
       const first = session.events[0]?.id ?? session.cursor + 1;
       if (cursor !== 0 && (cursor > session.cursor || cursor < first - 1)) throw new HttpError(409, "REPLAY_GAP: recover from session state");
-      const client = c.req.header("x-agent-client");
-      if (client !== undefined && !validId(client)) throw new HttpError(400, "Invalid X-Agent-Client");
       const res = c.env.outgoing;
       session.response?.end();
       session.response = res;
-      session.client = client ?? `stream_${randomUUID()}`;
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
-      res.write(`event: ready\ndata: ${JSON.stringify({ version: 3, agentId: session.header.id })}\n\n`);
+      // Each connection is a new MCP session with the application's attached server; `connection` names it.
+      const attached = new AttachedServer(res);
+      res.write(`event: ready\ndata: ${JSON.stringify({ version: 4, agentId: session.header.id, connection: attached.id })}\n\n`);
+      void session.attached?.close();
+      session.attached = attached;
       for (const event of session.events) if (event.id > cursor) {
-        // A call is delivered once, to one client: replays leave out calls settled since or delivered to another.
-        if (event.data.type === "tool_call") {
-          const call = session.calls.get(event.data.call.id);
-          if (call?.state !== "started" || call.client !== session.client) continue;
-        }
         const frame = `id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`;
         if (res.writableLength + Buffer.byteLength(frame) > 2 * FRAME_BYTES) { res.destroy(); break; }
         res.write(frame);
@@ -844,7 +821,7 @@ export class ClientSessions {
     app.get(`${agent}/history`, async c => json(c, 200, await this.history(c.var.session)));
     app.get(`${agent}/state`, c => {
       const session = c.var.session;
-      return json(c, 200, { cursor: session.cursor, calls: [...session.calls.values()], requests: [...session.requests.values()].map(visible) });
+      return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].map(visible) });
     });
     app.post(`${agent}/requests`, async c => {
       const { status, record } = await this.accept(c.var.session, await readJson(body(c), FRAME_BYTES));
@@ -855,11 +832,13 @@ export class ClientSessions {
       if (!record) throw new HttpError(404, "Unknown request");
       return json(c, 200, visible(record));
     });
-    app.post(`${agent}/calls/:call/outcome`, async c => {
-      const session = c.var.session;
-      const call = this.toolCall(session, c.req.param("call"));
-      await this.recordOutcome(session, call, outcome(await readJson(body(c), FRAME_BYTES)));
-      return json(c, 200, { recorded: true, state: session.calls.get(call.id)!.state });
+    // The application's JSON-RPC messages to the runtime, on the connection it names.
+    app.post(`${agent}/mcp`, async c => {
+      const attached = c.var.session.attached;
+      if (!attached?.open || c.req.header("x-agent-connection") !== attached.id) throw new HttpError(409, "Not the agent's current connection; reconnect");
+      const message = await readJson(body(c), FRAME_BYTES);
+      for (const entry of Array.isArray(message) ? message : [message]) attached.receive(entry);
+      return json(c, 202, { accepted: true });
     });
     app.all(`${agent}/*`, () => { throw new HttpError(404, "Unknown client route"); });
     app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
@@ -870,12 +849,6 @@ export class ClientSessions {
   private scheduler() {
     if (!this.options.scheduler) throw new HttpError(404, "Unknown client route");
     return this.options.scheduler;
-  }
-
-  private toolCall(session: Session, id: string) {
-    const call = session.calls.get(id);
-    if (!call) throw new HttpError(404, "Unknown tool call");
-    return call;
   }
 
   /**
@@ -1062,89 +1035,41 @@ export class ClientSessions {
     if (beginning) await (beginning.durable ??= this.commit(session, true));
   }
 
-  private async recordOutcome(session: Session, call: CallRecord, value: Outcome) {
-    if (call.state === "completed") {
-      if (canonical(call.outcome) !== canonical(value)) throw new HttpError(409, "Conflicting tool outcome");
-      return;
-    }
-    if (call.state === "cancelled" || call.state === "offered") throw new HttpError(409, "Tool call was not delivered");
-    if (call.state === "uncertain") {
-      if (call.lateOutcome && canonical(call.lateOutcome) !== canonical(value)) throw new HttpError(409, "Conflicting late outcome");
-      if (call.lateOutcome) return;
-      // The model already saw "unknown"; keep the real result as evidence and tell observers.
-      this.upsertCall(session, { ...call, lateOutcome: value });
-      await this.commit(session, true);
-      this.publish(session, { type: "event", requestId: call.requestId ?? "", event: { type: "tool_late_outcome", callId: call.id, toolCallId: call.toolCallId, name: call.name, outcome: value } });
-      return;
-    }
-    this.upsertCall(session, { ...call, state: value.uncertain ? "uncertain" : "completed", outcome: value });
-    await this.commit(session, true);
-    session.pending.get(call.id)?.(value);
-  }
-
   private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
     try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT, claim: session.claim }, record); }
     catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: errorText(error) })); }
   }
 
   /**
-   * Hand a call to the connected application. Like a call sent to a remote MCP server, it
-   * counts as started once delivered: recorded durably first (with the run's start, appended
-   * before it), so after a crash its outcome is unknown and it is never sent again. With no
-   * application connected, after a short wait for a reconnect, it fails without running.
+   * Call a tool on the application's attached server, as on any MCP server. With no application
+   * connected (after a short wait for one reconnecting) the call fails without running; a call the
+   * connection or deadline cut short has an unknown outcome. After a crash, the turn's transcript
+   * says the same: a tool call without a result is closed as unknown, never sent again.
    */
-  /** Whether an application is connected to the agent's stream, waiting briefly for one that is reconnecting. */
-  private async connected(session: Session, signal: AbortSignal) {
-    const live = () => !!session.response && !session.response.destroyed;
-    for (const until = Date.now() + RECONNECT_GRACE_MS; !live() && Date.now() < until && !signal.aborted && !this.closed;) await new Promise(resolve => setTimeout(resolve, 50));
-    return live();
+  private async callAttached(session: Session, { name, args, signal, toolCallId, origin }: ToolCall): Promise<McpResult> {
+    const attached = await this.attachedServer(session, signal);
+    if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
+    const timeout = this.options.toolTimeoutMs ?? 15_000;
+    const _meta = { "agent-runtime/callId": randomUUID(), ...(toolCallId ? { "agent-runtime/toolCallId": toolCallId } : {}), ...(origin ? { "agent-runtime/origin": origin } : {}) };
+    session.inflight++;
+    try {
+      return await attached.client.callTool({ name, arguments: args, _meta }, undefined, { signal, timeout, maxTotalTimeout: timeout }) as McpResult;
+    } catch (error) {
+      if (!signal.aborted && error instanceof McpError && [ErrorCode.ConnectionClosed, ErrorCode.RequestTimeout].includes(error.code)) {
+        throw new Error(`${error.message}, after the call was sent to the application. Its outcome is unknown: it may or may not have taken effect.`);
+      }
+      throw error;
+    } finally { session.inflight--; }
   }
 
-  private async offer(session: Session, { name, args, signal, toolCallId, origin }: ToolCall): Promise<McpResult> {
-    signal.throwIfAborted();
-    const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
-    if (this.closed || session.fault || session.header.revoked) throw new Error("Client session unavailable");
-    if (session.pending.size >= 32) throw new Error("Too many pending client tools");
-    const record = { ...(toolCallId ? { toolCallId } : {}), ...(request ? { requestId: request.id } : {}), ...(origin ? { origin } : {}), createdAt: Date.now(), id: randomUUID(), name, args, deadline: Date.now() + (this.options.toolTimeoutMs ?? 15_000) };
-    if (!await this.connected(session, signal)) {
-      // Recorded all the same, so the attempt (and who asked) shows in the agent's calls.
-      const error = "No application is connected to answer this tool call; it did not run";
-      this.upsertCall(session, { ...record, state: "cancelled", outcome: { error } });
-      this.commitLater(session);
-      throw new Error(error);
+  /** The attached server once its MCP session is up, waiting briefly for an application that is reconnecting. */
+  private async attachedServer(session: Session, signal: AbortSignal) {
+    for (const until = Date.now() + RECONNECT_GRACE_MS; ;) {
+      const attached = session.attached;
+      if (attached?.open && await attached.ready.then(() => true, () => false) && attached.open) return attached;
+      if (Date.now() >= until || signal.aborted || this.closed || session.fault) return undefined;
+      await sleep(50);
     }
-    const call = this.upsertCall(session, { ...record, state: "started", client: session.client });
-    await this.commit(session, true);
-    if (signal.aborted) {
-      // Never delivered, so it certainly did not run.
-      this.upsertCall(session, { ...call, state: "cancelled", outcome: { error: "Tool call cancelled before it was delivered" } });
-      this.commitLater(session);
-      signal.throwIfAborted();
-    }
-    const result = await new Promise<unknown>((resolve, reject) => {
-      const finish = (value: Outcome) => {
-        if (!session.pending.delete(call.id)) return;
-        clearTimeout(timer); signal.removeEventListener("abort", abort);
-        if ("error" in value) reject(new Error(value.error)); else resolve(value.result);
-      };
-      const cancel = (reason: string) => {
-        const current = session.calls.get(call.id)!;
-        if (current.state !== "started") return;
-        const settledCall = this.upsertCall(session, { ...current, state: "uncertain", outcome: { error: `${reason} after it was delivered to the application. Its outcome is unknown: it may or may not have taken effect.`, uncertain: true } });
-        this.commitLater(session);
-        this.publish(session, { type: "tool_cancel", id: call.id });
-        // The model receives the unknown outcome and decides what to do; the turn keeps going.
-        finish(settledCall.outcome!);
-      };
-      const abort = () => cancel("Tool call cancelled");
-      const timer = setTimeout(() => cancel("Tool call timed out"), Math.max(1, call.deadline - Date.now()));
-      session.pending.set(call.id, finish);
-      signal.addEventListener("abort", abort, { once: true });
-      this.publish(session, { type: "tool_call", call: { ...call } });
-    });
-    const value = result as McpResult | null;
-    if (!value || typeof value !== "object" || !Array.isArray(value.content)) throw new Error("The application's MCP server answered without a CallToolResult");
-    return value;
   }
 
   async remove(id: string) {
@@ -1183,17 +1108,14 @@ export class ClientSessions {
    * run there, and turns that began resume there from the transcript.
    */
   private async interrupt(session: Session, reason: string, handOff = false) {
-    for (const call of session.calls.values()) if (["offered", "started"].includes(call.state)) {
-      const uncertain = call.state === "started";
-      this.upsertCall(session, { ...call, state: uncertain ? "uncertain" : "cancelled", outcome: { error: reason, ...(uncertain ? { uncertain: true } : {}) } });
-    }
     for (const request of [...session.running.values()]) {
       const queued = RUN_METHODS.includes(request.method) && (!request.began || session.resuming.has(request.id));
       if (handOff && (queued || resumable(request))) continue;
       const { params: _params, ...rest } = request;
       this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: queued ? { error: reason } : { error: reason, uncertain: true } });
     }
-    for (const [id, finish] of session.pending) finish(session.calls.get(id)!.outcome!);
+    // Tool calls in flight end as unknown: the connection they were on is closed.
+    void session.attached?.close();
     await this.commit(session, true);
   }
 
@@ -1297,7 +1219,7 @@ export class ClientSessions {
     this.releasing = true;
     try {
       for (const session of [...this.sessions.values()]) {
-        if (this.working(session) || session.pending.size) continue;
+        if (this.working(session) || session.inflight) continue;
         await this.supervisor.stop(session.header.id).catch(() => {});
         await this.unload(session);
         session.response?.end();

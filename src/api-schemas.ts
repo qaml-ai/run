@@ -113,18 +113,6 @@ export const RequestRecord = z.object({
   outcome: Outcome.optional(),
 }).openapi("RequestRecord");
 
-const CallRecord = z.object({
-  id: z.string(),
-  toolCallId: z.string().optional(),
-  requestId: z.string().optional(),
-  createdAt: z.number().optional(),
-  name: z.string(),
-  args: z.record(z.string(), z.unknown()),
-  deadline: z.number(),
-  state: z.enum(["offered", "started", "completed", "cancelled", "uncertain"]),
-  outcome: Outcome.optional(),
-  lateOutcome: Outcome.optional(),
-}).openapi("CallRecord");
 
 export const AgentDetail = AgentSummary.extend({
   definition: z.object({ id: z.string(), revision: z.number() }).optional().openapi({ description: "The definition the agent was made from, and the revision it has" }),
@@ -134,7 +122,6 @@ export const AgentDetail = AgentSummary.extend({
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
   requests: z.array(RequestRecord),
-  calls: z.array(CallRecord),
 }).openapi("AgentDetail");
 
 export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi("History");

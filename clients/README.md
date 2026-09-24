@@ -47,7 +47,7 @@ try {
 }
 ```
 
-The Node/Bun entry shown above persists tool receipts and event cursors to disk.
+The Node/Bun entry shown above persists its event cursor to disk.
 For Cloudflare Workers or other Web API environments, import `clients/typescript.ts`
 instead and inject `journalStore: { load, save }` backed by your application's
 durable storage. That portable entry defaults to memory and does not read
@@ -216,30 +216,23 @@ application, keep the agent connected across multiple prompts.
 The host numbers events and replays them from memory using `Last-Event-ID`.
 Both SDKs reconnect with backoff. A bounded replay window holds up to 512 events
 / approximately 2 MiB; if the cursor falls behind it, or the host restarted,
-SDKs recover requests/tool calls from saved session state and emit `replay_gap`.
+SDKs recover request outcomes from saved session state and emit `replay_gap`.
 Display events (token deltas, progress) outside that window are not
-reconstructed, and SDKs persist their cursor only for tool calls and responses,
-never once per streamed token.
+reconstructed, and SDKs persist their cursor only for responses, never once per
+streamed token.
 
-A tool call counts as started once the runtime delivers it to the connected
-application, as a call to a remote MCP server does once it is sent; with no
-application connected (after a few seconds' grace for a reconnect) it fails
-without running. The SDK runs each call at most once: it saves a receipt before
-running the tool, and its result before POSTing it. If the result
-acknowledgement is lost, it resends that saved result. Replayed events never
-re-execute a tool. Use one connected client per agent: two processes answering
-the same agent could both run a call delivered to the first just before the
-second connected.
-A brief SSE disconnect leaves already-running callbacks and their HTTP uploads
-active, so it doesn't automatically turn a successful write into a failure.
-
-If a client dies after starting a tool but before saving its result, or a
-delivered call times out, the runtime cannot know whether the side effect
-happened. It settles the call as `uncertain` and gives the model an explicit
-"outcome unknown" result, so the turn continues and the model can check the
-real state before repeating anything. Nothing waits for an operator. A result
-that arrives later is kept as `lateOutcome` evidence and published as a
-`tool_late_outcome` event. Timeouts and cancellation are not rollback.
+Tool calls are MCP, as for any server: each connection to the event stream is a
+new MCP session (the runtime sends `initialize`), the runtime's JSON-RPC
+messages arrive as `mcp` events (live only: never buffered or replayed), and
+the SDK answers with `POST /clients/:id/mcp`, naming its connection. A call goes
+to one connection, once. With no application connected (after a few seconds'
+grace for a reconnect) it fails without running. If the connection drops, or
+the call's deadline passes, before the answer arrives, the runtime cannot know
+whether the side effect happened: the model gets an explicit "outcome unknown"
+result, so the turn continues and the model can check the real state before
+repeating anything, and the call is not sent again. The runtime also sends MCP's
+`notifications/cancelled`, which aborts the tool's `signal`. Nothing waits for
+an operator. Timeouts and cancellation are not rollback.
 
 This is **not an exactly-once transaction across the SDK and your database**.
 Business authorization, transactional writes, and application idempotency stay
@@ -251,9 +244,8 @@ execution. Keep handlers and schemas trusted.
 ## Persistence and prototype limits
 
 - Host journals are append-only logs under `AGENT_DATA_DIR/client-sessions`,
-  fsynced when a request is accepted, a tool call is delivered, and an outcome
-  is recorded.
-  SDK receipts/cursors default to `.agent-runtime/client-sdk`, configurable with
+  fsynced when a request is accepted, a run begins, and an outcome is recorded.
+  SDK cursors default to `.agent-runtime/client-sdk`, configurable with
   `stateDirectory` / `state_directory` or `AGENT_CLIENT_STATE_DIR`. Use persistent,
   application-owned directories. Do not share one SDK journal between concurrent
   application processes.
@@ -264,8 +256,7 @@ execution. Keep handlers and schemas trusted.
 - Session credentials expire after 24 hours and can be revoked via `destroy()`.
   There is no renewal or automatic cleanup policy yet. Sessions load lazily and
   unload when idle. Once a journal grows, settled records are folded away,
-  keeping the most recent 256 requests and 256 tool calls for idempotent
-  retries; retrying an older request ID starts it again. This file store is
+  keeping the most recent 256 requests for idempotent retries; retrying an older request ID starts it again. This file store is
   local to one host, not distributed hosting.
 - Tool calls default to a 15-second deadline. The existing sandbox, schema,
   argument, result and concurrency limits remain enforced. JSON frames are
@@ -276,8 +267,8 @@ execution. Keep handlers and schemas trusted.
   separate work. No browser or production application route has been switched.
 
 The wire transport is ordinary HTTP: `GET /clients/:id/events` streams SSE;
-`POST /clients/:id/requests` accepts idempotent requests; `POST /clients/:id/calls/:call/outcome`
-answers a delivered tool call. Application code should
+`POST /clients/:id/requests` accepts idempotent requests; `POST /clients/:id/mcp`
+carries the application's MCP messages. Application code should
 use the SDK rather than implement this protocol itself.
 
 Validation: `npm test` covers the host and TypeScript SDK;

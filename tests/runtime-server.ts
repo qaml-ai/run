@@ -122,3 +122,43 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
   };
   return { root, db, base, call, prompt, model, logs, child };
 }
+
+/**
+ * An application attached to an agent that sets up its MCP session and never answers a tool
+ * call: calls it gets stay in flight until they time out. `calls` collects them.
+ */
+export async function attachSilently(t: T, base: string, agent: string, token: string) {
+  const stream = new AbortController();
+  t.after(() => stream.abort());
+  const headers = { Authorization: `Bearer ${token}` };
+  const response = await fetch(`${base}/clients/${agent}/events`, { headers: { ...headers, Accept: "text/event-stream" }, signal: stream.signal });
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let connection = "";
+  const calls: any[] = [];
+  const initialized = Promise.withResolvers<void>();
+  const post = (message: unknown) => fetch(`${base}/clients/${agent}/mcp`, { method: "POST", headers: { ...headers, "Content-Type": "application/json", "X-Agent-Connection": connection }, body: JSON.stringify(message) });
+  void (async () => {
+    let buffer = "";
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        for (let end; (end = buffer.indexOf("\n\n")) !== -1;) {
+          const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+          const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
+          if (!data) continue;
+          const event = JSON.parse(data);
+          if (frame.includes("event: ready")) connection = event.connection;
+          else if (event.type === "mcp" && event.message.method === "initialize") {
+            await post({ jsonrpc: "2.0", id: event.message.id, result: { protocolVersion: event.message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "silent", version: "1" } } });
+            initialized.resolve();
+          } else if (event.type === "mcp" && event.message.method === "tools/call") calls.push(event.message);
+        }
+      }
+    } catch { /* the stream ended */ }
+  })();
+  await initialized.promise;
+  return { calls };
+}

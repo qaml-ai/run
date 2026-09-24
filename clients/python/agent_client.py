@@ -310,13 +310,15 @@ class AgentClient:
         try:
             self.journal = json.loads(self.journal_path.read_text())
         except FileNotFoundError:
-            self.journal = {"version": 1, "cursor": 0, "calls": {}}
+            self.journal = {"version": 1, "cursor": 0}
         if self.journal["version"] != 1:
             raise AgentError("Unsupported client journal")
+        # The journal keeps only the event cursor.
+        self.journal = {"version": 1, "cursor": self.journal["cursor"]}
+        # Tool calls running, by JSON-RPC id, so the runtime can cancel them.
         self.pending, self.active = {}, {}
-        self.delivered = set()
-        # Identifies this client on its event stream: the runtime delivers each call to one client only.
-        self.client_id = str(uuid.uuid4())
+        # The event stream's connection, named in the MCP messages this client sends back.
+        self.connection = None
         self.ready = asyncio.Event()
         self.runner = None
         self.closed = False
@@ -347,7 +349,7 @@ class AgentClient:
             try:
                 async with self.http.stream("GET", self.base + self.path + "/events", headers={
                     "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream",
-                    "Last-Event-ID": str(self.journal["cursor"]), "X-Agent-Client": self.client_id}, timeout=20) as response:
+                    "Last-Event-ID": str(self.journal["cursor"])}, timeout=20) as response:
                     if response.status_code == 409:
                         state = await self._sync()
                         self.journal["cursor"] = state["cursor"]
@@ -371,11 +373,19 @@ class AgentClient:
                             if not data:
                                 continue
                             if "event: ready" in lines:
+                                self.connection = json.loads(data).get("connection")
                                 await self._sync()
                                 backoff = 0.25
                                 self.ready.set()
                                 continue
-                            cursor = int(next(line[3:] for line in lines if line.startswith("id:")))
+                            id_line = next((line for line in lines if line.startswith("id:")), None)
+                            # The runtime's MCP messages are live only: no id, never replayed, no cursor.
+                            if id_line is None:
+                                event = json.loads(data)
+                                if event.get("type") == "mcp":
+                                    self._track(asyncio.create_task(self._mcp(event["message"])))
+                                continue
+                            cursor = int(id_line[3:])
                             if cursor <= self.journal["cursor"]:
                                 continue
                             event = json.loads(data)
@@ -404,13 +414,7 @@ class AgentClient:
                 backoff = min(5, backoff * 2)
 
     def _receive(self, event):
-        if event["type"] == "tool_call":
-            self._dispatch(event["call"])
-        elif event["type"] == "tool_cancel":
-            task = self.active.get(event["id"])
-            if task:
-                task.cancel()
-        elif event["type"] == "response":
+        if event["type"] == "response":
             self._settle(event["id"], event["outcome"])
         elif event["type"] == "event" and self.on_event:
             self.on_event(event["event"])
@@ -428,62 +432,66 @@ class AgentClient:
         for request in state["requests"]:
             if "outcome" in request:
                 self._settle(request["id"], request["outcome"])
-        for call in state["calls"]:
-            self._dispatch(call)
         return state
 
-    def _dispatch(self, call):
-        call_id = call["id"]
-        if self.closed or call_id in self.active or call_id in self.delivered or call["state"] in ("completed", "cancelled"):
-            return
-        # Only calls delivered to this client run here; a result this client saved is still resent.
-        if call.get("client") != self.client_id and self.journal["calls"].get(call_id, {}).get("state") != "done":
-            return
-        task = asyncio.create_task(self._run_tool(call))
-        self.active[call_id] = task
+    def _track(self, task):
         def finished(task):
-            self.active.pop(call_id, None)
             if not task.cancelled() and task.exception():
                 self._report(task.exception())
         task.add_done_callback(finished)
 
-    async def _run_tool(self, call):
-        """Run a delivered call at most once: the receipt is saved before the tool runs, so a replayed
-        call never runs again, and one this client started but never finished has an unknown outcome."""
-        call_id = call["id"]
-        receipt = self.journal["calls"].get(call_id)
-        if receipt and receipt["state"] == "done":
-            await self._http(f"/calls/{call_id}/outcome", "POST", receipt["outcome"])
-            self.delivered.add(call_id)
+    async def _mcp(self, message):
+        """Answer the runtime's JSON-RPC messages as the agent's attached MCP server: initialize, ping,
+        tools/list and tools/call, and cancellation. A call whose answer is lost with the connection
+        ends for the agent as "outcome unknown"."""
+        method, params = message.get("method"), message.get("params") or {}
+        if not isinstance(method, str):
             return
-        if call["state"] != "started":
+        if "id" not in message:
+            if method == "notifications/cancelled":
+                task = self.active.get(str(params.get("requestId")))
+                if task:
+                    task.cancel()
             return
-        if receipt and receipt["state"] == "started":
-            value = {"error": "The application restarted during this tool call; it may or may not have taken effect", "uncertain": True}
-        else:
-            self.journal["calls"][call_id] = {"state": "started"}
-            self._save()
+        connection = self.connection
+
+        async def reply(answer):
+            await _http(self.http, self.base, self.path + "/mcp", self.session["token"], "POST", {"jsonrpc": "2.0", "id": message["id"], **answer},
+                        headers={"X-Agent-Connection": connection or ""})
+
+        if method == "initialize":
+            return await reply({"result": {"protocolVersion": params.get("protocolVersion"), "capabilities": {"tools": {}}, "serverInfo": {"name": "agent-runtime-sdk-python", "version": "1.0.0"}}})
+        if method == "ping":
+            return await reply({"result": {}})
+        if method == "tools/list":
+            return await reply({"result": {"tools": [item.mcp_tool() for item in self.tools.values()]}})
+        if method != "tools/call":
+            return await reply({"error": {"code": -32601, "message": f"Unknown method {method}"}})
+        key, meta = str(message["id"]), params.get("_meta") or {}
+        self.active[key] = asyncio.current_task()
+        try:
+            definition = self.tools.get(params.get("name"))
+            if definition is None:
+                raise ValueError(f"Unknown tool {params.get('name')}")
+            args = dict(params.get("arguments") or {})
+            if definition.with_context:
+                args["context"] = ToolContext(call_id=meta.get("agent-runtime/callId", key), origin=meta.get("agent-runtime/origin"))
             try:
-                definition = self.tools[call["name"]]
-                args = dict(call["args"])
-                if definition.with_context:
-                    args["context"] = ToolContext(call_id=call_id, origin=call.get("origin"))
-                import time
-                remaining = max(0.001, call["deadline"] / 1000 - time.time())
-                result = await asyncio.wait_for(definition.function(**args), remaining)
-                answer = _call_tool_result(result)
-                if len(json.dumps(answer).encode()) > 1024 * 1024:
-                    raise ValueError("Tool result too large")
-                value = {"result": answer}
-            except (asyncio.CancelledError, TimeoutError):
-                value = {"error": "Tool cancelled; verify any side effects", "uncertain": True}
+                answer = _call_tool_result(await definition.function(**args))
+            except asyncio.CancelledError:
+                raise
             except Exception as error:
-                # The tool's own failure is an MCP error result, not a transport failure.
-                value = {"result": {"content": [{"type": "text", "text": str(error)[:2048]}], "isError": True}}
-        self.journal["calls"][call_id] = {"state": "done", "outcome": value}
-        self._save()
-        await self._http(f"/calls/{call_id}/outcome", "POST", value)
-        self.delivered.add(call_id)
+                # The tool's own failure is an MCP error result: the model sees it.
+                answer = {"content": [{"type": "text", "text": str(error)[:2048]}], "isError": True}
+            if len(json.dumps(answer).encode()) > 1024 * 1024:
+                raise ValueError("Tool result too large")
+            await reply({"result": answer})
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            await reply({"error": {"code": -32603, "message": str(error)[:2048]}})
+        finally:
+            self.active.pop(key, None)
 
     async def request(self, method, params=None, *, idempotency_key=None, timeout=180):
         if self.closed or self.fatal:

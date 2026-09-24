@@ -463,12 +463,6 @@
                 "items": {
                   "$ref": "#/components/schemas/RequestRecord"
                 }
-              },
-              "calls": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/CallRecord"
-                }
               }
             },
             "required": [
@@ -477,8 +471,7 @@
               "systemPrompt",
               "cursor",
               "events",
-              "requests",
-              "calls"
+              "requests"
             ]
           }
         ]
@@ -586,56 +579,6 @@
             "type": "boolean"
           }
         }
-      },
-      "CallRecord": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "toolCallId": {
-            "type": "string"
-          },
-          "requestId": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
-          },
-          "args": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "deadline": {
-            "type": "number"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "offered",
-              "started",
-              "completed",
-              "cancelled",
-              "uncertain"
-            ]
-          },
-          "outcome": {
-            "$ref": "#/components/schemas/Outcome"
-          },
-          "lateOutcome": {
-            "$ref": "#/components/schemas/Outcome"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "args",
-          "deadline",
-          "state"
-        ]
       },
       "History": {
         "type": "object",

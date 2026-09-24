@@ -7,7 +7,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 
 test("portable SDK awaits event consumers, persists the cursor only for control events, and attaches with saved credentials", async () => {
   const backing = memoryJournalStore();
-  await backing.save(session.id, { version: 1, cursor: 4, calls: {} });
+  await backing.save(session.id, { version: 1, cursor: 4 });
   const gate = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
   const committed = Promise.withResolvers<void>();
@@ -60,45 +60,44 @@ test("portable SDK waits for journal loading and propagates storage failures bef
   assert.equal(fetched, false);
 });
 
-test("async journals commit before running a tool and before delivering its outcome", async () => {
-  const backing = memoryJournalStore();
-  const gate = Promise.withResolvers<void>();
-  const saving = Promise.withResolvers<void>();
-  const delivered = Promise.withResolvers<void>();
-  let executions = 0;
-  let clientId = "";
+test("the SDK is its agent's MCP server: it answers initialize, tools/list and tools/call on the connection it was given, and honours cancellation", async () => {
   let eventStream: ReadableStreamDefaultController<Uint8Array>;
-  const store: JournalStore = {
-    load: id => backing.load(id),
-    async save(id, journal) {
-      if (journal.calls["call-1"]?.state === "started") { saving.resolve(); await gate.promise; }
-      await backing.save(id, journal);
-    },
-  };
+  const posted: { connection: string | null; message: any }[] = [];
+  const answered = Promise.withResolvers<void>();
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url.endsWith("/events")) return new Response(new ReadableStream<Uint8Array>({ start(controller) {
-      clientId = (init?.headers as Record<string, string>)["X-Agent-Client"];
       eventStream = controller;
-      controller.enqueue(new TextEncoder().encode('event: ready\ndata: {}\n\n'));
+      controller.enqueue(new TextEncoder().encode('event: ready\ndata: {"version":4,"connection":"conn-1"}\n\n'));
       init?.signal?.addEventListener("abort", () => controller.close(), { once: true });
     } }), { headers: { "Content-Type": "text/event-stream" } });
-    if (url.endsWith("/state")) return Response.json({ cursor: 0, calls: [], requests: [] });
-    assert.ok(url.endsWith("/outcome"));
-    assert.equal((await backing.load(session.id))?.calls["call-1"].state, "done");
-    delivered.resolve(); return Response.json({ ok: true });
+    if (url.endsWith("/state")) return Response.json({ cursor: 0, requests: [] });
+    assert.ok(url.endsWith("/mcp"));
+    posted.push({ connection: new Headers(init?.headers).get("X-Agent-Connection"), message: JSON.parse(String(init?.body)) });
+    if (posted.length === 3) answered.resolve();
+    return Response.json({ accepted: true }, { status: 202 });
   };
-  const client = await new AgentRuntime({ fetch: fetcher, journalStore: store }).connectAgent(session, {
-    tools: { echo: { description: "echo", input: { type: "object" }, execute() { executions++; return "ok"; } } },
-  });
+  const cancelled = Promise.withResolvers<void>();
+  const client = await new AgentRuntime({ fetch: fetcher }).connectAgent(session, { tools: {
+    echo: { description: "echo", input: { type: "object" }, execute: (args: any, context) => ({ said: args.text, callId: context.callId }) },
+    slow: { description: "slow", input: { type: "object" }, execute: (_args, context) => new Promise((_, reject) => context.signal.addEventListener("abort", () => { cancelled.resolve(); reject(new Error("stopped")); })) },
+  } });
   try {
-    const event = { type: "tool_call", call: { id: "call-1", name: "echo", args: {}, state: "started", client: clientId, deadline: Date.now() + 5000 } };
-    eventStream!.enqueue(new TextEncoder().encode(`id: 1\ndata: ${JSON.stringify(event)}\n\n`));
-    await saving.promise; await tick();
-    assert.equal(executions, 0, "the tool waits for its receipt to be committed");
-    gate.resolve(); await delivered.promise;
-    assert.equal(executions, 1);
-  } finally { gate.resolve(); await client.close(); }
+    const send = (message: unknown) => eventStream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "mcp", message })}\n\n`));
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } } });
+    send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "echo", arguments: { text: "hi" }, _meta: { "agent-runtime/callId": "call-9" } } });
+    send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "slow", arguments: {} } });
+    await answered.promise;
+    send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 4 } });
+    await cancelled.promise;
+    const byId = Object.fromEntries(posted.map(entry => [entry.message.id, entry.message]));
+    assert.deepEqual(new Set(posted.map(entry => entry.connection)), new Set(["conn-1"]));
+    assert.equal(byId[1].result.protocolVersion, "2025-06-18");
+    assert.deepEqual(byId[1].result.capabilities, { tools: {} });
+    assert.deepEqual(byId[2].result.tools.map((tool: any) => tool.name), ["echo", "slow"]);
+    assert.deepEqual(byId[3].result.structuredContent, { said: "hi", callId: "call-9" });
+  } finally { await client.close(); }
 });
 
 test("native fetch is bound to the global receiver required by Workers", async () => {

@@ -2,7 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import { Type, type TSchema, type Static } from "typebox";
 import { Check } from "typebox/value";
-import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
+import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
 export { Type as schema };
 export type { SessionCredentials, SessionState };
 
@@ -256,7 +256,8 @@ export class VolumeHandle {
   }
 }
 
-export type Journal = { version: 1; cursor: number; calls: Record<string, { state: "started" | "done"; outcome?: Outcome }> };
+/** The client's event cursor, saved so a restarted client resumes where it was. */
+export type Journal = { version: 1; cursor: number };
 /** Stores must resolve only once the complete snapshot is committed. Use one active client per agent. */
 export interface JournalStore {
   load(sessionId: string): Promise<Journal | undefined>;
@@ -277,15 +278,15 @@ export class AgentClient {
   private server: ToolServer;
   private readonly transport: Transport;
   private readonly store: JournalStore;
-  private journal: Journal = { version: 1, cursor: 0, calls: {} };
+  private journal: Journal = { version: 1, cursor: 0 };
   private loaded?: Promise<void>;
   private saving: Promise<void> = Promise.resolve();
   private readonly options: AgentOptions;
   private readonly pending = new Map<string, Pending>();
-  private readonly active = new Map<string, { controller: AbortController; task: Promise<void> }>();
-  private readonly delivered = new Set<string>();
-  /** Identifies this client on its event stream: the runtime delivers each call to one client only. */
-  private readonly clientId = globalThis.crypto.randomUUID();
+  /** Tool calls running, by JSON-RPC id, so the runtime can cancel them. */
+  private readonly active = new Map<string, AbortController>();
+  /** The event stream's connection, named in the MCP messages this client sends back. */
+  private connection?: string;
   private stream?: AbortController;
   private loop?: Promise<void>;
   private closed = false;
@@ -305,12 +306,12 @@ export class AgentClient {
   private async load() {
     const journal = await this.store.load(this.session.id);
     if (!journal) return;
-    if (journal.version !== 1 || !Number.isSafeInteger(journal.cursor) || journal.cursor < 0 || !journal.calls || typeof journal.calls !== "object") throw new AgentError("Unsupported client journal");
-    this.journal = structuredClone(journal);
+    if (journal.version !== 1 || !Number.isSafeInteger(journal.cursor) || journal.cursor < 0) throw new AgentError("Unsupported client journal");
+    this.journal = { version: 1, cursor: journal.cursor };
   }
   private save() {
     const snapshot = structuredClone(this.journal);
-    // Serialize commits so concurrent tool completions cannot overwrite newer receipts.
+    // Serialize commits so an older cursor never overwrites a newer one.
     this.saving = this.saving.then(() => this.store.save(this.session.id, snapshot));
     return this.saving;
   }
@@ -337,7 +338,7 @@ export class AgentClient {
       touch();
       try {
         const response = await this.transport.fetcher(this.transport.base + this.path("/events"), {
-          headers: { Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor), "X-Agent-Client": this.clientId },
+          headers: { Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor) },
           signal: this.stream.signal, redirect: "manual",
         });
         await rejectRedirect(response);
@@ -367,11 +368,19 @@ export class AgentClient {
               const data = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
               if (!data) continue;
               if (lines.includes("event: ready")) {
+                this.connection = (JSON.parse(data) as { connection?: string }).connection;
                 await this.sync();
                 backoff = 250; this.ready.resolve(); this.options.onConnection?.(true);
                 continue;
               }
-              const id = Number(lines.find(line => line.startsWith("id:"))?.slice(3));
+              const idLine = lines.find(line => line.startsWith("id:"));
+              // The runtime's MCP messages are live only: no id, never replayed, no cursor.
+              if (!idLine) {
+                const event = JSON.parse(data) as ClientEvent;
+                if (event.type === "mcp") void this.mcp(event.message).catch(error => this.report(error));
+                continue;
+              }
+              const id = Number(idLine.slice(3));
               if (!Number.isSafeInteger(id) || id <= 0) throw new AgentError("Invalid SSE cursor");
               if (id <= this.journal.cursor) continue;
               const event = JSON.parse(data) as ClientEvent;
@@ -403,9 +412,7 @@ export class AgentClient {
   }
 
   private async receive(event: ClientEvent) {
-    if (event.type === "tool_call") this.dispatch(event.call);
-    else if (event.type === "tool_cancel") this.active.get(event.id)?.controller.abort();
-    else if (event.type === "response") this.settle(event.id, event.outcome);
+    if (event.type === "response") this.settle(event.id, event.outcome);
     else if (event.type === "event") await this.options.onEvent?.(event.event, event.requestId);
   }
   private settle(id: string, value: Outcome) {
@@ -418,52 +425,42 @@ export class AgentClient {
   private async sync(): Promise<SessionState> {
     const state = await this.outcomes();
     for (const request of state.requests) if (request.outcome) this.settle(request.id, request.outcome);
-    for (const call of state.calls) this.dispatch(call);
     return state;
   }
 
-  private dispatch(call: CallRecord) {
-    if (this.closed || this.active.has(call.id) || this.delivered.has(call.id) || ["completed", "cancelled"].includes(call.state)) return;
-    // Only calls delivered to this client run here; a result this client saved is still resent.
-    if (call.client !== this.clientId && this.journal.calls[call.id]?.state !== "done") return;
-    const controller = new AbortController();
-    // Defer execution until the active entry exists; replay can arrive immediately.
-    const task = Promise.resolve().then(() => this.runTool(call, controller)).catch(error => this.report(error)).finally(() => this.active.delete(call.id));
-    this.active.set(call.id, { controller, task });
-  }
-
   /**
-   * Run a delivered call at most once: the receipt is saved before the callback runs, so a
-   * replayed or re-synced call is never run again. A call this client started but never
-   * finished (it restarted meanwhile) has an unknown outcome.
+   * Answer the runtime's JSON-RPC messages as the agent's attached MCP server: initialize,
+   * ping, tools/list and tools/call, and cancellation. The runtime runs a call once; a call
+   * whose answer is lost with the connection ends for the agent as "outcome unknown".
    */
-  private async runTool(call: CallRecord, controller: AbortController) {
-    let receipt = this.journal.calls[call.id];
-    if (receipt?.state === "done") {
-      await this.http(`/calls/${call.id}/outcome`, "POST", receipt.outcome);
-      this.delivered.add(call.id); return;
+  private async mcp(message: Record<string, any>) {
+    if (typeof message.method !== "string") return;
+    if (message.id === undefined) {
+      if (message.method === "notifications/cancelled") this.active.get(String(message.params?.requestId))?.abort();
+      return;
     }
-    if (call.state !== "started") return; // Settled already (unknown, cancelled or completed); never execute.
-    let value: Outcome;
-    if (receipt?.state === "started") value = { error: "The application restarted during this tool call; it may or may not have taken effect", uncertain: true };
-    else {
-      this.journal.calls[call.id] = { state: "started" }; await this.save();
-      const timer = setTimeout(() => controller.abort(), Math.max(1, call.deadline - Date.now()));
-      // A callback that ignores cancellation must not keep a closed client's process alive until the deadline.
-      (timer as { unref?: () => void }).unref?.();
-      try {
-        controller.signal.throwIfAborted();
-        const result = await this.server.callTool(call.name, call.args, { callId: call.id, toolCallId: call.toolCallId, signal: controller.signal, ...(call.origin ? { origin: call.origin } : {}) });
-        if (!isRecord(result) || !Array.isArray(result.content) || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
-        value = { result };
-      } catch (error) { value = { error: String(error).slice(0, 2048), ...(controller.signal.aborted ? { uncertain: true } : {}) }; }
-      finally { clearTimeout(timer); }
-    }
-    // Persist before POST; reconnect resends this receipt, never the side effect.
-    receipt = { state: "done", outcome: value };
-    this.journal.calls[call.id] = receipt; await this.save();
-    await this.http(`/calls/${call.id}/outcome`, "POST", value);
-    this.delivered.add(call.id);
+    const connection = this.connection;
+    const reply = (answer: { result: unknown } | { error: { code: number; message: string } }) =>
+      this.transport.json(this.path("/mcp"), this.session.token, "POST", { jsonrpc: "2.0", id: message.id, ...answer }, true, { "X-Agent-Connection": connection ?? "" });
+    const params = message.params ?? {};
+    if (message.method === "initialize") return reply({ result: { protocolVersion: params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "agent-runtime-sdk", version: "1.0.0" } } });
+    if (message.method === "ping") return reply({ result: {} });
+    if (message.method === "tools/list") return reply({ result: { tools: await this.server.listTools() } });
+    if (message.method !== "tools/call") return reply({ error: { code: -32601, message: `Unknown method ${message.method}` } });
+    const controller = new AbortController();
+    const key = String(message.id);
+    this.active.set(key, controller);
+    const meta = params._meta ?? {};
+    try {
+      const result = await this.server.callTool(params.name, params.arguments ?? {}, {
+        callId: meta["agent-runtime/callId"] ?? key, signal: controller.signal,
+        ...(meta["agent-runtime/toolCallId"] ? { toolCallId: meta["agent-runtime/toolCallId"] } : {}), ...(meta["agent-runtime/origin"] ? { origin: meta["agent-runtime/origin"] } : {}),
+      });
+      if (!isRecord(result) || !Array.isArray(result.content) || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
+      await reply({ result });
+    } catch (error) {
+      await reply({ error: { code: -32603, message: String(error).slice(0, 2048) } });
+    } finally { this.active.delete(key); }
   }
 
   async request(method: RequestMethod, params: Record<string, unknown> = {}, options: RequestOptions = {}): Promise<any> {
@@ -542,7 +539,7 @@ export class AgentClient {
 
   async close() {
     this.closed = true; this.stream?.abort();
-    for (const { controller } of this.active.values()) controller.abort();
+    for (const controller of this.active.values()) controller.abort();
     for (const [id, waiter] of this.pending) waiter.reject(new AgentError("Client closed; request may still be running", 0, id));
     this.pending.clear();
     await this.loop;

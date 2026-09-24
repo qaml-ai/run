@@ -347,7 +347,7 @@ test("a turn whose node died between model steps resumes on the next owner, call
   assert.equal(state.requests.find((request: any) => request.id === "turn-1").resumes, 1);
 });
 
-test("a turn whose node died during a delivered tool call continues with the outcome unknown, without calling the tool again", { timeout: 90_000 }, async t => {
+test("a turn whose node died during a tool call continues with the outcome unknown, without calling the tool again", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, (_body, index) => index === 0 ? jsExec("return await tools.slow({})") : { role: "assistant", content: "noted the unknown outcome" });
   const a = await c.start("a", model.env);
@@ -368,11 +368,9 @@ test("a turn whose node died during a delivered tool call continues with the out
   await once(a.child, "close");
   const result = await run;
   assert.equal(result.reply, "noted the unknown outcome");
-  assert.equal(executions, 1, "the delivered call was never executed again");
+  assert.equal(executions, 1, "the call was never sent again");
   assert.equal(model.bodies.length, 2);
   assert.ok(toolMessages(model.bodies[1]).some((content: string) => /outcome is unknown/.test(content)), "the model was told the outcome is unknown");
-  const state = await (await fetch(`${b.url}/clients/${created.session.id}/state`, { headers: { Authorization: `Bearer ${created.session.token}` } })).json() as any;
-  assert.deepEqual(state.calls.map((call: any) => call.state), ["uncertain"]);
 });
 
 test("a turn that keeps killing its node is resumed at most twice, then fails as uncertain", { timeout: 120_000 }, async t => {

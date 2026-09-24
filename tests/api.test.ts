@@ -13,6 +13,7 @@ import { checkProviderKey } from "../src/key-check.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
+import { attachSilently } from "./runtime-server.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const alice = "alice-operator-token-at-least-24-chars";
@@ -302,14 +303,12 @@ test("a tenant at its agent quota gets 429 with Retry-After and nothing half-cre
   const hold = { name: "hold", description: "Never answered", inputSchema: { type: "object", properties: {}, additionalProperties: false } };
   const busy = await call("/client-sessions", { token: bob, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": "busy" } });
   assert.equal(busy.status, 201);
-  // A call delivered to an application that never answers keeps the agent busy until the tool timeout, so it cannot be evicted.
-  const stream = new AbortController();
-  t.after(async () => stream.abort());
-  await fetch(`${base}/clients/${busy.json.id}/events`, { headers: { Authorization: `Bearer ${busy.json.token}` }, signal: stream.signal });
+  // A call sent to an application that never answers keeps the agent busy until the tool timeout, so it cannot be evicted.
+  const app = await attachSilently(t, base, busy.json.id, busy.json.token);
   const run = await call(`/clients/${busy.json.id}/requests`, { token: busy.json.token, body: { id: "hold-1", method: "execute", params: { code: "return await tools.hold({})" } } });
   assert.equal(run.status, 202);
-  for (let tries = 0; !(await call(`/clients/${busy.json.id}/state`, { token: busy.json.token })).json.calls.length; tries++) {
-    assert.ok(tries < 100, "the call was delivered");
+  for (let tries = 0; !app.calls.length; tries++) {
+    assert.ok(tries < 100, "the call was sent");
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   const agents = async () => Number((await db.query("select count(*) as count from agents where tenant = 'bob'")).rows[0].count);
@@ -352,13 +351,11 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
   const refused = ["b1", "b2", "b3"][bobs.findIndex(result => result.status === 429)];
 
   // Bob's two agents are busy, each with a call delivered to an application that never answers, so nothing can be evicted for the refused one.
-  const stream = new AbortController();
-  t.after(async () => stream.abort());
   for (const agent of bobs.filter(result => result.status === 201).map(result => result.json)) {
-    await fetch(`${base}/clients/${agent.id}/events`, { headers: { Authorization: `Bearer ${agent.token}` }, signal: stream.signal });
+    const app = await attachSilently(t, base, agent.id, agent.token);
     assert.equal((await call(`/clients/${agent.id}/requests`, { token: agent.token, body: { id: "hold", method: "execute", params: { code: "return await tools.hold({})" } } })).status, 202);
-    for (let tries = 0; !(await call(`/clients/${agent.id}/state`, { token: agent.token })).json.calls.length; tries++) {
-      assert.ok(tries < 100, "the call was delivered");
+    for (let tries = 0; !app.calls.length; tries++) {
+      assert.ok(tries < 100, "the call was sent");
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   }

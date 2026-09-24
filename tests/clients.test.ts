@@ -20,6 +20,7 @@ import { configuredModel } from "../src/model.ts";
 import { AgentClient, AgentRuntime, tool, schema, type AgentOptions, type RuntimeOptions, type Tool } from "../clients/node.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { testDatabase } from "./database.ts";
+import { attachSilently } from "./runtime-server.ts";
 
 const token = "fixture-operator-secret-32-characters";
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -144,7 +145,7 @@ test("lost request/result POST acknowledgements retry recorded outcomes, not exe
   const transport: typeof fetch = async (input, init) => {
     const response = await fetch(input, init);
     const path = String(input);
-    if ((!lostRequest && path.endsWith("/requests")) || (!lostResult && path.endsWith("/outcome"))) {
+    if ((!lostRequest && path.endsWith("/requests")) || (!lostResult && path.endsWith("/mcp") && String(init?.body).includes('"result"') && String(init?.body).includes("saved"))) {
       if (path.endsWith("/requests")) lostRequest = true; else lostResult = true;
       await response.text();
       throw new TypeError("Simulated acknowledgement lost after server commit");
@@ -159,10 +160,9 @@ test("lost request/result POST acknowledgements retry recorded outcomes, not exe
   assert.equal(writes, 1);
   assert.equal(lostRequest, true); assert.equal(lostResult, true);
   await assert.rejects(agent.execute("return 999", { idempotencyKey: "stable-request" }), /different arguments/);
-  assert.equal((await agent.outcomes()).calls.length, 1);
 });
 
-test("SSE reconnect replays events and preserves an in-flight client callback", async t => {
+test("a dropped connection ends the tool calls on it as unknown, never running them again; the client reconnects", async t => {
   const f = await fixture(t);
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -173,11 +173,16 @@ test("SSE reconnect replays events and preserves an in-flight client callback", 
   const running = agent.execute('text("before"); return await tools.echo({value:"write"})');
   await entered.promise;
   f.sessions.sessions.get(agent.session.id)!.response!.destroy();
+  await assert.rejects(running, /outcome is unknown/);
   release.resolve();
-  assert.deepEqual((await running).output, ["before", "saved"]);
-  assert.equal(writes, 1);
+  await sleep(200);
+  assert.equal(writes, 1, "the call was not sent again");
   assert.equal((await agent.status()).pid, pid);
   assert.ok(events.length >= 1);
+  const again = Promise.withResolvers<void>();
+  const next = await new AgentRuntime(f.runtimeOptions).connectAgent(agent.session, { tools: { echo: echo(() => { again.resolve(); return "later"; }) } });
+  f.clients.push(next);
+  assert.deepEqual((await next.execute('return await tools.echo({value:"x"})')).output, ["later"]);
 });
 
 test("a run stays in flight until its outcome is durable and published, so a drain never closes the stream first", async t => {
@@ -186,7 +191,7 @@ test("a run stays in flight until its outcome is durable and published, so a dra
   const agent = await f.start({ echo: echo(async () => { await release.promise; return "done"; }) });
   const running = agent.execute('return await tools.echo({value:"x"})', { timeoutMs: 20_000 });
   let session;
-  for (let i = 0; !(session = f.sessions.sessions.get(agent.session.id))?.pending.size; i++) { assert.ok(i < 500, "the tool call was offered"); await sleep(10); }
+  for (let i = 0; !(session = f.sessions.sessions.get(agent.session.id))?.inflight; i++) { assert.ok(i < 500, "the tool call was sent"); await sleep(10); }
   // Hold the durable flush that records the run as completed, as a slow database would.
   const flushing = Promise.withResolvers<void>();
   const proceed = Promise.withResolvers<void>();
@@ -212,7 +217,7 @@ test("a run stays in flight until its outcome is durable and published, so a dra
   assert.deepEqual((await running).output, ["done"]);
 });
 
-test("a call is delivered to one client: another that connects meanwhile, with its own journal, never runs it", async t => {
+test("a call goes to one connection: a client that connects meanwhile never runs it, and the first one's ends as unknown", async t => {
   const f = await fixture(t, { timeout: 5000 });
   let executions = 0;
   const entered = Promise.withResolvers<void>();
@@ -225,61 +230,24 @@ test("a call is delivered to one client: another that connects meanwhile, with i
   // A second process (a new container, say) attaches with an empty journal and replays everything buffered.
   const second = await new AgentRuntime({ ...f.runtimeOptions, stateDirectory: join(f.root, "second-sdk") }).connectAgent(first.session, { tools });
   t.after(() => second.close());
-  await sleep(300);
-  assert.equal(executions, 1, "the call delivered to the first client did not run again");
+  await assert.rejects(running, /outcome is unknown/);
   gate.resolve();
-  assert.deepEqual((await running).output, ["once"]);
-  assert.equal(executions, 1);
+  await sleep(300);
+  assert.equal(executions, 1, "the call went to the first client only");
 });
 
-test("a call with no application connected fails as not run; a delivered call that times out settles as unknown", async t => {
+test("a call with no application connected fails as not run; one the application never answers times out as unknown", async t => {
   const f = await fixture(t, { timeout: 400 });
   const agent = await f.start({ echo: echo(() => "must not execute") });
   await agent.close();
   await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /No application is connected[\s\S]*did not run/);
-  const [undelivered] = (await agent.outcomes()).calls;
-  assert.equal(undelivered.state, "cancelled", "a call nobody could receive is recorded as not run");
-  assert.match(String(undelivered.outcome?.error), /did not run/);
 
-  // A stream nobody answers: the call counts as started once delivered, and its deadline passes.
-  const stream = new AbortController();
-  t.after(() => stream.abort());
-  await fetch(`${f.url}/clients/${agent.session.id}/events`, { headers: { Authorization: `Bearer ${agent.session.token}` }, signal: stream.signal });
-  await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /timed out/);
-  const call = (await agent.outcomes()).calls.find(entry => entry.id !== undelivered.id)!;
-  const callId = call.id;
-  assert.equal(call.state, "uncertain");
-  assert.equal(call.outcome && "error" in call.outcome && call.outcome.uncertain, true);
+  const app = await attachSilently(t, f.url, agent.session.id, agent.session.token);
+  await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /timed out[\s\S]*outcome is unknown/);
+  assert.equal(app.calls.length, 1);
+  assert.deepEqual(app.calls[0].params.arguments, { value: "write" });
   // Nothing waits for an operator: the next run is accepted straight away.
   assert.equal((await f.post(agent, "/requests", { id: "next", method: "execute", params: { code: "return 1" } })).status, 202);
-  assert.equal((await f.post(agent, `/calls/${callId}/outcome`, { result: "verified late write" })).status, 200);
-  assert.equal((await agent.outcomes()).calls.find(entry => entry.id === callId)?.lateOutcome?.result, "verified late write");
-  assert.equal((await f.post(agent, `/calls/${callId}/outcome`, { result: "conflicting result" })).status, 409);
-});
-
-test("client journal resends a completed result after restart without running the callback", async t => {
-  const f = await fixture(t, { timeout: 5000 });
-  let executions = 0;
-  const receiptSaved = Promise.withResolvers<void>();
-  let blackhole = true;
-  const transport: typeof fetch = async (input, init) => {
-    if (blackhole && String(input).endsWith("/outcome")) { receiptSaved.resolve(); throw new TypeError("Result upload unavailable"); }
-    return fetch(input, init);
-  };
-  const tools = { echo: echo(() => { executions++; return "receipt survives restart"; }) };
-  const agent = await f.start(tools, {}, { fetch: transport });
-  const pending = agent.execute('return await tools.echo({value:"write"})', { idempotencyKey: "restart-request" });
-  const rejected = assert.rejects(pending, /closed/);
-  await receiptSaved.promise;
-  await agent.close(); await rejected;
-  blackhole = false;
-  const resumed = await new AgentRuntime(f.runtimeOptions).connectAgent(agent.session, { tools });
-  f.clients.push(resumed);
-  const result = await resumed.execute('return await tools.echo({value:"write"})', { idempotencyKey: "restart-request" });
-  assert.deepEqual(result.output, ["receipt survives restart"]);
-  assert.equal(executions, 1);
-  const journal = JSON.parse(await readFile(join(f.root, "sdk", `${agent.session.id}.json`), "utf8"));
-  assert.equal(Object.values(journal.calls).length, 1);
 });
 
 test("bounded replay gaps recover from state; settled requests remain deduplicated after host restart", async t => {
@@ -342,13 +310,13 @@ test("SDK system prompts are agent-scoped and persisted across host restarts", a
   assert.equal((await f.header(agent.session.id)).config.systemPrompt, systemPrompt);
 });
 
-test("streamed events are not journaled: only request and tool state reach the session log", async t => {
+test("streamed events are not journaled: only request state reaches the session log", async t => {
   const f = await fixture(t);
   const agent = await f.start({ echo: echo(({ value }) => value) });
   await agent.execute('for (let i = 0; i < 200; i++) text("line " + i); return await tools.echo({value:"done"})');
   const journal = (await readFile(join(f.root, "sessions", `${agent.session.id}.journal.jsonl`), "utf8")).trim().split("\n").map(line => JSON.parse(line));
   assert.ok(journal.length <= 6, `journal has ${journal.length} records`);
-  assert.deepEqual([...new Set(journal.map((record: any) => record.t))].sort(), ["call", "request"]);
+  assert.deepEqual([...new Set(journal.map((record: any) => record.t))], ["request"], "tool calls are not journaled: the transcript has them");
   const header = await f.header(agent.session.id);
   assert.equal(header.version, 3);
   assert.equal("events" in header, false);
@@ -500,9 +468,7 @@ test("an execution's start is durable before its first tool call takes effect, a
   const computing = (await durable(agent.session.id)).filter(entry => entry.t === "request" && entry.record.id === "slow-start");
   assert.deepEqual(computing.map(entry => [entry.record.state, entry.record.began]), [["running", undefined]]);
   assert.equal((await run).output[0], "x");
-  // The application got the call only once the start and the call's delivery were durable, in that order.
+  // The application got the call only once the run's start was durable.
   const [atEffect] = seen;
-  const began = atEffect.findIndex(entry => entry.t === "request" && entry.record.id === "slow-start" && entry.record.began);
-  const delivered = atEffect.findIndex(entry => entry.t === "call" && entry.record.state === "started");
-  assert.ok(began >= 0 && delivered > began, JSON.stringify(atEffect));
+  assert.ok(atEffect.some(entry => entry.t === "request" && entry.record.id === "slow-start" && entry.record.began), JSON.stringify(atEffect));
 });

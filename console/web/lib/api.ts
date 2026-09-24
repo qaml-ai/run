@@ -59,7 +59,6 @@ export interface RequestRecord {
 export interface AgentDetail extends AgentSummary {
   definition?: { id: string; revision: number };
   tools: { name: string; description: string }[]; systemPrompt: string; requests: RequestRecord[];
-  calls: { id: string; name: string; state: string; createdAt?: number; outcome?: { error?: string; uncertain?: boolean } }[];
 }
 export interface ApiToken { id: string; name: string; prefix: string; createdAt: number }
 export interface Usage {

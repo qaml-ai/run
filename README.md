@@ -187,14 +187,13 @@ SIGTERM, and turns can run far longer, so tasks avoid being stopped mid-turn:
 run began and never finished (its node crashed, was killed, or drained out of
 time), the turn resumes there under the same request ID instead of failing: an
 answer the model had already finished is taken as the outcome; otherwise any
-tool call whose outcome was lost gets an "outcome unknown" result (delivered calls
-are never sent again) and the model is called once more to continue. A run is
+tool call whose outcome was lost gets an "outcome unknown" result (a call is
+never sent again) and the model is called once more to continue. A run is
 resumed at most twice, counted in the journal; after that, and for code
 executions, the request fails as uncertain. A code execution counts as begun
 once it has called a tool: until then it has no effect outside its sandbox, so
 one whose node is lost before its first tool call is simply run again (its
-start becomes durable when its first tool call is delivered, or before a tool the
-runtime answers itself).
+start becomes durable before its first tool call is sent anywhere).
 
 **Load.** Every minute each node logs a `node_load` line in CloudWatch Embedded
 Metric Format: namespace `AgentRuntime`, metrics `hostedAgents` (agents started
@@ -338,11 +337,11 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
   being converted to UI messages. A retried provider error is retracted. The
   supervisor writes it under the agent's ownership claim; an agent in its own
   process sends records over IPC and holds no database connection.
-- `<session>.journal.jsonl`: request and tool-call state changes. It is fsynced
-  only where correctness needs it: accepting a request, delivering a tool call
-  (before the application can perform the side effect), and recording outcomes.
-  Old settled records are folded away, keeping the most recent 256 of each
-  for idempotent retries.
+- `<session>.journal.jsonl`: request state changes. It is fsynced only where
+  correctness needs it: accepting a request, a run's start (before its first tool
+  call can have an effect), and recording outcomes. Tool calls are not journaled:
+  the transcript has them. Old settled records are folded away, keeping the most
+  recent 256 for idempotent retries.
 
 Streamed events (token deltas, tool progress) are kept in a bounded in-memory
 buffer for SSE replay. After a host restart a client's cursor falls outside the
@@ -355,8 +354,8 @@ If the runtime dies mid-turn, the next owner resumes the turn (see
 "outcome unknown" result so the model neither assumes success nor repeats the
 effect blindly, and the model continues from there. A turn that cannot resume
 (a code execution, or one resumed twice already) is closed with a runtime notice
-and its request completes with an `uncertain` error. Delivered tool calls are never
-re-sent, and nothing blocks later requests.
+and its request completes with an `uncertain` error. Tool calls are never re-sent,
+and nothing blocks later requests.
 
 Transient provider failures (overload, rate limits, 5xx, dropped streams) are
 retried in the same turn with exponential backoff (3 attempts from 2 s).
@@ -920,7 +919,7 @@ the Worker, retaining its authorization and confirmation checks.
 The application no longer owns model retries, model-context compaction, or
 isolate-death recovery. A browser/DO reconnect observes the saved service request
 ID. It never re-prompts the model to reconstruct a UI stream. The DO retains only
-a UI turn marker, the SDK receipt cursor, and a render projection.
+a UI turn marker, the SDK event cursor, and a render projection.
 
 The service persists native messages and tool outcomes. A killed service run
 resumes on the next node with "outcome unknown" tool results (at most twice,

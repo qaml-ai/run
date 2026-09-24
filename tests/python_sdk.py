@@ -79,7 +79,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         async def flaky_request(method, url, **kwargs):
             response = await original(method, url, **kwargs)
             suffix = str(url).split("/")[-1]
-            if method == "POST" and suffix in ("requests", "outcome") and suffix not in dropped:
+            if method == "POST" and suffix in ("requests", "mcp") and suffix not in dropped:
                 dropped.add(suffix)
                 raise ConnectionError("Simulated acknowledgement lost after server commit")
             return response
@@ -90,9 +90,10 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         repeated = await agent.execute(script, idempotency_key="stable-python-request")
         self.assertEqual(first, repeated)
         self.assertEqual(len(writes), 1)
-        self.assertEqual(dropped, {"requests", "outcome"})
+        self.assertEqual(dropped, {"requests", "mcp"})
 
-        # Restart only the receive stream while the application callback is live.
+        # Restart only the receive stream while the application callback is live: the call on
+        # the old connection ends as unknown, and is not sent again.
         pending = asyncio.create_task(agent.execute('return await tools.save({value:"hold"})'))
         await asyncio.wait_for(entered.wait(), 5)
         agent.runner.cancel()
@@ -100,12 +101,13 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         agent.runner = None
         agent.ready.clear()
         await agent.connect()
+        with self.assertRaisesRegex(Exception, "outcome is unknown"):
+            await asyncio.wait_for(pending, 5)
         release.set()
-        result = await asyncio.wait_for(pending, 5)
-        self.assertEqual(json.loads(result["output"][0]), {"saved": "hold"})
+        await asyncio.sleep(0.2)
         self.assertEqual(len(writes), 2)
         self.assertNotEqual(writes[0][1], writes[1][1])
-        self.assertTrue(all(call["state"] == "completed" for call in (await agent.outcomes())["calls"]))
+        self.assertEqual(json.loads((await agent.execute(script))["output"][0]), {"saved": "once"}, "the new connection answers calls")
         await agent.destroy()
 
     async def test_volumes_files_snapshots_and_mounts(self):

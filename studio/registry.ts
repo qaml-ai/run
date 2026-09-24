@@ -1,19 +1,10 @@
-import type { CallRecord, ClientEvent, RequestRecord } from '../shared/client-protocol.ts';
+import type { ClientEvent, RequestRecord } from '../shared/client-protocol.ts';
 import type { AgentView, Run, Trace } from './types.ts';
 export interface RegistrySnapshot {
   id: string; name: string; type: string; connected: boolean; systemPrompt: string;
   tools: { name: string; description: string; parameters: unknown }[];
   cursor: number; events: { id: number; at?: number; data: ClientEvent }[];
-  requests: RequestRecord[]; calls: CallRecord[];
-}
-/** A call's outcome as a trace shows it: an MCP result's data (its error text when `isError`), or the plain result. */
-function toolOutcome(outcome: CallRecord['outcome']): Pick<Trace, 'result' | 'error'> {
-  const result = outcome?.result as any;
-  if (!result || !Array.isArray(result.content)) return { result, error: outcome?.error };
-  const text = result.content.filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n');
-  if (result.isError) return { error: text || 'Tool failed' };
-  if (result.structuredContent !== undefined) return { result: result.structuredContent };
-  try { return { result: JSON.parse(text) }; } catch { return { result: text }; }
+  requests: RequestRecord[];
 }
 /** Fold the passive runtime journal; never connect a second tool receiver. */
 export function snapshotAgent(snapshot: RegistrySnapshot, previous: Run[]): AgentView {
@@ -43,11 +34,6 @@ export function snapshotAgent(snapshot: RegistrySnapshot, previous: Run[]): Agen
       if (ev.type === 'codemode') add({ kind: 'sandbox', event: ev.event });
     }
     run.cursor = snapshot.cursor;
-    for (const call of snapshot.calls.filter(c => c.requestId === request.id)) {
-      const trace: Trace = { at: call.createdAt ?? run.started, kind: 'tool', callId: call.id, name: call.name, args: call.args, ...toolOutcome(call.outcome) };
-      const index = run.traces.findIndex(t => t.callId === call.id);
-      if (index >= 0) run.traces[index] = trace; else if (run.traces.length < 300) run.traces.push(trace);
-    }
     run.traces.sort((a, b) => a.at - b.at);
     if (request.state !== 'running') {
       const outcome = request.outcome;
