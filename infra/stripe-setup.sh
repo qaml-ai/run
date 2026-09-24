@@ -26,9 +26,9 @@ fi
 open "$dash/apikeys/create?name=agent-runtime%20credit&permissions%5B%5D=rak_customer_write&permissions%5B%5D=rak_checkout_session_write"
 echo "In the page that opened: check the key has Customers: Write and Checkout Sessions: Write, click Create key, and copy it."
 # Read from the clipboard rather than a prompt, so this also works where stdin isn't a terminal.
-echo "Waiting for a $mode key on the clipboard (5 minutes)..."
+echo "Waiting for a $mode key on the clipboard (15 minutes)..."
 key=
-for i in {1..300}; do
+for i in {1..900}; do
   clip=$(pbpaste 2>/dev/null | tr -d '[:space:]')
   if [[ $clip == rk_${mode}_* || $clip == sk_${mode}_* ]]; then key=$clip; break; fi
   sleep 1
