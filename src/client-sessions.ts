@@ -321,9 +321,13 @@ export class ClientSessions {
     for (const finish of session.pending.values()) finish({ error: session.fault.message, uncertain: true });
   }
 
-  /** Drop old settled records once the journal is long, keeping recent ones for idempotent retries. */
+  /**
+   * Drop old settled records once the journal is long, keeping recent ones for idempotent retries.
+   * The appended count starts over with each load, so an agent that wakes often but briefly is
+   * folded by how many records it holds.
+   */
   private async fold(session: Session) {
-    if (session.log.appendedSinceRewrite < FOLD_AFTER_RECORDS) return;
+    if (session.log.appendedSinceRewrite < FOLD_AFTER_RECORDS && session.requests.size + session.calls.size < 4 * RETAINED_SETTLED) return;
     const prune = <T extends { id: string; state: string }>(records: Map<string, T>, at: (record: T) => number) => {
       const old = [...records.values()].filter(record => settled(record.state)).sort((a, b) => at(a) - at(b));
       for (const record of old.slice(0, Math.max(0, old.length - RETAINED_SETTLED))) records.delete(record.id);

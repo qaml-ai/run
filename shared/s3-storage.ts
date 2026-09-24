@@ -20,14 +20,14 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
   const missing = (error: unknown) => error instanceof S3ServiceException && (error.name === "NoSuchKey" || error.$metadata.httpStatusCode === 404);
 
   async function list(prefix: string) {
-    const keys: string[] = [];
+    const objects: { key: string; size: number }[] = [];
     let token: string | undefined;
     do {
       const page = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: objectKey(prefix), ContinuationToken: token }));
-      for (const item of page.Contents ?? []) if (item.Key) keys.push(item.Key);
+      for (const item of page.Contents ?? []) if (item.Key) objects.push({ key: item.Key, size: item.Size ?? 0 });
       token = page.IsTruncated ? page.NextContinuationToken : undefined;
     } while (token);
-    return keys;
+    return objects;
   }
   async function getText(key: string) {
     try { return await (await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }))).Body!.transformToString("utf8"); }
@@ -42,9 +42,11 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
     const directory = `${at(key)}.log/`;
     return {
       async list() {
-        const names = (await list(`${key}.log/`)).map(name => name.slice(directory.length));
+        const objects = (await list(`${key}.log/`)).map(object => ({ name: object.key.slice(directory.length), size: object.size }));
+        const names = objects.map(object => object.name);
         return {
           segments: names.filter(name => /^\d+$/.test(name)).map(Number).sort((a, b) => a - b),
+          bytes: new Map(objects.filter(object => !object.name.startsWith("blob-")).map(object => [object.name, object.size])),
           snapshots: names.filter(name => /^snapshot-\d+$/.test(name)).map(name => Number(name.slice(9))).sort((a, b) => a - b),
         };
       },
@@ -68,7 +70,7 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
     async removeLog(key) {
       const store = segments(key);
       const directory = `${at(key)}.log/`;
-      await store.remove((await list(`${key}.log/`)).map(name => name.slice(directory.length)));
+      await store.remove((await list(`${key}.log/`)).map(object => object.key.slice(directory.length)));
     },
     async readBlob(key) {
       try {

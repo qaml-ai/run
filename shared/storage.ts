@@ -69,8 +69,13 @@ function fileSegments(directory: string): SegmentStore {
       let names: string[] = [];
       try { names = await readdir(directory); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const bytes = new Map<string, number>();
+      await Promise.all(names.filter(name => /^(snapshot-)?\d+$/.test(name)).map(async name => {
+        try { bytes.set(name, (await stat(join(directory, name))).size); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }));
       return {
-        segments: names.filter(name => /^\d+$/.test(name)).map(Number).sort((a, b) => a - b),
+        segments: names.filter(name => /^\d+$/.test(name)).map(Number).sort((a, b) => a - b), bytes,
         snapshots: names.filter(name => /^snapshot-\d+$/.test(name)).map(name => Number(name.slice(9))).sort((a, b) => a - b),
       };
     },
@@ -105,8 +110,10 @@ export function memoryStorage(tail: LogTail): Storage & { logs: Map<string, Map<
  * records through sequence `n`; a snapshot at `n` replaces everything up to `n`.
  * Objects are created once and never change.
  */
+export interface Listing { segments: number[]; snapshots: number[]; bytes?: Map<string, number> }
 export interface SegmentStore {
-  list(): Promise<{ segments: number[]; snapshots: number[] }>;
+  /** `bytes`, when the store knows it cheaply, is each segment's and snapshot's size, by object name. */
+  list(): Promise<Listing>;
   read(name: string): Promise<string>;
   /** Create a segment, snapshot or blob; throws PreconditionFailed if it already exists. */
   create(name: string, body: string): Promise<void>;
@@ -124,6 +131,7 @@ function memorySegments(logs: Map<string, Map<string, string>>, key: string, put
       const names = [...objects().keys()];
       return {
         segments: names.filter(name => /^\d+$/.test(name)).map(Number).sort((a, b) => a - b),
+        bytes: new Map(names.filter(name => !name.startsWith("blob-")).map(name => [name, Buffer.byteLength(objects().get(name)!)])),
         snapshots: names.filter(name => name.startsWith("snapshot-")).map(name => Number(name.slice(9))).sort((a, b) => a - b),
       };
     },
@@ -163,6 +171,26 @@ const BLOB_BYTES = 64 * 1024;
 /** A tail past either bound is compacted without waiting for the actor to unload. */
 const TAIL_RECORDS = 512;
 const TAIL_BYTES = 4 * 1024 * 1024;
+/**
+ * A compaction that would leave more than this many segments after the latest
+ * snapshot, or segments larger in all than the snapshot (and than FOLD_BYTES),
+ * writes a new snapshot instead: the whole log folded into one object. So a log
+ * is at most a snapshot and FOLD_SEGMENTS segments, however often its actor
+ * wakes, and folding costs at most about twice the log's size in writes.
+ */
+export const FOLD_SEGMENTS = 8;
+const FOLD_BYTES = 4 * 1024 * 1024;
+/** Objects a read fetches at once. */
+const READ_PARALLELISM = 8;
+
+/** `work` over `items` with at most `limit` running at once; results in order. */
+async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const index = next++; results[index] = await work(items[index]); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 /**
  * An AppendLog over immutable segments plus a hot tail. Every record has a
@@ -193,6 +221,18 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
   const fence = () => fenced ??= new PreconditionFailed(`${key} (another owner is appending)`);
   const position = async () => next ??= Math.max(covered(await store.list()), await tail.last(key) ?? -1) + 1;
   const body = (row: TailRow) => row.body ?? store.read(`blob-${row.blob}`);
+  /** What Storage holds per `listing`: the latest snapshot's records, then later segments', fetched a few at a time. */
+  const stored = async (listing: Listing): Promise<T[]> => {
+    const snapshot = listing.snapshots.at(-1);
+    const names = [
+      ...(snapshot === undefined ? [] : [`snapshot-${segmentName(snapshot)}`]),
+      ...listing.segments.filter(sequence => snapshot === undefined || sequence > snapshot).map(segmentName),
+    ];
+    const texts = await mapLimit(names, READ_PARALLELISM, name => store.read(name));
+    const records: T[] = snapshot === undefined ? [] : JSON.parse(texts.shift()!);
+    for (const text of texts) for (const line of text.split("\n")) if (line) records.push(JSON.parse(line));
+    return records;
+  };
 
   async function insert(texts: string[], snapshot: boolean) {
     const first = await position();
@@ -223,9 +263,17 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       const last = fresh.at(-1)!.seq;
       const texts = await Promise.all(fresh.map(body));
       const start = fresh.findLastIndex(row => row.snapshot);
-      if (start < 0) await store.create(segmentName(last), texts.join("\n") + "\n");
+      const base = listing.snapshots.at(-1);
+      const pending = listing.segments.filter(sequence => base === undefined || sequence > base);
+      const size = (name: string) => listing.bytes?.get(name) ?? 0;
+      const pendingBytes = pending.reduce((sum, sequence) => sum + size(segmentName(sequence)), 0) + texts.reduce((sum, text) => sum + Buffer.byteLength(text) + 1, 0);
+      const fold = pending.length >= FOLD_SEGMENTS || pendingBytes > Math.max(FOLD_BYTES, base === undefined ? 0 : size(`snapshot-${segmentName(base)}`));
+      if (start < 0 && !fold) await store.create(segmentName(last), texts.join("\n") + "\n");
       else {
-        await store.create(`snapshot-${segmentName(last)}`, JSON.stringify([...JSON.parse(texts[start]), ...texts.slice(start + 1).map(text => JSON.parse(text))]));
+        // A rewrite among the rows replaces everything before it; otherwise fold Storage's records and the rows into one snapshot.
+        const records = start >= 0 ? JSON.parse(texts[start]) : await stored(listing);
+        for (const text of texts.slice(start + 1)) records.push(JSON.parse(text));
+        await store.create(`snapshot-${segmentName(last)}`, JSON.stringify(records));
         superseded = [...listing.segments.map(segmentName), ...listing.snapshots.map(item => `snapshot-${segmentName(item)}`)];
       }
       return last;
@@ -250,13 +298,13 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     // Serialized with writes, so a read beside a live writer never moves its position back.
     read: () => serialize(async () => {
       // The tail first: a compaction between the two reads then shows up in Storage, never in neither.
-      const rows = await tail.rows(key);
-      const listing = await store.list();
-      const snapshot = listing.snapshots.at(-1);
-      let records: T[] = snapshot === undefined ? [] : JSON.parse(await store.read(`snapshot-${segmentName(snapshot)}`));
-      for (const sequence of listing.segments) {
-        if (snapshot !== undefined && sequence <= snapshot) continue;
-        for (const line of (await store.read(segmentName(sequence))).split("\n")) if (line) records.push(JSON.parse(line));
+      let rows: TailRow[], listing: Listing, records: T[];
+      for (let attempt = 1; ; attempt++) {
+        rows = await tail.rows(key);
+        listing = await store.list();
+        // A compaction elsewhere (this log's owner, when this reader is not it) may fold and delete what was listed: read again.
+        try { records = await stored(listing); break; }
+        catch (error) { if (attempt >= 3) throw error; }
       }
       const through = covered(listing);
       // Rows at or below `through` are left by a compaction that stopped before deleting them.

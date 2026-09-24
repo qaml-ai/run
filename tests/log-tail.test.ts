@@ -9,7 +9,7 @@ import { join } from "node:path";
 import pg from "pg";
 import { getRequestListener } from "@hono/node-server";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { fileStorage, memoryStorage, PreconditionFailed, type LogTail } from "../shared/storage.ts";
+import { FOLD_SEGMENTS, fileStorage, memoryStorage, PreconditionFailed, segmentLog, type LogTail, type SegmentStore } from "../shared/storage.ts";
 import { postgresTail, sweepTails } from "../src/log-tail.ts";
 import { Ownership, type Claim } from "../src/ownership.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
@@ -50,6 +50,51 @@ test("appends go to the tail, not Storage; compaction folds them into one segmen
   assert.deepEqual(await rows(db, "agents/old/log"), []);
   assert.equal(storage.logs.get("agents/old/log")!.get("000000000007"), '{"n":4}\n{"n":5}\n{"n":6}\n{"n":7}\n{"n":8}\n');
   assert.deepEqual(await storage.log("agents/old/log").read(), [1, 2, 3, 4, 5, 6, 7, 8].map(n => ({ n })));
+});
+
+/** A log's segments and snapshots in memory storage (blobs aside). */
+const objects = (storage: ReturnType<typeof memoryStorage>, key: string) => [...storage.logs.get(key)?.keys() ?? []].filter(name => !name.startsWith("blob-"));
+
+test("a log reopened and compacted again and again folds into a snapshot instead of piling up segments", async () => {
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const key = "agents/woken/log";
+  for (let n = 0; n < 30; n++) {
+    const log = storage.log<{ n: number }>(key);
+    assert.deepEqual((await log.read()).map(record => record.n), Array.from({ length: n }, (_, index) => index));
+    log.append({ n }); await log.flush(true);
+    await log.close();
+    assert.ok(objects(storage, key).length <= FOLD_SEGMENTS + 1, `at most a snapshot and ${FOLD_SEGMENTS} segments (had ${objects(storage, key).join(",")})`);
+  }
+  assert.ok(objects(storage, key).some(name => name.startsWith("snapshot-")));
+  assert.deepEqual((await storage.log<{ n: number }>(key).read()).map(record => record.n), Array.from({ length: 30 }, (_, n) => n));
+
+  // Segments larger in all than the snapshot (and a few megabytes) fold too, however few they are.
+  const log = storage.log<{ n: number; pad?: string }>(key);
+  await log.read();
+  log.append({ n: 30, pad: "x".repeat(5 * 1024 * 1024) }); await log.flush(true);
+  await log.close();
+  assert.deepEqual(objects(storage, key).filter(name => !name.startsWith("snapshot-")), [], "one snapshot, no segments");
+  assert.equal((await storage.log<{ n: number }>(key).read()).length, 31);
+});
+
+test("reads fetch a log's segments a few at a time, in order", async () => {
+  const { db } = await testDatabase();
+  const names = Array.from({ length: 20 }, (_, n) => String(n).padStart(12, "0"));
+  let running = 0, peak = 0;
+  const store: SegmentStore = {
+    async list() { return { segments: names.map(Number), snapshots: [] }; },
+    async read(name) {
+      running++; peak = Math.max(peak, running);
+      await sleep(10);
+      running--;
+      return `{"n":${Number(name)}}\n`;
+    },
+    async create() { throw new Error("read only"); },
+    async remove() {},
+  };
+  assert.deepEqual((await segmentLog<{ n: number }>(store, "agents/wide/log", postgresTail(db)).read()).map(record => record.n), names.map(Number));
+  assert.ok(peak > 1 && peak <= 8, `bounded parallelism (peak ${peak})`);
 });
 
 test("a long-lived writer compacts once the tail passes its bound", async () => {
@@ -289,4 +334,40 @@ test("an append may be repeated after its connection dropped: its own rows count
   const down = { query: async () => { throw Object.assign(new Error("Connection terminated unexpectedly"), {}); } } as unknown as pg.Pool;
   await assert.rejects(postgresTail(down, { retryMs: 300 }).append("agents/r/log", claim, batch), /Connection terminated/);
   await assert.rejects(postgresTail(down).append("agents/r/log", claim, batch), /Connection terminated/, "no retries by default");
+});
+
+test("an agent woken thirty times, one execute each, keeps a bounded number of Storage objects and its whole history", { timeout: 120_000 }, async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "tail-wakes-"));
+  const storage = memoryStorage(postgresTail(db));
+  const ownership = new Ownership(db, { node: "http://n" });
+  await ownership.start();
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "tail-test-secret-with-32-characters!", apiKey: "fixture-only" });
+  t.after(async () => {
+    await sessions.close(); await supervisor.close(); await ownership.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const model = { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: "http://127.0.0.1:9/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
+  const { id } = await sessions.create([], { model }, "woken-agent");
+  const logs = [`client-sessions/${id}.journal`, AgentSupervisor.transcriptKey(id)];
+  for (let n = 0; n < 30; n++) {
+    await sessions.submit(id, "default", { id: `wake-${n}`, method: "execute", params: { code: `return ${n}` } });
+    for (let tries = 0; sessions.sessions.get(id)?.requests.get(`wake-${n}`)?.state !== "completed" || sessions.inFlight(); tries++) {
+      assert.ok(tries < 1000, `execute ${n} finished`);
+      await sleep(5);
+    }
+    // Unloading compacts the tail into Storage: once per wake.
+    await sessions.releaseIdle();
+    assert.equal(sessions.sessions.has(id), false);
+    for (const key of logs) assert.ok(objects(storage, key).length <= FOLD_SEGMENTS + 1, `${key} after wake ${n}: ${objects(storage, key).join(",")}`);
+  }
+  assert.ok(objects(storage, logs[0]).some(name => name.startsWith("snapshot-")), "the journal was folded");
+  const state = await sessions.inspect(id, "default");
+  const wakes = state.requests.filter(request => request.id.startsWith("wake-"));
+  assert.equal(wakes.length, 30);
+  for (const [n, request] of wakes.sort((a, b) => a.startedAt! - b.startedAt!).entries()) {
+    assert.equal(request.id, `wake-${n}`);
+    assert.deepEqual((request.outcome as { result: { output: string[] } }).result.output, [String(n)]);
+  }
 });
