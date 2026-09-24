@@ -215,7 +215,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_DATABASE_CA` | PEM bundle the server's certificate must chain to (e.g. `/etc/ssl/rds-global-bundle.pem`); TLS settings in a URL are then ignored |
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_DATABASE_QUERY_TIMEOUT_MS` | how long a query may take before it fails and its connection is replaced (default 30000; 0 for none), so a connection that went dark in a failover cannot hang a request |
-| `AGENT_STORAGE` | `file` (default), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
+| `AGENT_STORAGE` | `file` (default; one node only), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
 | `AGENT_DRAIN_TIMEOUT_MS` | how long SIGTERM waits for running turns before handing them off (default 100000; see [Draining](#draining)) |
@@ -362,7 +362,10 @@ the SDKs retry both. A tenant's entry in the tenants file or secret may set its 
 it; it applies from the next tenants reload (SIGHUP, or the secret's refresh every
 minute) to new starts, and agents already running above a lowered limit keep
 running. With `AGENT_STORAGE=file`, logs are local files, not
-replicated storage; the whole transcript of an active agent is still held in memory.
+replicated storage, and their writes are not fenced: it is for a single node. A node
+with it refuses to start while another node's heartbeat is live in the same database
+(after waiting one lease for a peer that just stopped). The whole transcript of an
+active agent is still held in memory.
 
 The host provider key is only sent to trusted endpoints: the default model's,
 Pi's published endpoint for the requested provider and model, or an entry in

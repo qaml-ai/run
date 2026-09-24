@@ -73,6 +73,12 @@ const lookup = (calls: string[]) => ({
   }),
 });
 
+test("a node with single-host file storage refuses to start beside another node on the same database", { timeout: 60_000 }, async t => {
+  const c = await cluster(t);
+  await c.start("a");
+  await assert.rejects(c.start("b", { AGENT_STORAGE: "file" }), /node b exited: 1/);
+});
+
 test("any node serves any agent: requests are forwarded to the owner, and a survivor takes over when it dies", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const a = await c.start("a");

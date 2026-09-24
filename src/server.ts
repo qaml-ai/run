@@ -72,6 +72,16 @@ const address = await taskAddress();
 const node = nodeUrl(process.env, port, address);
 const ownership = new Ownership(db, { node, ttlMs: leaseTtlMs });
 await ownership.start();
+// Local files are this host's alone: a second node on the same database would serve agents and volumes whose
+// logs it cannot see, with nothing to fence its writes. Wait out a peer that may have just died, then refuse.
+if (!distributed) {
+  for (const deadline = Date.now() + leaseTtlMs; ;) {
+    const peers = await ownership.livePeers();
+    if (!peers.length) break;
+    if (Date.now() >= deadline) throw new Error(`AGENT_STORAGE=file is for one node, but other nodes share this database (${peers.join(", ")}); use shared-file or s3 for several nodes`);
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+  }
+}
 const hosting = (process.env.AGENT_HOSTING ?? "process") as Hosting;
 if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
 const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: process.env.AGENT_RUNTIME, maxAgents, hosting, ...(distributed ? { storage } : {}) });
