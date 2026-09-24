@@ -79,3 +79,34 @@ resource "aws_cloudwatch_metric_alarm" "running_tasks" {
   alarm_actions       = local.alarm_topics
   ok_actions          = local.alarm_topics
 }
+
+# The runtime logs {"type": ...} JSON lines when it cannot protect its task or
+# read its service's deployments (missing IAM shows up here). Without either,
+# scale-in can stop tasks mid-turn and superseded tasks never retire.
+resource "aws_cloudwatch_log_metric_filter" "ecs_control_errors" {
+  name           = "${var.name}-ecs-control-errors"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ ($.type = \"task_protection_failed\") || ($.type = \"ecs_service_check_failed\") || ($.type = \"ecs_service_unavailable\") }"
+
+  metric_transformation {
+    namespace     = "AgentRuntime/Logs"
+    name          = "EcsControlErrors"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "ecs_control_errors" {
+  alarm_name          = "${var.name}-ecs-control-errors"
+  alarm_description   = "Runtime tasks fail to set task protection or read the ECS service (task_protection_failed, ecs_service_check_failed, ecs_service_unavailable in /ecs/${var.name})"
+  namespace           = "AgentRuntime/Logs"
+  metric_name         = "EcsControlErrors"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 2
+  threshold           = 3
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}

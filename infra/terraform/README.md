@@ -136,6 +136,11 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
     checks. The service scheduler replaces tasks that fail ALB health checks
     as a separate mechanism ([ALB health checks for ECS][hc]), so a protected
     task that returned 503 would be killed, along with its turns.
+  - **Knobs** (runtime defaults, not set by Terraform):
+    `AGENT_RETIRE_MAX_MS=21600000`, `AGENT_ECS_POLL_MS=30000`,
+    `AGENT_PROTECTION_IDLE_MS=30000`. `AGENT_ECS_SERVICE` is required for
+    retirement. `ECS_AGENT_URI` and `ECS_CONTAINER_METADATA_URI_V4` come from
+    Fargate.
   - **How long protection lasts.** `AGENT_RETIRE_MAX_MS` (6 h) bounds how long
     a task holds protection. The runtime must keep refreshing it within the
     2880-minute limit.
@@ -168,6 +173,15 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
   - `-target-5xx`: more than 25 task 5xx in 5 minutes;
   - `-running-tasks`: `RunningTaskCount` below the minimum for 5 minutes. This
     needs Container Insights.
+  - `-ecs-control-errors`: at least 3 runtime log lines of type
+    `task_protection_failed`, `ecs_service_check_failed` or
+    `ecs_service_unavailable` in each of two 5-minute periods. A log metric
+    filter on `/ecs/camelai-agent-runtime` counts them as
+    `AgentRuntime/Logs` `EcsControlErrors`. Missing IAM or ECS API trouble shows
+    up here: without protection, scale-in can stop busy tasks, and without the
+    service check, superseded tasks never retire. The `retiring` and `retired`
+    lines can be found with a Logs Insights query:
+    `filter type in ["retiring", "retired"]`.
 
   CloudWatch alarms can only notify a topic in their own region, so these use
   the new us-west-2 topic `camelai-agent-runtime-alerts` (output
