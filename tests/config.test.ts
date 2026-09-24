@@ -61,3 +61,16 @@ test("a tenant's maxMonthlyCost is a non-negative number of USD; an invalid one 
   await tenants.reload();
   assert.equal(tenants.maxMonthlyCost("acme"), undefined);
 });
+
+test("a tenant's apiKeys are optional, and invalid ones still reject the reload", async () => {
+  const token = createHash("sha256").update("acme-token").digest("hex");
+  let secret = JSON.stringify({ tenants: { acme: { tokenSha256: token, billing: "prepaid" } } });
+  const tenants = new Tenants({ read: async () => secret });
+  await tenants.reload();
+  assert.ok(tenants.authenticate("Bearer acme-token"));
+  assert.deepEqual(tenants.providers("acme"), []);
+  for (const bad of [null, [], { anthropic: "" }, "key"]) {
+    secret = JSON.stringify({ tenants: { acme: { tokenSha256: token, apiKeys: bad } } });
+    await assert.rejects(tenants.reload(), /invalid apiKeys/, JSON.stringify(bad));
+  }
+});
