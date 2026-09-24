@@ -175,5 +175,5 @@ variable "dns_target" {
 variable "dns_ttl" {
   description = "TTL of the runtime record. Lower it to 60 at least one old TTL before flipping dns_target."
   type        = number
-  default     = 300
+  default     = 60
 }
