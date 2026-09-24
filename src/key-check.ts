@@ -1,6 +1,8 @@
 import { getModels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
+const CHECK_ORDER = ["openai-completions", "openai-responses", "mistral-conversations", "google-generative-ai", "anthropic-messages"];
+
 export type KeyCheck = { status: "valid" | "unverified"; detail?: string } | { status: "invalid"; detail: string };
 
 /**
@@ -9,7 +11,9 @@ export type KeyCheck = { status: "valid" | "unverified"; detail?: string } | { s
  * else (unknown API, network trouble, 5xx) leaves the key unverified but usable.
  */
 export async function checkProviderKey(provider: string, key: string, fetcher: typeof fetch = fetch): Promise<KeyCheck> {
-  const model = (getModels(provider as never) as Model<Api>[]).find(candidate => candidate.baseUrl && !candidate.baseUrl.includes("{"));
+  const usable = (getModels(provider as never) as Model<Api>[]).filter(candidate => candidate.baseUrl && !candidate.baseUrl.includes("{"));
+  // Gateways such as OpenRouter also serve some models over Anthropic's API; their key is checked the OpenAI way.
+  const model = CHECK_ORDER.map(api => usable.find(candidate => candidate.api === api)).find(Boolean) ?? usable[0];
   if (!model) return { status: "unverified", detail: "No published endpoint to check against" };
   const base = model.baseUrl.replace(/\/+$/, "");
   let request: { url: string; headers: Record<string, string> };

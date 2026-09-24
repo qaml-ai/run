@@ -253,6 +253,9 @@ test("key checks treat only 401/403 as invalid and send each API's auth header",
   assert.equal((await checkProviderKey("google", "k3", fetcher(503))).status, "unverified");
   assert.equal(seen[2].headers["x-goog-api-key"], "k3");
   assert.equal((await checkProviderKey("openai", "k4", (async () => { throw new Error("offline"); }) as typeof fetch)).status, "unverified");
+  // OpenRouter also serves Claude over Anthropic's API, but its key is checked the OpenAI way.
+  assert.equal((await checkProviderKey("openrouter", "k5", fetcher(200))).status, "valid");
+  assert.deepEqual(seen[3], { url: "https://openrouter.ai/api/v1/models", headers: { Authorization: "Bearer k5" } });
 });
 
 test("usage is recorded per response and summed per day and model across nodes", async () => {
