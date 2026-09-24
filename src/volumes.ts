@@ -583,16 +583,21 @@ export class VolumeService {
     return mounts;
   }
 
-  /** Record which volumes wake `agent` on change, after its mounts changed from `previous` to `next`. */
-  async watch(agent: string, tenant: string, previous: Mount[], next: Mount[]) {
+  /**
+   * Record which volumes wake `agent` on change, after its mounts changed from `previous` to `next`.
+   * The watches are the agent's, so they are written under its owner's `claim`.
+   */
+  async watch(agent: string, tenant: string, previous: Mount[], next: Mount[], claim: Claim | undefined) {
     const volumes = new Set([...previous, ...next].map(mount => mount.volumeId));
-    for (const volumeId of volumes) {
-      const mounts = next.filter(mount => mount.volumeId === volumeId && mount.notify).map(mount => ({ path: mount.path, subpath: mount.subpath ?? "/" }));
-      if (mounts.length) {
-        await this.db.query("insert into volume_watchers (volume, agent, tenant, mounts) values ($1, $2, $3, $4) on conflict (volume, agent) do update set tenant = excluded.tenant, mounts = excluded.mounts",
-          [volumeId, agent, tenant, JSON.stringify(mounts)]);
-      } else if (previous.some(mount => mount.volumeId === volumeId && mount.notify)) await this.db.query("delete from volume_watchers where volume = $1 and agent = $2", [volumeId, agent]);
-    }
+    await underClaim(this.db, claim, async sql => {
+      for (const volumeId of volumes) {
+        const mounts = next.filter(mount => mount.volumeId === volumeId && mount.notify).map(mount => ({ path: mount.path, subpath: mount.subpath ?? "/" }));
+        if (mounts.length) {
+          await sql.query("insert into volume_watchers (volume, agent, tenant, mounts) values ($1, $2, $3, $4) on conflict (volume, agent) do update set tenant = excluded.tenant, mounts = excluded.mounts",
+            [volumeId, agent, tenant, JSON.stringify(mounts)]);
+        } else if (previous.some(mount => mount.volumeId === volumeId && mount.notify)) await sql.query("delete from volume_watchers where volume = $1 and agent = $2", [volumeId, agent]);
+      }
+    });
   }
 
   /** Coalesce changes briefly, then prompt each watching agent once about the ones in its mounts. */

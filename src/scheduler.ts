@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { transaction, type Db } from "./db.ts";
+import type { Db } from "./db.ts";
+import { underClaim, type Claim } from "./ownership.ts";
 
 /**
  * Durable timers that wake agents with a prompt, on any node. Each schedule is a
@@ -8,10 +9,12 @@ import { transaction, type Db } from "./db.ts";
  * minute. Delivery submits a request whose id is derived from the schedule and due
  * time, so a repeated delivery (after a crash) is a no-op.
  *
- * Schedules are API state any node writes, not state an agent's owner holds: they
- * are kept consistent by their own conditions. Creates for one agent take turns
- * (an advisory lock), so its cap holds; a claim is a token of its own, so only the
- * scan that took a wake-up moves it on, even after its node restarted under the same name.
+ * The API writes schedules from any node, so they are kept consistent by their own
+ * conditions: creates for one agent take turns (an advisory lock), so its cap holds,
+ * and a scan's claim is a token of its own, so only the scan that took a wake-up
+ * moves it on, even after its node restarted under the same name. An agent's own
+ * routes, served by its owner, also pass the owner's claim: a node that lost the
+ * agent then changes none of its schedules.
  */
 /** A wake-up either prompts the agent (`text`) or runs sandboxed code with its tools (`code`). */
 export interface Schedule {
@@ -49,13 +52,13 @@ export class Scheduler {
   }
   stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
-  async create(input: { agent: string; tenant: string; text?: string; code?: string; dueAt: number; everySeconds?: number }): Promise<Schedule> {
+  async create(input: { agent: string; tenant: string; text?: string; code?: string; dueAt: number; everySeconds?: number }, claim?: Claim): Promise<Schedule> {
     const content = input.text ?? input.code;
     if ((input.text === undefined) === (input.code === undefined) || typeof content !== "string" || !content.trim() || content.length > 32_000) throw new Error("Give exactly one of text or code (1–32000 characters)");
     if (!Number.isFinite(input.dueAt)) throw new Error("A schedule needs a due time");
     if (input.everySeconds !== undefined && (!Number.isInteger(input.everySeconds) || input.everySeconds < MIN_REPEAT_SECONDS)) throw new Error(`everySeconds must be an integer of at least ${MIN_REPEAT_SECONDS}`);
     const created: Schedule = { id: randomUUID(), ...input, dueAt: Math.round(input.dueAt), createdAt: Date.now() };
-    await transaction(this.db, async sql => {
+    await underClaim(this.db, claim, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`schedules:${input.agent}`]);
       if ((await sql.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
       await sql.query(`insert into schedules (${COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -68,9 +71,9 @@ export class Scheduler {
     return (await this.db.query(`select ${COLUMNS} from schedules where agent = $1 order by due_at, id`, [agent])).rows.map(schedule);
   }
 
-  async remove(agent: string, id: string) {
+  async remove(agent: string, id: string, claim?: Claim) {
     if (!/^[0-9a-f-]{36}$/.test(id)) return false;
-    return !!(await this.db.query("delete from schedules where agent = $1 and id = $2", [agent, id])).rowCount;
+    return !!(await underClaim(this.db, claim, sql => sql.query("delete from schedules where agent = $1 and id = $2", [agent, id]))).rowCount;
   }
 
   /** Deliver every due wake-up this node claims. */

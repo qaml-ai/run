@@ -21,7 +21,7 @@ import { errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
 import { volumeToolDefinitions } from "./volume-tools.ts";
 import { databaseUnavailable, type Db, type Sql } from "./db.ts";
-import { underClaim, type Claim, type Ownership } from "./ownership.ts";
+import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
@@ -529,7 +529,7 @@ export class ClientSessions {
         await this.writeHeader(session);
         this.sessions.set(id, session);
         created = true;
-        if (granted) await this.options.volumes!.watch(id, tenant, [], granted);
+        if (granted) await this.options.volumes!.watch(id, tenant, [], granted, claim);
       } catch (error) {
         if (!created) {
           this.supervisor.unreserve(id);
@@ -570,7 +570,7 @@ export class ClientSessions {
         if (rowCount) await this.purgeData(id, sql);
         return !!rowCount;
       });
-      if (deleted && session.header.mounts?.length) await this.options.volumes?.watch(id, session.header.tenant ?? DEFAULT_TENANT, session.header.mounts, []);
+      if (deleted && session.header.mounts?.length) await this.options.volumes?.watch(id, session.header.tenant ?? DEFAULT_TENANT, session.header.mounts, [], session.claim);
     } catch (error) {
       console.error(JSON.stringify({ type: "agent_discard_failed", agent: id, error: errorText(error) }));
     } finally {
@@ -649,7 +649,7 @@ export class ClientSessions {
     if (!session) throw new HttpError(404, "Unknown agent");
     if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
     const mounts = await this.options.volumes.mountsFor(tenant, id, requested ?? []);
-    await this.options.volumes.watch(id, tenant, session.header.mounts ?? [], mounts);
+    await this.options.volumes.watch(id, tenant, session.header.mounts ?? [], mounts, session.claim);
     session.header.mounts = mounts;
     await this.writeHeader(session);
     if (this.supervisor.agents.has(id) && !this.busy(session)) await this.supervisor.stop(id);
@@ -741,10 +741,10 @@ export class ClientSessions {
       const tenant = c.var.session.header.tenant ?? DEFAULT_TENANT;
       let input;
       try { input = scheduleInput(await readJson(body(c), 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
-      try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input })); } catch (error) { throw new HttpError(400, errorText(error)); }
+      try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input }, c.var.session.claim)); } catch (error) { if (error instanceof LostClaim) throw error; throw new HttpError(400, errorText(error)); }
     });
     app.delete(`${agent}/schedules/:schedule`, async c => {
-      if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"))) throw new HttpError(404, "Unknown schedule");
+      if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"), c.var.session.claim)) throw new HttpError(404, "Unknown schedule");
       return json(c, 200, { deleted: true });
     });
     app.get(`${agent}/history`, async c => json(c, 200, await this.history(c.var.session)));
@@ -1010,17 +1010,17 @@ export class ClientSessions {
     await this.writeHeader(session);
     await this.interrupt(session, "Session revoked");
     session.response?.end();
-    await this.releaseVolumes(session.header);
+    await this.releaseVolumes(session.header, session.claim);
   }
 
   /** A deleted agent stops watching its mounts, and its own workspace goes with it; shared volumes stay. */
-  private async releaseVolumes(header: SessionHeader) {
+  private async releaseVolumes(header: SessionHeader, claim: Claim | undefined) {
     const volumes = this.options.volumes;
     const mounts = header.mounts ?? [];
     if (!volumes || !mounts.length) return;
     const id = header.id, tenant = header.tenant ?? DEFAULT_TENANT;
     try {
-      await volumes.watch(id, tenant, mounts, []);
+      await volumes.watch(id, tenant, mounts, [], claim);
       const workspace = VolumeService.workspaceOf(id);
       if (mounts.some(mount => mount.volumeId === workspace)) await volumes.call(workspace, tenant, "delete");
     } catch (error) {
@@ -1105,7 +1105,7 @@ export class ClientSessions {
     }
     try {
       // Revoking released the agent's volumes; one that expired unrevoked still holds them.
-      if (!header.revoked) await this.releaseVolumes(header);
+      if (!header.revoked) await this.releaseVolumes(header, claim);
       // Under the claim: a node that stalled past its lease finds the claim gone and leaves the purge to whoever took it.
       await underClaim(this.db, claim, async sql => {
         await this.purgeData(id, sql);
