@@ -2,14 +2,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { StorageDescriptor } from "../shared/storage-config.ts";
 
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  resultFormat?: "json" | "content";
-  exposure?: "direct" | "codemode" | "both";
-  executionMode?: "sequential" | "parallel";
-}
+import type { ToolDefinition } from "../shared/client-protocol.ts";
+export type { ToolDefinition };
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown>;

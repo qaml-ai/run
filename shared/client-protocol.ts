@@ -29,3 +29,12 @@ export type ClientEvent =
   | { type: "event"; requestId: string; event: any }
   | { type: "response"; id: string; outcome: Outcome };
 export type SessionState = { cursor: number; calls: CallRecord[]; requests: RequestRecord[] };
+/** A tool an application offers its agent; shared by the SDKs and the runtime. */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  resultFormat?: "json" | "content";
+  exposure?: "direct" | "codemode" | "both";
+  executionMode?: "sequential" | "parallel";
+}

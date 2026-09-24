@@ -2,8 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import { Type, type TSchema, type Static } from "typebox";
 import { Check } from "typebox/value";
-import type { ToolDefinition } from "../src/protocol.ts";
-import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
+import { FRAME_BYTES, type ToolDefinition, type CallRecord, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
 export { Type as schema };
 export type { SessionCredentials, SessionState };
 
