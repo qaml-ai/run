@@ -7,12 +7,20 @@ import { SANDBOX_BOOTSTRAP } from "./sandbox-bootstrap.ts";
 import type { ToolDefinition } from "./protocol.ts";
 
 /**
+ * The last execution's memory, kept for the next one on this thread. A new
+ * WebAssembly.Memory per execution counts as tens of MB of external memory each
+ * time, and V8 answers with a full GC of the worker per execution or so: most of
+ * what an execution cost. Zeroed before reuse, it is as fresh as a new one.
+ */
+let spare: WebAssembly.Memory | undefined;
+
+/**
  * Runs in a pool worker. The main thread has already validated the catalog and
  * prepared the code, and it enforces tool-call schemas and quotas; this side
  * only bounds what crosses from the guest before handing it over.
  */
 export async function runSandbox(options: {
-  /** Compiled once per worker; every execution instantiates it with fresh, bounded memory. */
+  /** Compiled once per worker; every execution instantiates it with zeroed, bounded memory. */
   wasmModule: WebAssembly.Module;
   /** Set by the main thread while guest code may be spinning: the interrupt handler polls it. */
   cancel: Int32Array;
@@ -29,8 +37,10 @@ export async function runSandbox(options: {
 }) {
   // Hard guest-memory boundary: setMemoryLimit alone undercounts bulk
   // allocations in the pinned 0.32.0 release (upstream issue #271).
-  const pages = SANDBOX_LIMITS.wasmBytes / 65536;
-  const memory = new WebAssembly.Memory({ initial: pages, maximum: pages });
+  // It starts at the module's declared minimum (16 MB) and grows in place up to the bound.
+  const memory = spare ?? new WebAssembly.Memory({ initial: 256, maximum: SANDBOX_LIMITS.wasmBytes / 65536 });
+  spare = undefined;
+  new Uint8Array(memory.buffer).fill(0);
   const module = await newQuickJSWASMModuleFromVariant(newVariant(RELEASE_SYNC, { wasmMemory: memory, wasmModule: options.wasmModule }));
   if (module.getWasmMemory() !== memory) throw new Error("QuickJS did not use the bounded memory");
   const runtime = module.newRuntime();
@@ -159,5 +169,6 @@ export async function runSandbox(options: {
     for (const handle of handles.reverse()) if (handle.alive) handle.dispose();
     vm.dispose();
     runtime.dispose();
+    spare = memory;
   }
 }
