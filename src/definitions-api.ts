@@ -28,7 +28,7 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
   };
   route(createRoute({ method: "get", path: "/v1/definitions", responses: { 200: reply("The tenant's definitions", z.array(schema.Definition)) } }),
     async c => json(c, 200, await service().list(c.var.principal.tenant)));
-  route(createRoute({ method: "post", path: "/v1/definitions", request: { body: body(schema.DefinitionInput) }, responses: { 201: reply("The definition, at revision 1", schema.Definition) } }), async c => {
+  route(createRoute({ method: "post", path: "/v1/definitions", request: { body: body(schema.DefinitionInput) }, responses: { 201: reply("The definition, at revision 1, with its signing secret", schema.DefinitionCreated) } }), async c => {
     const definitions = service();
     return json(c, 201, definitions.view(await definitions.create(c.var.principal.tenant, await parse(schema.DefinitionInput, c))));
   });
@@ -50,6 +50,13 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
   route(createRoute({ method: "delete", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition is deleted; agents made from it keep their configuration", schema.Deleted) } }), async c => {
     await service().remove(c.var.principal.tenant, c.req.param("id")!);
     return json(c, 200, { deleted: true });
+  });
+  route(createRoute({
+    method: "post", path: "/v1/definitions/{id}/signing-secret", request: { params: definitionId },
+    responses: { 200: reply("A new signing secret, shown only this once; agents sign with the old one until the new revision is applied to them", schema.SigningSecret) },
+  }), async c => {
+    const { id, revision, signingSecret } = await service().rotateSigningSecret(c.var.principal.tenant, c.req.param("id")!);
+    return json(c, 200, { id, revision, signingSecret });
   });
   route(createRoute({ method: "get", path: "/v1/definitions/{id}/agents", request: { params: definitionId }, responses: { 200: reply("Live agents made from the definition, and the revision each has", z.array(schema.DefinitionAgent)) } }), async c => {
     const definitions = service();

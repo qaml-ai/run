@@ -65,7 +65,7 @@ once. The runtime does not start without a database.
 | the recent records of each append log (`log_records`) | |
 | agent headers: identity, configuration, mounts; the tenant index | volume trees (append logs) |
 | console tenants, sealed provider keys, API tokens, usage | volume chunks and snapshot file maps (blobs, written once) |
-| agent definitions (MCP credentials sealed) | |
+| agent definitions (tool credentials and signing secrets sealed) | |
 | schedules and their claims | |
 | channels, conversations, the outbox, dedupe markers, rate counters | |
 | volume headers, snapshots, watchers | |
@@ -232,7 +232,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_CODE_WORKERS_MIN`, `AGENT_CODE_WORKERS_MAX` | codemode worker threads kept warm (default min(4, cores); none in each agent process under `process` hosting, which starts one on demand) and the most there may be (default 32); workers beyond the minimum stop after 30 s idle, and executions beyond the maximum queue within their own timeout. With sandbox processes, the totals are shared among them |
 | `AGENT_SANDBOX_PROCESSES` | read by `agent-launcher` (the image's entrypoint): how many [sandbox processes](#sandbox-boundary-and-remaining-production-work) run js_exec (default 2, at most 16; 0 runs it in the runtime process) |
 | `AGENT_SANDBOX_REQUIRED` | `1` (the image's default) refuses to start without sandbox processes |
-| `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers use `http://` URLs (tests and development only) |
+| `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers and HTTP tools use `http://` URLs (tests and development only) |
 | `AGENT_OUTBOUND_BLOCK_CIDRS` | ranges no tool source may reach, on top of the built-in private and reserved ranges, e.g. the VPC's CIDR (see [Outbound calls](#outbound-calls)) |
 | `AGENT_OUTBOUND_ALLOW_CIDRS` | exceptions to the built-in ranges, e.g. `127.0.0.1/32` for a local test server; never set in production |
 | `AGENT_SANDBOX_SOCKETS` | set by `agent-launcher`: the sandbox processes' sockets. Without it, js_exec runs on worker threads in the runtime process, as in development on macOS; the `listening` log line's `sandbox` field says which |
@@ -415,13 +415,15 @@ be deleted.
 
 ## Tool sources
 
-An agent's tools come from three places:
+An agent's tools come from four places:
 
 - **Client tools**, declared by an SDK application (or a definition's `tools`)
   and answered by that application over its SSE connection.
 - **Built-ins** the runtime answers itself: `js_exec` (the QuickJS sandbox), the
   file tools over the agent's mounts, and `send_message` for channel agents.
 - **MCP servers** a definition lists (`mcpServers`), which the runtime calls.
+- **HTTP tools** a definition declares (`httpTools`): the runtime sends their
+  arguments to a URL, signed.
 
 The runtime's own tools work whether or not an application is connected, so
 they suit channel agents and anything scheduled. When two sources offer the same
@@ -467,9 +469,45 @@ name, the application's tool wins.
 - A server that cannot be reached when an agent starts contributes no tools
   that time (logged as `mcp_tools_unavailable`); the agent starts anyway.
 
+### HTTP tools
+
+```json
+{"name": "Orders", "httpTools": [{
+  "name": "create_ticket", "description": "Open a support ticket",
+  "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+  "url": "https://api.example.com/agent/tickets", "headers": {"X-Api-Key": "…"}, "exposure": "direct"
+}]}
+```
+
+- The runtime sends the arguments as a JSON body, with `POST` unless `method`
+  says `PUT` or `PATCH`. It does not follow redirects, and it waits up to
+  `timeoutMs` (default 30 s).
+- A 2xx response is the result: parsed if its content type is JSON, otherwise
+  the text. Anything else becomes a tool error that quotes the status and the
+  start of the body. Responses are capped at 1 MiB.
+- `headers` and `auth` are sealed and kept as for MCP servers.
+- Requests carry `X-Agent-Runtime-Agent` and `X-Agent-Runtime-Tool`, and are
+  signed per [Standard Webhooks](https://www.standardwebhooks.com/):
+  - `webhook-id` is a unique call id and `webhook-timestamp` is Unix seconds.
+  - `webhook-signature` is `v1,<base64 HMAC-SHA256 of "<id>.<timestamp>.<body>">`,
+    keyed with the definition's signing secret (`whsec_<base64 key>`).
+  - The secret is returned once, when the definition is created (or when an
+    older definition gets its first HTTP tool). `POST
+    /v1/definitions/:id/signing-secret` replaces it and returns the new one
+    once. Agents keep the secret of their revision until the definition is
+    applied to them, so a receiver should accept both during a rotation.
+- The Standard Webhooks libraries verify these requests. By hand:
+
+```js
+const expected = createHmac("sha256", Buffer.from(secret.slice(6), "base64"))
+  .update(`${headers["webhook-id"]}.${headers["webhook-timestamp"]}.${rawBody}`).digest("base64");
+const ok = headers["webhook-signature"].split(" ").includes(`v1,${expected}`)
+  && Math.abs(Date.now() / 1000 - Number(headers["webhook-timestamp"])) < 300;
+```
+
 ### Outbound calls
 
-Every request to a URL a tenant configured goes through one guard (`src/outbound.ts`):
+Every request to a URL a tenant configured (MCP servers, HTTP tools) goes through one guard (`src/outbound.ts`):
 
 - Only `https://`, unless the operator sets `AGENT_OUTBOUND_ALLOW_HTTP=true`
   (tests and development). No credentials in URLs.
@@ -491,7 +529,7 @@ Every request to a URL a tenant configured goes through one guard (`src/outbound
   address the name returns must pass, and the socket connects to the address
   that was checked. A name that later resolves elsewhere (DNS rebinding) is
   checked again on the next connection, and each new connection resolves afresh.
-- MCP servers get no redirects. Where redirects are followed, each hop is
+- MCP servers and HTTP tools get no redirects. Where redirects are followed, each hop is
   checked the same way, and credentials are never sent to another origin.
 - Requests have a deadline (an event stream is timed until it starts) and
   responses a byte cap.

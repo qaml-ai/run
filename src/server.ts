@@ -103,10 +103,10 @@ const github = secrets.github && { ...secrets.github, org: process.env.GITHUB_OR
 const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 
-// Every call to a URL a tenant configured (MCP servers) goes through one guard: public addresses only.
+// Every call to a URL a tenant configured (MCP servers, HTTP tools) goes through one guard: public addresses only.
 const outbound = outboundFromEnvironment();
 const mcp = new McpConnections({ outbound });
-const toolSources = new ToolSources({ accounts, mcp });
+const toolSources = new ToolSources({ accounts, mcp, outbound });
 const definitions = new Definitions({ db, accounts, outbound });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */

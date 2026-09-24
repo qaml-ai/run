@@ -1225,6 +1225,12 @@
               "$ref": "#/components/schemas/McpServer"
             }
           },
+          "httpTools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HttpTool"
+            }
+          },
           "createdAt": {
             "type": "number"
           },
@@ -1321,6 +1327,100 @@
           "url"
         ]
       },
+      "HttpTool": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The tool's name: letters and digits, single underscores between them"
+          },
+          "description": {
+            "type": "string"
+          },
+          "inputSchema": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "JSON Schema of the arguments, an object"
+          },
+          "url": {
+            "type": "string",
+            "description": "Where the arguments are sent as JSON; https, on a public address. Redirects are not followed"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "POST",
+              "PUT",
+              "PATCH"
+            ],
+            "description": "Default POST"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000,
+            "description": "Default 30000"
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "codemode",
+              "both"
+            ],
+            "description": "How the model calls it: directly, from js_exec (the default), or both"
+          },
+          "executionMode": {
+            "type": "string",
+            "enum": [
+              "sequential",
+              "parallel"
+            ]
+          },
+          "headerNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "auth": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "bearer"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema",
+          "url"
+        ]
+      },
+      "DefinitionCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Definition"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "signingSecret": {
+                "type": "string",
+                "description": "The secret HTTP tool requests are signed with (whsec_…, Standard Webhooks); shown only this once"
+              }
+            }
+          }
+        ]
+      },
       "DefinitionInput": {
         "type": "object",
         "properties": {
@@ -1376,6 +1476,14 @@
             },
             "maxItems": 16,
             "description": "Remote MCP servers whose tools the runtime calls for the agent"
+          },
+          "httpTools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HttpToolInput"
+            },
+            "maxItems": 64,
+            "description": "Tools the runtime answers by sending their arguments to a URL, signed with the definition's signing secret (Standard Webhooks)"
           }
         },
         "required": [
@@ -1456,6 +1564,89 @@
           "url"
         ]
       },
+      "HttpToolInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The tool's name: letters and digits, single underscores between them"
+          },
+          "description": {
+            "type": "string"
+          },
+          "inputSchema": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "JSON Schema of the arguments, an object"
+          },
+          "url": {
+            "type": "string",
+            "description": "Where the arguments are sent as JSON; https, on a public address. Redirects are not followed"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "POST",
+              "PUT",
+              "PATCH"
+            ],
+            "description": "Default POST"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000,
+            "description": "Default 30000"
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "codemode",
+              "both"
+            ],
+            "description": "How the model calls it: directly, from js_exec (the default), or both"
+          },
+          "executionMode": {
+            "type": "string",
+            "enum": [
+              "sequential",
+              "parallel"
+            ]
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Sent with each request; stored encrypted and never returned. Leave out with auth to keep the ones stored for a tool of this name and origin"
+          },
+          "auth": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "bearer"
+                ]
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "token"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema",
+          "url"
+        ]
+      },
       "DefinitionUpdated": {
         "allOf": [
           {
@@ -1464,6 +1655,10 @@
           {
             "type": "object",
             "properties": {
+              "signingSecret": {
+                "type": "string",
+                "description": "Set when this update gave the definition its first signing secret (its first HTTP tool)"
+              },
               "applied": {
                 "type": "object",
                 "properties": {
@@ -1587,6 +1782,17 @@
             "maxItems": 16,
             "description": "Remote MCP servers whose tools the runtime calls for the agent"
           },
+          "httpTools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/HttpToolInput"
+            },
+            "maxItems": 64,
+            "description": "Tools the runtime answers by sending their arguments to a URL, signed with the definition's signing secret (Standard Webhooks)"
+          },
           "revision": {
             "type": "integer",
             "description": "Only update the definition if it is still at this revision"
@@ -1600,6 +1806,26 @@
           }
         },
         "description": "Fields given replace the stored ones; null removes one"
+      },
+      "SigningSecret": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "number"
+          },
+          "signingSecret": {
+            "type": "string",
+            "description": "The secret HTTP tool requests are signed with (whsec_…, Standard Webhooks); shown only this once"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "signingSecret"
+        ]
       },
       "DefinitionAgent": {
         "type": "object",
@@ -2887,11 +3113,11 @@
         },
         "responses": {
           "201": {
-            "description": "The definition, at revision 1",
+            "description": "The definition, at revision 1, with its signing secret",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Definition"
+                  "$ref": "#/components/schemas/DefinitionCreated"
                 }
               }
             }
@@ -3016,6 +3242,42 @@
                   "required": [
                     "deleted"
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/definitions/{id}/signing-secret": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A new signing secret, shown only this once; agents sign with the old one until the new revision is applied to them",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SigningSecret"
                 }
               }
             }

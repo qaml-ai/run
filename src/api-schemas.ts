@@ -200,6 +200,22 @@ const McpServer = z.object({
   headerNames: z.array(z.string()).optional().openapi({ description: "Headers the server gets; their values are never returned" }),
   auth: z.object({ type: z.literal("bearer") }).optional(),
 }).openapi("McpServer");
+const httpToolFields = {
+  name: z.string().openapi({ description: "The tool's name: letters and digits, single underscores between them" }),
+  description: z.string(),
+  inputSchema: z.record(z.string(), z.unknown()).openapi({ description: "JSON Schema of the arguments, an object" }),
+  url: z.string().openapi({ description: "Where the arguments are sent as JSON; https, on a public address. Redirects are not followed" }),
+  method: z.enum(["POST", "PUT", "PATCH"]).optional().openapi({ description: "Default POST" }),
+  timeoutMs: z.number().int().min(1_000).max(300_000).optional().openapi({ description: "Default 30000" }),
+  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls it: directly, from js_exec (the default), or both" }),
+  executionMode: z.enum(["sequential", "parallel"]).optional(),
+};
+const HttpToolInput = z.object({
+  ...httpToolFields,
+  headers: z.record(z.string(), z.string()).optional().openapi({ description: "Sent with each request; stored encrypted and never returned. Leave out with auth to keep the ones stored for a tool of this name and origin" }),
+  auth: z.object({ type: z.literal("bearer"), token: z.string() }).optional(),
+}).openapi("HttpToolInput");
+const HttpTool = z.object({ ...httpToolFields, headerNames: z.array(z.string()).optional(), auth: z.object({ type: z.literal("bearer") }).optional() }).openapi("HttpTool");
 const definitionFields = {
   model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().trim().min(1).max(32_000),
@@ -208,6 +224,7 @@ const definitionFields = {
   limits: DefinitionLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
   mcpServers: z.array(McpServerInput).max(16).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
+  httpTools: z.array(HttpToolInput).max(64).openapi({ description: "Tools the runtime answers by sending their arguments to a URL, signed with the definition's signing secret (Standard Webhooks)" }),
 };
 const optional = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.optional()])) as { [K in keyof T]: z.ZodOptional<T[K]> };
 const removable = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.nullable().optional()])) as { [K in keyof T]: z.ZodOptional<z.ZodNullable<T[K]>> };
@@ -224,10 +241,15 @@ export const Definition = z.object({
   revision: z.number().openapi({ description: "Increases with every change" }),
   ...optional(definitionFields),
   mcpServers: z.array(McpServer).optional(),
+  httpTools: z.array(HttpTool).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 }).openapi("Definition");
+const signingSecret = z.string().openapi({ description: "The secret HTTP tool requests are signed with (whsec_…, Standard Webhooks); shown only this once" });
+export const DefinitionCreated = Definition.extend({ signingSecret: signingSecret.optional() }).openapi("DefinitionCreated");
+export const SigningSecret = z.object({ id: z.string(), revision: z.number(), signingSecret }).openapi("SigningSecret");
 export const DefinitionUpdated = Definition.extend({
+  signingSecret: signingSecret.optional().openapi({ description: "Set when this update gave the definition its first signing secret (its first HTTP tool)" }),
   applied: z.object({ accepted: z.array(z.string()), failed: z.array(z.object({ agent: z.string(), error: z.string() })) }).optional()
     .openapi({ description: "Agents that accepted the new revision (applied between their turns), and any that could not be reached" }),
 }).openapi("DefinitionUpdated");
