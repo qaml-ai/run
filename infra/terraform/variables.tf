@@ -156,3 +156,9 @@ variable "dns_ttl" {
   type        = number
   default     = 60
 }
+
+variable "github_repository" {
+  description = "GitHub repository (owner/name) whose production environment may deploy."
+  type        = string
+  default     = "qaml-ai/agent-runtime"
+}
