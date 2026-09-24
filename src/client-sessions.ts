@@ -503,16 +503,26 @@ export class ClientSessions {
       if (await this.ownerElsewhere(id)) return { id, token, expiresAt: existing.value.expiresAt, running: true };
     }
     let session = await this.load(id);
+    // Another create of this agent on this node is provisioning it: wait for what it makes. Two at once
+    // would each take the claim, and the second acquire's new epoch would fence the first out.
+    while (!session && this.loading.has(id)) session = await this.load(id);
     let created = false;
     if (session) {
       if ((session.header.tenant ?? DEFAULT_TENANT) !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       if (session.header.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
       if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
     } else {
-      // Capacity is reserved before anything is persisted: an agent refused for it leaves nothing behind.
-      await this.makeRoom(id, tenant);
+      // Loads and creates of this agent here wait for this one (see `load`).
+      const provisioned = Promise.withResolvers<Session | undefined>();
+      this.loading.set(id, provisioned.promise);
+      const settle = (made?: Session) => {
+        provisioned.resolve(made);
+        if (this.loading.get(id) === provisioned.promise) this.loading.delete(id);
+      };
       let claim: Claim | undefined;
       try {
+        // Capacity is reserved before anything is persisted: an agent refused for it leaves nothing behind.
+        await this.makeRoom(id, tenant);
         const granted = this.options.volumes ? await this.options.volumes.mountsFor(tenant, id, mounts) : undefined;
         const ownership = this.options.ownership;
         if (ownership) {
@@ -529,8 +539,10 @@ export class ClientSessions {
         await this.writeHeader(session);
         this.sessions.set(id, session);
         created = true;
+        settle(session);
         if (granted) await this.options.volumes!.watch(id, tenant, [], granted, claim);
       } catch (error) {
+        settle();
         if (!created) {
           this.supervisor.unreserve(id);
           if (claim) await this.options.ownership!.release(claim).catch(() => {});

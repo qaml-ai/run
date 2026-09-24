@@ -140,3 +140,30 @@ test("a stale owner's volume watches and schedules for its agent lose to a takeo
   await assert.rejects(scheduler.remove("client_watcher", made.id, taken.claim), LostClaim);
   assert.equal(await scheduler.remove("client_watcher", made.id), true);
 });
+
+test("two creates of one agent at once on one node leave one claim, still current, and an agent that works", { timeout: 60_000 }, async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "fencing-"));
+  const ownership = new Ownership(db, { node: "http://a" });
+  await ownership.start();
+  const storage = memoryStorage(postgresTail(db));
+  const volumes = new VolumeService({ db, storage, ownership });
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, volumes, secret: "fencing-test-secret-with-32-characters", apiKey: "fixture-only" });
+  t.after(async () => {
+    await sessions.close(); await supervisor.close(); await volumes.close(); await ownership.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+  // Both find no agent, and before the fix both took the claim: the second's new epoch fenced the first's writes.
+  const [first, second] = await Promise.all([sessions.create([], { model }, "twin"), sessions.create([], { model }, "twin")]);
+  assert.equal(first.id, second.id);
+  const session = sessions.sessions.get(first.id)!;
+  assert.ok(session.claim && ownership.holds(session.claim));
+  const [row] = (await db.query("select epoch from actor_owners where actor = $1", [first.id])).rows;
+  assert.equal(Number(row.epoch), session.claim.epoch, "the agent's claim is the current one");
+  await sessions.submit(first.id, "default", { id: "after-twins", method: "execute", params: { code: "return 1" } });
+  for (let tries = 0; sessions.sessions.get(first.id)?.requests.get("after-twins")?.state !== "completed"; tries++) {
+    assert.ok(tries < 1000, "the agent ran a request");
+    await sleep(5);
+  }
+});
