@@ -164,7 +164,7 @@ variable "runtime_env" {
 variable "dns_target" {
   description = "Where agents.camelai.dev points: \"host\" (A record at the EC2 Elastic IP) or \"alb\" (CNAME at the load balancer). Flip deliberately; see README.md, Cutover."
   type        = string
-  default     = "host"
+  default     = "alb"
 
   validation {
     condition     = contains(["host", "alb"], var.dns_target)
