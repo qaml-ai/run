@@ -14,16 +14,21 @@ locals {
   runtime_image = "${aws_ecr_repository.runtime.repository_url}:${var.runtime_image_tag}"
 
   runtime_environment = merge(var.runtime_env, {
-    AGENT_PUBLIC_URL          = "https://${var.hostname}"
-    AGENT_STORAGE             = "s3"
-    AGENT_S3_BUCKET           = aws_s3_bucket.state.id
-    AGENT_S3_PREFIX           = var.state_prefix
-    AWS_REGION                = var.region
-    AGENT_DATABASE_HOST       = aws_db_instance.control.address
+    AGENT_PUBLIC_URL = "https://${var.hostname}"
+    AGENT_STORAGE    = "s3"
+    AGENT_S3_BUCKET  = aws_s3_bucket.state.id
+    AGENT_S3_PREFIX  = var.state_prefix
+    AWS_REGION       = var.region
+    # Through RDS Proxy (rds-proxy.tf). The bundle holds the RDS CAs and the
+    # Amazon Trust Services roots that sign the proxy's certificate.
+    AGENT_DATABASE_HOST       = aws_db_proxy.control.endpoint
     AGENT_DATABASE_NAME       = aws_db_instance.control.db_name
     AGENT_DATABASE_SECRET_ARN = aws_db_instance.control.master_user_secret[0].secret_arn
     AGENT_DATABASE_CA         = "/etc/ssl/rds-global-bundle.pem"
-    AGENT_TENANTS_SECRET_ARN  = aws_secretsmanager_secret.runtime["tenants"].arn
+    # Longer than the database is away in a Multi-AZ failover, so nodes ride it
+    # out instead of fencing; only crash takeover waits this long.
+    AGENT_LEASE_TTL_MS       = "90000"
+    AGENT_TENANTS_SECRET_ARN = aws_secretsmanager_secret.runtime["tenants"].arn
     # The runtime reads these itself (task role), so no secret value is in its
     # environment, where a sandbox child with the same uid could read it.
     AGENT_SESSION_SECRET_ARN      = aws_secretsmanager_secret.runtime["session-secret"].arn
@@ -174,6 +179,8 @@ resource "aws_vpc_security_group_egress_rule" "task_all_ipv4" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+# The runtime connects through the proxy (rds-proxy.tf); this keeps the
+# instance endpoint reachable from a task for debugging and manual migrations.
 resource "aws_vpc_security_group_ingress_rule" "database_from_task" {
   security_group_id            = aws_security_group.database.id
   referenced_security_group_id = aws_security_group.task.id

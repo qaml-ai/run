@@ -68,10 +68,24 @@ and the RDS instance also have deletion protection in AWS.
   7-day backups. RDS generates and rotates the master password in Secrets
   Manager (`manage_master_user_password`), so it never appears in state; the
   runtime reads it from that secret.
+- **RDS Proxy** (`rds-proxy.tf`): the tasks connect through it, so a Multi-AZ
+  failover is a stall (the proxy holds connections and queues statements) rather
+  than dropped connections and a DNS change. It logs in with the same master
+  secret (its role may read it), requires TLS, and uses the default target group
+  settings. Its certificate is from ACM, so the image's CA bundle holds the
+  Amazon Trust Services roots as well as the RDS CAs. The tasks' security group
+  can still reach the instance directly, for debugging and manual migrations
+  (`database.host` output; the proxy is `database.proxy_endpoint`). About $22 a
+  month ($0.015 per vCPU-hour, 2 vCPU).
+  Moving the tasks onto the proxy: deploy an image whose bundle
+  trusts the proxy first (any image from this change on), set
+  `runtime_image_tag` to it, apply, then redeploy that tag with
+  `infra/ecs-deploy.sh <tag>` to ship the new environment.
 - **Task definition** (`ecs.tf`). Settings come from `var.runtime_env`. Storage,
   database, public-URL and tenant settings are derived from the resources:
   - `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`, `AWS_REGION`;
-  - `AGENT_DATABASE_HOST`, `AGENT_DATABASE_NAME`, `AGENT_DATABASE_SECRET_ARN`, `AGENT_DATABASE_CA`;
+  - `AGENT_DATABASE_HOST` (the proxy), `AGENT_DATABASE_NAME`, `AGENT_DATABASE_SECRET_ARN`, `AGENT_DATABASE_CA`;
+  - `AGENT_LEASE_TTL_MS=90000`, longer than a failover keeps the database away;
   - `AGENT_PUBLIC_URL`, `AGENT_TENANTS_SECRET_ARN`;
   - `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN`.
 

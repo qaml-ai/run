@@ -23,12 +23,13 @@ output "secret_arns" {
 }
 
 output "database" {
-  description = "Control-plane Postgres; the ECS tasks get these as AGENT_DATABASE_HOST and AGENT_DATABASE_SECRET_ARN."
+  description = "Control-plane Postgres. The ECS tasks connect through proxy_endpoint (AGENT_DATABASE_HOST); host is the instance itself, for migrations and debugging."
   value = {
-    host       = aws_db_instance.control.address
-    port       = aws_db_instance.control.port
-    name       = aws_db_instance.control.db_name
-    secret_arn = aws_db_instance.control.master_user_secret[0].secret_arn
+    proxy_endpoint = aws_db_proxy.control.endpoint
+    host           = aws_db_instance.control.address
+    port           = aws_db_instance.control.port
+    name           = aws_db_instance.control.db_name
+    secret_arn     = aws_db_instance.control.master_user_secret[0].secret_arn
   }
 }
 
