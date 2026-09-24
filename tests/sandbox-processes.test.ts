@@ -127,6 +127,21 @@ test("timeouts and aborts cancel the execution in the sandbox process, which kee
   assert.deepEqual((await executeCode({ code: "return 7", bridge: hang, pool: sandbox })).output, ["7"]);
 });
 
+test("guests stuck where the interrupt handler cannot reach cost a sandbox process none of its workers", async t => {
+  const { path } = await sandboxProcess(t);
+  const sandbox = new SandboxProcesses([path]);
+  // More than --workers-max: each stuck guest's worker is terminated and its slot refilled.
+  for (let i = 0; i < 4; i++) {
+    const controller = new AbortController();
+    // Aborted once inside one long native call (see tests/sandbox.test.ts, stuck()).
+    await assert.rejects(executeCode({
+      code: 'const digits = "9".repeat(300000); text("parsing"); return BigInt(digits).toString().length;',
+      bridge: echo, pool: sandbox, signal: controller.signal, timeoutMs: 60_000, onEvent: () => controller.abort(),
+    }), /aborted/);
+    assert.deepEqual((await executeCode({ code: "return 1", bridge: echo, pool: sandbox, timeoutMs: 10_000 })).output, ["1"]);
+  }
+});
+
 test("a sandbox process that dies fails its executions clearly, and one that comes back serves again", async t => {
   const first = await sandboxProcess(t);
   const sandbox = new SandboxProcesses([first.path]);
