@@ -216,7 +216,8 @@ export class Billing {
         { quantity: 1, price_data: { currency: "usd", unit_amount: amount / CENT, product_data: { name: "Agent runtime credit" } } },
         ...(fee ? [{ quantity: 1, price_data: { currency: "usd", unit_amount: fee / CENT, product_data: { name: `Processing fee (${purchaseFeeBps / 100}%)` } } }] : []),
       ],
-      success_url: `${page}?checkout=success`, cancel_url: `${page}?checkout=cancelled`,
+      // Stripe fills in the session id, so the console can wait for this purchase rather than any.
+      success_url: `${page}?checkout=success&session={CHECKOUT_SESSION_ID}`, cancel_url: `${page}?checkout=cancelled`,
     });
     return { id: session.id, url: session.url, amount, fee, total: amount + fee };
   }

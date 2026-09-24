@@ -105,14 +105,20 @@ function AddCreditDialog({ rates, onClose }: { rates: Billing["rates"]; onClose:
 /** Stripe sends the buyer back with ?checkout=success or ?checkout=cancelled. */
 function useCheckoutReturn() {
   const [returned, setReturned] = useState(() => new URLSearchParams(location.search).get("checkout"));
+  const [session] = useState(() => new URLSearchParams(location.search).get("session"));
   const dismiss = () => { history.replaceState(null, "", location.pathname); setReturned(null); };
-  return { returned, dismiss };
+  return { returned, session, dismiss };
 }
 
+/** Stop waiting for the webhook's credit after this long, and say it may still come. */
+const CHECKOUT_WAIT_MS = 2 * 60_000;
+
 export function BillingPage() {
-  const { returned, dismiss } = useCheckoutReturn();
-  // After a payment, poll until the webhook's credit shows up.
+  const { returned, session, dismiss } = useCheckoutReturn();
+  // After a payment, poll until the webhook's credit shows up, for a while.
   const [polling, setPolling] = useState(returned === "success");
+  const [gaveUp, setGaveUp] = useState(false);
+  const [arrived, setArrived] = useState(false);
   const billing = useApi<Billing>("/v1/billing", polling ? 3_000 : 30_000);
   const [adding, setAdding] = useState(false);
   const [older, setOlder] = useState<LedgerEntry[]>([]);
@@ -122,9 +128,18 @@ export function BillingPage() {
   const data = billing.data;
   const entries = [...(data?.recent ?? []), ...older];
   const cursor = next === undefined ? data?.recent.at(-1)?.id : next;
-  // The purchase has arrived once the newest entry is a recent one; stop polling then.
-  const arrived = returned === "success" && data?.recent[0]?.kind === "purchase" && Date.now() - data.recent[0].createdAt < 15 * 60_000;
-  useEffect(() => { if (arrived) setPolling(false); }, [arrived]);
+  // The purchase has arrived once its entry (by checkout session; else any purchase in the last 15 minutes)
+  // is among the recent ones. Latched, since a busy tenant's usage entries soon push it out of `recent`.
+  const seen = returned === "success" && !!data?.recent.some(entry => entry.kind === "purchase" &&
+    (session ? entry.metadata?.session === session : Date.now() - entry.createdAt < 15 * 60_000));
+  useEffect(() => { if (seen) { setArrived(true); setPolling(false); } }, [seen]);
+  // A tenant that isn't billed here never gets the credit (the purchase was another tenant's).
+  useEffect(() => { if (data?.billing === "none") setPolling(false); }, [data?.billing]);
+  useEffect(() => {
+    if (!polling) return;
+    const timer = setTimeout(() => { setGaveUp(true); setPolling(false); }, CHECKOUT_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [polling]);
 
   async function loadMore() {
     if (cursor == null) return;
@@ -142,12 +157,14 @@ export function BillingPage() {
       <PageHeader title="Billing" description="Prepaid credit pays for model tokens on the platform's keys (at the provider's list price), time your agents spend in turns, and storage."
         actions={data?.billing === "prepaid" && data.checkout && <Button onClick={() => setAdding(true)}><Plus />Add credit</Button>} />
       <ErrorAlert error={billing.error ?? error} />
-      {returned === "success" && (
+      {returned === "success" && data?.billing !== "none" && (
         <Alert className="mb-4">
-          {arrived ? <CheckCircle2 /> : <Loader2 className="animate-spin" />}
+          {arrived ? <CheckCircle2 /> : gaveUp ? <Receipt /> : <Loader2 className="animate-spin" />}
           <AlertTitle>{arrived ? "Credit added" : "Payment received"}</AlertTitle>
           <AlertDescription>
-            {arrived ? "Thank you. Your new balance is below." : "Your credit appears here as soon as Stripe confirms the payment, usually within seconds."}
+            {arrived ? "Thank you. Your new balance is below."
+              : gaveUp ? "Stripe hasn't confirmed the payment yet. The credit is added when it does; refresh this page later."
+              : "Your credit appears here as soon as Stripe confirms the payment, usually within seconds."}
             <Button variant="link" size="sm" className="h-auto p-0" onClick={dismiss}>Dismiss</Button>
           </AlertDescription>
         </Alert>

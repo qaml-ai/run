@@ -331,7 +331,7 @@ test("credit is bought through Stripe Checkout with the fee on top, added once t
   assert.equal(params["line_items[1][price_data][product_data][name]"], "Processing fee (5.5%)");
   assert.equal(params["metadata[credit]"], "10000000");
   assert.equal(params["payment_intent_data[metadata][tenant]"], "payg");
-  assert.equal(params.success_url, "https://agents.example.test/console/billing?checkout=success");
+  assert.equal(params.success_url, "https://agents.example.test/console/billing?checkout=success&session={CHECKOUT_SESSION_ID}");
   // A second checkout reuses the customer.
   await call("/v1/billing/checkout", { body: { amountUsd: 5.5 }, token: PAYG });
   assert.deepEqual(stripeApi.requests.map(request => request.path), ["/v1/customers", "/v1/checkout/sessions", "/v1/checkout/sessions"]);
