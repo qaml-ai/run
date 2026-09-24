@@ -333,7 +333,8 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
     alice: { tokenSha256: sha(alice), apiKeys: { anthropic: "alice-admin-anthropic-key" } },
     bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "bob-admin-anthropic-key" }, maxAgents: bobLimit },
   });
-  const { root, call, child, logged } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "20000" }, tenants(2));
+  // The held calls are never answered: shut down without draining them for the tool timeout.
+  const { root, call, child, logged } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "20000", AGENT_DRAIN_TIMEOUT_MS: "0" }, tenants(2));
   const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
   const create = (token: string, key: string) => call("/client-sessions", { token, body: { tools: [hold] }, headers: { "Idempotency-Key": key } });
   const statuses = (results: { status: number }[]) => results.map(result => result.status).sort();
