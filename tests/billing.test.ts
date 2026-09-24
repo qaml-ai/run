@@ -457,6 +457,8 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
   }), {
     ...githubEnv(github.url), AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_PRICE_AGENT_HOUR_USD: "0",
     AGENT_FREE_MAX_AGENTS: "2", AGENT_FREE_HOURLY_SPEND_USD: "0.2", AGENT_MAX_AGENTS_PER_TENANT: "5",
+    // The held calls are never answered: shut down without draining them.
+    AGENT_DRAIN_TIMEOUT_MS: "0",
     STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: "http://127.0.0.1:9",
   }, tenantsFile);
   github.account(5001, "Erin", 365);
@@ -464,9 +466,21 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
   const token = (await consoleCall(call, session.cookie!)("/v1/tokens", { body: { name: "test" } })).json.token;
   assert.equal((await call("/v1/billing", { token })).json.freeCredit, true);
 
-  const created = await Promise.all(["a", "b", "c"].map(key => call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": key } })));
-  assert.deepEqual(created.map(result => result.status).sort(), [201, 201, 429], "two agents at once on free credit");
-  const agent = created.find(result => result.status === 201)!.json;
+  // Two agents kept busy by calls that are never answered, so neither is idle and can be stopped to make room for a third.
+  const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
+  const busy: { id: string; token: string }[] = [];
+  for (const key of ["a", "b"]) {
+    const created = await call("/client-sessions", { token, body: { tools: [hold] }, headers: { "Idempotency-Key": key } });
+    assert.equal(created.status, 201, created.text);
+    busy.push(created.json);
+    assert.equal((await call(`/clients/${created.json.id}/requests`, { token: created.json.token, body: { id: "hold", method: "execute", params: { code: "return await tools.hold({})" } } })).status, 202);
+    await until(async () => (await call(`/clients/${created.json.id}/state`, { token: created.json.token })).json.calls.length > 0, "the held call to be offered");
+  }
+  assert.equal((await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": "c" } })).status, 429, "two agents at once on free credit");
+  assert.equal((await call(`/v1/agents/${busy[1].id}`, { method: "DELETE", token })).status, 200);
+  const created = await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": "c" } });
+  assert.equal(created.status, 201, "deleting one makes room");
+  const agent = created.json;
 
   const first = await prompt(call, agent.id, token);
   assert.equal(first.result.stopped, "spend_limit");
@@ -481,8 +495,7 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
   assert.equal((await call("/v1/billing/stripe/webhook", { body: event, token: null, headers: { "Stripe-Signature": signWebhook(WEBHOOK_SECRET, JSON.stringify(event)) } })).status, 200);
   assert.equal((await call("/v1/billing", { token })).json.freeCredit, false);
   assert.equal((await prompt(call, agent.id, token)).result.reply, "finished");
-  const failed = created.findIndex(result => result.status === 429);
-  assert.equal((await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": ["a", "b", "c"][failed] } })).status, 201);
+  assert.equal((await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": "d" } })).status, 201, "a third agent while the other two are busy");
 });
 
 /** Prompt over the REST API with `token` and wait for the run's outcome. */
