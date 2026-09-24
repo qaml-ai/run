@@ -26,13 +26,15 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
+import { runtimeSecrets } from "./secrets.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
 const tenants = await tenantsFromEnvironment();
+const secrets = await runtimeSecrets();
 // Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify.
-const sessionSecret = process.env.AGENT_SESSION_SECRET ?? (tenants.legacy ? process.env.AGENT_RUNTIME_TOKEN : undefined);
-if (!sessionSecret || sessionSecret.length < (process.env.AGENT_SESSION_SECRET ? 32 : 24)) throw new Error("Set AGENT_SESSION_SECRET to at least 32 random characters");
+const sessionSecret = secrets.sessionSecret ?? (tenants.legacy ? process.env.AGENT_RUNTIME_TOKEN : undefined);
+if (!sessionSecret || sessionSecret.length < (secrets.sessionSecret ? 32 : 24)) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
 const root = resolve(process.env.AGENT_DATA_DIR ?? ".agent-runtime");
 const maxAgents = Number(process.env.AGENT_MAX_PROCESSES ?? 8);
 if (!Number.isInteger(maxAgents) || maxAgents < 1) throw new Error("AGENT_MAX_PROCESSES must be a positive integer");
@@ -66,11 +68,8 @@ if (!Number.isInteger(idleMs) || idleMs < 1000) throw new Error("AGENT_IDLE_MS m
 const allowedBaseUrls = (process.env.AGENT_ALLOWED_BASE_URLS ?? "").split(",").map(value => value.trim()).filter(Boolean);
 const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
 // Tenant-set provider keys are encrypted with AGENT_SECRETS_KEY; without it tenants cannot store keys.
-const accounts = new Accounts({ tenants, db, secretsKey: process.env.AGENT_SECRETS_KEY });
-const github = process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
-  ? { clientId: process.env.GITHUB_CLIENT_ID, clientSecret: process.env.GITHUB_CLIENT_SECRET, org: process.env.GITHUB_ORG ?? "qaml-ai",
-      webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL }
-  : undefined;
+const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey });
+const github = secrets.github && { ...secrets.github, org: process.env.GITHUB_ORG ?? "qaml-ai", webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL };
 const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 

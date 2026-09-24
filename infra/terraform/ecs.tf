@@ -24,21 +24,17 @@ locals {
     AGENT_DATABASE_SECRET_ARN = aws_db_instance.control.master_user_secret[0].secret_arn
     AGENT_DATABASE_CA         = "/etc/ssl/rds-global-bundle.pem"
     AGENT_TENANTS_SECRET_ARN  = aws_secretsmanager_secret.runtime["tenants"].arn
+    # The runtime reads these itself (task role), so no secret value is in its
+    # environment, where a sandbox child with the same uid could read it.
+    AGENT_SESSION_SECRET_ARN      = aws_secretsmanager_secret.runtime["session-secret"].arn
+    AGENT_SECRETS_KEY_ARN         = aws_secretsmanager_secret.runtime["secrets-key"].arn
+    AGENT_GITHUB_OAUTH_SECRET_ARN = aws_secretsmanager_secret.runtime["github-oauth"].arn
     # Scale-in protection while turns run, and retirement once superseded.
     AGENT_ECS_CLUSTER = local.cluster_name
     AGENT_ECS_SERVICE = local.service_name
     # ServiceName dimension on the AgentRuntime EMF metrics.
     AGENT_SERVICE_NAME = local.service_name
   })
-
-  # Injected by ECS at task start from Secrets Manager (execution role).
-  github_oauth_arn = aws_secretsmanager_secret.runtime["github-oauth"].arn
-  runtime_secrets = {
-    AGENT_SESSION_SECRET = aws_secretsmanager_secret.runtime["session-secret"].arn
-    AGENT_SECRETS_KEY    = aws_secretsmanager_secret.runtime["secrets-key"].arn
-    GITHUB_CLIENT_ID     = "${local.github_oauth_arn}:clientId::"
-    GITHUB_CLIENT_SECRET = "${local.github_oauth_arn}:clientSecret::"
-  }
 }
 
 resource "aws_cloudwatch_log_group" "runtime" {
@@ -77,7 +73,7 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-# Used by ECS itself: pull the image, write logs, resolve `secrets`.
+# Used by ECS itself: pull the image and write logs.
 resource "aws_iam_role" "task_execution" {
   name               = "${var.name}-task-execution"
   description        = "Agent runtime ECS task execution"
@@ -89,24 +85,9 @@ resource "aws_iam_role_policy_attachment" "task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-resource "aws_iam_role_policy" "task_execution_secrets" {
-  name = "agent-runtime-task-secrets"
-  role = aws_iam_role.task_execution.name
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = "secretsmanager:GetSecretValue"
-      Resource = distinct([
-        for value in values(local.runtime_secrets) : regex("^arn:aws:secretsmanager:[^:]+:[^:]+:secret:[^:]+", value)
-      ])
-    }]
-  })
-}
-
-# Used by the runtime process: agent state in S3, the database and tenants
-# secrets it reads itself, its own task's scale-in protection, the service's
-# deployments (to notice it has been superseded), and ECS Exec.
+# Used by the runtime process: agent state in S3, the secrets it reads itself,
+# its own task's scale-in protection, the service's deployments (to notice it
+# has been superseded), and ECS Exec.
 resource "aws_iam_role" "task" {
   name               = "${var.name}-task"
   description        = "Agent runtime ECS task"
@@ -126,6 +107,9 @@ resource "aws_iam_role_policy" "task" {
         Resource = [
           aws_db_instance.control.master_user_secret[0].secret_arn,
           aws_secretsmanager_secret.runtime["tenants"].arn,
+          aws_secretsmanager_secret.runtime["session-secret"].arn,
+          aws_secretsmanager_secret.runtime["secrets-key"].arn,
+          aws_secretsmanager_secret.runtime["github-oauth"].arn,
         ]
       },
       {
@@ -221,7 +205,6 @@ resource "aws_ecs_task_definition" "runtime" {
     essential    = true
     portMappings = [{ containerPort = local.runtime_port, protocol = "tcp" }]
     environment  = [for name in sort(keys(local.runtime_environment)) : { name = name, value = local.runtime_environment[name] }]
-    secrets      = [for name in sort(keys(local.runtime_secrets)) : { name = name, valueFrom = local.runtime_secrets[name] }]
     # SIGTERM starts the runtime's drain (about 100 s); SIGKILL follows after this.
     stopTimeout = 120
     # An init as PID 1 forwards signals and reaps the sandbox children.

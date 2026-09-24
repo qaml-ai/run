@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "../src/ecs.ts";
 import { tenantsFromEnvironment } from "../src/tenants.ts";
+import { runtimeSecrets } from "../src/secrets.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -160,4 +161,39 @@ test("tenants load from a Secrets Manager secret, and a bad refresh keeps the la
   assert.equal(tenants.authenticate("Bearer bob-token")?.id, "bob");
 
   await assert.rejects(tenantsFromEnvironment({ AGENT_TENANTS_SECRET_ARN: arn, AGENT_TENANTS_FILE: "/etc/agent-runtime/tenants.json" }), /not both/);
+});
+
+test("the session secret, secrets key and GitHub OAuth app load once from Secrets Manager ARNs, or from plain values", async t => {
+  const arn = (name: string) => `arn:aws:secretsmanager:us-west-2:123456789012:secret:agent-runtime/${name}-AbCdEf`;
+  const values: Record<string, string> = {
+    [arn("session-secret")]: "s".repeat(64),
+    [arn("secrets-key")]: "k".repeat(64),
+    [arn("github-oauth")]: JSON.stringify({ clientId: "Iv1.fixture", clientSecret: "github-fixture-secret" }),
+  };
+  const requested: string[] = [];
+  const endpoint = await fake(t, (_req, res, body) => {
+    const { SecretId } = JSON.parse(body);
+    requested.push(SecretId);
+    if (!(SecretId in values)) { res.writeHead(400, { "Content-Type": "application/x-amz-json-1.1" }).end(JSON.stringify({ __type: "ResourceNotFoundException", message: "Secrets Manager can't find the specified secret." })); return; }
+    res.writeHead(200, { "Content-Type": "application/x-amz-json-1.1" }).end(JSON.stringify({ ARN: SecretId, Name: "x", VersionId: "v1", SecretString: values[SecretId] }));
+  });
+  Object.assign(process.env, { AWS_ENDPOINT_URL_SECRETS_MANAGER: endpoint, AWS_ACCESS_KEY_ID: "AKIDEXAMPLE", AWS_SECRET_ACCESS_KEY: "fixture-secret", AWS_REGION: "us-west-2" });
+  const env = { AGENT_SESSION_SECRET_ARN: arn("session-secret"), AGENT_SECRETS_KEY_ARN: arn("secrets-key"), AGENT_GITHUB_OAUTH_SECRET_ARN: arn("github-oauth"), AWS_REGION: "us-west-2" };
+
+  assert.deepEqual(await runtimeSecrets(env), {
+    sessionSecret: "s".repeat(64), secretsKey: "k".repeat(64), github: { clientId: "Iv1.fixture", clientSecret: "github-fixture-secret" },
+  });
+  assert.deepEqual(requested.sort(), Object.keys(values).sort(), "Each secret is read once");
+
+  assert.deepEqual(await runtimeSecrets({ AGENT_SESSION_SECRET: "plain-session", AGENT_SECRETS_KEY: "plain-key", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret" }), {
+    sessionSecret: "plain-session", secretsKey: "plain-key", github: { clientId: "id", clientSecret: "secret" },
+  });
+  assert.deepEqual(await runtimeSecrets({}), { sessionSecret: undefined, secretsKey: undefined, github: undefined });
+
+  await assert.rejects(runtimeSecrets({ ...env, AGENT_SESSION_SECRET: "x".repeat(32) }), /AGENT_SESSION_SECRET or AGENT_SESSION_SECRET_ARN, not both/);
+  await assert.rejects(runtimeSecrets({ ...env, AGENT_SECRETS_KEY: "x" }), /AGENT_SECRETS_KEY or AGENT_SECRETS_KEY_ARN, not both/);
+  await assert.rejects(runtimeSecrets({ ...env, GITHUB_CLIENT_SECRET: "x" }), /GITHUB_CLIENT_ID\/GITHUB_CLIENT_SECRET or AGENT_GITHUB_OAUTH_SECRET_ARN, not both/);
+  values[arn("github-oauth")] = JSON.stringify({ clientId: "Iv1.fixture" });
+  await assert.rejects(runtimeSecrets(env), /must hold \{clientId, clientSecret\}/);
+  await assert.rejects(runtimeSecrets({ AGENT_SESSION_SECRET_ARN: arn("missing"), AWS_REGION: "us-west-2" }), /can't find the specified secret/);
 });

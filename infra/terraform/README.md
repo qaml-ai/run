@@ -96,18 +96,19 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
   public-URL and tenant settings are derived from the resources:
   - `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`, `AWS_REGION`;
   - `AGENT_DATABASE_HOST`, `AGENT_DATABASE_SECRET_ARN`, `AGENT_DATABASE_CA`;
-  - `AGENT_PUBLIC_URL`, `AGENT_TENANTS_SECRET_ARN`.
+  - `AGENT_PUBLIC_URL`, `AGENT_TENANTS_SECRET_ARN`;
+  - `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN`.
 
-  ECS injects `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, and
-  `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`. The last two are JSON keys of
-  `github-oauth`.
-  The runtime reads the RDS and tenants secrets itself, through the task role.
+  The task definition has no `secrets`: the runtime reads every secret itself,
+  through the task role, so no secret value is in its environment, where a
+  sandbox child running as the same uid could read it.
   Logs go to `/ecs/camelai-agent-runtime`, kept for 30 days.
-- **Roles**. The execution role has `AmazonECSTaskExecutionRolePolicy` and read
-  access to the `secrets` above. The task role has the same S3 statements as the
-  host role (`local.state_bucket_statements`), read access to the RDS and
-  tenants secrets, `ecs:UpdateTaskProtection`/`ecs:GetTaskProtection` on this
-  cluster's tasks, `ecs:DescribeServices` on this service, and ECS Exec. To get a shell:
+- **Roles**. The execution role has only `AmazonECSTaskExecutionRolePolicy`
+  (ECR and logs). The task role has the same S3 statements as the host role
+  (`local.state_bucket_statements`), read access to the RDS, tenants,
+  session-secret, secrets-key and github-oauth secrets,
+  `ecs:UpdateTaskProtection`/`ecs:GetTaskProtection` on this cluster's tasks,
+  `ecs:DescribeServices` on this service, and ECS Exec. To get a shell:
   `aws ecs execute-command --cluster camelai-agent-runtime --task <id> --container agent-runtime --interactive --command sh`.
 - **Scaling**. Target tracking holds average CPU at 60% and average memory at 70%,
   within `service_min_count`..`service_max_count` (2..10). Scale-in has a
