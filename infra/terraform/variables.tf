@@ -146,6 +146,8 @@ variable "runtime_env" {
     AGENT_TOOL_TIMEOUT_MS       = "60000"
     GITHUB_ORG                  = "qaml-ai"
     AGENT_HOSTING               = "inline"
+    # Operator tenants that may post manual credit adjustments (POST /v1/billing/adjustments).
+    AGENT_BILLING_ADMINS = "miguel"
   }
 }
 
