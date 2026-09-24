@@ -207,7 +207,10 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
-| `AGENT_CODE_WORKERS_MIN`, `AGENT_CODE_WORKERS_MAX` | codemode worker threads kept warm (default min(4, cores); none in each agent process under `process` hosting, which starts one on demand) and the most there may be (default 32); workers beyond the minimum stop after 30 s idle, and executions beyond the maximum queue within their own timeout |
+| `AGENT_CODE_WORKERS_MIN`, `AGENT_CODE_WORKERS_MAX` | codemode worker threads kept warm (default min(4, cores); none in each agent process under `process` hosting, which starts one on demand) and the most there may be (default 32); workers beyond the minimum stop after 30 s idle, and executions beyond the maximum queue within their own timeout. With sandbox processes, the totals are shared among them |
+| `AGENT_SANDBOX_PROCESSES` | read by `agent-launcher` (the image's entrypoint): how many [sandbox processes](#sandbox-boundary-and-remaining-production-work) run js_exec (default 2, at most 16; 0 runs it in the runtime process) |
+| `AGENT_SANDBOX_REQUIRED` | `1` (the image's default) refuses to start without sandbox processes |
+| `AGENT_SANDBOX_SOCKETS` | set by `agent-launcher`: the sandbox processes' sockets. Without it, js_exec runs on worker threads in the runtime process, as in development on macOS; the `listening` log line's `sandbox` field says which |
 
 Start the HTTP supervisor on a VM using a trusted terminal:
 
@@ -500,21 +503,62 @@ workers, timers, shared memory or nested WebAssembly. Every module import is
 denied, including `node:`, `file:`, `data:` and HTTP URLs. `eval` and function
 constructors stay inside QuickJS; they never create host functions.
 
-QuickJS compiled to WebAssembly is the only sandbox boundary; a separate
-isolation tier (gVisor/Firecracker) is only warranted if agents ever run native
-code. Executions run on a pool of `worker_threads` workers in the hosting
-process (`src/codemode.ts`, `src/code-worker.ts`). A worker compiles the QuickJS
-module once; every execution instantiates it with its own fixed WASM memory,
-then creates a new runtime and context, and drops all three when it ends. No
-guest state survives an execution, and one worker runs one execution at a time.
-The worker is resource control, not isolation: it shares the process, but guest
-code only ever sees the QuickJS heap, never the worker's Node globals,
-`process.env`, modules or the filesystem (the worker also gets an empty `env`).
-Cancellation reaches a guest spinning in QuickJS through a shared flag its
-interrupt handler polls, and one awaiting a tool through the closed message
-port. Tool calls cross a per-execution `MessagePort`; schema validation, call
-count, concurrency, and result and transfer size limits are enforced on the main
-thread, which also streams output events.
+Guest code is contained by layers, each assuming the one inside it failed:
+
+1. **QuickJS compiled to WebAssembly.** A worker (`src/code-worker.ts`)
+   compiles the QuickJS module once; every execution instantiates it with its
+   own fixed WASM memory, then creates a new runtime and context, and drops all
+   three when it ends. No guest state survives an execution, and one worker runs
+   one execution at a time. Guest code only ever sees the QuickJS heap, never the
+   worker's Node globals, `process.env`, modules or the filesystem.
+2. **A separate process with its own uid.** The workers run in sandbox
+   processes (`src/sandbox-server.ts`, `AGENT_SANDBOX_PROCESSES`, default 2),
+   not in the runtime. The image's entrypoint, `agent-launcher`
+   (`sandbox/launcher.c`), starts as root under the container's init and runs
+   the runtime as `node` (uid 1000) and sandbox process *i* as uid 1001 + *i*
+   (group `sandbox`, no supplementary groups), so a sandbox process cannot read
+   another process's `/proc/<pid>/environ` or `mem`, or trace it. It restarts a
+   sandbox process that dies, forwards termination signals to the runtime and
+   exits with its status.
+3. **No network, no secrets.** A sandbox process starts with an empty
+   environment (a fixed `PATH`, `HOME` and `TMPDIR` only), `/dev/null` for stdin
+   and no descriptors but its socket. The runtime's data directory (`/data`,
+   mode 0700) is unreadable to it, and secrets are never in any environment it
+   can see. It has no capabilities, `no_new_privs`, and a seccomp filter
+   installed before `exec`: every `socket()` fails (`AF_UNIX` included), as do
+   `ptrace`, `process_vm_readv`/`writev`, `pidfd_getfd`, the keyring calls,
+   `mount`, `unshare`/`setns` and namespace flags to `clone`, `bpf`,
+   `perf_event_open`, `userfaultfd`, `io_uring` (which could open sockets past
+   the filter), `kexec`, module loading and `reboot`; other architectures' calls
+   kill it. It is a denylist: Node, V8, libuv and glibc use a syscall set that
+   shifts with their versions and the kernel, and an allowlist that misses one
+   crashes rare paths.
+
+The launcher binds one unix socket per sandbox process at
+`/run/agent-sandbox/<i>.sock` (root:node 0660, in a root:node 0710 directory, so
+only the runtime's uid connects) and hands it over as fd 3; a sandbox process
+cannot reach its own socket's path, only accept on it. Each execution is one
+connection carrying length-prefixed JSON frames (at most 4 MiB each; either side
+drops the connection on anything bigger or malformed); closing it cancels the
+execution. The runtime sends each execution to the process with the fewest open,
+and at startup checks that every one answers. A sandbox process that dies fails
+the executions it held with "Codemode sandbox process exited", and new ones queue
+on its socket until the launcher has restarted it.
+
+The runtime treats a sandbox process as compromised: it accepts only tool-call
+requests, output events and the execution's answer, rebuilt from checked fields;
+it caps the number of messages, holds output to the caller's character and event
+limits, validates the result, and enforces tool schemas, call count, concurrency,
+and result and transfer size limits on its side, as it always has. Cancellation
+reaches a guest spinning in QuickJS through a shared flag its interrupt handler
+polls, and one awaiting a tool through the closed connection and message port.
+
+Without the launcher (macOS, tests, not root, or `AGENT_SANDBOX_PROCESSES=0`),
+js_exec runs on the same pool of worker threads inside the runtime process
+(`src/codemode.ts`), with layer 1 only; the `listening` log line says which mode
+is active, and the image sets `AGENT_SANDBOX_REQUIRED=1` so production cannot
+start that way. `tests/image-isolation.ts` boots the image and proves the other
+layers from inside a sandbox process.
 
 What guest code can reach on the host, all through the trusted bootstrap
 (`src/sandbox-bootstrap.ts`) and never as globals:
@@ -550,8 +594,9 @@ race-proof directory traversal against another OS process replacing directories.
 Use DO/R2-backed tools or an OS-contained filesystem service for that threat.
 
 The tests cover known escape patterns and limits; they are not a security audit
-or proof against engine vulnerabilities. Production shared-VM operation still
-needs OS/container containment and resource quotas around the sandbox, tenant
+or proof against engine vulnerabilities. A sandbox process serves many tenants'
+executions in turn, so an escape that persists in one would see later executions
+routed to it. Production shared-VM operation still needs resource quotas around the sandbox, tenant
 authentication, tool-specific authorization, controlled egress for tool hosts,
 and a maintained engine/security update process. No deployed environment has
 been changed.
