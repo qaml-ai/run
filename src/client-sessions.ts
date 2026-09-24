@@ -19,6 +19,7 @@ import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
+import { volumeToolDefinitions } from "./volume-tools.ts";
 import { databaseUnavailable, type Db } from "./db.ts";
 import type { Claim, Ownership } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
@@ -79,6 +80,7 @@ const validId = (value: unknown): value is string => typeof value === "string" &
 const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 const has = (object: object, key: string) => Object.hasOwn(object, key);
 const RUN_METHODS = ["prompt", "execute", "continue"];
+const FILE_TOOL_NAMES = new Set(volumeToolDefinitions([]).map(tool => tool.name));
 /** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. */
 const MAX_RESUMES = 2;
 /** A model turn that began can continue from its transcript on another node; a code execution cannot. */
@@ -451,7 +453,7 @@ export class ClientSessions {
         definitions: [...this.fileTools(session, session.header.definitions), ...session.header.definitions],
         // File tools run here against the agent's current mounts; every other tool goes to the application.
         call: async (name, args, signal, context) => {
-          if (!this.fileTools(session, session.header.definitions).some(tool => tool.name === name)) return this.call(session, name, args, signal, context);
+          if (!this.isFileTool(session, name)) return this.call(session, name, args, signal, context);
           await this.beforeEffect(session);
           return this.options.volumes!.tool({ tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, mounts: session.header.mounts ?? [] }, name, args, signal);
         },
@@ -471,6 +473,10 @@ export class ClientSessions {
   }
 
   /** The runtime's file tools for a session with mounts; application tools of the same name take precedence. */
+  /** Whether `name` is one of the file tools `fileTools` gives the session now, without building their definitions. */
+  private isFileTool(session: Session, name: string) {
+    return FILE_TOOL_NAMES.has(name) && !!this.options.volumes && !!session.header.mounts?.length && !session.header.definitions.some(tool => tool.name === name);
+  }
   private fileTools(session: Session, definitions: ToolDefinition[]) {
     return this.options.volumes && session.header.mounts?.length ? this.options.volumes.definitions(session.header.mounts, definitions) : [];
   }
