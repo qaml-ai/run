@@ -263,7 +263,8 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
 
 - `transcript.jsonl`: one durable record per finished native Pi message
   (`message_end`), plus turn start/end markers. Messages stay native instead of
-  being converted to UI messages. A retried provider error is retracted.
+  being converted to UI messages. A retried provider error is retracted. The
+  supervisor writes it; an agent in its own process sends records over IPC.
 - `<session>.journal.jsonl`: request and tool-call state changes. It is fsynced
   only where correctness needs it: accepting a request, claiming a tool call
   (before the application performs the side effect), and recording outcomes.

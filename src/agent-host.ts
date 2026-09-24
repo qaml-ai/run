@@ -5,10 +5,8 @@ import { isContextOverflow, isRetryableAssistantError, type AssistantMessage } f
 import { executeCode } from "./codemode.ts";
 import type { AgentConfig, ToolBridge } from "./protocol.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
-import { fileAppendLog } from "../shared/append-log.ts";
-import { Transcript, legacySnapshotPath, readTranscript, readTranscriptLog, summaryMessage, transcriptPath, type CompactionState, type TranscriptRecord } from "./transcript.ts";
-import { openStorage } from "../shared/storage-config.ts";
-import type { Storage } from "../shared/storage.ts";
+import type { AppendLog } from "../shared/append-log.ts";
+import { Transcript, legacySnapshotPath, readTranscriptLog, summaryMessage, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, runCompaction } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY } from "./limits.ts";
@@ -20,6 +18,8 @@ export interface HostIO {
   tool(name: string, args: Record<string, unknown>, toolCallId?: string): Promise<any>;
   /** Abort the application tool calls this agent has in flight. */
   cancelTools(): Promise<unknown>;
+  /** The agent's transcript, which its supervisor writes. */
+  transcript: AppendLog<TranscriptRecord>;
 }
 
 /**
@@ -30,7 +30,6 @@ export function createAgentHost(io: HostIO) {
   let agent: Agent | undefined;
   let config: AgentConfig;
   let transcript: Transcript;
-  let storage: Storage | undefined;
   let busy = false;
   let active: AbortController | undefined;
   let persistenceError: unknown;
@@ -171,14 +170,8 @@ export function createAgentHost(io: HostIO) {
       if (agent) throw new Error("Agent already initialized");
       config = params;
       await mkdir(config.directory, { recursive: true, mode: 0o700 });
-      if (config.storage && config.transcriptKey) {
-        storage = await openStorage(config.storage);
-        transcript = new Transcript(storage.log<TranscriptRecord>(config.transcriptKey));
-        await transcript.load();
-      } else {
-        transcript = new Transcript(fileAppendLog<TranscriptRecord>(transcriptPath(config.directory)));
-        await transcript.load(legacySnapshotPath(config.directory));
-      }
+      transcript = new Transcript(io.transcript);
+      await transcript.load(config.localTranscript ? legacySnapshotPath(config.directory) : undefined);
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string } } | undefined;
       if (transcript.active && config.resume) {
@@ -264,7 +257,7 @@ export function createAgentHost(io: HostIO) {
       return { configured: true };
     }
     // Full history comes from the log; memory holds only the working set.
-    if (method === "history") return { messages: storage ? await readTranscriptLog(storage.log(config.transcriptKey!)) : await readTranscript(config.directory) };
+    if (method === "history") return { messages: await readTranscriptLog(transcript.log) };
     if (method === "steer" || method === "followUp") {
       // Pi queues these whether or not a run is active; an idle queue drains into the next run.
       const messages = params.message !== undefined ? userMessages(params.message) : undefined;

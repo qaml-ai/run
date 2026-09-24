@@ -7,9 +7,9 @@ import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
-import { openStorage, type StorageDescriptor } from "../shared/storage-config.ts";
 import type { Storage } from "../shared/storage.ts";
-import { readTranscript, readTranscriptLog } from "./transcript.ts";
+import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
+import { readTranscript, readTranscriptLog, transcriptPath, type TranscriptRecord } from "./transcript.ts";
 import { createAgentHost } from "./agent-host.ts";
 
 /**
@@ -19,11 +19,11 @@ import { createAgentHost } from "./agent-host.ts";
  * hosting process's worker pool either way.
  */
 export type Hosting = "process" | "inline";
-type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void> };
+type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; transcript: AppendLog<TranscriptRecord> };
 type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc };
 type InlineHandle = Common & { kind: "inline"; host: ReturnType<typeof createAgentHost>; stop: (error: Error) => void; stopped: Promise<never> };
 type Handle = ProcessHandle | InlineHandle;
-export type SupervisorOptions = { runtime?: string; maxAgents?: number; storage?: StorageDescriptor; hosting?: Hosting };
+export type SupervisorOptions = { runtime?: string; maxAgents?: number; storage?: Storage; hosting?: Hosting };
 
 export class AgentSupervisor {
   readonly agents = new Map<string, Handle>();
@@ -32,11 +32,11 @@ export class AgentSupervisor {
   private readonly stopping = new Map<string, Promise<void>>();
   readonly root: string;
   readonly options: SupervisorOptions;
-  private storage?: Promise<Storage>;
   /**
    * `root` holds each agent's local working directory (its sandbox cwd). With
    * `storage`, transcripts live there under `sessions/<id>/transcript` instead of
-   * in the working directory, so any host can load the agent.
+   * in the working directory, so any host can load the agent. The supervisor
+   * writes the transcript; an agent process sends records over IPC.
    */
   constructor(root: string, options: SupervisorOptions = {}) {
     this.root = root;
@@ -50,8 +50,7 @@ export class AgentSupervisor {
   /** An agent's full history without its process. */
   async history(id: string) {
     if (!this.options.storage) return readTranscript(resolve(join(this.root, id)));
-    this.storage ??= openStorage(this.options.storage);
-    return readTranscriptLog((await this.storage).log(AgentSupervisor.transcriptKey(id)));
+    return readTranscriptLog(this.options.storage.log(AgentSupervisor.transcriptKey(id)));
   }
 
   /** Validate and dispatch an agent's application tool call, with the same limits in either hosting mode. */
@@ -78,26 +77,29 @@ export class AgentSupervisor {
     try {
       const directory = resolve(join(this.root, id));
       await mkdir(directory, { recursive: true, mode: 0o700 });
-      const location = this.options.storage ? { storage: this.options.storage, transcriptKey: AgentSupervisor.transcriptKey(id) } : {};
-      const init = { ...config, ...location, id, directory, tools: bridge.definitions };
-      return this.hosting === "inline" ? await this.startInline(id, init, bridge) : await this.startProcess(id, directory, init, bridge);
+      const storage = this.options.storage;
+      const transcript = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
+      const init = { ...config, ...(storage ? {} : { localTranscript: true }), id, directory, tools: bridge.definitions };
+      return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript) : await this.startProcess(id, directory, init, bridge, transcript);
     } finally { this.starting.delete(id); }
   }
 
-  private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge) {
+  private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
     const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true);
-    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set() };
+    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript };
     this.agents.set(id, handle);
     this.starting.delete(id);
     const cleanup = () => {
       this.cancelTools(handle);
       if (this.agents.get(id) === handle) this.agents.delete(id);
+      void handle.transcript.close();
     };
     child.once("exit", cleanup);
     child.once("error", cleanup);
     rpc.onEvent = event => { for (const listener of handle.listeners) listener(event); };
     rpc.handler = async (method, params) => {
       if (method === "cancel-tools") return this.cancelTools(handle);
+      if (method === "transcript") return this.transcriptRequest(handle, params);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
@@ -107,11 +109,21 @@ export class AgentSupervisor {
     finally { clearTimeout(timeout); }
   }
 
-  private async startInline(id: string, init: AgentConfig, bridge: ToolBridge) {
+  /** An agent process's transcript operations. Appends are applied before the first await, so they keep IPC order. */
+  private transcriptRequest(handle: Handle, params: { op: string; records?: TranscriptRecord[]; durable?: boolean }) {
+    const log = handle.transcript;
+    if (params.op === "read") return log.read();
+    if (params.op === "append") { for (const record of params.records ?? []) log.append(record); return log.flush(params.durable).then(() => null); }
+    if (params.op === "rewrite") return log.rewrite(() => params.records ?? []).then(() => null);
+    throw new Error("Unknown transcript operation");
+  }
+
+  private async startInline(id: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
     const stopped = Promise.withResolvers<never>();
     stopped.promise.catch(() => {});
-    const handle = { kind: "inline", bridge, calls: new Set(), listeners: new Set(), stop: stopped.reject, stopped: stopped.promise } as unknown as InlineHandle;
+    const handle = { kind: "inline", bridge, calls: new Set(), listeners: new Set(), stop: stopped.reject, stopped: stopped.promise, transcript } as unknown as InlineHandle;
     handle.host = createAgentHost({
+      transcript,
       // Copies keep the agent from sharing objects with the supervisor, as IPC would.
       emit: event => { for (const listener of handle.listeners) listener(structuredClone(event)); },
       tool: (name, args, toolCallId) => this.dispatchTool(handle, { name, args: structuredClone(args), toolCallId }),
@@ -166,6 +178,7 @@ export class AgentSupervisor {
       handle.stop(new Error("Agent stopped"));
       await handle.host.dispose();
     }
+    await handle.transcript.close();
   }
 
   async close() { await Promise.all([...[...this.agents.keys()].map(id => this.stop(id)), ...this.stopping.values()]); }

@@ -1,6 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { StorageDescriptor } from "../shared/storage-config.ts";
 
 import type { ToolDefinition } from "../shared/client-protocol.ts";
 export type { ToolDefinition };
@@ -19,9 +18,8 @@ export interface AgentConfig {
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** Host policy for retrying transient provider errors. */
   retry?: { maxAttempts: number; baseDelayMs: number };
-  /** Where the transcript lives; without it, `transcript.jsonl` in `directory`. */
-  storage?: StorageDescriptor;
-  transcriptKey?: string;
+  /** The transcript is `transcript.jsonl` in `directory`, which may hold a version-1 snapshot to import. */
+  localTranscript?: boolean;
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
 }

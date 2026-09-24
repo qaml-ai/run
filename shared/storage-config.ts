@@ -1,6 +1,6 @@
 import { fileStorage, type Storage } from "./storage.ts";
 
-/** A serializable description of storage, so agent processes can open the same storage as the server. */
+/** Which storage the runtime uses. */
 export type StorageDescriptor =
   | { kind: "file"; root: string; shared?: boolean }
   | { kind: "s3"; bucket: string; prefix?: string; region?: string };
