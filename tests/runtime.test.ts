@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
+import { codePool } from "../src/codemode.ts";
 import { localTools } from "../src/local-tools.ts";
 import { configuredModel } from "../src/model.ts";
 import { readTranscript } from "../src/transcript.ts";
@@ -23,7 +24,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, maxAgent
   return { root, supervisor, start };
 }
 
-test("two real agent processes compose tools concurrently, with distinct workspaces and code processes", async t => {
+test("two real agents compose tools concurrently, with distinct workspaces", async t => {
   const { root, supervisor, start } = await fixture(t, 2);
   const [a, b] = await Promise.all([start("a"), start("b")]);
   if (supervisor.hosting === "process") assert.notEqual(a.pid, b.pid);
@@ -165,29 +166,25 @@ test("process death closes the interrupted turn on restart without replaying it 
   assert.equal((await start("a", chosen)).recovered, false);
 });
 
-test("stopping an agent also kills a CPU-bound codemode child", async t => {
+test("stopping an agent also stops its CPU-bound codemode execution", async t => {
   const { supervisor, start } = await fixture(t);
   await start("a");
   const started = Promise.withResolvers<void>();
-  const running = supervisor.request("a", "execute", { code: 'text("started");\nwhile (true) {}' }, () => started.resolve());
+  const running = supervisor.request("a", "execute", { code: 'text("started");\nwhile (true) {}', timeoutMs: 60_000 }, () => started.resolve());
   const rejected = assert.rejects(running, /stopped|exited/);
   await started.promise;
-  // The sandbox child's parent is the agent's process, or this one when agents run inline.
   const handle = supervisor.agents.get("a")!;
-  const agentPid = handle.kind === "process" ? handle.child.pid : process.pid;
-  const children = execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" }).trim().split("\n")
-    .map(line => line.trim().split(/\s+/)).filter(([, ppid, ...command]) => Number(ppid) === agentPid && command.join(" ").includes("code-child"));
-  assert.equal(children.length, 1);
-  const pid = Number(children[0][0]);
   await supervisor.stop("a");
   await rejected;
-  // Allow the OS to reap the orphan after the entire process group is killed.
-  for (let i = 0; i < 50; i++) {
-    try { process.kill(pid, 0); }
-    catch (error) { assert.equal((error as NodeJS.ErrnoException).code, "ESRCH"); return; }
-    await new Promise(resolve => setTimeout(resolve, 20));
+  if (handle.kind === "process") {
+    // The sandbox worker is a thread of the agent's process, which is gone.
+    assert.throws(() => process.kill(handle.child.pid!, 0), { code: "ESRCH" });
+    return;
   }
-  assert.fail("Codemode child survived agent shutdown");
+  // Inline, the guest is cancelled through the interrupt handler and its worker returns to the pool.
+  const pool = codePool();
+  for (let i = 0; i < 50 && [...pool.slots].some(slot => slot.state === "busy"); i++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok([...pool.slots].every(slot => slot.state !== "busy"), "Codemode execution survived agent shutdown");
 });
 
 test("HTTP control plane authenticates, streams codemode output, and stops agents", async t => {

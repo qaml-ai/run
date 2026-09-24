@@ -216,7 +216,7 @@ export function createAgentHost(io: HostIO) {
         execute: async (id, args, signal, onUpdate) => {
           try {
             const result = await executeCode({
-              ...codeRequest(args), directory: config.directory, bridge: bridge(signal ?? new AbortController().signal), signal,
+              ...codeRequest(args), bridge: bridge(signal ?? new AbortController().signal), signal,
               onEvent: event => {
                 io.emit({ type: "codemode", toolCallId: id, event });
                 onUpdate?.({ content: [{ type: "text", text: JSON.stringify(event) }], details: event });
@@ -281,7 +281,7 @@ export function createAgentHost(io: HostIO) {
     busy = true;
     active = new AbortController();
     try {
-      if (method === "execute") return await executeCode({ ...codeRequest(params), directory: config.directory, bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
+      if (method === "execute") return await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
       await transcript.setActive(true);
       if (method === "continue") await agent.continue();
       else if (promptMessages) await agent.prompt(promptMessages);

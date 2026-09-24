@@ -15,23 +15,15 @@ import { createAgentHost } from "./agent-host.ts";
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
  * isolation, ~50 MB each). "inline": many agents share this process, each
- * bounded by its compacted working set. Model-written code always runs in its
- * own sandbox process either way.
+ * bounded by its compacted working set. Model-written code runs in QuickJS on the
+ * hosting process's worker pool either way.
  */
 export type Hosting = "process" | "inline";
 type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void> };
-type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; groupKilled: boolean };
+type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc };
 type InlineHandle = Common & { kind: "inline"; host: ReturnType<typeof createAgentHost>; stop: (error: Error) => void; stopped: Promise<never> };
 type Handle = ProcessHandle | InlineHandle;
 export type SupervisorOptions = { runtime?: string; maxAgents?: number; storage?: StorageDescriptor; hosting?: Hosting };
-
-function killGroup(handle: ProcessHandle) {
-  if (handle.groupKilled || !handle.child.pid) return;
-  try { process.kill(-handle.child.pid, "SIGKILL"); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-  // Never signal an already reaped group again on the subsequent exit event.
-  handle.groupKilled = true;
-}
 
 export class AgentSupervisor {
   readonly agents = new Map<string, Handle>();
@@ -94,15 +86,11 @@ export class AgentSupervisor {
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge) {
     const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true);
-    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), groupKilled: false };
+    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set() };
     this.agents.set(id, handle);
     this.starting.delete(id);
     const cleanup = () => {
       this.cancelTools(handle);
-      // A VM is Unix: reap the entire agent process group, including a
-      // codemode child stuck in synchronous code when its agent dies.
-      try { killGroup(handle); }
-      catch (error) { console.error("Failed to reap agent process group", child.pid, error); }
       if (this.agents.get(id) === handle) this.agents.delete(id);
     };
     child.once("exit", cleanup);
@@ -113,7 +101,7 @@ export class AgentSupervisor {
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
-    const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); killGroup(handle); }, 30_000);
+    const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); child.kill("SIGKILL"); }, 30_000);
     try { return await rpc.request("init", init); }
     catch (error) { await this.stop(id); throw error; }
     finally { clearTimeout(timeout); }
@@ -171,7 +159,7 @@ export class AgentSupervisor {
     if (handle.kind === "process") {
       handle.rpc.close("Agent stopped");
       const closed = once(handle.child, "close");
-      killGroup(handle);
+      handle.child.kill("SIGKILL");
       await closed;
     } else {
       // Callers see the same failure as a killed process; the host writes nothing more.

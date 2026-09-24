@@ -3,24 +3,41 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, symlink, readFile, writeFile, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { executeCode } from "../src/codemode.ts";
+import { CodePool, executeCode } from "../src/codemode.ts";
 import { localTools } from "../src/local-tools.ts";
 import { SANDBOX_LIMITS, codeRequest } from "../src/limits.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 
-async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?: ToolBridge) {
+type RunOptions = { timeoutMs?: number; maxOutputCharacters?: number; signal?: AbortSignal };
+async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?: ToolBridge, pool?: CodePool) {
   const directory = await mkdtemp(join(tmpdir(), "camelai-sandbox-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
+  if (pool) t.after(() => pool.close());
   const tools = bridge ?? await localTools(join(directory, "workspace"));
   return {
     directory,
-    run: (code: string, options: { timeoutMs?: number; maxOutputCharacters?: number; signal?: AbortSignal } = {}) => executeCode({
-      code, directory, bridge: tools, runtime: process.env.AGENT_RUNTIME, ...options,
+    run: (code: string, options: RunOptions = {}) => executeCode({ code, bridge: tools, pool, ...options }),
+  };
+}
+
+const threads = (pool: CodePool) => [...pool.slots].map(slot => slot.worker.threadId).sort();
+async function until(condition: () => boolean) {
+  for (let i = 0; i < 200 && !condition(); i++) await sleep(25);
+  assert.ok(condition(), "Condition not reached");
+}
+function blocking() {
+  let calls = 0;
+  const release = Promise.withResolvers<void>();
+  const bridge: ToolBridge = {
+    definitions: [{ name: "hang", description: "Blocks until released or aborted", parameters: { type: "object" } }],
+    call: (_name, _args, signal) => new Promise((resolve, reject) => {
+      calls++;
+      void release.promise.then(() => resolve("released"));
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     }),
   };
+  return { bridge, entered: (count: number) => until(() => calls >= count), release: () => release.resolve() };
 }
 
 test("guest globals, function constructors, eval and callback prototypes cannot reach the host", async t => {
@@ -148,51 +165,131 @@ test("workspace capabilities reject traversal, live/dangling symlinks and hard l
   await assert.rejects(readFile(join(directory, "created-outside.txt")), /ENOENT/);
 });
 
-const codeChildren = () => {
-  try { return execFileSync("pgrep", ["-P", String(process.pid)], { encoding: "utf8" }).trim().split("\n").filter(Boolean).map(Number); }
-  catch { return []; }
-};
-const environment = (pid: number) => process.platform === "linux"
-  ? readFileSync(`/proc/${pid}/environ`, "utf8").replaceAll("\0", "\n")
-  : execFileSync("ps", ["eww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+test("the guest reaches only ECMAScript built-ins and the codemode helpers: no process, require, Node modules or environment", async t => {
+  process.env.SANDBOX_TEST_CANARY = "sandbox-test-canary-must-not-leak";
+  t.after(() => { delete process.env.SANDBOX_TEST_CANARY; });
+  const { run } = await fixture(t);
+  const result = await run(`
+    const globals = Object.getOwnPropertyNames(globalThis).sort();
+    const probes = {
+      process: typeof process, require: typeof require, module: typeof module, Buffer: typeof Buffer,
+      globalProcess: typeof globalThis.process, std: typeof std, os: typeof os, env: typeof env,
+    };
+    const imports = await Promise.all(["node:process", "node:fs", "node:worker_threads", "process", "fs", "module"]
+      .map(async name => { try { await import(name); return "escaped"; } catch (error) { return String(error.message); } }));
+    return { globals, probes, imports, reachable: JSON.stringify(globals.map(name => { try { return String(globalThis[name]); } catch { return ""; } })) };
+  `);
+  const value = JSON.parse(result.output[0]);
+  assert.deepEqual(value.globals, [
+    "AggregateError", "Array", "ArrayBuffer", "BigInt", "BigInt64Array", "BigUint64Array", "Boolean", "DataView", "Date", "Error",
+    "EvalError", "FinalizationRegistry", "Float16Array", "Float32Array", "Float64Array", "Function", "Infinity", "Int16Array", "Int32Array",
+    "Int8Array", "InternalError", "Iterator", "JSON", "Map", "Math", "NaN", "Number", "Object", "Promise", "Proxy", "RangeError",
+    "ReferenceError", "Reflect", "RegExp", "Set", "String", "Symbol", "SyntaxError", "TypeError", "URIError", "Uint16Array", "Uint32Array",
+    "Uint8Array", "Uint8ClampedArray", "WeakMap", "WeakRef", "WeakSet", "console", "decodeURI", "decodeURIComponent", "encodeURI",
+    "encodeURIComponent", "escape", "eval", "globalThis", "isFinite", "isNaN", "parseFloat", "parseInt", "text", "tools", "undefined", "unescape",
+  ]);
+  assert.ok(Object.values(value.probes).every(type => type === "undefined"), JSON.stringify(value.probes));
+  assert.ok(value.imports.every((outcome: string) => /imports are disabled/.test(outcome)), JSON.stringify(value.imports));
+  assert.ok(!value.reachable.includes("sandbox-test-canary"));
+});
 
-test("timeouts and aborts kill the code child, which inherits none of the runtime's environment", async t => {
-  const CANARY = "sandbox-test-canary-must-not-leak";
-  process.env.SANDBOX_TEST_CANARY = CANARY;
-  t.after(async () => { delete process.env.SANDBOX_TEST_CANARY; });
-  let entered = Promise.withResolvers<void>();
+test("a worker keeps no guest state between executions", async t => {
+  const pool = new CodePool({ min: 1, max: 1 });
+  const { run } = await fixture(t, undefined, pool);
+  await run("return 0");
+  const [worker] = threads(pool);
+  await run(`globalThis.leak = "secret"; Object.prototype.polluted = 1; Array.prototype.push = () => 0; JSON.parse = () => "hijacked"; var declared = 1;`);
+  const result = await run(`return [typeof leak, typeof declared, ({}).polluted, [].push(1), JSON.parse("2")];`);
+  assert.deepEqual(JSON.parse(result.output[0]), ["undefined", "undefined", null, 1, 2]);
+  assert.deepEqual(threads(pool), [worker], "Both ran on the same worker");
+  // Memory is fresh too: exhausting it leaves nothing behind for the next guest.
+  await run('const keep = []; try { for (;;) keep.push(new Uint8Array(1024 * 1024)); } catch {}');
+  assert.deepEqual((await run('const keep = []; for (let i = 0; i < 12; i++) keep.push(new Uint8Array(1024 * 1024)); return keep.length;')).output, ["12"]);
+  assert.deepEqual(threads(pool), [worker]);
+});
+
+test("concurrent executions do not interfere", async t => {
+  let delay = 0;
+  const pool = new CodePool({ min: 1, max: 3 });
   const { run } = await fixture(t, {
-    definitions: [{ name: "hang", description: "Blocks until aborted", parameters: { type: "object" } }],
-    call: (_name, _args, signal) => new Promise((_, reject) => {
-      entered.resolve();
-      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-    }),
-  });
-  const before = codeChildren();
-  const timedOut = assert.rejects(run("await tools.hang({});", { timeoutMs: 1_500 }), /timed out after 1500ms/);
-  await entered.promise;
-  const [child] = codeChildren().filter(pid => !before.includes(pid));
-  assert.ok(child, "A code child is running");
-  const env = environment(child);
-  assert.ok(process.platform === "linux" || env.includes("code-child.ts"), "Inspected the code child");
-  assert.match(env, /TMPDIR=/, "The environment is visible, and it is the fixed one the runtime sets");
-  assert.ok(!env.includes(CANARY), "No inherited environment");
-  assert.ok(!env.includes("NODE_OPTIONS"));
-  await timedOut;
-  assert.ok(!codeChildren().includes(child), "The timed-out child is gone");
+    definitions: [{ name: "wait", description: "Resolves later", parameters: { type: "object" } }],
+    call: async () => { await sleep(5 + (delay++ % 4) * 10); return null; },
+  }, pool);
+  const results = await Promise.all(Array.from({ length: 12 }, (_, i) => run(`
+    globalThis.mine = ${i};
+    Object.prototype.owner = ${i};
+    await tools.wait({});
+    text("progress ${i}");
+    await tools.wait({});
+    return [globalThis.mine, ({}).owner];
+  `)));
+  results.forEach((result, i) => assert.deepEqual(result.output, [`progress ${i}`, JSON.stringify([i, i])]));
+  assert.ok(pool.slots.size <= 3);
+});
 
-  entered = Promise.withResolvers<void>();
+test("timeouts and aborts cancel the guest, and the worker is reused once it unwinds", async t => {
+  const pool = new CodePool({ min: 1, max: 1 });
+  const hang = blocking();
+  const { run } = await fixture(t, hang.bridge, pool);
+  await run("return 0");
+  const [worker] = threads(pool);
+  const timedOut = assert.rejects(run("await tools.hang({});", { timeoutMs: 500 }), /timed out after 500ms/);
+  await hang.entered(1);
+  await timedOut;
   const controller = new AbortController();
   const aborted = assert.rejects(run("await tools.hang({});", { signal: controller.signal }), /aborted/);
-  await entered.promise;
-  const [running] = codeChildren().filter(pid => !before.includes(pid));
-  assert.ok(running);
+  await hang.entered(2);
   controller.abort();
   await aborted;
-  assert.ok(!codeChildren().includes(running), "The aborted child is gone");
+  const spinning = new AbortController();
+  const spun = assert.rejects(run("while (true) {}", { signal: spinning.signal, timeoutMs: 60_000 }), /aborted/);
+  await sleep(200);
+  spinning.abort();
+  await spun;
+  await assert.rejects(run("return await new Promise(() => {});", { timeoutMs: 300 }), /timed out/);
+  assert.match(String(await run("while (true) {}", { timeoutMs: 60_000 }).catch(error => error)), /CPU or wall-clock limit/, "A CPU-bound guest dies at the CPU limit, well before its deadline");
+  assert.deepEqual((await run("return 42;")).output, ["42"]);
+  assert.deepEqual(threads(pool), [worker], "Every cancellation was cooperative");
+});
 
-  const busy = run("while (true) {}", { timeoutMs: 60_000 }).catch(error => error);
-  while (!codeChildren().some(pid => !before.includes(pid))) await sleep(25);
-  assert.match(String(await busy), /CPU or wall-clock limit/, "A CPU-bound guest dies at the CPU limit, well before its deadline");
-  assert.deepEqual(codeChildren().filter(pid => !before.includes(pid)), []);
+test("a guest stuck where the interrupt handler cannot reach is terminated with its worker, which is replaced", async t => {
+  const pool = new CodePool({ min: 1, max: 2 });
+  const { run } = await fixture(t, undefined, pool);
+  await run("return 0");
+  const [worker] = threads(pool);
+  // Parsing a 300,000-digit BigInt is one native call (~0.7 s) with no interrupt checks inside.
+  const started = performance.now();
+  await assert.rejects(run('return BigInt("9".repeat(300000)) > 0n;', { timeoutMs: 100 }), /timed out after 100ms/);
+  assert.ok(performance.now() - started < 1_000, "The caller does not wait for the worker to be terminated");
+  await until(() => pool.slots.size === 1 && !threads(pool).includes(worker));
+  assert.deepEqual((await run("return 42;")).output, ["42"]);
+});
+
+test("a worker that dies mid-execution fails the execution and is replaced", async t => {
+  const pool = new CodePool({ min: 1, max: 1 });
+  const hang = blocking();
+  const { run } = await fixture(t, hang.bridge, pool);
+  const running = assert.rejects(run("await tools.hang({});"), /worker exited/);
+  await hang.entered(1);
+  const [slot] = pool.slots;
+  await slot.worker.terminate();
+  await running;
+  await until(() => pool.slots.size === 1 && !pool.slots.has(slot));
+  assert.deepEqual((await run("return 1;")).output, ["1"]);
+});
+
+test("executions queue for a free worker and fail clearly past their own timeout; idle extra workers are reaped", async t => {
+  const pool = new CodePool({ min: 1, max: 2, idleMs: 100 });
+  const hang = blocking();
+  const { run } = await fixture(t, hang.bridge, pool);
+  const held = [run("return await tools.hang({});"), run("return await tools.hang({});")];
+  await until(() => [...pool.slots].filter(slot => slot.state === "busy").length === 2);
+  assert.equal(pool.slots.size, 2, "Grew on demand up to the maximum");
+  await assert.rejects(run("return 1;", { timeoutMs: 200 }), /timed out after 200ms waiting for a sandbox worker \(all 2 busy\)/);
+  const queued = run("return 2;", { timeoutMs: 10_000 });
+  await sleep(100);
+  hang.release();
+  assert.deepEqual((await Promise.all(held)).map(result => result.output), [["released"], ["released"]]);
+  assert.deepEqual((await queued).output, ["2"]);
+  await until(() => pool.slots.size === 1);
 });

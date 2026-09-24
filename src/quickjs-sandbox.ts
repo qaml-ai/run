@@ -2,26 +2,36 @@ import {
   newQuickJSWASMModuleFromVariant, newVariant, RELEASE_SYNC,
   type QuickJSHandle, type QuickJSDeferredPromise,
 } from "quickjs-emscripten";
-import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
-import { SANDBOX_LIMITS, jsonWithinLimit } from "./limits.ts";
-import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
+import { SANDBOX_LIMITS } from "./limits.ts";
 import { SANDBOX_BOOTSTRAP } from "./sandbox-bootstrap.ts";
 import type { ToolDefinition } from "./protocol.ts";
 
+/**
+ * Runs in a pool worker. The main thread has already validated the catalog and
+ * prepared the code, and it enforces tool-call schemas and quotas; this side
+ * only bounds what crosses from the guest before handing it over.
+ */
 export async function runSandbox(options: {
+  /** Compiled once per worker; every execution instantiates it with fresh, bounded memory. */
+  wasmModule: WebAssembly.Module;
+  /** Set by the main thread while guest code may be spinning: the interrupt handler polls it. */
+  cancel: Int32Array;
+  /** Aborted when the main thread gives up, to wake a guest waiting on nothing. */
+  signal: AbortSignal;
+  /** Plain JavaScript, already stripped of TypeScript. */
   code: string;
   tools: ToolDefinition[];
   timeoutMs: number;
   maxOutputCharacters: number;
-  call: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  /** Resolves with the result as JSON, already within the size and transfer limits. */
+  call: (name: string, args: unknown) => Promise<string>;
   onOutput: (text: string) => void;
 }) {
-  validateDefinitions(options.tools);
   // Hard guest-memory boundary: setMemoryLimit alone undercounts bulk
   // allocations in the pinned 0.32.0 release (upstream issue #271).
   const pages = SANDBOX_LIMITS.wasmBytes / 65536;
   const memory = new WebAssembly.Memory({ initial: pages, maximum: pages });
-  const module = await newQuickJSWASMModuleFromVariant(newVariant(RELEASE_SYNC, { wasmMemory: memory }));
+  const module = await newQuickJSWASMModuleFromVariant(newVariant(RELEASE_SYNC, { wasmMemory: memory, wasmModule: options.wasmModule }));
   if (module.getWasmMemory() !== memory) throw new Error("QuickJS did not use the bounded memory");
   const runtime = module.newRuntime();
   runtime.setMemoryLimit(SANDBOX_LIMITS.heapBytes);
@@ -35,7 +45,6 @@ export async function runSandbox(options: {
   let outputEvents = 0;
   let truncated = false;
   let calls = 0;
-  let transferred = 0;
   let closed = false;
   let cpuMs = 0;
   let enteredAt = performance.now();
@@ -44,9 +53,11 @@ export async function runSandbox(options: {
   let interrupted = false;
   runtime.setInterruptHandler(() => {
     const now = performance.now();
-    interrupted ||= now >= deadline || cpuMs + now - enteredAt >= SANDBOX_LIMITS.cpuMs;
+    interrupted ||= now >= deadline || cpuMs + now - enteredAt >= SANDBOX_LIMITS.cpuMs || Atomics.load(options.cancel, 0) === 1;
     return interrupted;
   });
+  const onAbort = () => { interrupted = true; wake?.(); };
+  options.signal.addEventListener("abort", onAbort, { once: true });
   function run<T>(fn: () => T): T {
     enteredAt = performance.now();
     try { return fn(); }
@@ -86,21 +97,16 @@ export async function runSandbox(options: {
     const call = vm.newFunction("call", (nameHandle, jsonHandle) => {
       const name = string(nameHandle, 80);
       const args = JSON.parse(string(jsonHandle, SANDBOX_LIMITS.argumentBytes));
-      const checked = validateToolCall(options.tools, name, args);
+      // Also enforced by the main thread; failing here keeps a flood of calls from ever becoming messages.
       if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
       if (pending.size >= SANDBOX_LIMITS.concurrentTools) throw new Error("Too many concurrent tool calls");
-      transferred += checked.bytes;
-      if (transferred > SANDBOX_LIMITS.totalToolBytes) throw new Error("Codemode transfer limit exceeded");
       const promise = vm.newPromise();
       pending.add(promise);
       void Promise.resolve().then(() => {
         if (closed) throw new Error("Sandbox execution ended");
-        return options.call(name, checked.args);
-      }).then(value => {
+        return options.call(name, args);
+      }).then(json => {
         if (closed) return;
-        const json = jsonWithinLimit(value, SANDBOX_LIMITS.resultBytes, "Tool result");
-        transferred += Buffer.byteLength(json);
-        if (transferred > SANDBOX_LIMITS.totalToolBytes) throw new Error("Codemode transfer limit exceeded");
         const result = vm.newString(json);
         try { promise.resolve(result); } finally { result.dispose(); }
       }).catch(error => {
@@ -123,8 +129,7 @@ export async function runSandbox(options: {
     handles.push(catalog);
     formatError = vm.unwrapResult(vm.callFunction(bootstrap, vm.undefined, call, emit, catalog));
     handles.push(formatError);
-    const code = prepareCodeModeUserCode(await stripTypeScriptFromUserCode(options.code));
-    const initial = run(() => vm.evalCode(`(async function() { "use strict";\n${code}\n})().then(value => { if (value !== undefined) text(value); })`, "codemode.js"));
+    const initial = run(() => vm.evalCode(`(async function() { "use strict";\n${options.code}\n})().then(value => { if (value !== undefined) text(value); })`, "codemode.js"));
     if (initial.error) { try { throw guestError(initial.error); } finally { initial.dispose(); } }
     const result = initial.value;
     handles.push(result);
@@ -149,6 +154,7 @@ export async function runSandbox(options: {
   } finally {
     closed = true;
     wake = undefined;
+    options.signal.removeEventListener("abort", onAbort);
     for (const promise of pending) promise.dispose();
     for (const handle of handles.reverse()) if (handle.alive) handle.dispose();
     vm.dispose();

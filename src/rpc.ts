@@ -51,8 +51,9 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
   const child = spawn(runtime, [...args, fileURLToPath(new URL(entry, import.meta.url))], {
     cwd,
     detached,
-    // No inherited provider keys, supervisor token, NODE_OPTIONS, or preload hooks.
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, TMPDIR: cwd },
+    // No inherited provider keys, supervisor token, NODE_OPTIONS, or preload hooks. One agent
+    // runs one js_exec at a time: it starts a sandbox worker on demand and lets it go when idle.
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, TMPDIR: cwd, AGENT_CODE_WORKERS_MIN: "0" },
     stdio: ["ignore", "ignore", "inherit", "ipc"],
     serialization: "json",
   });
@@ -66,12 +67,12 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
   return { child, rpc };
 }
 
-export function parentRpc(onDisconnect?: () => void): Rpc {
+export function parentRpc(): Rpc {
   const rpc = new Rpc(message => {
     if (!process.connected) throw new Error("Parent disconnected");
     process.send!(message, error => { if (error) rpc.close(error.message); });
   });
   process.on("message", message => { void rpc.receive(message as WireMessage); });
-  process.on("disconnect", () => { rpc.close(); onDisconnect?.(); process.exit(0); });
+  process.on("disconnect", () => { rpc.close(); process.exit(0); });
   return rpc;
 }
