@@ -22,6 +22,8 @@ export type RequestRecord = {
   began?: number;
   /** Kept until the run begins, so a queued run survives a restart and runs exactly once. */
   params?: unknown;
+  /** Times a new owner resumed this run's turn after the node running it was lost. */
+  resumes?: number;
 };
 export type ClientEvent =
   | { type: "tool_call"; call: CallRecord }

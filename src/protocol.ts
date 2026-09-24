@@ -24,6 +24,8 @@ export interface AgentConfig {
   /** Where the transcript lives; without it, `transcript.jsonl` in `directory`. */
   storage?: StorageDescriptor;
   transcriptKey?: string;
+  /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
+  resume?: boolean;
 }
 export type WireMessage =
   | { type: "request"; id: string; method: string; params: any }

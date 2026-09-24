@@ -101,13 +101,23 @@ is dropped when its node answers 503 or cannot be reached.
 3. waits, up to `AGENT_DRAIN_TIMEOUT_MS`, for turns and runs that began (and
    other open requests) to finish; runs that never began stay queued for the
    next owner, which starts them when it loads the agent;
-4. marks anything still running as uncertain, stops its agents, releases every
-   agent and volume, then closes event streams so clients reconnect to the next
-   owner, deletes its heartbeat, and exits 0.
+4. stops its agents and hands off what is still running (its next owner resumes
+   those turns; see [Turn handoff](#turn-handoff)), releases every agent and
+   volume, then closes event streams so clients reconnect to the next owner,
+   deletes its heartbeat, and exits 0.
 
 A second signal stops the wait. Every 503 carries `Retry-After`. Give the
 container a stop timeout longer than the drain (ECS `stopTimeout` 120 with the
 default 100 s).
+
+<a id="turn-handoff"></a>**Turn handoff.** When a node loads an agent whose last
+run began and never finished (its node crashed, was killed, or drained out of
+time), the turn resumes there under the same request ID instead of failing: an
+answer the model had already finished is taken as the outcome; otherwise any
+tool call whose outcome was lost gets an "outcome unknown" result (claimed calls
+are never run again) and the model is called once more to continue. A run is
+resumed at most twice, counted in the journal; after that, and for code
+executions, the request fails as uncertain.
 
 **Load.** Every minute each node logs a `node_load` line in CloudWatch Embedded
 Metric Format: namespace `AgentRuntime`, metrics `agents` (awake agents),
@@ -129,7 +139,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_STORAGE` | `file` (default), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 30000) |
-| `AGENT_DRAIN_TIMEOUT_MS` | how long SIGTERM waits for running turns before releasing everything (default 100000; see [Draining](#draining)) |
+| `AGENT_DRAIN_TIMEOUT_MS` | how long SIGTERM waits for running turns before handing them off (default 100000; see [Draining](#draining)) |
 | `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?}}}`), re-read on SIGHUP |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, e.g. from an ECS task definition's `secrets` (a JSON key of a secret is `<arn>:clientId::`) |
@@ -240,11 +250,13 @@ buffer, it receives `REPLAY_GAP`, and it recovers durable state from `/state`
 and `/history`. The session header (a row in `agents`) is rewritten only when
 configuration or metadata changes.
 
-If the runtime dies mid-turn, the next start closes the turn automatically:
-tool calls without results get an explicit "outcome unknown" result, and a
-runtime notice is added so the model neither assumes success nor repeats the
-effect blindly. The interrupted request completes with an `uncertain` error.
-Nothing is re-driven automatically and nothing blocks later requests.
+If the runtime dies mid-turn, the next owner resumes the turn (see
+[Turn handoff](#turn-handoff)): tool calls without results get an explicit
+"outcome unknown" result so the model neither assumes success nor repeats the
+effect blindly, and the model continues from there. A turn that cannot resume
+(a code execution, or one resumed twice already) is closed with a runtime notice
+and its request completes with an `uncertain` error. Claimed tool calls are never
+re-run, and nothing blocks later requests.
 
 Transient provider failures (overload, rate limits, 5xx, dropped streams) are
 retried in the same turn with exponential backoff (3 attempts from 2 s).
@@ -462,8 +474,8 @@ ID. It never re-prompts the model to reconstruct a UI stream. The DO retains onl
 a UI turn marker, the SDK receipt cursor, and a render projection.
 
 The service persists native messages and tool outcomes. A killed service run
-completes with an uncertain error, and the agent's next start closes the turn
-with "outcome unknown" tool results; unknown side effects are never
+resumes on the next node with "outcome unknown" tool results (at most twice,
+then it completes with an uncertain error); unknown side effects are never
 automatically repeated. The service retries transient provider errors itself,
 so no degraded retry ladder, salvage mode, or retry budget is needed in the
 application.

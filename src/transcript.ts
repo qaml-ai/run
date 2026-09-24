@@ -64,6 +64,8 @@ export class Transcript {
   compaction?: CompactionState;
   /** A turn was running when the log was last written. */
   active = false;
+  /** `total` when the running turn started. */
+  turnStart = 0;
   readonly log: AppendLog<TranscriptRecord>;
   constructor(log: AppendLog<TranscriptRecord>) { this.log = log; }
 
@@ -95,7 +97,7 @@ export class Transcript {
   apply(record: TranscriptRecord) {
     if (record.t === "message") { this.context.push(record.message); this.total++; }
     else if (record.t === "retract") { if (this.context.pop()) this.total--; }
-    else if (record.t === "turn") this.active = record.active;
+    else if (record.t === "turn") { this.active = record.active; if (record.active) this.turnStart = this.total; }
     else if (record.t === "reset") {
       this.total = record.messages.length;
       this.compaction = record.compaction;

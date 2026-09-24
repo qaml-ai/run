@@ -13,7 +13,7 @@ import { validateUserMessages } from "./history.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
-import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type RequestRecord } from "../shared/client-protocol.ts";
+import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
@@ -56,6 +56,10 @@ type Session = {
   pending: Map<string, (outcome: Outcome) => void>;
   /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
   runs: Promise<void>;
+  /** Runs that began on a lost node, queued here to resume their turn. */
+  resuming: Set<string>;
+  /** How the agent process found the interrupted turn when it started. */
+  handoff?: { continue: true } | { finished: unknown };
   fault?: Error;
   lastActive: number;
 };
@@ -64,6 +68,10 @@ const validId = (value: unknown): value is string => typeof value === "string" &
 const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 const has = (object: object, key: string) => Object.hasOwn(object, key);
 const RUN_METHODS = ["prompt", "execute", "continue"];
+/** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. */
+const MAX_RESUMES = 2;
+/** A model turn that began can continue from its transcript on another node; a code execution cannot. */
+const resumable = (request: RequestRecord) => ["prompt", "continue"].includes(request.method) && !!request.began;
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
 const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "history", "steer", "followUp", "configure"];
@@ -232,16 +240,20 @@ export class ClientSessions {
     const session: Session = {
       header, revision: stored.revision, claim, requests: new Map(), calls: new Map(), log,
       // Cursors restart above any cursor from an earlier process, so clients see a gap, never a repeat.
-      cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), lastActive: Date.now(),
+      cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), lastActive: Date.now(),
     };
     for (const record of await log.read()) this.apply(session, record);
     if (header.version !== 3 || header.id !== id) throw new Error("Invalid client session header");
     // Loading means no process anywhere owns the session, so nothing it recorded is still running.
-    // Queued runs that never began are safe to run now; anything that began has an unknown outcome.
+    // Queued runs that never began are safe to run now. A turn that began resumes from its
+    // transcript, a bounded number of times; anything else that began has an unknown outcome.
     const queued: RequestRecord[] = [];
+    const resumed: RequestRecord[] = [];
     for (const request of session.requests.values()) if (request.state === "running") {
       if (RUN_METHODS.includes(request.method) && !request.began && request.params !== undefined) queued.push(request);
-      else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true } });
+      else if (resumable(request) && (request.resumes ?? 0) < MAX_RESUMES) {
+        resumed.push(this.upsertRequest(session, { ...request, resumes: (request.resumes ?? 0) + 1 }));
+      } else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true } });
     }
     for (const call of session.calls.values()) {
       if (call.state === "started") this.upsertCall(session, { ...call, state: "uncertain", outcome: { error: "The runtime restarted during this tool call; its outcome is unknown", uncertain: true } });
@@ -250,6 +262,7 @@ export class ClientSessions {
     await log.flush(true);
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
     this.sessions.set(id, session);
+    for (const record of resumed) { session.resuming.add(record.id); this.enqueue(session, record, undefined); }
     for (const record of queued.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) this.enqueue(session, record, record.params);
     return session;
   }
@@ -368,7 +381,7 @@ export class ClientSessions {
     return session.starting ??= (async () => {
       await this.makeRoom(session);
       const apiKey = await this.apiKey(session, session.header.config.model.provider);
-      const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}) }, {
+      const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: [...this.fileTools(session, session.header.definitions), ...session.header.definitions],
         // File tools run here against the agent's current mounts; every other tool goes to the application.
         call: (name, args, signal, context) => this.fileTools(session, session.header.definitions).some(tool => tool.name === name)
@@ -380,7 +393,9 @@ export class ClientSessions {
         delete session.header.config.initialMessages;
         await this.writeHeader(session);
       }
-      if (result.recovered) this.publish(session, { type: "event", requestId: "", event: { type: "turn_recovered", reason: "The runtime restarted during a turn; unresolved tool calls were marked unknown" } });
+      session.handoff = result.resume;
+      if (result.resume && "continue" in result.resume) this.publish(session, { type: "event", requestId: "", event: { type: "turn_resumed", reason: "The node running this turn was lost; it continues here, with unresolved tool calls marked unknown" } });
+      else if (result.recovered) this.publish(session, { type: "event", requestId: "", event: { type: "turn_recovered", reason: "The runtime restarted during a turn; unresolved tool calls were marked unknown" } });
       // Starting can take longer than the idle timeout; the agent is fresh, not idle.
       session.lastActive = Date.now();
       return result;
@@ -429,7 +444,7 @@ export class ClientSessions {
       session = {
         header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
         claim, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id)),
-        cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), lastActive: Date.now(),
+        cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), lastActive: Date.now(),
       };
       // A conditional create: if a concurrent request made this agent first, retry as a load.
       try { await this.writeHeader(session); }
@@ -696,7 +711,7 @@ export class ClientSessions {
     return (await this.accept(session, body)).record;
   }
 
-  private async execute(session: Session, record: RequestRecord, params: any) {
+  private async execute(session: Session, record: RequestRecord, params: any, method: RequestMethod = record.method) {
     const id = session.header.id;
     const live = this.supervisor.agents.has(id);
     if (record.method === "history") return this.history(session);
@@ -716,7 +731,7 @@ export class ClientSessions {
       await this.writeHeader(session);
       return result;
     }
-    return this.supervisor.request(id, record.method, params, RUN_METHODS.includes(record.method)
+    return this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
       ? event => {
           // Failed calls report zero usage; count only responses the provider completed.
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
@@ -724,6 +739,15 @@ export class ClientSessions {
           }
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
+  }
+
+  /** Finish a run whose node was lost: continue its turn, or take the answer it had already reached. */
+  private async resume(session: Session, record: RequestRecord): Promise<Outcome> {
+    const handoff = session.handoff;
+    session.handoff = undefined;
+    if (handoff && "continue" in handoff) return { result: await this.execute(session, record, {}, "continue") };
+    if (handoff) return { result: handoff.finished };
+    return { error: "The runtime restarted during this request", uncertain: true };
   }
 
   /** Queue a run behind the agent's earlier runs; a busy agent never rejects work. */
@@ -744,7 +768,7 @@ export class ClientSessions {
         await this.commit(session, true);
         this.hook("runStarted", session, record);
       }
-      value = { result: await this.execute(session, record, params) };
+      value = session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
     }
     catch (error) { value = { error: errorText(error) }; }
     if (this.closed || session.fault || session.requests.get(record.id)?.state !== "running") return;
@@ -852,15 +876,18 @@ export class ClientSessions {
     }
   }
 
-  /** Settle in-flight work. With `keepQueued`, runs that never began stay queued for the next owner. */
-  private async interrupt(session: Session, reason: string, keepQueued = false) {
+  /**
+   * Settle in-flight work. With `handOff`, runs stay for the next owner: queued ones
+   * run there, and turns that began resume there from the transcript.
+   */
+  private async interrupt(session: Session, reason: string, handOff = false) {
     for (const call of session.calls.values()) if (["offered", "started"].includes(call.state)) {
       const uncertain = call.state === "started";
       this.upsertCall(session, { ...call, state: uncertain ? "uncertain" : "cancelled", outcome: { error: reason, ...(uncertain ? { uncertain: true } : {}) } });
     }
     for (const request of session.requests.values()) if (request.state === "running") {
-      const queued = RUN_METHODS.includes(request.method) && !request.began;
-      if (queued && keepQueued) continue;
+      const queued = RUN_METHODS.includes(request.method) && (!request.began || session.resuming.has(request.id));
+      if (handOff && (queued || resumable(request))) continue;
       const { params: _params, ...rest } = request;
       this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: queued ? { error: reason } : { error: reason, uncertain: true } });
     }
@@ -868,12 +895,14 @@ export class ClientSessions {
     await this.commit(session, true);
   }
 
-  /** Requests being worked on: runs that began and other open requests, but not queued runs. */
+  /** Requests being worked on: runs that began and other open requests, but not queued runs or resumes. */
   inFlight() {
     let count = 0;
     for (const session of this.sessions.values()) {
       if (session.starting) count++;
-      for (const request of session.requests.values()) if (request.state === "running" && (request.began || !RUN_METHODS.includes(request.method))) count++;
+      for (const request of session.requests.values()) {
+        if (request.state === "running" && (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method))) count++;
+      }
     }
     return count;
   }
@@ -917,10 +946,10 @@ export class ClientSessions {
     this.closed = true;
     clearInterval(this.heartbeat);
     for (const session of [...this.sessions.values()]) {
+      // Stopped first, so no turn advances past what is handed off, and the next owner never shares the transcript with a live process.
+      await this.supervisor.stop(session.header.id).catch(() => {});
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
-      // Stopped before release, so the next owner never shares the transcript with a live process.
-      await this.supervisor.stop(session.header.id).catch(() => {});
       await this.unload(session);
       // Closed after release, so the client's reconnect finds the next owner rather than this node.
       session.response?.end();

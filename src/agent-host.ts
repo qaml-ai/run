@@ -184,7 +184,22 @@ export function createAgentHost(io: HostIO) {
         await transcript.load(legacySnapshotPath(config.directory));
       }
       let recovered = false;
-      if (transcript.active) {
+      let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string } } | undefined;
+      if (transcript.active && config.resume) {
+        // A response cut off when its node stopped is not history; the model is asked again.
+        for (let last = transcript.context.at(-1); last?.role === "assistant" && ["aborted", "error"].includes(last.stopReason) && transcript.total > transcript.turnStart; last = transcript.context.at(-1)) await transcript.retract();
+        // Answer tool calls whose outcome was lost as unknown, never by running them again.
+        await transcript.append(interruptedTurnRepairs(transcript.context, false));
+        const last = transcript.context.at(-1);
+        // At a step boundary the model is simply called again; a final answer means the turn had ended.
+        if (last && (last.role === "user" || last.role === "toolResult")) resume = { continue: true };
+        else {
+          if (last?.role === "assistant" && transcript.total > transcript.turnStart) resume = { finished: { messages: transcript.total, ...answer(last as AssistantMessage) } };
+          else await transcript.append(interruptedTurnRepairs(transcript.context));
+          await transcript.setActive(false);
+        }
+        recovered = true;
+      } else if (transcript.active) {
         // Close the interrupted turn instead of refusing work until an operator intervenes.
         await transcript.append(interruptedTurnRepairs(transcript.context));
         await transcript.setActive(false);
@@ -239,7 +254,7 @@ export function createAgentHost(io: HostIO) {
         }
         io.emit(event);
       });
-      return { pid: process.pid, recovered, messages: transcript.total };
+      return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}) };
     }
     if (!agent) throw new Error("Agent is not initialized");
     if (method === "status") return { pid: process.pid, busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
@@ -279,9 +294,7 @@ export function createAgentHost(io: HostIO) {
       if (persistenceError) throw persistenceError;
       await transcript.setActive(false);
       const last = agent.state.messages.at(-1) as AssistantMessage | undefined;
-      // The final answer's text, for callers that relay it (channels).
-      const reply = last?.role === "assistant" && last.stopReason !== "error" ? last.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
-      return { messages: transcript.total, error: agent.state.errorMessage ?? null, ...(reply ? { reply } : {}) };
+      return { messages: transcript.total, ...answer(last), error: agent.state.errorMessage ?? null };
     } finally {
       // Release what compaction folded away: the next run starts from summary + kept messages.
       if (method !== "execute" && !persistenceError) {
@@ -292,6 +305,12 @@ export function createAgentHost(io: HostIO) {
       active = undefined;
       busy = false;
     }
+  }
+
+  /** The final answer's text, for callers that relay it (channels). */
+  function answer(last: AssistantMessage | undefined) {
+    const reply = last?.role === "assistant" && last.stopReason !== "error" ? last.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
+    return { error: last?.stopReason === "error" ? last.errorMessage ?? "The model returned an error" : null, ...(reply ? { reply } : {}) };
   }
 
   /**

@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -30,8 +31,8 @@ async function cluster(t: { after(fn: () => Promise<void>): void }) {
   const { db, url: databaseUrl } = await testDatabase();
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { "*": "fixture-key" } } } }));
   const children: ChildProcess[] = [];
-  const start = async (name: string, env: Record<string, string> = {}) => {
-    const port = await freePort();
+  const start = async (name: string, env: Record<string, string> = {}, fixedPort?: number) => {
+    const port = fixedPort ?? await freePort();
     const url = `http://127.0.0.1:${port}`;
     const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
       env: {
@@ -279,4 +280,137 @@ test("with no live peer, a draining node answers 503 with Retry-After for anythi
   gate.resolve();
   assert.equal((await running).output[0], "ok");
   assert.equal((await once(a.child, "exit"))[0], 0);
+});
+
+/** An OpenAI-compatible model answering from `respond`; undefined leaves that call hanging, as if the node died mid-request. */
+async function fakeModel(t: { after(fn: () => Promise<void>): void }, respond: (body: any, index: number) => object | undefined) {
+  const bodies: any[] = [];
+  const server = createHttpServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    bodies.push(body);
+    const delta = respond(body, bodies.length - 1) as any;
+    if (!delta) return;
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const [content, finish_reason] of [[delta, null], [{}, delta.tool_calls ? "tool_calls" : "stop"]]) res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }] })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  }).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const env = { AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` };
+  return { bodies, env };
+}
+const jsExec = (code: string) => ({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "js_exec", arguments: JSON.stringify({ code }) } }] });
+const toolMessages = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => typeof message.content === "string" ? message.content : JSON.stringify(message.content));
+async function until(check: () => boolean | Promise<boolean>, what: string, ms = 20_000) {
+  for (const started = Date.now(); !await check(); await sleep(50)) assert.ok(Date.now() - started < ms, what);
+}
+
+test("a turn whose node died between model steps resumes on the next owner, calling the model once more", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, (_body, index) => index === 0 ? jsExec('return await tools.lookup({ key: "k" })') : index === 1 ? undefined : { role: "assistant", content: "all done" });
+  const a = await c.start("a", model.env);
+  const b = await c.start("b", model.env);
+  const calls: string[] = [];
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: lookup(calls), idempotencyKey: "resumed-agent" });
+  await created.close();
+  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: lookup(calls) });
+  t.after(() => client.close());
+  const run = client.prompt("go", { idempotencyKey: "turn-1", timeoutMs: 60_000 });
+
+  await until(() => model.bodies.length === 2, "A made the second model call");
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  const result = await run;
+  assert.equal(result.reply, "all done");
+  assert.equal(result.error, null);
+
+  const observer = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: lookup([]) });
+  t.after(() => observer.close());
+  assert.equal((await observer.waitForRequest("turn-1", { timeoutMs: 10_000 })).reply, "all done");
+  assert.equal(model.bodies.length, 3, "one more model call, not a new turn");
+  const resumed = model.bodies[2];
+  assert.equal(resumed.messages.filter((message: any) => message.role === "user").length, 1, "the prompt was not submitted again");
+  assert.ok(toolMessages(resumed).some((content: string) => content.includes("value-of-k")), "the finished step's tool result carried over");
+  assert.deepEqual(calls, ["k"]);
+  assert.equal(await c.owner(created.session.id), b.url);
+  const state = await (await fetch(`${b.url}/clients/${created.session.id}/state`, { headers: { Authorization: `Bearer ${created.session.token}` } })).json() as any;
+  assert.equal(state.requests.find((request: any) => request.id === "turn-1").resumes, 1);
+});
+
+test("a turn whose node died during a claimed tool call continues with the outcome unknown, without calling the tool again", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, (_body, index) => index === 0 ? jsExec("return await tools.slow({})") : { role: "assistant", content: "noted the unknown outcome" });
+  const a = await c.start("a", model.env);
+  const b = await c.start("b", model.env);
+  let executions = 0;
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const tools = { slow: tool({ description: "A side effect", input: schema.Object({}, { additionalProperties: false }), execute: async () => { executions++; entered.resolve(); await gate.promise; return "effect-done"; } }) };
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: "tool-in-flight" });
+  await created.close();
+  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools });
+  t.after(() => client.close());
+  const run = client.prompt("do it", { idempotencyKey: "turn-2", timeoutMs: 60_000 });
+
+  await entered.promise;
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  const result = await run;
+  assert.equal(result.reply, "noted the unknown outcome");
+  assert.equal(executions, 1, "the claimed call was never executed again");
+  assert.equal(model.bodies.length, 2);
+  assert.ok(toolMessages(model.bodies[1]).some((content: string) => /outcome is unknown/.test(content)), "the model was told the outcome is unknown");
+  const state = await (await fetch(`${b.url}/clients/${created.session.id}/state`, { headers: { Authorization: `Bearer ${created.session.token}` } })).json() as any;
+  assert.deepEqual(state.calls.map((call: any) => call.state), ["uncertain"]);
+});
+
+test("a turn that keeps killing its node is resumed at most twice, then fails as uncertain", { timeout: 120_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, () => undefined);
+  const port = await freePort();
+  let node = await c.start("a", model.env, port);
+  const created = await new AgentRuntime({ url: node.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "doomed-agent" });
+  await created.close();
+  const client = await new AgentRuntime({ url: node.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  t.after(() => client.close());
+  const run = client.prompt("hang", { idempotencyKey: "turn-3", timeoutMs: 100_000 });
+  run.catch(() => {});
+  for (let restart = 1; restart <= 3; restart++) {
+    await until(() => model.bodies.length === restart, `model call ${restart}`);
+    node.child.kill("SIGKILL");
+    await once(node.child, "close");
+    // The same address takes the old heartbeat over, so the restarted node owns the agent at once.
+    node = await c.start(`a${restart}`, model.env, port);
+  }
+  await assert.rejects(run, /runtime restarted during this request/);
+  assert.equal(model.bodies.length, 3, "the first attempt and two resumes");
+  const state = await (await fetch(`${node.url}/clients/${created.session.id}/state`, { headers: { Authorization: `Bearer ${created.session.token}` } })).json() as any;
+  const request = state.requests.find((entry: any) => entry.id === "turn-3");
+  assert.equal(request.resumes, 2);
+  assert.equal(request.outcome.uncertain, true);
+});
+
+test("a turn still running when the drain times out is handed off and resumed by the next owner", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "resumed after the drain" });
+  const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "500" });
+  const b = await c.start("b", model.env);
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "outlives-drain" });
+  await created.close();
+  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  t.after(() => client.close());
+  const run = client.prompt("think for a long time", { idempotencyKey: "turn-4", timeoutMs: 60_000 });
+  await until(() => model.bodies.length === 1, "A called the model");
+
+  a.child.kill("SIGTERM");
+  assert.equal((await once(a.child, "exit"))[0], 0);
+  assert.equal(a.logs.find(entry => entry.type === "drain_finished")?.unfinished, 1);
+  const result = await run;
+  assert.equal(result.reply, "resumed after the drain");
+  assert.equal(model.bodies.length, 2);
+  assert.equal(model.bodies[1].messages.filter((message: any) => message.role === "user").length, 1);
+  assert.equal(await c.owner(created.session.id), b.url);
 });
