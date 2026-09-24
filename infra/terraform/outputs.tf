@@ -31,20 +31,7 @@ output "secret_arns" {
   value = merge(
     { for key, secret in aws_secretsmanager_secret.runtime : key => secret.arn },
     { for tenant, secret in aws_secretsmanager_secret.operator_token : "operator-token/${tenant}" => secret.arn },
-    local.executor_enabled ? { executor-token = aws_secretsmanager_secret.executor_token[0].arn } : {},
   )
-}
-
-output "executor" {
-  description = "Executor tier ids, or null while executor_enabled = false."
-  value = local.executor_enabled ? {
-    security_group    = aws_security_group.executor[0].id
-    subnets           = local.executor_subnet_ids
-    launch_template   = aws_launch_template.executor[0].name
-    autoscaling_group = aws_autoscaling_group.executor[0].name
-    url               = local.executor_url
-    log_group         = aws_cloudwatch_log_group.executor[0].name
-  } : null
 }
 
 output "database" {

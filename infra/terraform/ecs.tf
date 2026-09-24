@@ -29,21 +29,16 @@ locals {
     AGENT_ECS_SERVICE = local.service_name
     # ServiceName dimension on the AgentRuntime EMF metrics.
     AGENT_SERVICE_NAME = local.service_name
-    }, local.executor_enabled ? {
-    AGENT_EXECUTOR_URL           = local.executor_url
-    AGENT_EXECUTOR_CALLBACK_PORT = tostring(var.executor_callback_port)
-  } : {})
+  })
 
   # Injected by ECS at task start from Secrets Manager (execution role).
   github_oauth_arn = aws_secretsmanager_secret.runtime["github-oauth"].arn
-  runtime_secrets = merge({
+  runtime_secrets = {
     AGENT_SESSION_SECRET = aws_secretsmanager_secret.runtime["session-secret"].arn
     AGENT_SECRETS_KEY    = aws_secretsmanager_secret.runtime["secrets-key"].arn
     GITHUB_CLIENT_ID     = "${local.github_oauth_arn}:clientId::"
     GITHUB_CLIENT_SECRET = "${local.github_oauth_arn}:clientSecret::"
-    }, local.executor_enabled ? {
-    AGENT_EXECUTOR_TOKEN = aws_secretsmanager_secret.executor_token[0].arn
-  } : {})
+  }
 }
 
 resource "aws_cloudwatch_log_group" "runtime" {
@@ -188,7 +183,7 @@ resource "aws_vpc_security_group_ingress_rule" "task_from_task" {
   description                  = "Runtime nodes"
 }
 
-# Model providers, S3, RDS, Secrets Manager and executors.
+# Model providers, S3, RDS and Secrets Manager.
 resource "aws_vpc_security_group_egress_rule" "task_all_ipv4" {
   security_group_id = aws_security_group.task.id
   ip_protocol       = "-1"
@@ -221,15 +216,12 @@ resource "aws_ecs_task_definition" "runtime" {
   }
 
   container_definitions = jsonencode([{
-    name      = local.container_name
-    image     = local.runtime_image
-    essential = true
-    portMappings = concat(
-      [{ containerPort = local.runtime_port, protocol = "tcp" }],
-      local.executor_enabled ? [{ containerPort = var.executor_callback_port, protocol = "tcp" }] : [],
-    )
-    environment = [for name in sort(keys(local.runtime_environment)) : { name = name, value = local.runtime_environment[name] }]
-    secrets     = [for name in sort(keys(local.runtime_secrets)) : { name = name, valueFrom = local.runtime_secrets[name] }]
+    name         = local.container_name
+    image        = local.runtime_image
+    essential    = true
+    portMappings = [{ containerPort = local.runtime_port, protocol = "tcp" }]
+    environment  = [for name in sort(keys(local.runtime_environment)) : { name = name, value = local.runtime_environment[name] }]
+    secrets      = [for name in sort(keys(local.runtime_secrets)) : { name = name, valueFrom = local.runtime_secrets[name] }]
     # SIGTERM starts the runtime's drain (about 100 s); SIGKILL follows after this.
     stopTimeout = 120
     # An init as PID 1 forwards signals and reaps the sandbox children.

@@ -1,9 +1,0 @@
-# The CloudWatch agent tails this file; copytruncate keeps systemd's append handle valid.
-/var/log/agent-executor/executor.log {
-  size 50M
-  rotate 3
-  copytruncate
-  compress
-  missingok
-  notifempty
-}

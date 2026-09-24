@@ -3,7 +3,6 @@
 
 locals {
   secret_arn_prefix = "arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${var.secret_prefix}"
-  executor_enabled  = var.executor_enabled
 }
 
 data "aws_vpc" "default" {
@@ -58,8 +57,7 @@ resource "aws_iam_role_policy_attachment" "runtime_ssm" {
 }
 
 # Secrets, and pull access to the runtime's own repository. S3 access for agent
-# state is a separate policy (state-bucket.tf). Executors serve the ECS tasks
-# only (ecs.tf), so this host never gets the executor token.
+# state is a separate policy (state-bucket.tf).
 resource "aws_iam_role_policy" "runtime" {
   name = "agent-runtime"
   role = aws_iam_role.runtime.name
