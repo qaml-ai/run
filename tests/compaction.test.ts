@@ -2,13 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { explicitKeyStream, runCompaction } from "../src/compaction.ts";
+import { readTranscript } from "../src/transcript.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
@@ -86,6 +87,35 @@ test("long conversations compact into a summary; history stays complete and the 
   assert.equal(after.contextMessages, status.contextMessages, "only the working set is loaded");
   await supervisor.request("long", "prompt", { text: "After restart" });
   assert.match(text(fake.chat().at(-1)!), /SUMMARY-MARKER/);
+});
+
+test("a transcript written by pi 0.80.6 loads, replays its tool history and summary, and keeps compacting", async t => {
+  const fake = await provider(t);
+  const root = await mkdtemp(join(tmpdir(), "compaction-legacy-"));
+  const directory = join(root, "agents", "legacy");
+  await mkdir(directory, { recursive: true });
+  // Recorded by the runtime on pi 0.80.6: an image prompt, tool calls with thinking, and two compactions.
+  await copyFile(new URL("./fixtures/pi-0.80.6-transcript.jsonl", import.meta.url), join(directory, "transcript.jsonl"));
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
+  const before = await readTranscript(directory);
+  assert.equal(before.length, 20);
+  const inspect = { definitions: [{ name: "inspect", description: "Inspect", parameters: { type: "object" }, exposure: "direct" as const }], async call() { return "inspected"; } };
+  const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture" }, inspect);
+  assert.equal(started.messages, 20);
+  assert.deepEqual((await supervisor.request("legacy", "history")).messages, before);
+  const result = await supervisor.request("legacy", "prompt", { text: "After the upgrade" });
+  assert.equal(result.error, null);
+  const sent = text(fake.chat().at(-1)!);
+  assert.match(sent, /SUMMARY-write-4/, "the stored summary is the context's start");
+  assert.doesNotMatch(sent, /TURN-0 /);
+  assert.match(sent, /"name":"inspect"/, "stored tool calls replay");
+  assert.match(sent, /"role":"tool"/, "stored tool results replay");
+  const events: any[] = [];
+  for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
+  assert.ok(events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0));
+  assert.match(text(fake.summarizations()[0]), /SUMMARY-write-4/, "the stored summary seeds the next one");
+  assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 20), before);
 });
 
 test("an imported history larger than one summarization request is summarized in chunks", async t => {

@@ -1,0 +1,38 @@
+{"t":"turn","active":true}
+{"t":"message","message":{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}],"timestamp":1790277879949}}
+{"t":"message","message":{"role":"assistant","content":[{"type":"text","text":"ack 1"}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":391,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":396,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790277879975,"responseId":"x"}}
+{"t":"turn","active":false}
+{"t":"turn","active":true}
+{"t":"message","message":{"role":"user","content":[{"type":"text","text":"TOOL please"}],"timestamp":1790277880003}}
+{"t":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"thinking about it","thinkingSignature":"reasoning_content"},{"type":"toolCall","id":"call_2","name":"inspect","arguments":{"n":1,"nested":{"list":[1,"a",null]}}}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":417,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":422,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1790277880007,"responseId":"x"}}
+{"t":"message","message":{"role":"toolResult","toolCallId":"call_2","toolName":"inspect","content":[{"type":"text","text":"inspected"},{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}],"isError":false,"timestamp":1790277880016}}
+{"t":"message","message":{"role":"assistant","content":[{"type":"text","text":"ack 3"}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":528,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":533,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790277880020,"responseId":"x"}}
+{"t":"turn","active":false}
+{"t":"turn","active":true}
+{"t":"message","message":{"role":"user","content":[{"type":"text","text":"TURN-0 xxxx"}],"timestamp":1790277880035}}
+{"t":"message","message":{"role":"assistant","content":[{"type":"text","text":"ack 4"}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":2803,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2808,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790277880039,"responseId":"x"}}
+{"t":"turn","active":false}
+{"t":"turn","active":true}
+{"t":"message","message":{"role":"user","content":[{"type":"text","text":"TURN-1 xxxx"}],"timestamp":1790277880053}}
+{"t":"compaction","summary":"## Goal\nSUMMARY-write-2","cut":8,"tokensBefore":5060,"details":{"readFiles":[],"modifiedFiles":[]},"at":1790277880061}
+{"t":"message","message":{"role":"assistant","content":[{"type":"text","text":"ack 7"}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":2669,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2674,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790277880065,"responseId":"x"}}
+{"t":"turn","active":false}
+{"t":"turn","active":true}
+{"t":"message","message":{"role":"user","content":[{"type":"text","text":"TURN-2 xxxx"}],"timestamp":1790277880078}}
+{"t":"message","message":{"role":"assistant","content":[{"type":"text","text":"ack 8"}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":4944,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":4949,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790277880082,"responseId":"x"}}
+{"t":"turn","active":false}
+{"t":"turn","active":true}
+{"t":"message","message":{"role":"user","content":[{"type":"text","text":"TURN-3 xxxx"}],"timestamp":1790277880096}}
+{"t":"compaction","summary":"## Goal\nSUMMARY-write-4","cut":12,"tokensBefore":7201,"details":{"readFiles":[],"modifiedFiles":[]},"at":1790277880104}
+{"t":"message","message":{"role":"assistant","content":[{"type":"text","text":"ack 11"}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":2669,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2674,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790277880108,"responseId":"x"}}
+{"t":"turn","active":false}
+{"t":"turn","active":true}
+{"t":"message","message":{"role":"user","content":[{"type":"text","text":"TURN-4 xxxx"}],"timestamp":1790277880121}}
+{"t":"message","message":{"role":"assistant","content":[{"type":"text","text":"ack 12"}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":4945,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":4950,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790277880125,"responseId":"x"}}
+{"t":"turn","active":false}
+{"t":"turn","active":true}
+{"t":"message","message":{"role":"user","content":[{"type":"text","text":"TOOL again"}],"timestamp":1790277880142}}
+{"t":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"thinking about it","thinkingSignature":"reasoning_content"},{"type":"toolCall","id":"call_13","name":"inspect","arguments":{"n":1,"nested":{"list":[1,"a",null]}}}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":4971,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":4976,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1790277880146,"responseId":"x"}}
+{"t":"message","message":{"role":"toolResult","toolCallId":"call_13","toolName":"inspect","content":[{"type":"text","text":"inspected"},{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}],"isError":false,"timestamp":1790277880151}}
+{"t":"message","message":{"role":"assistant","content":[{"type":"text","text":"ack 14"}],"api":"openai-completions","provider":"openai","model":"fixture","usage":{"input":5082,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":5087,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790277880157,"responseId":"x"}}
+{"t":"turn","active":false}
