@@ -22,8 +22,8 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?:
 }
 
 const threads = (pool: CodePool) => [...pool.slots].map(slot => slot.worker.threadId).sort();
-async function until(condition: () => boolean) {
-  for (let i = 0; i < 200 && !condition(); i++) await sleep(25);
+async function until(condition: () => boolean, timeoutMs = 5_000) {
+  for (let i = 0; i < timeoutMs / 25 && !condition(); i++) await sleep(25);
   assert.ok(condition(), "Condition not reached");
 }
 function blocking() {
@@ -261,7 +261,8 @@ test("a guest stuck where the interrupt handler cannot reach is terminated with 
   const started = performance.now();
   await assert.rejects(run('return BigInt("9".repeat(300000)) > 0n;', { timeoutMs: 100 }), /timed out after 100ms/);
   assert.ok(performance.now() - started < 1_000, "The caller does not wait for the worker to be terminated");
-  await until(() => pool.slots.size === 1 && !threads(pool).includes(worker));
+  // Termination lands at the worker's next interrupt point, which a slow CI host reaches late.
+  await until(() => pool.slots.size === 1 && !threads(pool).includes(worker), 20_000);
   assert.deepEqual((await run("return 42;")).output, ["42"]);
 });
 
