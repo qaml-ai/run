@@ -15,6 +15,7 @@
     "build": "vite build --config studio/vite.config.ts",
     "build:console": "vite build --config console/vite.config.ts",
     "openapi": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/openapi.ts",
+    "bench:codemode": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-codemode.ts",
     "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts"
   },
   "version": "0.1.0",
