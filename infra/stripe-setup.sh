@@ -13,13 +13,14 @@ mode=${1:-test}
 [[ $mode == test || $mode == live ]] || { echo "usage: $0 [test|live]"; exit 2; }
 here=${0:A:h}
 url=https://agents.camelai.dev/v1/billing/stripe/webhook
-cli=(stripe); [[ $mode == live ]] && cli+=(--live)
+# The CLI takes --live after the subcommand.
+live=(); [[ $mode == live ]] && live=(--live)
 dash=https://dashboard.stripe.com; [[ $mode == test ]] && dash+=/test
 
-existing=$("${cli[@]}" webhook_endpoints list --limit 100 2>/dev/null | jq -r --arg url $url '.data[] | select(.url == $url) | .id')
+existing=$(stripe webhook_endpoints list --limit 100 "${live[@]}" 2>/dev/null | jq -r --arg url $url '.data[] | select(.url == $url) | .id')
 if [[ -n $existing ]]; then
   echo "A $mode webhook for $url already exists ($existing); Stripe shows its secret only at creation."
-  echo "Delete it (${cli[*]} webhook_endpoints delete $existing) and run this again, or use infra/stripe.sh directly."
+  echo "Delete it (stripe webhook_endpoints delete $existing ${live[*]}) and run this again, or use infra/stripe.sh directly."
   exit 1
 fi
 
@@ -38,7 +39,7 @@ unset clip
 print -n | pbcopy
 echo "Got the key (clipboard cleared)."
 
-created=$("${cli[@]}" webhook_endpoints create --url $url \
+created=$(stripe webhook_endpoints create --url $url "${live[@]}" \
   -d "enabled_events[]=checkout.session.completed" \
   -d "enabled_events[]=checkout.session.async_payment_succeeded" \
   -d "enabled_events[]=charge.refunded" \
