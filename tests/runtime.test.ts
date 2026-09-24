@@ -19,7 +19,7 @@ const model = configuredModel();
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, maxAgents = 4) {
   const root = await mkdtemp(join(tmpdir(), "camelai-runtime-test-"));
   const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: process.env.AGENT_RUNTIME, maxAgents, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
-  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   const start = async (id: string, chosen = model, systemPrompt?: string) => supervisor.start(id, { model: chosen, apiKey: "fixture-only", systemPrompt }, await localTools(join(root, "workspaces", id)));
   return { root, supervisor, start };
 }
@@ -199,7 +199,7 @@ test("HTTP control plane authenticates, streams codemode output, and stops agent
     const closed = once(child, "close");
     child.kill("SIGTERM");
     await closed;
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const ready = Promise.withResolvers<number>();
   let output = "";

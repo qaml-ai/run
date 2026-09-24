@@ -26,7 +26,7 @@ async function node(t: Context, db: pg.Pool, storage: ReturnType<typeof memorySt
   const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "purge-test-secret-with-32-characters!", apiKey: "fixture-only" });
   t.after(async () => {
     await sessions.close(); await supervisor.close(); await ownership.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   return { sessions, supervisor };
 }

@@ -17,7 +17,7 @@ type Context = { after: (fn: () => unknown) => void };
 async function socketPath(t: Context) {
   // Short: unix socket paths are limited to about 100 bytes.
   const directory = await mkdtemp(join(tmpdir(), "sbx-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   return join(directory, "s.sock");
 }
 

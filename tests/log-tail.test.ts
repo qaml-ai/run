@@ -226,7 +226,7 @@ function writer(url: string, root: string, records: number) {
 test("two nodes: B takes over the tail a killed node left, and a paused node that resumes is rejected", { timeout: 60_000 }, async t => {
   const { db, url } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "tail-nodes-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const storage = fileStorage(root, { tail: postgresTail(db) });
 
   // A writes three records and is killed before it compacts anything.
@@ -290,7 +290,7 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   t.after(async () => {
     await sessions.close(); await supervisor.close(); await ownership.close();
     for (const listening of [server, provider]) { listening.closeAllConnections(); await new Promise(resolve => listening.close(resolve)); }
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const echo = tool({ description: "Echo", input: schema.Object({ value: schema.String() }, { additionalProperties: false }), execute: ({ value }) => ({ echoed: value }) });
   const agent = await new AgentRuntime({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, apiKey: "x", stateDirectory: join(root, "sdk") }).createAgent({ tools: { echo } });
@@ -346,7 +346,7 @@ test("an agent woken thirty times, one execute each, keeps a bounded number of S
   const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "tail-test-secret-with-32-characters!", apiKey: "fixture-only" });
   t.after(async () => {
     await sessions.close(); await supervisor.close(); await ownership.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const model = { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: "http://127.0.0.1:9/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
   const { id } = await sessions.create([], { model }, "woken-agent");

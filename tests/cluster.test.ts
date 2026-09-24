@@ -59,7 +59,7 @@ async function cluster(t: { after(fn: () => Promise<void>): void }) {
   };
   t.after(async () => {
     for (const child of children) if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGKILL"); await closed; }
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   /** Which node owns an actor, read straight from the database. */
   const owner = async (id: string) => (await db.query("select node from actor_owners where actor = $1", [id])).rows[0]?.node as string | undefined;

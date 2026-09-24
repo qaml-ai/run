@@ -98,7 +98,7 @@ async function node(t: { after(fn: () => Promise<void>): void }) {
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGKILL"); await closed; }
     await link.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   await ready.promise;
   const alive = () => assert.ok(child.exitCode === null && child.signalCode === null, `the node is still running\n${stderr}`);

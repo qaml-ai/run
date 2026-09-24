@@ -45,7 +45,7 @@ test("the connection takes a URL or a host and secret, verifies TLS against AGEN
   await assert.rejects(databaseFromEnvironment({}), /AGENT_DATABASE_URL, or AGENT_DATABASE_HOST and AGENT_DATABASE_SECRET_ARN/);
   await assert.rejects(databaseFromEnvironment({ AGENT_DATABASE_URL: "postgres://db/agents", AGENT_DATABASE_POOL_SIZE: "0" }), /POOL_SIZE/);
   const root = await mkdtemp(join(tmpdir(), "agent-ca-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const ca = join(root, "bundle.pem");
   writeFileSync(ca, "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n");
   const pool = await databaseFromEnvironment({ AGENT_DATABASE_URL: "postgres://user:pass@db.example.test:5432/agents?sslmode=require&sslrootcert=/elsewhere.pem", AGENT_DATABASE_CA: ca, AGENT_DATABASE_POOL_SIZE: "4" });
@@ -113,7 +113,7 @@ test("a pool on rotating credentials re-reads the secret when a connection fails
 
 test("the runtime refuses to start without AGENT_DATABASE_URL", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-no-db-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_RUNTIME_TOKEN: "no-database-operator-token-24", PORT: "0" }, stdio: ["ignore", "pipe", "pipe"],
   });

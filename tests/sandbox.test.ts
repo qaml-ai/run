@@ -13,7 +13,7 @@ import type { ToolBridge } from "../src/protocol.ts";
 type RunOptions = { timeoutMs?: number; maxOutputCharacters?: number; signal?: AbortSignal; onEvent?: (event: unknown) => void };
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?: ToolBridge, pool?: CodePool) {
   const directory = await mkdtemp(join(tmpdir(), "camelai-sandbox-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   if (pool) t.after(() => pool.close());
   const tools = bridge ?? await localTools(join(directory, "workspace"));
   return {

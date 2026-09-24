@@ -60,7 +60,7 @@ async function runtime(t: { after(fn: () => Promise<void>): void }, github?: str
   });
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGTERM"); await closed; }
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const ready = Promise.withResolvers<number>();
   let output = "";

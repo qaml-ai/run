@@ -293,7 +293,7 @@ async function agents(t: Context) {
     await volumes.close();
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   return {
     volumes, sessions,
@@ -388,7 +388,7 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   });
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGTERM"); await closed; }
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const [line] = await once(child.stdout!, "data");
   const url = `http://127.0.0.1:${JSON.parse(String(line).split("\n")[0]).address.port}`;

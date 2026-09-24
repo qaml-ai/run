@@ -8,7 +8,7 @@ import { Transcript, readTranscript, type TranscriptRecord } from "../src/transc
 
 async function directory(t: { after: (fn: () => Promise<void>) => void }) {
   const root = await mkdtemp(join(tmpdir(), "append-log-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   return root;
 }
 

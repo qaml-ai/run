@@ -45,7 +45,7 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(join(tmpdir(), "compaction-test-"));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
-  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   return supervisor;
 }
 const bridge = { definitions: [], async call() { return null; } };
