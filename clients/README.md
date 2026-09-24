@@ -163,6 +163,7 @@ bun examples/release-board.ts --prompt \
 | TypeScript | Python | Purpose |
 | --- | --- | --- |
 | `runtime.createAgent({tools})` | `runtime.create_agent(tools=[...])` | Provision and connect |
+| `runtime.createAgent({definition, tools})` | `runtime.create_agent(definition=..., tools=[...])` | Provision from a definition (`GET /v1/definitions`): it supplies the model, prompt and tools; `tools` answer its tools, and others are added |
 | `runtime.connectAgent(session, {tools})` | `runtime.connect_agent(session, tools=[...])` | Reattach using scoped credentials |
 | `agent.prompt(text)` | `agent.prompt(text)` | Run a model turn |
 | `agent.execute(code)` | `agent.execute(code)` | Diagnostic QuickJS execution, outside model history |

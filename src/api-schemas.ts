@@ -72,6 +72,7 @@ export const Mount = z.object({
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
 export const AgentInput = z.object({
+  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tools; name, type, ttlSeconds, mounts and initialMessages given here override its defaults, and tools given here are added" }),
   name: z.string().optional(),
   type: z.string().optional(),
   model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
@@ -128,6 +129,7 @@ const CallRecord = z.object({
 }).openapi("CallRecord");
 
 export const AgentDetail = AgentSummary.extend({
+  definition: z.object({ id: z.string(), revision: z.number() }).optional().openapi({ description: "The definition the agent was made from, and the revision it has" }),
   tools: z.array(ToolDefinition),
   mounts: z.array(Mount),
   systemPrompt: z.string(),
@@ -175,6 +177,42 @@ export const Usage = z.object({
   days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context" }) })),
 }).openapi("Usage");
 
+const ThinkingLevel = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const DefinitionLimits = z.object({
+  ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400." }),
+}).openapi("DefinitionLimits");
+const definitionName = z.string().trim().min(1).max(120);
+const definitionFields = {
+  model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
+  systemPrompt: z.string().trim().min(1).max(32_000),
+  thinkingLevel: ThinkingLevel,
+  tools: z.array(ToolDefinition).max(128).openapi({ description: "Client tools, answered by an application connected to the agent" }),
+  limits: DefinitionLimits,
+  mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
+};
+const optional = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.optional()])) as { [K in keyof T]: z.ZodOptional<T[K]> };
+const removable = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.nullable().optional()])) as { [K in keyof T]: z.ZodOptional<z.ZodNullable<T[K]>> };
+export const DefinitionInput = z.object({ name: definitionName, ...optional(definitionFields) }).openapi("DefinitionInput");
+export const DefinitionUpdate = z.object({
+  name: definitionName.optional(),
+  ...removable(definitionFields),
+  revision: z.number().int().optional().openapi({ description: "Only update the definition if it is still at this revision" }),
+  apply: z.enum(["all"]).optional().openapi({ description: "Also reconfigure every live agent made from the definition to the new revision; each takes it between turns" }),
+}).openapi("DefinitionUpdate", { description: "Fields given replace the stored ones; null removes one" });
+export const Definition = z.object({
+  id: z.string(),
+  name: z.string(),
+  revision: z.number().openapi({ description: "Increases with every change" }),
+  ...optional(definitionFields),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).openapi("Definition");
+export const DefinitionUpdated = Definition.extend({
+  applied: z.object({ accepted: z.array(z.string()), failed: z.array(z.object({ agent: z.string(), error: z.string() })) }).optional()
+    .openapi({ description: "Agents that accepted the new revision (applied between their turns), and any that could not be reached" }),
+}).openapi("DefinitionUpdated");
+export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
+
 const ChannelTemplate = z.object({
   model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().trim().min(1).max(32_000).optional(),
@@ -192,7 +230,8 @@ const ChannelLimits = z.object({
 const channelFields = {
   name: z.string().trim().min(1).max(120).optional(),
   credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. Stored encrypted and never returned" }),
-  template: ChannelTemplate.optional().openapi({ description: "How each conversation's agent is created" }),
+  definition: z.string().optional().openapi({ description: "The definition each conversation's agent is made from (GET /v1/definitions)" }),
+  template: ChannelTemplate.optional().openapi({ description: "Deprecated: give a definition instead. An inline template becomes a definition of the channel's own" }),
   access: ChannelAccess.optional(),
   limits: ChannelLimits.optional(),
   greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start (Telegram)" }),
@@ -205,7 +244,7 @@ export const Channel = z.object({
   type: z.string(),
   name: z.string(),
   webhookUrl: z.string().optional().openapi({ description: "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Discord channels have none: they connect to Discord's gateway" }),
-  template: ChannelTemplate,
+  definition: z.string().optional().openapi({ description: "The definition each conversation's agent is made from" }),
   access: z.object({ public: z.boolean(), allow: z.array(z.string()) }),
   limits: z.object({ perSenderPerMinute: z.number(), turnsPerDay: z.number() }),
   greeting: z.string().optional(),

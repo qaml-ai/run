@@ -1,6 +1,6 @@
 import { StrictMode, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2 } from "lucide-react";
+import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { AgentsPage } from "@/pages/agents";
 import { AgentPage } from "@/pages/agent";
 import { ChannelsPage } from "@/pages/channels";
+import { DefinitionsPage } from "@/pages/definitions";
 import { ModelsPage } from "@/pages/models";
 import { TokensPage } from "@/pages/tokens";
 import { UsagePage } from "@/pages/usage";
@@ -27,6 +28,7 @@ dark.addEventListener("change", applyTheme);
 
 const NAV = [
   { to: "agents", label: "Agents", icon: Bot },
+  { to: "definitions", label: "Definitions", icon: FileCog },
   { to: "channels", label: "Channels", icon: MessageCircle },
   { to: "models", label: "Models & keys", icon: Boxes },
   { to: "tokens", label: "API tokens", icon: KeyRound },
@@ -41,6 +43,7 @@ function App() {
   if (!me.data) return <SignIn onSignedIn={() => void me.reload()} />;
   const [section, ...rest] = path.split("/");
   const page = section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
+    : section === "definitions" ? <DefinitionsPage />
     : section === "channels" ? <ChannelsPage />
     : section === "models" ? <ModelsPage me={me.data} />
     : section === "tokens" ? <TokensPage />

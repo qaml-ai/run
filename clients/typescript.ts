@@ -41,6 +41,12 @@ export interface AgentOptions {
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
   idempotencyKey?: string;
+  /**
+   * Make the agent from a definition (GET /v1/definitions): it supplies the model, system
+   * prompt, thinking level and tools, so leave those out. `tools` here answer the tools it
+   * declares, and any others are added to the agent.
+   */
+  definition?: string;
   /** Agent lifetime in seconds (60 to 366 days), or null to keep the agent until it is deleted. Default one day. */
   ttlSeconds?: number | null;
   systemPrompt?: string;
@@ -147,7 +153,7 @@ export class AgentRuntime {
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
     const key = this.options.apiKey;
     if (!key) throw new AgentError("Set apiKey to provision an agent");
-    const session = await this.transport.json("/client-sessions", key, "POST", { tools: definitions(options.tools), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
+    const session = await this.transport.json("/client-sessions", key, "POST", { tools: definitions(options.tools), ...(options.definition !== undefined ? { definition: options.definition } : {}), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }

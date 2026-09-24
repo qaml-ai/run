@@ -23,6 +23,7 @@ import { volumeToolDefinitions } from "./volume-tools.ts";
 import { databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
+import type { DefinitionRef } from "./definitions.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -41,6 +42,8 @@ interface SessionHeader {
   mounts?: Mount[];
   /** A purged agent's tombstone keeps only its identity (see `purge`): nothing loads it again. */
   purged?: true;
+  /** The definition and revision the agent was made from, or last had applied. */
+  definition?: DefinitionRef;
 }
 /** Upserts of request and tool-call records, appended as their state changes. */
 type JournalRecord = { t: "request"; record: RequestRecord } | { t: "call"; record: CallRecord };
@@ -153,7 +156,11 @@ export interface ClientSessionOptions {
   hooks?: SessionHooks;
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
+  /** A definition's current configuration, to apply to an agent made from it (`configure` with `definition`). */
+  definitionFor?: (tenant: string, id: string) => Promise<DefinitionConfig>;
 }
+/** A definition resolved for an agent: its revision, agent configuration and client tools. */
+export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; tools: ToolDefinition[] };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
@@ -494,7 +501,12 @@ export class ClientSessions {
     return this.options.volumes && session.header.mounts?.length ? this.options.volumes.definitions(session.header.mounts, definitions) : [];
   }
 
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  /**
+   * Provision an agent, idempotently per `key`. An agent made from a definition records it
+   * (`origin.definition`), and `origin.provision` stands for its configuration in the
+   * idempotency check, so a retry after the definition changed returns the same agent.
+   */
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown }): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -503,7 +515,7 @@ export class ClientSessions {
     const id = `client_${hash(scoped).slice(0, 40)}`;
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
-    const provisionHash = hash(canonical({ definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }));
+    const provisionHash = hash(canonical(origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }));
     // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
     const existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
     if (existing) {
@@ -541,7 +553,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
+          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}) },
           claim, requests: new Map(), running: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -556,7 +568,7 @@ export class ClientSessions {
         if (!created) {
           this.supervisor.unreserve(id);
           if (claim) await this.options.ownership!.release(claim).catch(() => {});
-          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts);
+          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin);
           throw error;
         }
         await this.discard(session!);
@@ -633,7 +645,8 @@ export class ClientSessions {
     const metadata = (await this.owns(id, tenant)) ? (await this.list(tenant)).find(agent => agent.id === id) : undefined;
     const session = metadata && await this.load(id);
     if (!metadata || !session) throw new HttpError(404, "Agent not found");
-    return { ...metadata, tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "", mounts: session.header.mounts ?? [],
+    const definition = session.header.definition && { id: session.header.definition.id, revision: session.header.definition.revision };
+    return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "", mounts: session.header.mounts ?? [],
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible), calls: [...session.calls.values()] };
   }
 
@@ -820,10 +833,13 @@ export class ClientSessions {
    * Accept an idempotent request: 200 with the existing record for a retried ID,
    * or 202 once the new record is durable and the work has started.
    */
-  private async accept(session: Session, body: any): Promise<{ status: 200 | 202; record: RequestRecord }> {
+  private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
+    // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
+    const applying = body.method === "configure" && body.params.definition !== undefined;
+    if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
-      if (body.method === "configure") configurationUpdate(body.params);
+      if (body.method === "configure" && !applying) configurationUpdate(body.params);
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer", "followUp"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -842,8 +858,8 @@ export class ClientSessions {
       if (limited) throw new HttpError(402, limited);
     }
     const isRun = RUN_METHODS.includes(body.method);
-    // Reads and aborts never need a process; runs start it when their turn comes.
-    if (!isRun && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
+    // Reads, aborts and applied definitions never need a process; runs start it when their turn comes.
+    if (!isRun && !applying && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
     // Concurrent retries may have waited on the same process startup.
     const raced = existing();
     if (raced) return { status: 200, record: visible(raced) };
@@ -853,7 +869,8 @@ export class ClientSessions {
       id: body.id, method: body.method, fingerprint, state: "running", ...(isRun ? { params: body.params } : {}),
     });
     await this.commit(session, true);
-    if (isRun) this.enqueue(session, record, body.params);
+    // A definition is applied between runs, when the agent is not busy.
+    if (isRun || applying) this.enqueue(session, record, body.params);
     else void this.run(session, record, body.params);
     return { status: 202, record: visible(record) };
   }
@@ -864,7 +881,7 @@ export class ClientSessions {
     if (!session) throw new HttpError(404, "Unknown agent");
     if (session.fault) throw session.fault;
     session.lastActive = Date.now();
-    return (await this.accept(session, body)).record;
+    return (await this.accept(session, body, true)).record;
   }
 
   private async execute(session: Session, record: RequestRecord, params: any, method: RequestMethod = record.method) {
@@ -874,16 +891,19 @@ export class ClientSessions {
     if (record.method === "status" && !live) return { running: false };
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
-      const update = configurationUpdate(params);
+      const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
+      const update = applied?.update ?? configurationUpdate(params);
       // A new model may belong to another provider: the agent needs that provider's key.
       const apiKey = update.model ? await this.apiKey(session, update.model.provider) : undefined;
       if (update.model && this.options.apiKeyFor && !apiKey) throw new Error(`No ${update.model.provider} API key is configured for this tenant; set one with PUT /v1/providers/${update.model.provider}/key`);
       // Replacing the application's tools keeps the runtime's file tools.
       const withFiles = update.tools && [...this.fileTools(session, update.tools), ...update.tools];
-      const result = await this.supervisor.request(id, "configure", { ...update, ...(withFiles ? { tools: withFiles } : {}), ...(apiKey ? { apiKey } : {}) });
+      // An agent that is not running takes its new configuration when it next starts.
+      const result = live || params.definition === undefined ? await this.supervisor.request(id, "configure", { ...update, ...(withFiles ? { tools: withFiles } : {}), ...(apiKey ? { apiKey } : {}) }) : { configured: true };
       const { tools, ...config } = update;
       if (tools !== undefined) session.header.definitions = tools;
       session.header.config = { ...session.header.config, ...config };
+      if (applied) session.header.definition = applied.definition;
       await this.writeHeader(session);
       return result;
     }
@@ -896,6 +916,17 @@ export class ClientSessions {
           if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, { ...event, kind: "compaction" });
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
+  }
+
+  /** The configuration an agent takes from its definition's current revision; tools added at creation stay. */
+  private async definitionUpdate(session: Session) {
+    const current = session.header.definition;
+    if (!current) throw new Error("This agent was not made from a definition");
+    const resolved = await this.options.definitionFor!(session.header.tenant ?? DEFAULT_TENANT, current.id);
+    const extra = session.header.definitions.filter(tool => current.extraTools?.includes(tool.name));
+    const tools = [...resolved.tools, ...extra];
+    validateDefinitions(tools);
+    return { update: { ...resolved.config, tools }, definition: { ...current, revision: resolved.revision } };
   }
 
   /** Finish a run whose node was lost: continue its turn, or take the answer it had already reached. */

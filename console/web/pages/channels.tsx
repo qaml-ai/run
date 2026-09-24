@@ -8,9 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type Channel } from "@/lib/api";
+import { api, formatTime, useApi, type Channel, type Definition } from "@/lib/api";
+import { Link } from "@/lib/router";
 
 const senders = (value: string) => value.split(/[\s,]+/).map(entry => entry.trim()).filter(Boolean);
 
@@ -37,13 +37,16 @@ const TYPES: Record<ChannelType, { label: string; help: string; fields: { key: s
   },
 };
 
-/** Create a channel, or edit one's prompt and access (credentials are write-only). */
+/** Picking none gives a new channel a definition of its own with the runtime defaults. */
+const OWN = "own";
+
+/** Create a channel, or edit its definition and access (credentials are write-only). */
 function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClose: () => void; onSaved: (created?: Channel) => void }) {
   const [type, setType] = useState<ChannelType>((channel?.type as ChannelType) ?? "telegram");
   const [name, setName] = useState(channel?.name ?? "");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
-  const [model, setModel] = useState(channel?.template.model ?? "");
-  const [systemPrompt, setSystemPrompt] = useState(channel?.template.systemPrompt ?? "");
+  const definitions = useApi<Definition[]>("/v1/definitions");
+  const [definition, setDefinition] = useState(channel?.definition ?? OWN);
   const [allow, setAllow] = useState(channel?.access.allow.join(", ") ?? "");
   const [open, setOpen] = useState(channel?.access.public ?? false);
   const [busy, setBusy] = useState(false);
@@ -56,10 +59,8 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
   async function save(event: FormEvent) {
     event.preventDefault();
     setBusy(true); setError(undefined);
-    // The template is replaced whole: keep what this form does not edit.
-    const template = { ...channel?.template, model: model.trim() || undefined, systemPrompt: systemPrompt.trim() || undefined };
     const body = {
-      ...(name.trim() ? { name: name.trim() } : {}), template, access: { public: open, allow: senders(allow) },
+      ...(name.trim() ? { name: name.trim() } : {}), ...(definition !== OWN ? { definition } : {}), access: { public: open, allow: senders(allow) },
       ...(complete ? { credentials: Object.fromEntries(info.fields.map((field, index) => [field.key, entered[index]])) } : {}),
     };
     try {
@@ -105,12 +106,15 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
             <Input id="channel-name" placeholder="Defaults to the bot's username" value={name} onChange={event => setName(event.target.value)} />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="channel-model">Model</Label>
-            <Input id="channel-model" placeholder="Runtime default, or e.g. anthropic/claude-sonnet-5" value={model} onChange={event => setModel(event.target.value)} />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="channel-prompt">System prompt</Label>
-            <Textarea id="channel-prompt" rows={4} value={systemPrompt} onChange={event => setSystemPrompt(event.target.value)} />
+            <Label>Definition</Label>
+            <Select value={definition} onValueChange={setDefinition}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Loading…" /></SelectTrigger>
+              <SelectContent>
+                {!channel?.definition && <SelectItem value={OWN}>Runtime defaults</SelectItem>}
+                {definitions.data?.map(entry => <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-muted-foreground text-xs">The model, prompt and tools each conversation's agent is made from. Manage them under <Link className="underline" to="definitions">Definitions</Link>; existing conversations keep the revision they started with unless you apply a new one there.</p>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="channel-allow">Allowed senders</Label>
@@ -136,7 +140,7 @@ export function ChannelsPage() {
   const [error, setError] = useState<string>();
   return (
     <>
-      <PageHeader title="Channels" description="Let people talk to agents from messaging apps. Each conversation gets its own agent, created from the channel's template."
+      <PageHeader title="Channels" description="Let people talk to agents from messaging apps. Each conversation gets its own agent, made from the channel's definition."
         actions={<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button>} />
       <ErrorAlert error={channels.error ?? error} />
       {!channels.data ? <Skeleton className="h-32 w-full" /> : channels.data.length === 0 ? (

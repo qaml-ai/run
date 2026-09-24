@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
+import { Definitions } from "../src/definitions.ts";
 import { Channels } from "../src/channels.ts";
 import { Ownership } from "../src/ownership.ts";
 import { discord, parseMessage } from "../src/channels-discord.ts";
@@ -88,7 +89,7 @@ async function node(t: T, api: { url: string }, db: Awaited<ReturnType<typeof te
   await ownership.start();
   const prompts: { agent: string; text: string }[] = [];
   const channels: Channels = new Channels({
-    db, accounts: new Accounts({ tenants: new Tenants({ legacyToken: "discord-operator-token-at-least-24-chars" }), db, secretsKey }),
+    db, definitions: new Definitions({ db }), accounts: new Accounts({ tenants: new Tenants({ legacyToken: "discord-operator-token-at-least-24-chars" }), db, secretsKey }),
     node: name, publicUrl: "https://agents.example.test", ownership,
     providers: { discord: discord({ apiUrl: api.url }) },
     createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), live: async () => true,

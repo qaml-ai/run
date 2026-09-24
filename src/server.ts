@@ -18,6 +18,7 @@ import { ConsoleAuth } from "./console-auth.ts";
 import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
+import { Definitions, validTtl } from "./definitions.ts";
 import { telegram } from "./channels-telegram.ts";
 import { slack } from "./channels-slack.ts";
 import { discord } from "./channels-discord.ts";
@@ -99,16 +100,21 @@ const github = secrets.github && { ...secrets.github, org: process.env.GITHUB_OR
 const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 
+const definitions = new Definitions({ db });
+
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
+  const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
+  if (made) params = made.params;
   const config = sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
   // A single-tenant development host may run code-only agents without a model key.
   if (!tenants.legacy && !await accounts.hasKey(tenant, config.model.provider)) {
     throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}; set one with PUT /v1/providers/${config.model.provider}/key`);
   }
   const ttl = params.ttlSeconds;
-  if (ttl !== undefined && ttl !== null && (!Number.isInteger(ttl) || ttl < 60 || ttl > 366 * 86_400)) throw new Error("ttlSeconds must be null (never expires) or an integer from 60 to 31622400");
-  return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts);
+  validTtl(ttl);
+  return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
+    made && { definition: made.ref, provision: made.provision });
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
@@ -235,6 +241,11 @@ const clients = new ClientSessions(supervisor, {
   db, storage, prefix: "client-sessions/", ownership, volumes,
   get scheduler() { return scheduler; },
   get hooks() { return channels.hooks; },
+  definitionFor: async (tenant, id) => {
+    const { revision, spec } = await definitions.read(tenant, id);
+    const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
+    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off" }, tools: spec.tools ?? [] };
+  },
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({
@@ -247,7 +258,7 @@ const scheduler = new Scheduler({
 scheduler.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 // Messaging channels: webhooks (or a gateway socket one node holds) in, replies out through a durable queue any node can drain.
 const channels = new Channels({
-  db, accounts, node, publicUrl, ownership,
+  db, accounts, definitions, node, publicUrl, ownership,
   providers: {
     telegram: telegram({ apiUrl: process.env.AGENT_TELEGRAM_API_URL }),
     slack: slack({ apiUrl: process.env.AGENT_SLACK_API_URL }),
@@ -306,7 +317,7 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
 app.route("/", channels.app);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, volumes, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" }));
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, volumes, definitions, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
 app.get("/", c => c.redirect("/console/", 302));

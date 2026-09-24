@@ -57,6 +57,7 @@ export interface RequestRecord {
   outcome?: { result?: unknown; error?: string; uncertain?: boolean };
 }
 export interface AgentDetail extends AgentSummary {
+  definition?: { id: string; revision: number };
   tools: { name: string; description: string }[]; systemPrompt: string; requests: RequestRecord[];
   calls: { id: string; name: string; state: string; createdAt?: number; outcome?: { error?: string; uncertain?: boolean } }[];
 }
@@ -70,9 +71,12 @@ export interface Usage {
 export const formatNumber = (value: number) => new Intl.NumberFormat("en-US", { notation: value >= 100_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 export const formatCost = (value: number) => `$${value === 0 || value >= 1 ? value.toFixed(2) : value.toFixed(4)}`;
 export const formatTime = (value?: number) => value ? new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
+export interface Definition {
+  id: string; name: string; revision: number; model?: string; systemPrompt?: string; thinkingLevel?: string;
+  tools?: unknown[]; limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; createdAt: number; updatedAt: number;
+}
 export interface Channel {
-  id: string; type: string; name: string; webhookUrl?: string;
-  template: { model?: string; systemPrompt?: string; thinkingLevel?: string; tools?: unknown[] };
+  id: string; type: string; name: string; webhookUrl?: string; definition?: string;
   access: { public: boolean; allow: string[] }; limits: { perSenderPerMinute: number; turnsPerDay: number };
   greeting?: string; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
 }

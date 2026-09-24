@@ -12,6 +12,9 @@ import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorStatus, HttpError, readJson } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
+import type { Definitions } from "./definitions.ts";
+import { definitionRoutes } from "./definitions-api.ts";
+import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, type VolumeService } from "./volumes.ts";
 
@@ -30,6 +33,9 @@ export interface ApiContext {
   scheduler?: Scheduler;
   channels?: Channels;
   volumes?: VolumeService;
+  definitions?: Definitions;
+  /** Submit a request to an agent on whichever node serves it (applying definitions). */
+  submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
 type Env = { Variables: { principal: Principal & { login?: string } } };
 
@@ -197,6 +203,7 @@ export function api(context: ApiContext) {
   });
 
   channelRoutes(route, () => context.channels);
+  definitionRoutes(route, () => context);
 
   const volumes = () => {
     if (!context.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");

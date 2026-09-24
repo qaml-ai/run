@@ -318,6 +318,10 @@
       "AgentInput": {
         "type": "object",
         "properties": {
+          "definition": {
+            "type": "string",
+            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tools; name, type, ttlSeconds, mounts and initialMessages given here override its defaults, and tools given here are added"
+          },
           "name": {
             "type": "string"
           },
@@ -453,6 +457,22 @@
           {
             "type": "object",
             "properties": {
+              "definition": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "id",
+                  "revision"
+                ],
+                "description": "The definition the agent was made from, and the revision it has"
+              },
               "tools": {
                 "type": "array",
                 "items": {
@@ -892,8 +912,9 @@
             "type": "string",
             "description": "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Discord channels have none: they connect to Discord's gateway"
           },
-          "template": {
-            "$ref": "#/components/schemas/ChannelTemplate"
+          "definition": {
+            "type": "string",
+            "description": "The definition each conversation's agent is made from"
           },
           "access": {
             "type": "object",
@@ -957,7 +978,6 @@
           "tenant",
           "type",
           "name",
-          "template",
           "access",
           "limits",
           "account",
@@ -965,40 +985,6 @@
           "createdAt",
           "updatedAt"
         ]
-      },
-      "ChannelTemplate": {
-        "type": "object",
-        "properties": {
-          "model": {
-            "type": "string",
-            "description": "A model id from GET /v1/models; the runtime default when omitted"
-          },
-          "systemPrompt": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 32000
-          },
-          "thinkingLevel": {
-            "type": "string",
-            "enum": [
-              "off",
-              "minimal",
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          },
-          "tools": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ToolDefinition"
-            },
-            "maxItems": 64,
-            "description": "Client tools, answered by an application connected to each agent"
-          }
-        }
       },
       "ChannelInput": {
         "type": "object",
@@ -1023,15 +1009,12 @@
               "maxLength": 4096
             }
           },
+          "definition": {
+            "type": "string",
+            "description": "The definition each conversation's agent is made from (GET /v1/definitions)"
+          },
           "template": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/ChannelTemplate"
-              },
-              {
-                "description": "How each conversation's agent is created"
-              }
-            ]
+            "$ref": "#/components/schemas/ChannelTemplate"
           },
           "access": {
             "type": "object",
@@ -1081,6 +1064,41 @@
           "credentials"
         ]
       },
+      "ChannelTemplate": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "A model id from GET /v1/models; the runtime default when omitted"
+          },
+          "systemPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinition"
+            },
+            "maxItems": 64,
+            "description": "Client tools, answered by an application connected to each agent"
+          }
+        },
+        "description": "Deprecated: give a definition instead. An inline template becomes a definition of the channel's own"
+      },
       "ChannelUpdate": {
         "type": "object",
         "properties": {
@@ -1097,15 +1115,12 @@
             },
             "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. Stored encrypted and never returned"
           },
+          "definition": {
+            "type": "string",
+            "description": "The definition each conversation's agent is made from (GET /v1/definitions)"
+          },
           "template": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/ChannelTemplate"
-              },
-              {
-                "description": "How each conversation's agent is created"
-              }
-            ]
+            "$ref": "#/components/schemas/ChannelTemplate"
           },
           "access": {
             "type": "object",
@@ -1150,6 +1165,288 @@
             "description": "Reply to /start (Telegram)"
           }
         }
+      },
+      "Definition": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "number",
+            "description": "Increases with every change"
+          },
+          "model": {
+            "type": "string",
+            "description": "A model id from GET /v1/models; the runtime default when omitted"
+          },
+          "systemPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinition"
+            },
+            "maxItems": 128,
+            "description": "Client tools, answered by an application connected to the agent"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/DefinitionLimits"
+          },
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mount"
+            },
+            "maxItems": 16,
+            "description": "Volumes for each agent's file tools; default: a new workspace volume per agent"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "revision",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "DefinitionLimits": {
+        "type": "object",
+        "properties": {
+          "ttlSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400."
+          }
+        }
+      },
+      "DefinitionInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "model": {
+            "type": "string",
+            "description": "A model id from GET /v1/models; the runtime default when omitted"
+          },
+          "systemPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinition"
+            },
+            "maxItems": 128,
+            "description": "Client tools, answered by an application connected to the agent"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/DefinitionLimits"
+          },
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mount"
+            },
+            "maxItems": 16,
+            "description": "Volumes for each agent's file tools; default: a new workspace volume per agent"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "DefinitionUpdated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Definition"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "applied": {
+                "type": "object",
+                "properties": {
+                  "accepted": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "failed": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "agent",
+                        "error"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "accepted",
+                  "failed"
+                ],
+                "description": "Agents that accepted the new revision (applied between their turns), and any that could not be reached"
+              }
+            }
+          }
+        ]
+      },
+      "DefinitionUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A model id from GET /v1/models; the runtime default when omitted"
+          },
+          "systemPrompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 32000
+          },
+          "thinkingLevel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              null
+            ]
+          },
+          "tools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinition"
+            },
+            "maxItems": 128,
+            "description": "Client tools, answered by an application connected to the agent"
+          },
+          "limits": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DefinitionLimits"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "mounts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Mount"
+            },
+            "maxItems": 16,
+            "description": "Volumes for each agent's file tools; default: a new workspace volume per agent"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "Only update the definition if it is still at this revision"
+          },
+          "apply": {
+            "type": "string",
+            "enum": [
+              "all"
+            ],
+            "description": "Also reconfigure every live agent made from the definition to the new revision; each takes it between turns"
+          }
+        },
+        "description": "Fields given replace the stored ones; null removes one"
+      },
+      "DefinitionAgent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "revision"
+        ]
       },
       "MountsInput": {
         "type": "object",
@@ -2365,6 +2662,231 @@
                   "required": [
                     "deleted"
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/definitions": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The tenant's definitions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Definition"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefinitionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The definition, at revision 1",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Definition"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/definitions/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The definition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Definition"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefinitionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The definition at its new revision; with apply, the agents asked to take it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefinitionUpdated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The definition is deleted; agents made from it keep their configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/definitions/{id}/agents": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Live agents made from the definition, and the revision each has",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DefinitionAgent"
+                  }
                 }
               }
             }

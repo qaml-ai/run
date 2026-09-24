@@ -65,6 +65,7 @@ once. The runtime does not start without a database.
 | the recent records of each append log (`log_records`) | |
 | agent headers: identity, configuration, mounts; the tenant index | volume trees (append logs) |
 | console tenants, sealed provider keys, API tokens, usage | volume chunks and snapshot file maps (blobs, written once) |
+| agent definitions | |
 | schedules and their claims | |
 | channels, conversations, the outbox, dedupe markers, rate counters | |
 | volume headers, snapshots, watchers | |
@@ -385,6 +386,30 @@ Pi's published endpoint for the requested provider and model, or an entry in
 `AGENT_ALLOWED_BASE_URLS` (comma-separated). Scoped credentials can only submit
 user messages; assistant and tool-result history is produced by the runtime.
 
+## Agent definitions
+
+A definition is a tenant's reusable agent configuration: name, model, system
+prompt, thinking level, client tool declarations, limits (`ttlSeconds`) and
+optional mounts. Tenants manage them with `/v1/definitions` or the console's
+Definitions page, and make agents from one with `POST /v1/agents
+{"definition": "def_…"}` (or `createAgent({ definition })` in the SDKs). The
+definition supplies the model, prompt, thinking level and tools; `name`, `type`,
+`ttlSeconds`, `mounts` and `initialMessages` given alongside it override its
+defaults, and tools given alongside it are added to its own (an SDK app that
+answers the definition's tools declares them too; those are the definition's).
+
+Every change is a new revision (`PATCH` replaces the fields given; `null`
+removes one; `revision` makes it conditional). An agent records the definition
+and revision it was made from (`definition` in `GET /v1/agents/:id`), and keeps
+that configuration when the definition changes: only new agents get the new
+revision. `PATCH … {"apply": "all"}` also reconfigures every live agent made
+from the definition, through each agent's `configure` request, queued behind its
+runs so it lands between turns; tools added at creation are kept. Only the
+tenant can apply a definition, never an agent's own token. `GET
+/v1/definitions/:id/agents` lists the agents and the revision each has. Deleting
+a definition leaves its agents as they are; a definition a channel uses cannot
+be deleted.
+
 ## Channels
 
 A channel lets people talk to agents from a messaging service: Telegram, Slack or
@@ -393,10 +418,15 @@ Discord. Tenants manage channels with `/v1/channels` or the console's Channels p
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"type":"telegram","credentials":{"botToken":"<from @BotFather>"},
-       "template":{"systemPrompt":"You are our support assistant."},
-       "access":{"allow":["@ada","123456789"]}}' \
+       "definition":"def_…","access":{"allow":["@ada","123456789"]}}' \
   https://agents.camelai.dev/v1/channels
 ```
+
+Each conversation's agent is made from the channel's `definition`. The older
+inline `template` (`{model, systemPrompt, thinkingLevel, tools}`) is still
+accepted for one release: it becomes a definition of the channel's own, which
+later templates for that channel rewrite and which is deleted with the channel.
+Migration 006 turned every existing channel's template into such a definition.
 
 | Service | Credentials | Messages arrive | A conversation (one agent) is |
 | --- | --- | --- | --- |
@@ -436,8 +466,8 @@ only masked values.
 
 What all three share:
 
-- Each external conversation gets its own agent, created on first contact from
-  the channel's template (model, system prompt, thinking level, client tools).
+- Each external conversation gets its own agent, made on first contact from
+  the channel's definition, at its revision then.
   Its prompts go through the agent's normal queue on whichever node serves it.
 - Senders must be on the allowlist unless the channel sets `access.public`:
   Telegram and Discord user ids or @usernames, Slack member ids (`U0123ABCD`).

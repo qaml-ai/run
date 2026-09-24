@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
+import { Definitions } from "../src/definitions.ts";
 import { Channels } from "../src/channels.ts";
 import { slack } from "../src/channels-slack.ts";
 import { testDatabase } from "./database.ts";
@@ -63,7 +64,7 @@ async function setup(t: T) {
   const accounts = new Accounts({ tenants: new Tenants({ legacyToken: "slack-operator-token-at-least-24-chars" }), db, secretsKey: randomBytes(32).toString("hex") });
   const prompts: { agent: string; text: string; images: number }[] = [];
   const channels: Channels = new Channels({
-    db, accounts, node: "a", publicUrl: "https://agents.example.test",
+    db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test",
     providers: { slack: slack({ apiUrl: api.url }) },
     createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), live: async () => true,
     // Each prompt's turn ends at once, answering with what it was asked.
