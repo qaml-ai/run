@@ -87,17 +87,18 @@ and the RDS instance also have deletion protection in AWS.
   - `AGENT_DATABASE_HOST` (the proxy), `AGENT_DATABASE_NAME`, `AGENT_DATABASE_SECRET_ARN`, `AGENT_DATABASE_CA`;
   - `AGENT_LEASE_TTL_MS=90000`, longer than a failover keeps the database away;
   - `AGENT_PUBLIC_URL`, `AGENT_TENANTS_SECRET_ARN`;
-  - `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN`.
+  - `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN`,
+    `AGENT_STRIPE_SECRET_ARN` (credit purchases stay off until `infra/stripe.sh` stores its value).
 
   The task definition has no `secrets`: the runtime reads every secret itself,
   through the task role, so no secret value is in its environment, where a
   sandbox child running as the same uid could read it. Session-secret,
-  secrets-key and github-oauth are read once at startup; the tenants secret is
+  secrets-key, github-oauth and stripe are read once at startup; the tenants secret is
   re-read every 60 s. Logs go to `/ecs/camelai-agent-runtime`, kept for 30 days.
 - **Roles**. The execution role has only `AmazonECSTaskExecutionRolePolicy`
   (ECR and logs). The task role has the state bucket statements
   (`local.state_bucket_statements`), read access to the RDS, tenants,
-  session-secret, secrets-key and github-oauth secrets,
+  session-secret, secrets-key, github-oauth and stripe secrets,
   `ecs:UpdateTaskProtection`/`ecs:GetTaskProtection` on this cluster's tasks,
   `ecs:DescribeServices` on this service, and ECS Exec. To get a shell:
   `aws ecs execute-command --region us-west-2 --cluster camelai-agent-runtime --task <id> --container agent-runtime --interactive --command sh`.

@@ -934,6 +934,10 @@
             "type": "boolean",
             "description": "Whether the tenant has only ever had free credit, which comes with tighter limits"
           },
+          "checkout": {
+            "type": "boolean",
+            "description": "Whether credit can be bought here (POST /v1/billing/checkout)"
+          },
           "month": {
             "type": "object",
             "properties": {
@@ -1019,6 +1023,7 @@
           "billing",
           "balance",
           "freeCredit",
+          "checkout",
           "month",
           "recent",
           "rates"
@@ -1079,6 +1084,51 @@
         },
         "required": [
           "entries"
+        ]
+      },
+      "Checkout": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The Stripe Checkout session"
+          },
+          "url": {
+            "type": "string",
+            "description": "Send the buyer here to pay"
+          },
+          "amount": {
+            "type": "integer",
+            "description": "Credit bought, in micro-USD (1 USD = 1000000)"
+          },
+          "fee": {
+            "type": "integer",
+            "description": "Fee, in micro-USD (1 USD = 1000000)"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Charged, in micro-USD (1 USD = 1000000)"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "amount",
+          "fee",
+          "total"
+        ]
+      },
+      "CheckoutInput": {
+        "type": "object",
+        "properties": {
+          "amountUsd": {
+            "type": "number",
+            "description": "Credit to buy, in USD with at most two decimals; the fee is added on top",
+            "example": 10
+          }
+        },
+        "required": [
+          "amountUsd"
         ]
       },
       "AdjustmentInput": {
@@ -3198,6 +3248,41 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Ledger"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/checkout": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "A Stripe Checkout session; the credit is added once Stripe reports the payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Checkout"
                 }
               }
             }

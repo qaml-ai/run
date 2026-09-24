@@ -25,9 +25,23 @@ export async function runtimeSecrets(env = process.env) {
     if (typeof clientId !== "string" || !clientId || typeof clientSecret !== "string" || !clientSecret) throw new Error("AGENT_GITHUB_OAUTH_SECRET_ARN must hold {clientId, clientSecret}");
     github = { clientId, clientSecret };
   } else if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) github = { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET };
+  // Stripe, for credit purchases. The secret may exist before anyone stores its value: until then purchases are off.
+  const stripeArn = exclusive(["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"], "AGENT_STRIPE_SECRET_ARN");
+  let stripe: { secretKey: string; webhookSecret: string } | undefined;
+  if (stripeArn) {
+    let text = "";
+    try { text = await read(stripeArn); }
+    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; }
+    if (text) {
+      const { secretKey, webhookSecret } = JSON.parse(text);
+      if (typeof secretKey !== "string" || !secretKey || typeof webhookSecret !== "string" || !webhookSecret) throw new Error("AGENT_STRIPE_SECRET_ARN must hold {secretKey, webhookSecret}");
+      stripe = { secretKey, webhookSecret };
+    } else console.error(JSON.stringify({ type: "stripe_not_configured", reason: "AGENT_STRIPE_SECRET_ARN has no value yet" }));
+  } else if (env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) stripe = { secretKey: env.STRIPE_SECRET_KEY, webhookSecret: env.STRIPE_WEBHOOK_SECRET };
   return {
     sessionSecret: sessionArn ? await read(sessionArn) : env.AGENT_SESSION_SECRET,
     secretsKey: keyArn ? await read(keyArn) : env.AGENT_SECRETS_KEY,
     github,
+    stripe,
   };
 }

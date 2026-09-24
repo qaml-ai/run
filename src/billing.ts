@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Db, Sql } from "./db.ts";
 import type { Tenants } from "./tenants.ts";
+import { transaction, type Db, type Sql } from "./db.ts";
 import type { Storage } from "../shared/storage.ts";
-import { DEFAULT_PRICING, MICROS, storageCharge, type Pricing } from "./pricing.ts";
+import { HttpError } from "./http.ts";
+import { DEFAULT_PRICING, MICROS, purchaseFee, storageCharge, type Pricing } from "./pricing.ts";
+import type { Stripe } from "./stripe.ts";
 
 /**
  * Prepaid credit. Tenants with `billing: "prepaid"` (every tenant created by sign-in)
@@ -27,6 +29,9 @@ const MODE_CACHE_MS = 60_000;
 /** A claimed billing job whose node died is taken again after this long. */
 const JOB_CLAIM_MS = 60 * 60_000;
 const usd = (amount: number) => `${amount < 0 ? "-" : ""}$${(Math.abs(amount) / MICROS).toFixed(2)}`;
+/** Marks checkout sessions this runtime created: the Stripe account also serves other products, whose events are ignored. */
+const PURPOSE = "agent-runtime-credit";
+const CENT = 10_000;
 
 /**
  * Append the entries whose keys are new and move their tenants' balances, in one
@@ -66,6 +71,8 @@ export interface BillingOptions {
   pending?: (tenant: string) => number;
   /** Write pending usage, before a balance is read. */
   flush?: () => Promise<void>;
+  /** Credit purchases through Stripe Checkout; without it, credit only comes from grants and adjustments. */
+  stripe?: Stripe;
 }
 
 export class Billing {
@@ -159,11 +166,101 @@ export class Billing {
     const thisMonth = Object.fromEntries(LEDGER_KINDS.map(kind => [kind, Number(rows.find(row => row.kind === kind)?.amount ?? 0)])) as Record<LedgerKind, number>;
     const pricing = this.pricing;
     return {
-      billing: mode, balance, freeCredit: mode === "prepaid" && purchased <= 0,
+      billing: mode, balance, freeCredit: mode === "prepaid" && purchased <= 0, checkout: !!this.options.stripe,
       month: { since, ...thisMonth },
       recent: (await this.ledger(tenant, { limit: 10 })).entries,
       rates: { agentHour: pricing.agentHour, storageGbMonth: pricing.storageGbMonth, purchaseFeeBps: pricing.purchaseFeeBps, minPurchase: pricing.minPurchase, maxPurchase: pricing.maxPurchase },
     };
+  }
+
+  // Purchases -----------------------------------------------------------------
+
+  /**
+   * A Stripe Checkout session buying `amount` of credit (whole cents), with the fee as a
+   * line of its own. The credit is added when Stripe reports the payment (`webhook`).
+   */
+  async checkout(tenant: string, amount: number) {
+    const stripe = this.options.stripe;
+    if (!stripe) throw new HttpError(503, "Credit purchases are not configured on this runtime");
+    if (await this.mode(tenant) !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
+    const { minPurchase, maxPurchase, purchaseFeeBps } = this.pricing;
+    if (!Number.isSafeInteger(amount) || amount % CENT || amount < minPurchase || amount > maxPurchase) {
+      throw new HttpError(400, `Buy between ${usd(minPurchase)} and ${usd(maxPurchase)} of credit, in whole cents`);
+    }
+    const fee = purchaseFee(this.pricing, amount);
+    const customer = await this.customer(tenant);
+    const page = `${this.options.publicUrl ?? ""}/console/billing`;
+    const metadata = { purpose: PURPOSE, tenant, credit: String(amount) };
+    const session = await stripe.post<{ id: string; url: string }>("/v1/checkout/sessions", {
+      mode: "payment", customer, client_reference_id: tenant, metadata, payment_intent_data: { metadata },
+      line_items: [
+        { quantity: 1, price_data: { currency: "usd", unit_amount: amount / CENT, product_data: { name: "Agent runtime credit" } } },
+        ...(fee ? [{ quantity: 1, price_data: { currency: "usd", unit_amount: fee / CENT, product_data: { name: `Processing fee (${purchaseFeeBps / 100}%)` } } }] : []),
+      ],
+      success_url: `${page}?checkout=success`, cancel_url: `${page}?checkout=cancelled`,
+    });
+    return { id: session.id, url: session.url, amount, fee, total: amount + fee };
+  }
+
+  /** The tenant's Stripe customer, created at its first checkout. */
+  private async customer(tenant: string): Promise<string> {
+    const row = (await this.db.query("select stripe_customer from credit_accounts where tenant = $1", [tenant])).rows[0];
+    if (row?.stripe_customer) return row.stripe_customer;
+    // Concurrent first checkouts send the same idempotency key, so Stripe makes one customer.
+    const created = await this.options.stripe!.post<{ id: string }>("/v1/customers", { name: tenant, metadata: { purpose: PURPOSE, tenant } }, `agent-runtime-customer:${tenant}`);
+    const { rows } = await this.db.query(`
+      insert into credit_accounts (tenant, stripe_customer) values ($1, $2)
+      on conflict (tenant) do update set stripe_customer = coalesce(credit_accounts.stripe_customer, excluded.stripe_customer)
+      returning stripe_customer`, [tenant, created.id]);
+    return rows[0].stripe_customer;
+  }
+
+  /**
+   * A Stripe webhook: a paid checkout adds the credit bought (not the fee), once per
+   * session; a refund removes credit in proportion to the amount refunded, once per
+   * refunded total. Events for anything this runtime did not sell are acknowledged and ignored.
+   */
+  async webhook(payload: string, signature: string | undefined): Promise<{ handled: string }> {
+    const stripe = this.options.stripe;
+    if (!stripe) throw new HttpError(404, "Credit purchases are not configured on this runtime");
+    const event = stripe.verify(payload, signature);
+    if (!event) throw new HttpError(400, "Invalid Stripe signature");
+    const object = event.data?.object ?? {};
+    if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+      if (object.metadata?.purpose !== PURPOSE) return { handled: "ignored" };
+      if (object.payment_status !== "paid") return { handled: "awaiting payment" };
+      const tenant = object.metadata.tenant, amount = Number(object.metadata.credit);
+      if (typeof tenant !== "string" || !Number.isSafeInteger(amount) || amount <= 0) throw new HttpError(400, "Checkout session without a tenant or credit amount");
+      await this.post([{
+        tenant, kind: "purchase", amount, key: `purchase:${object.id}`,
+        metadata: { session: object.id, paymentIntent: object.payment_intent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null },
+      }]);
+      if (typeof object.customer === "string") await this.db.query("update credit_accounts set stripe_customer = coalesce(stripe_customer, $2) where tenant = $1", [tenant, object.customer]);
+      console.log(JSON.stringify({ type: "credit_purchased", tenant, amount, session: object.id }));
+      return { handled: "purchase" };
+    }
+    if (event.type === "charge.refunded") return { handled: await this.refund(object) };
+    return { handled: "ignored" };
+  }
+
+  /** Bring a purchase's refunds up to the charge's refunded total; concurrent deliveries for one charge take turns. */
+  private async refund(charge: { id: string; payment_intent?: string; amount: number; amount_refunded: number }) {
+    if (typeof charge.payment_intent !== "string" || !(charge.amount > 0)) return "ignored";
+    const posted = await transaction(this.db, async sql => {
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-refund:${charge.id}`]);
+      const purchase = (await sql.query("select tenant, amount from credit_ledger where kind = 'purchase' and metadata->>'paymentIntent' = $1", [charge.payment_intent])).rows[0];
+      if (!purchase) return undefined;
+      const refunded = -Number((await sql.query("select coalesce(sum(amount), 0) as sum from credit_ledger where kind = 'refund' and metadata->>'charge' = $1", [charge.id])).rows[0].sum);
+      const target = Math.round(purchase.amount * Math.min(1, charge.amount_refunded / charge.amount));
+      if (target <= refunded) return [];
+      return postLedger(sql, [{
+        tenant: purchase.tenant, kind: "refund", amount: refunded - target, key: `refund:${charge.id}:${charge.amount_refunded}`,
+        metadata: { charge: charge.id, paymentIntent: charge.payment_intent, refunded: charge.amount_refunded },
+      }]);
+    });
+    if (!posted) return "ignored";
+    this.invalidate(posted.map(entry => entry.tenant));
+    return "refund";
   }
 
   // Storage -------------------------------------------------------------------

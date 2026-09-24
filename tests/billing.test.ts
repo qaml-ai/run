@@ -13,7 +13,8 @@ import { Tenants } from "../src/tenants.ts";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { testDatabase } from "./database.ts";
-import { runtime, toolCall, until } from "./runtime-server.ts";
+import { listen, runtime, toolCall, until } from "./runtime-server.ts";
+import { formEncode, signWebhook, Stripe } from "../src/stripe.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const PAYG = "payg-operator-token-at-least-24-chars";
@@ -262,4 +263,110 @@ test("responses on the tenant's own key cost no credit for tokens, but time in t
     assert.ok(Math.abs(entry.amount + entry.metadata.activeMs * 1000) <= 1000, "$1 per second of agent time");
   }
   assert.equal((await call("/v1/usage", { token: PAYG })).json.totals.platformResponses, 0);
+});
+
+const WEBHOOK_SECRET = "whsec_fixture_signing_secret";
+/** A Stripe API that records requests and creates customers and checkout sessions. */
+async function fakeStripe(t: { after(fn: () => void | Promise<void>): void }) {
+  const requests: { path: string; params: URLSearchParams; idempotencyKey?: string; authorization?: string }[] = [];
+  const url = await listen(t, async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const params = new URLSearchParams(body);
+    requests.push({ path: req.url!, params, idempotencyKey: req.headers["idempotency-key"] as string | undefined, authorization: req.headers.authorization });
+    const count = requests.length;
+    const reply = req.url === "/v1/customers" ? { id: `cus_${params.get("metadata[tenant]")}` }
+      : req.url === "/v1/checkout/sessions" ? { id: `cs_test_${count}`, url: `https://checkout.stripe.test/c/pay/cs_test_${count}` }
+      : undefined;
+    res.writeHead(reply ? 200 : 404, { "Content-Type": "application/json" }).end(JSON.stringify(reply ?? { error: { message: "No such route" } }));
+  });
+  return { url, requests };
+}
+
+test("Stripe webhooks are verified by signature: a bad or stale signature is refused, and a well-signed replay is harmless", () => {
+  const stripe = new Stripe({ secretKey: "sk_test_x", webhookSecret: WEBHOOK_SECRET });
+  const payload = JSON.stringify({ id: "evt_1", type: "ping", data: { object: {} } });
+  assert.equal(stripe.verify(payload, signWebhook(WEBHOOK_SECRET, payload))?.id, "evt_1");
+  // Several v1 signatures during a secret rotation: any one may match.
+  const now = Math.floor(Date.now() / 1000);
+  assert.ok(stripe.verify(payload, `t=${now},v1=${"0".repeat(64)},${signWebhook(WEBHOOK_SECRET, payload, now).split(",")[1]}`));
+  assert.equal(stripe.verify(payload, signWebhook("whsec_other", payload)), undefined);
+  assert.equal(stripe.verify(payload.replace("ping", "pong"), signWebhook(WEBHOOK_SECRET, payload)), undefined, "the payload is signed");
+  assert.equal(stripe.verify(payload, signWebhook(WEBHOOK_SECRET, payload, now - 600)), undefined, "older than five minutes");
+  assert.equal(stripe.verify(payload, undefined), undefined);
+  assert.equal(stripe.verify(payload, "t=abc,v1=zz"), undefined);
+  assert.equal(formEncode({ a: { b: [{ c: 1 }, { c: "x" }] }, d: undefined }).toString(), "a%5Bb%5D%5B0%5D%5Bc%5D=1&a%5Bb%5D%5B1%5D%5Bc%5D=x");
+  assert.throws(() => new Stripe({ secretKey: "pk_test_x", webhookSecret: WEBHOOK_SECRET }), /secret \(sk_\)/);
+});
+
+test("credit is bought through Stripe Checkout with the fee on top, added once the webhook reports payment, and refunds take it back", async t => {
+  const stripeApi = await fakeStripe(t);
+  const { call } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {
+    STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: stripeApi.url,
+  }, tenantsFile);
+  const webhook = (event: object, signature?: string) => {
+    const payload = JSON.stringify(event);
+    return call("/v1/billing/stripe/webhook", { body: event, token: null, headers: { "Stripe-Signature": signature ?? signWebhook(WEBHOOK_SECRET, payload) } });
+  };
+  assert.equal((await call("/v1/billing", { token: PAYG })).json.checkout, true);
+  for (const amountUsd of [4.99, 10.001, 1001, "10"]) assert.equal((await call("/v1/billing/checkout", { body: { amountUsd }, token: PAYG })).status, 400, String(amountUsd));
+  assert.equal((await call("/v1/billing/checkout", { body: { amountUsd: 10 }, token: OPS })).status, 400, "unbilled tenants do not buy credit");
+
+  const checkout = await call("/v1/billing/checkout", { body: { amountUsd: 10 }, token: PAYG });
+  assert.equal(checkout.status, 201);
+  assert.deepEqual(checkout.json, { id: "cs_test_2", url: "https://checkout.stripe.test/c/pay/cs_test_2", amount: 10_000_000, fee: 550_000, total: 10_550_000 });
+  const [customer, session] = stripeApi.requests;
+  assert.equal(customer.path, "/v1/customers");
+  assert.equal(customer.idempotencyKey, "agent-runtime-customer:payg");
+  assert.equal(customer.authorization, "Bearer sk_test_fixture");
+  const params = Object.fromEntries(session.params);
+  assert.equal(params.mode, "payment");
+  assert.equal(params.customer, "cus_payg");
+  assert.equal(params.client_reference_id, "payg");
+  assert.equal(params["line_items[0][price_data][unit_amount]"], "1000");
+  assert.equal(params["line_items[1][price_data][unit_amount]"], "55");
+  assert.equal(params["line_items[1][price_data][product_data][name]"], "Processing fee (5.5%)");
+  assert.equal(params["metadata[credit]"], "10000000");
+  assert.equal(params["payment_intent_data[metadata][tenant]"], "payg");
+  assert.equal(params.success_url, "https://agents.example.test/console/billing?checkout=success");
+  // A second checkout reuses the customer.
+  await call("/v1/billing/checkout", { body: { amountUsd: 5.5 }, token: PAYG });
+  assert.deepEqual(stripeApi.requests.map(request => request.path), ["/v1/customers", "/v1/checkout/sessions", "/v1/checkout/sessions"]);
+
+  const completed = (id: string, extra: object = {}) => ({
+    id: `evt_${id}`, type: "checkout.session.completed",
+    data: { object: { id, object: "checkout.session", payment_status: "paid", payment_intent: `pi_${id}`, customer: "cus_payg", amount_total: 1055, currency: "usd", metadata: { purpose: "agent-runtime-credit", tenant: "payg", credit: "10000000" }, ...extra } },
+  });
+  const balance = async () => (await call("/v1/billing", { token: PAYG })).json.balance;
+  assert.equal((await webhook(completed("cs_test_2"), "t=1,v1=bad")).status, 400);
+  assert.equal((await webhook(completed("cs_test_2"), signWebhook("whsec_wrong", JSON.stringify(completed("cs_test_2"))))).status, 400);
+  assert.equal(await balance(), 0);
+  assert.equal((await webhook(completed("cs_test_2", { payment_status: "unpaid" }))).json.handled, "awaiting payment");
+  assert.equal((await webhook(completed("cs_test_2"))).json.handled, "purchase");
+  assert.equal((await webhook(completed("cs_test_2"))).status, 200, "Stripe redelivers; it is acknowledged");
+  assert.equal((await webhook({ ...completed("cs_test_2"), id: "evt_async", type: "checkout.session.async_payment_succeeded" })).status, 200);
+  assert.equal(await balance(), 10_000_000, "credited once, without the fee");
+  assert.equal((await call("/v1/billing", { token: PAYG })).json.freeCredit, false);
+  // Sessions other products on the same Stripe account created are none of ours.
+  assert.equal((await webhook(completed("cs_other", { metadata: { tenant: "payg", credit: "99000000" } }))).json.handled, "ignored");
+  assert.equal((await webhook({ id: "evt_x", type: "invoice.paid", data: { object: {} } })).json.handled, "ignored");
+
+  // Refunds are cumulative on the charge: a quarter, a repeat of it, then the rest.
+  const refunded = (amountRefunded: number) => ({ id: `evt_r${amountRefunded}`, type: "charge.refunded", data: { object: { id: "ch_1", object: "charge", payment_intent: "pi_cs_test_2", amount: 1055, amount_refunded: amountRefunded } } });
+  assert.equal((await webhook(refunded(264))).json.handled, "refund");
+  assert.equal((await webhook(refunded(264))).status, 200);
+  assert.equal(await balance(), 10_000_000 - Math.round(10_000_000 * 264 / 1055));
+  await Promise.all([webhook(refunded(1055)), webhook(refunded(1055))]);
+  assert.equal(await balance(), 0);
+  assert.equal((await webhook({ ...refunded(1055), data: { object: { ...refunded(1055).data.object, id: "ch_2", payment_intent: "pi_unknown" } } })).json.handled, "ignored");
+  const kinds = (await call("/v1/billing/ledger", { token: PAYG })).json.entries.map((entry: any) => [entry.kind, entry.amount]);
+  assert.deepEqual(kinds, [["refund", -(10_000_000 - Math.round(10_000_000 * 264 / 1055))], ["refund", -Math.round(10_000_000 * 264 / 1055)], ["purchase", 10_000_000]]);
+  assert.equal((await call("/v1/billing", { token: PAYG })).json.freeCredit, true, "fully refunded: back on free credit");
+});
+
+test("without Stripe, checkout answers 503 and the webhook 404", async t => {
+  const { call } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {}, tenantsFile);
+  assert.equal((await call("/v1/billing", { token: PAYG })).json.checkout, false);
+  assert.equal((await call("/v1/billing/checkout", { body: { amountUsd: 10 }, token: PAYG })).status, 503);
+  assert.equal((await call("/v1/billing/stripe/webhook", { body: {}, token: null })).status, 404);
 });

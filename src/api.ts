@@ -9,7 +9,7 @@ import { listModels, listProviders, providerInfo } from "./catalog.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { errorStatus, HttpError, readJson } from "./http.ts";
+import { errorStatus, HttpError, readJson, readText } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import type { Definitions } from "./definitions.ts";
@@ -73,6 +73,11 @@ export function api(context: ApiContext) {
   app.openAPIRegistry.registerComponent("securitySchemes", "console", { type: "apiKey", in: "cookie", name: "ar_session", description: "Console session; mutations also need X-Agent-Runtime-Console: 1" });
   app.doc31("/v1/openapi.json", DOCUMENT);
 
+  // Stripe's webhook authenticates by its signature, not a token, so it comes before the check below.
+  app.post("/v1/billing/stripe/webhook", async c => {
+    const payload = await readText(c.req.raw.body, 1024 * 1024);
+    return json(c, 200, await accounts.billing.webhook(payload, c.req.header("stripe-signature")));
+  });
   app.use("/v1/*", async (c, next) => {
     c.set("principal", await authenticate(c, context));
     await next();
@@ -214,6 +219,15 @@ export function api(context: ApiContext) {
     const before = c.req.query("before") === undefined ? undefined : Number(c.req.query("before"));
     if (before !== undefined && !Number.isSafeInteger(before)) throw new HttpError(400, "before must be a ledger entry id");
     return json(c, 200, await accounts.billing.ledger(c.var.principal.tenant, { before, limit: Number(c.req.query("limit") ?? 50) || 50 }));
+  });
+  route(createRoute({
+    method: "post", path: "/v1/billing/checkout", request: { body: content(schema.CheckoutInput) },
+    responses: { 201: reply("A Stripe Checkout session; the credit is added once Stripe reports the payment", schema.Checkout) },
+  }), async c => {
+    const { amountUsd } = parse(schema.CheckoutInput, await readJson(c.req.raw.body, 4096, {}));
+    const amount = Math.round(amountUsd * 100) * 10_000;
+    if (Math.abs(amountUsd * 100 - Math.round(amountUsd * 100)) > 1e-6) throw new HttpError(400, "amountUsd must be in whole cents");
+    return json(c, 201, await accounts.billing.checkout(c.var.principal.tenant, amount));
   });
   route(createRoute({
     method: "post", path: "/v1/billing/adjustments", request: { body: content(schema.AdjustmentInput) },

@@ -34,6 +34,8 @@ locals {
     AGENT_SESSION_SECRET_ARN      = aws_secretsmanager_secret.runtime["session-secret"].arn
     AGENT_SECRETS_KEY_ARN         = aws_secretsmanager_secret.runtime["secrets-key"].arn
     AGENT_GITHUB_OAUTH_SECRET_ARN = aws_secretsmanager_secret.runtime["github-oauth"].arn
+    # Credit purchases stay off until infra/stripe.sh stores a value in it.
+    AGENT_STRIPE_SECRET_ARN = aws_secretsmanager_secret.runtime["stripe"].arn
     # Scale-in protection while turns run, and retirement once superseded.
     AGENT_ECS_CLUSTER = local.cluster_name
     AGENT_ECS_SERVICE = local.service_name
@@ -117,6 +119,7 @@ resource "aws_iam_role_policy" "task" {
           aws_secretsmanager_secret.runtime["session-secret"].arn,
           aws_secretsmanager_secret.runtime["secrets-key"].arn,
           aws_secretsmanager_secret.runtime["github-oauth"].arn,
+          aws_secretsmanager_secret.runtime["stripe"].arn,
         ]
       },
       {

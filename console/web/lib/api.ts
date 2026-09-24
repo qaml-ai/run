@@ -71,7 +71,7 @@ export interface Usage {
 export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustment" | "refund";
 export interface LedgerEntry { id: number; kind: LedgerKind; amount: number; metadata: Record<string, any>; createdAt: number }
 export interface Billing {
-  billing: "prepaid" | "none"; balance: number; freeCredit: boolean;
+  billing: "prepaid" | "none"; balance: number; freeCredit: boolean; checkout: boolean;
   month: { since: number } & Record<LedgerKind, number>;
   recent: LedgerEntry[];
   rates: { agentHour: number; storageGbMonth: number; purchaseFeeBps: number; minPurchase: number; maxPurchase: number };

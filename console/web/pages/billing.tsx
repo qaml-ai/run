@@ -1,9 +1,12 @@
-import { useState } from "react";
-import { Loader2, Receipt } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { CheckCircle2, Loader2, Plus, Receipt } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, ErrorAlert, PageHeader } from "@/components/common";
@@ -46,8 +49,72 @@ function LedgerTable({ entries }: { entries: LedgerEntry[] }) {
   );
 }
 
+const AMOUNTS = [5, 10, 25, 50, 100];
+
+/** Choose an amount, then pay for it on Stripe's checkout page, which returns here. */
+function AddCreditDialog({ rates, onClose }: { rates: Billing["rates"]; onClose: () => void }) {
+  const [choice, setChoice] = useState("10");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const amount = Math.round(Number(choice) * 100) * 10_000;
+  const valid = Number.isFinite(Number(choice)) && amount >= rates.minPurchase && amount <= rates.maxPurchase;
+  // Whole cents, as the server and Stripe round it.
+  const fee = Math.round(amount * rates.purchaseFeeBps / 10_000 / 10_000) * 10_000;
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(undefined);
+    try { location.assign((await api<{ url: string }>("/v1/billing/checkout", { body: { amountUsd: Number(choice) } })).url); }
+    catch (caught) { setError((caught as Error).message); setBusy(false); }
+  }
+  return (
+    <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
+      <DialogContent>
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          <DialogHeader>
+            <DialogTitle>Add credit</DialogTitle>
+            <DialogDescription>You pay on Stripe's checkout page; the credit appears here as soon as the payment goes through.</DialogDescription>
+          </DialogHeader>
+          <ErrorAlert error={error} />
+          <div className="flex flex-wrap gap-2">
+            {AMOUNTS.map(value => (
+              <Button key={value} type="button" size="sm" variant={choice === String(value) ? "default" : "outline"} onClick={() => setChoice(String(value))}>${value}</Button>
+            ))}
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="credit-amount">Amount (USD)</Label>
+            <Input id="credit-amount" inputMode="decimal" value={choice} onChange={event => setChoice(event.target.value.replace(/[^0-9.]/g, ""))} />
+            <p className="text-muted-foreground text-xs">Between {formatMicros(rates.minPurchase)} and {formatMicros(rates.maxPurchase)}.</p>
+          </div>
+          {valid && (
+            <div className="bg-muted/40 grid grid-cols-[1fr_auto] gap-1 rounded-md border p-3 text-sm tabular-nums">
+              <span>Credit</span><span className="text-right">{formatMicros(amount)}</span>
+              <span className="text-muted-foreground">Processing fee ({rates.purchaseFeeBps / 100}%)</span><span className="text-muted-foreground text-right">{formatMicros(fee)}</span>
+              <span className="font-medium">Total</span><span className="text-right font-medium">{formatMicros(amount + fee)}</span>
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={!valid || busy}>{busy && <Loader2 className="animate-spin" />}Continue to payment</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Stripe sends the buyer back with ?checkout=success or ?checkout=cancelled. */
+function useCheckoutReturn() {
+  const [returned, setReturned] = useState(() => new URLSearchParams(location.search).get("checkout"));
+  const dismiss = () => { history.replaceState(null, "", location.pathname); setReturned(null); };
+  return { returned, dismiss };
+}
+
 export function BillingPage() {
-  const billing = useApi<Billing>("/v1/billing", 30_000);
+  const { returned, dismiss } = useCheckoutReturn();
+  // After a payment, poll until the webhook's credit shows up.
+  const [polling, setPolling] = useState(returned === "success");
+  const billing = useApi<Billing>("/v1/billing", polling ? 3_000 : 30_000);
+  const [adding, setAdding] = useState(false);
   const [older, setOlder] = useState<LedgerEntry[]>([]);
   const [next, setNext] = useState<number | null>();
   const [loading, setLoading] = useState(false);
@@ -55,6 +122,9 @@ export function BillingPage() {
   const data = billing.data;
   const entries = [...(data?.recent ?? []), ...older];
   const cursor = next === undefined ? data?.recent.at(-1)?.id : next;
+  // The purchase has arrived once the newest entry is a recent one; stop polling then.
+  const arrived = returned === "success" && data?.recent[0]?.kind === "purchase" && Date.now() - data.recent[0].createdAt < 15 * 60_000;
+  useEffect(() => { if (arrived) setPolling(false); }, [arrived]);
 
   async function loadMore() {
     if (cursor == null) return;
@@ -69,8 +139,26 @@ export function BillingPage() {
 
   return (
     <>
-      <PageHeader title="Billing" description="Prepaid credit pays for model tokens on the platform's keys (at the provider's list price), time your agents spend in turns, and storage." />
+      <PageHeader title="Billing" description="Prepaid credit pays for model tokens on the platform's keys (at the provider's list price), time your agents spend in turns, and storage."
+        actions={data?.billing === "prepaid" && data.checkout && <Button onClick={() => setAdding(true)}><Plus />Add credit</Button>} />
       <ErrorAlert error={billing.error ?? error} />
+      {returned === "success" && (
+        <Alert className="mb-4">
+          {arrived ? <CheckCircle2 /> : <Loader2 className="animate-spin" />}
+          <AlertTitle>{arrived ? "Credit added" : "Payment received"}</AlertTitle>
+          <AlertDescription>
+            {arrived ? "Thank you. Your new balance is below." : "Your credit appears here as soon as Stripe confirms the payment, usually within seconds."}
+            <Button variant="link" size="sm" className="h-auto p-0" onClick={dismiss}>Dismiss</Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {returned === "cancelled" && (
+        <Alert className="mb-4">
+          <Receipt /><AlertTitle>Checkout cancelled</AlertTitle>
+          <AlertDescription>Nothing was charged. <Button variant="link" size="sm" className="h-auto p-0" onClick={dismiss}>Dismiss</Button></AlertDescription>
+        </Alert>
+      )}
+      {adding && data && <AddCreditDialog rates={data.rates} onClose={() => setAdding(false)} />}
       {!data ? <Skeleton className="h-64 w-full" /> : data.billing === "none" ? (
         <Alert><Receipt /><AlertTitle>Not billed here</AlertTitle><AlertDescription>This tenant is not billed by the runtime: it uses its own or admin-configured provider keys.</AlertDescription></Alert>
       ) : (

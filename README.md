@@ -223,10 +223,15 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_ECS_SERVICE`, `AGENT_ECS_CLUSTER` | the ECS service this task belongs to, for retirement (see [Deploys](#deploys)); the cluster defaults to the task's own; without the service, tasks never retire |
 | `AGENT_RETIRE_MAX_MS` | how long a retiring task keeps protection for running turns (default 21600000, 6 h) |
 | `AGENT_ECS_POLL_MS`, `AGENT_PROTECTION_IDLE_MS` | how often to check the service's deployment (default 30000), and how long without work before task protection is cleared (default 30000) |
-| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?, maxMonthlyCost?}}}`), re-read on SIGHUP |
+| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?, maxMonthlyCost?, billing?}}, platformKeys?}`), re-read on SIGHUP; see [Billing](#billing) for `billing` and `platformKeys` |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, for development |
 | `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe, for credit purchases (development; see [Billing](#billing)) |
+| `AGENT_STRIPE_SECRET_ARN` | instead: a Secrets Manager secret holding `{secretKey, webhookSecret}`, read at startup; while it has no value, purchases are off |
+| `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
+| `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
+| `AGENT_BILLING_INTERVAL_MS` | how often a node checks whether today's storage charge has run (default 3600000) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
 | `AGENT_CODE_WORKERS_MIN`, `AGENT_CODE_WORKERS_MAX` | codemode worker threads kept warm (default min(4, cores); none in each agent process under `process` hosting, which starts one on demand) and the most there may be (default 32); workers beyond the minimum stop after 30 s idle, and executions beyond the maximum queue within their own timeout. With sandbox processes, the totals are shared among them |
@@ -678,6 +683,61 @@ place, empty directories, renames, and durable change notifications (a crash
 during the one-second window drops that notification). Listings and snapshots
 hold a volume's file map in memory and in one blob, which suits volumes of
 up to about 100,000 files. Uploads share the server's 30-second request timeout.
+
+## Billing
+
+Tenants created by console sign-in pay from **prepaid credit**, like OpenRouter;
+admin tenants from the tenants file are unbilled unless their entry sets
+`"billing": "prepaid"` (the default is `"none"`). Tenants that signed up before
+billing existed stay unbilled. A prepaid tenant without a provider key of its own
+runs on the platform's keys, the tenants file's top-level `platformKeys`
+(`{"anthropic": "...", "*": "..."}`, like a tenant's `apiKeys`), and pays for:
+
+- **Model tokens** on the platform's keys, at the provider's list price from the
+  model catalog (no markup), turns and compaction alike. Responses on the tenant's
+  own key cost no credit. `/v1/usage` reports `platformResponses` and `platformCost`.
+- **Agent time**, $0.01 per hour an agent spends in a run (model calls and tool
+  execution, not idle loaded time), metered continuously, with or without its own key.
+- **Storage**, $0.10 per GB-month of what its agents and volumes keep in Storage
+  (transcripts, journals, volume trees and snapshots, file chunks), measured once a
+  UTC day on one node and charged for that day.
+
+Every movement is an entry in `credit_ledger` (grant, purchase, usage, storage,
+adjustment, refund), in integer micro-USD, under an idempotency key naming its
+cause; the same statement moves the balance in `credit_accounts`. Token and time
+charges ride the usage flush (a few seconds after a response), each batch in one
+transaction that a retry after a lost commit skips. A prepaid tenant at or below
+zero gets **402** for new runs, code executions included, with where to add credit;
+a running turn ends after the response that spent the last credit, as at the
+[monthly spend cap](#persistence). The balance counts this node's unwritten charges
+at once and other nodes' within about five seconds, so the overdraft is about one
+response per node running the tenant's turns. Each new self-serve tenant starts with
+$5 of credit, once.
+
+`GET /v1/billing` has the balance, this month by kind, recent entries and the
+rates; `GET /v1/billing/ledger?before=<id>` pages through the ledger; the console's
+Billing page shows both. An operator of a tenant in `AGENT_BILLING_ADMINS` can
+`POST /v1/billing/adjustments` `{tenant, amount (micro-USD), reason, idempotencyKey?}`.
+
+**Buying credit.** `POST /v1/billing/checkout {amountUsd}` ($5 to $1000, whole
+cents) creates a Stripe Checkout session (mode `payment`) for the tenant's Stripe
+customer, with a 5.5% processing fee as a line of its own ($10 of credit costs
+$10.55), and returns its `url`; Stripe returns the buyer to
+`/console/billing?checkout=success` (or `cancelled`). Stripe then calls
+`POST /v1/billing/stripe/webhook`, authenticated by its `Stripe-Signature` (HMAC-SHA256
+of `<t>.<payload>` under the endpoint's signing secret, at most five minutes old):
+
+- `checkout.session.completed` or `checkout.session.async_payment_succeeded`, paid:
+  the credit bought, not the fee, is added once per session;
+- `charge.refunded`: credit is removed in proportion to the refunded share of the
+  charge, once per refunded total.
+
+Sessions and charges the runtime did not create (the Stripe account serves other
+products) are acknowledged and ignored. Setup: create a secret or restricted key
+(Customers and Checkout Sessions, write) and a webhook endpoint at
+`https://<host>/v1/billing/stripe/webhook` for those three events, then run
+`infra/stripe.sh` and paste the key and the signing secret; it stores them in the
+`stripe` secret and rolls the service.
 
 ## Tenant isolation contract
 

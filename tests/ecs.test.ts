@@ -166,12 +166,13 @@ test("tenants load from a Secrets Manager secret, and a bad refresh keeps the la
   await assert.rejects(tenantsFromEnvironment({ AGENT_TENANTS_SECRET_ARN: arn, AGENT_TENANTS_FILE: "/etc/agent-runtime/tenants.json" }), /not both/);
 });
 
-test("the session secret, secrets key and GitHub OAuth app load once from Secrets Manager ARNs, or from plain values", async t => {
+test("the session secret, secrets key, GitHub OAuth app and Stripe keys load once from Secrets Manager ARNs, or from plain values", async t => {
   const arn = (name: string) => `arn:aws:secretsmanager:us-west-2:123456789012:secret:agent-runtime/${name}-AbCdEf`;
   const values: Record<string, string> = {
     [arn("session-secret")]: "s".repeat(64),
     [arn("secrets-key")]: "k".repeat(64),
     [arn("github-oauth")]: JSON.stringify({ clientId: "Iv1.fixture", clientSecret: "github-fixture-secret" }),
+    [arn("stripe")]: JSON.stringify({ secretKey: "sk_test_fixture", webhookSecret: "whsec_fixture" }),
   };
   const requested: string[] = [];
   const endpoint = await fake(t, (_req, res, body) => {
@@ -181,17 +182,21 @@ test("the session secret, secrets key and GitHub OAuth app load once from Secret
     res.writeHead(200, { "Content-Type": "application/x-amz-json-1.1" }).end(JSON.stringify({ ARN: SecretId, Name: "x", VersionId: "v1", SecretString: values[SecretId] }));
   });
   Object.assign(process.env, { AWS_ENDPOINT_URL_SECRETS_MANAGER: endpoint, AWS_ACCESS_KEY_ID: "AKIDEXAMPLE", AWS_SECRET_ACCESS_KEY: "fixture-secret", AWS_REGION: "us-west-2" });
-  const env = { AGENT_SESSION_SECRET_ARN: arn("session-secret"), AGENT_SECRETS_KEY_ARN: arn("secrets-key"), AGENT_GITHUB_OAUTH_SECRET_ARN: arn("github-oauth"), AWS_REGION: "us-west-2" };
+  const env = { AGENT_SESSION_SECRET_ARN: arn("session-secret"), AGENT_SECRETS_KEY_ARN: arn("secrets-key"), AGENT_GITHUB_OAUTH_SECRET_ARN: arn("github-oauth"), AGENT_STRIPE_SECRET_ARN: arn("stripe"), AWS_REGION: "us-west-2" };
 
   assert.deepEqual(await runtimeSecrets(env), {
     sessionSecret: "s".repeat(64), secretsKey: "k".repeat(64), github: { clientId: "Iv1.fixture", clientSecret: "github-fixture-secret" },
+    stripe: { secretKey: "sk_test_fixture", webhookSecret: "whsec_fixture" },
   });
   assert.deepEqual(requested.sort(), Object.keys(values).sort(), "Each secret is read once");
 
-  assert.deepEqual(await runtimeSecrets({ AGENT_SESSION_SECRET: "plain-session", AGENT_SECRETS_KEY: "plain-key", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret" }), {
-    sessionSecret: "plain-session", secretsKey: "plain-key", github: { clientId: "id", clientSecret: "secret" },
+  assert.deepEqual(await runtimeSecrets({ AGENT_SESSION_SECRET: "plain-session", AGENT_SECRETS_KEY: "plain-key", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret", STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }), {
+    sessionSecret: "plain-session", secretsKey: "plain-key", github: { clientId: "id", clientSecret: "secret" }, stripe: { secretKey: "sk_test_x", webhookSecret: "whsec_x" },
   });
-  assert.deepEqual(await runtimeSecrets({}), { sessionSecret: undefined, secretsKey: undefined, github: undefined });
+  assert.deepEqual(await runtimeSecrets({}), { sessionSecret: undefined, secretsKey: undefined, github: undefined, stripe: undefined });
+  // The Stripe secret exists before anyone stores its value: purchases stay off rather than the runtime failing to start.
+  assert.equal((await runtimeSecrets({ ...env, AGENT_STRIPE_SECRET_ARN: arn("stripe-unset") })).stripe, undefined);
+  await assert.rejects(runtimeSecrets({ ...env, STRIPE_SECRET_KEY: "sk_test_x" }), /STRIPE_SECRET_KEY\/STRIPE_WEBHOOK_SECRET or AGENT_STRIPE_SECRET_ARN, not both/);
 
   await assert.rejects(runtimeSecrets({ ...env, AGENT_SESSION_SECRET: "x".repeat(32) }), /AGENT_SESSION_SECRET or AGENT_SESSION_SECRET_ARN, not both/);
   await assert.rejects(runtimeSecrets({ ...env, AGENT_SECRETS_KEY: "x" }), /AGENT_SECRETS_KEY or AGENT_SECRETS_KEY_ARN, not both/);

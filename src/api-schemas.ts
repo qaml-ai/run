@@ -337,6 +337,7 @@ export const Billing = z.object({
   billing: z.enum(["prepaid", "none"]).openapi({ description: "prepaid: runs are paid from credit; none: not billed by the runtime" }),
   balance: micros("Credit left; at zero or below, runs are refused with 402"),
   freeCredit: z.boolean().openapi({ description: "Whether the tenant has only ever had free credit, which comes with tighter limits" }),
+  checkout: z.boolean().openapi({ description: "Whether credit can be bought here (POST /v1/billing/checkout)" }),
   month: z.object({
     since: z.number(),
     grant: micros("Granted this UTC month"), purchase: micros("Bought"), usage: micros("Spent on model tokens and agent time"),
@@ -356,3 +357,11 @@ export const AdjustmentInput = z.object({
   reason: z.string().trim().min(1).max(500),
   idempotencyKey: z.string().regex(/^[A-Za-z0-9_.:-]{1,120}$/).optional().openapi({ description: "Repeating an adjustment with the same key applies it once" }),
 }).openapi("AdjustmentInput");
+export const CheckoutInput = z.object({
+  amountUsd: z.number().openapi({ description: "Credit to buy, in USD with at most two decimals; the fee is added on top", example: 10 }),
+}).openapi("CheckoutInput");
+export const Checkout = z.object({
+  id: z.string().openapi({ description: "The Stripe Checkout session" }),
+  url: z.string().openapi({ description: "Send the buyer here to pay" }),
+  amount: micros("Credit bought"), fee: micros("Fee"), total: micros("Charged"),
+}).openapi("Checkout");
