@@ -11,7 +11,7 @@ import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { databaseFromEnvironment, migrate } from "./db.ts";
 import { Ownership } from "./ownership.ts";
-import { DEFAULT_TENANT, Tenants } from "./tenants.ts";
+import { DEFAULT_TENANT, tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
 import { ConsoleAuth } from "./console-auth.ts";
 import { api } from "./api.ts";
@@ -27,9 +27,9 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 
-// Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE.
-// Without it, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
-const tenants = new Tenants({ file: process.env.AGENT_TENANTS_FILE, legacyToken: process.env.AGENT_RUNTIME_TOKEN, legacyApiKey: process.env.AGENT_API_KEY });
+// Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
+// Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
+const tenants = await tenantsFromEnvironment();
 // Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify.
 const sessionSecret = process.env.AGENT_SESSION_SECRET ?? (tenants.legacy ? process.env.AGENT_RUNTIME_TOKEN : undefined);
 if (!sessionSecret || sessionSecret.length < (process.env.AGENT_SESSION_SECRET ? 32 : 24)) throw new Error("Set AGENT_SESSION_SECRET to at least 32 random characters");
@@ -312,7 +312,7 @@ app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorTex
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
-  console.log(JSON.stringify({ type: "listening", address: server.address(), tenants: tenants.legacy ? "single" : "file", hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys }));
+  console.log(JSON.stringify({ type: "listening", address: server.address(), tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys }));
 });
 const callbacks = executor && createAdaptorServer({ fetch: executor.executions.app.fetch }) as Server;
 if (callbacks) {
@@ -321,10 +321,15 @@ if (callbacks) {
     console.log(JSON.stringify({ type: "executor_callbacks_listening", address: callbacks.address(), executors: executor!.endpoint.urls }));
   });
 }
-process.on("SIGHUP", () => {
-  try { tenants.reload(); console.log(JSON.stringify({ type: "tenants_reloaded" })); }
-  catch (error) { console.error(JSON.stringify({ type: "tenants_reload_failed", error: errorText(error) })); }
-});
+// A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
+const reloadTenants = (announce: boolean) => tenants.reload().then(
+  () => { if (announce) console.log(JSON.stringify({ type: "tenants_reloaded" })); },
+  error => console.error(JSON.stringify({ type: "tenants_reload_failed", error: errorText(error) })));
+process.on("SIGHUP", () => void reloadTenants(true));
+// Tasks on ECS get no SIGHUP: re-read the secret every minute so tenant changes land without a deploy.
+const tenantsTimer = tenants.source === "secret" ? setInterval(() => void reloadTenants(false), 60_000) : undefined;
+tenantsTimer?.unref();
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
   server.close();
   callbacks?.close();

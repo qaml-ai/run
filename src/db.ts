@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { secretReader } from "./secrets.ts";
 
 /**
  * The control plane: Postgres holds every piece of small mutable state and all
@@ -43,12 +44,10 @@ export async function databaseFromEnvironment(env = process.env): Promise<Db> {
   }
   const port = Number(env.AGENT_DATABASE_PORT ?? 5432);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("AGENT_DATABASE_PORT must be a TCP port");
-  const { GetSecretValueCommand, SecretsManagerClient } = await import("@aws-sdk/client-secrets-manager");
-  const client = new SecretsManagerClient({ region: env.AWS_REGION ?? env.AWS_DEFAULT_REGION });
-  const secretId = env.AGENT_DATABASE_SECRET_ARN;
+  const secret = await secretReader(env.AGENT_DATABASE_SECRET_ARN, env);
   return rotatingPool({
     ...common, host: env.AGENT_DATABASE_HOST, port, database: env.AGENT_DATABASE_NAME ?? "agent_runtime",
-    credentials: async () => JSON.parse((await client.send(new GetSecretValueCommand({ SecretId: secretId }))).SecretString ?? "{}"),
+    credentials: async () => JSON.parse(await secret() || "{}"),
   });
 }
 

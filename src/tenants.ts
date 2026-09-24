@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { secretReader } from "./secrets.ts";
 
 /**
  * A tenant owns its operator token, its agents and its model provider keys.
@@ -23,25 +24,35 @@ const validTenantId = (value: unknown): value is string => typeof value === "str
 
 export class Tenants {
   private byId = new Map<string, Tenant>();
-  /** Legacy mode: one operator token from AGENT_RUNTIME_TOKEN, no tenants file. */
+  /** Legacy mode: one operator token from AGENT_RUNTIME_TOKEN, no tenants file or secret. */
   readonly legacy: boolean;
   private readonly file?: string;
+  private readonly read?: () => Promise<string>;
 
-  constructor(options: { file?: string; legacyToken?: string; legacyApiKey?: string }) {
+  /** `read` returns the tenants file's JSON from elsewhere (a secret); the tenants are empty until `reload`. */
+  constructor(options: { file?: string; read?: () => Promise<string>; legacyToken?: string; legacyApiKey?: string }) {
+    if (options.file && options.read) throw new Error("Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN, not both");
     this.file = options.file;
-    this.legacy = !options.file;
-    if (options.file) this.reload();
-    else {
-      if (!options.legacyToken || options.legacyToken.length < 24) throw new Error("Set AGENT_TENANTS_FILE, or AGENT_RUNTIME_TOKEN to at least 24 random characters");
+    this.read = options.read;
+    this.legacy = !options.file && !options.read;
+    if (options.file) this.parse(readFileSync(options.file, "utf8"));
+    else if (this.legacy) {
+      if (!options.legacyToken || options.legacyToken.length < 24) throw new Error("Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN, or AGENT_RUNTIME_TOKEN to at least 24 random characters");
       this.set([{ id: DEFAULT_TENANT, tokenSha256: sha256(options.legacyToken), apiKeys: options.legacyApiKey ? { "*": options.legacyApiKey } : {} }]);
     }
   }
 
-  /** Re-read the tenants file (e.g. on SIGHUP after adding a tenant). Invalid files are rejected whole. */
-  reload() {
-    if (!this.file) return;
-    const parsed = JSON.parse(readFileSync(this.file, "utf8")) as { tenants?: Record<string, Omit<Tenant, "id">> };
-    if (!parsed.tenants || typeof parsed.tenants !== "object") throw new Error("Tenants file must contain a `tenants` object");
+  get source() { return this.file ? "file" : this.read ? "secret" : "single"; }
+
+  /** Re-read the tenants file or secret (on SIGHUP after adding a tenant). Invalid contents are rejected whole, keeping the tenants loaded before. */
+  async reload() {
+    if (this.file) this.parse(readFileSync(this.file, "utf8"));
+    else if (this.read) this.parse(await this.read());
+  }
+
+  private parse(text: string) {
+    const parsed = JSON.parse(text) as { tenants?: Record<string, Omit<Tenant, "id">> };
+    if (!parsed?.tenants || typeof parsed.tenants !== "object") throw new Error("Tenants file must contain a `tenants` object");
     this.set(Object.entries(parsed.tenants).map(([id, tenant]) => ({ id, ...tenant })));
   }
 
@@ -85,4 +96,14 @@ export class Tenants {
     const keys = this.byId.get(tenantId)?.apiKeys;
     return keys?.[provider] ?? keys?.["*"];
   }
+}
+
+/** Tenants from AGENT_TENANTS_SECRET_ARN (the tenants file's JSON in Secrets Manager), AGENT_TENANTS_FILE, or the single-token mode. */
+export async function tenantsFromEnvironment(env = process.env) {
+  const tenants = new Tenants({
+    file: env.AGENT_TENANTS_FILE, read: env.AGENT_TENANTS_SECRET_ARN ? await secretReader(env.AGENT_TENANTS_SECRET_ARN, env) : undefined,
+    legacyToken: env.AGENT_RUNTIME_TOKEN, legacyApiKey: env.AGENT_API_KEY,
+  });
+  await tenants.reload();
+  return tenants;
 }

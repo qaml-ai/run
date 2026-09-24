@@ -100,6 +100,9 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_STORAGE` | `file` (default), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 30000) |
+| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?}}}`), re-read on SIGHUP |
+| `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
+| `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, e.g. from an ECS task definition's `secrets` (a JSON key of a secret is `<arn>:clientId::`) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
 | `AGENT_EXECUTOR_URL` | run `js_exec` on executor hosts (see `infra/executor/README.md`) |
 
