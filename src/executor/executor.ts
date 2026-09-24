@@ -1,16 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { once } from "node:events";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { childProcess } from "../rpc.ts";
 import { errorText } from "../protocol.ts";
 import { validateDefinitions } from "../tool-policy.ts";
+import { processLauncher, type Sandbox, type SandboxLauncher } from "./sandbox.ts";
+import { staticToken, type ExecutorToken } from "./token.ts";
 
 // A disconnect from the runtime normally ends an execution first; this is the backstop.
 const GRACE_MS = 2_000;
-const hash = (token: string) => createHash("sha256").update(token).digest();
 
 type Execution = {
   executionId: string; code: string; tools: any[]; timeoutMs: number; maxOutputCharacters: number;
@@ -19,21 +14,22 @@ type Execution = {
 
 /**
  * Executor host: runs one model-written program per request in a fresh
- * code-child (QuickJS/WASM, the same limits as local codemode), with no
+ * sandbox (a gVisor sandbox per execution in production; see sandbox.ts) around
+ * the code child (QuickJS/WASM, the same limits as local codemode), with no
  * credentials and no agent state. Guest tool calls go back to the runtime's
  * callback URL with the per-execution capability the runtime minted; the
  * runtime validates and dispatches them. Nothing here is trusted by the runtime.
  */
-export function createExecutorServer(options: { token: string; maxConcurrent?: number; runtime?: string }) {
-  if (options.token.length < 32) throw new Error("AGENT_EXECUTOR_TOKEN must be at least 32 characters");
-  const expected = hash(options.token);
+export function createExecutorServer(options: { token: string | ExecutorToken; maxConcurrent?: number; runtime?: string; launcher?: SandboxLauncher }) {
+  const token = typeof options.token === "string" ? staticToken(options.token) : options.token;
+  const launcher = options.launcher ?? processLauncher(options.runtime);
   const maxConcurrent = options.maxConcurrent ?? 8;
   let active = 0;
   const server = createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/healthz") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true, active })); return; }
     if (req.url !== "/execute") { res.writeHead(404).end(); return; }
     const presented = /^Bearer (\S{1,512})$/.exec(req.headers.authorization ?? "")?.[1];
-    if (!presented || !timingSafeEqual(hash(presented), expected)) { res.writeHead(401).end(); return; }
+    if (!presented || !await token.matches(presented)) { res.writeHead(401).end(); return; }
     if (req.method !== "POST") { res.writeHead(405).end(); return; }
     if (active >= maxConcurrent) { res.writeHead(503).end(); return; }
     active++;
@@ -41,23 +37,26 @@ export function createExecutorServer(options: { token: string; maxConcurrent?: n
       let execution: Execution;
       try { execution = parse(await body(req, 2 * 1024 * 1024)); }
       catch (error) { res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: errorText(error) })); return; }
-      await run(execution, res, options.runtime);
+      await run(execution, res, launcher);
     } finally { active--; }
   });
   server.requestTimeout = 30_000;
   return server;
 }
 
-async function run(execution: Execution, res: ServerResponse, runtime?: string) {
-  const directory = await mkdtemp(join(tmpdir(), "codemode-"));
-  const { child, rpc } = childProcess("./code-child.ts", directory, runtime);
-  const exited = once(child, "close");
+async function run(execution: Execution, res: ServerResponse, launcher: SandboxLauncher) {
+  const started = Date.now();
+  let sandbox: Sandbox;
+  try { sandbox = await launcher.launch(); }
+  catch (error) { res.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({ error: errorText(error) })); return; }
+  const { rpc } = sandbox;
   const calls = new AbortController();
-  const kill = (reason: string) => { calls.abort(); rpc.close(reason); child.kill("SIGKILL"); };
-  // The runtime owns the deadline and aborts by disconnecting; either way the child dies.
+  const kill = (reason: string) => { calls.abort(); rpc.close(reason); sandbox.kill(); };
+  // The runtime owns the deadline and aborts by disconnecting; either way the sandbox dies.
   const timer = setTimeout(() => kill("Codemode timed out on the executor"), execution.timeoutMs + GRACE_MS);
   const disconnected = () => { if (!res.writableFinished) kill("Runtime disconnected"); };
   res.on("close", disconnected);
+  if (res.destroyed) disconnected();
   const write = (message: unknown) => { if (!res.destroyed) res.write(`${JSON.stringify(message)}\n`); };
   res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
   rpc.onEvent = event => write({ type: "event", event });
@@ -65,17 +64,19 @@ async function run(execution: Execution, res: ServerResponse, runtime?: string) 
     if (method !== "tool") throw new Error("Unknown tool");
     return callback(execution.callback, { name: params.name, args: params.args }, calls.signal);
   };
+  let outcome = "result";
   try {
     const { code, tools, timeoutMs, maxOutputCharacters } = execution;
     write({ type: "result", result: await rpc.request("execute", { code, tools, timeoutMs, maxOutputCharacters }) });
   } catch (error) {
+    outcome = calls.signal.aborted ? "killed" : "error";
     write({ type: "error", error: errorText(error) });
   } finally {
     clearTimeout(timer);
     kill("Codemode completed");
-    await exited;
+    await sandbox.closed;
     res.end();
-    await rm(directory, { recursive: true, force: true });
+    console.log(JSON.stringify({ type: "execution", executionId: execution.executionId, sandbox: launcher.kind, outcome, ms: Date.now() - started }));
   }
 }
 

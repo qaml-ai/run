@@ -5,7 +5,7 @@ import { getRequestListener } from "@hono/node-server";
 import { once } from "node:events";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,10 +18,15 @@ import { localTools } from "../src/local-tools.ts";
 import { configuredModel } from "../src/model.ts";
 import { SANDBOX_LIMITS } from "../src/limits.ts";
 import type { ToolBridge } from "../src/protocol.ts";
+import { sandboxLauncher } from "../src/executor/sandbox.ts";
+import { rotatingToken } from "../src/executor/token.ts";
 
 type T = { after: (fn: () => unknown) => void };
 const TOKEN = "executor-test-token-0123456789abcdef";
 const CANARY = "executor-test-canary-must-not-leak";
+// AGENT_EXECUTOR_SANDBOX=runsc runs this file against real gVisor sandboxes (see infra/executor/README.md).
+const SANDBOX = process.env.AGENT_EXECUTOR_SANDBOX ?? "process";
+const passthrough = Object.fromEntries(["AGENT_RUNTIME", "AGENT_EXECUTOR_SANDBOX", "AGENT_EXECUTOR_SANDBOX_HELPER"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : []));
 
 async function listen(t: T, server: Server) {
   server.listen(0, "127.0.0.1");
@@ -33,7 +38,7 @@ async function listen(t: T, server: Server) {
 /** A real executor process, started the way a host runs it, with a canary secret in its environment. */
 async function startExecutor(t: T) {
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/executor/server.ts", import.meta.url))], {
-    env: { PATH: process.env.PATH, AGENT_EXECUTOR_TOKEN: TOKEN, PORT: "0", HOST: "127.0.0.1", EXECUTOR_TEST_CANARY: CANARY, ...process.env.AGENT_RUNTIME ? { AGENT_RUNTIME: process.env.AGENT_RUNTIME } : {} },
+    env: { PATH: process.env.PATH, AGENT_EXECUTOR_TOKEN: TOKEN, PORT: "0", HOST: "127.0.0.1", EXECUTOR_TEST_CANARY: CANARY, ...passthrough },
     stdio: ["ignore", "pipe", "inherit"],
   });
   t.after(() => { child.kill("SIGKILL"); });
@@ -304,12 +309,16 @@ test("the executor's code child inherits none of the executor's environment", as
   await hung.entered;
   const [child] = children(executor.pid);
   assert.ok(child, "A code child is running");
-  const environment = processEnvironment(child);
-  assert.ok(process.platform === "linux" || environment.includes("code-child.ts"), "Inspected the code child");
-  assert.match(environment, /TMPDIR=\S*codemode-/, "The environment is visible, and it is the fixed one childProcess sets");
-  assert.ok(!environment.includes(CANARY), "No inherited canary");
-  assert.ok(!environment.includes(TOKEN), "No executor token");
-  assert.ok(!environment.includes("AGENT_EXECUTOR_TOKEN"));
+  // Under runsc the direct child is sudo, whose environment /proc does not expose; the
+  // helper fixes the guest's (infra/executor/test-sandbox.sh probes it).
+  if (SANDBOX === "process") {
+    const environment = processEnvironment(child);
+    assert.ok(process.platform === "linux" || environment.includes("sandbox-child.ts"), "Inspected the code child");
+    assert.match(environment, /TMPDIR=\S*codemode-/, "The environment is visible, and it is the fixed one the launcher sets");
+    assert.ok(!environment.includes(CANARY), "No inherited canary");
+    assert.ok(!environment.includes(TOKEN), "No executor token");
+    assert.ok(!environment.includes("AGENT_EXECUTOR_TOKEN"));
+  }
   controller.abort();
   await running;
 });
@@ -334,4 +343,101 @@ test("supervised agents run js_exec remotely and callbacks reach only the owning
   await assert.rejects(supervisor.request("a", "execute", { code: "while (true) {}", timeoutMs: 1000 }), /timed out|CPU or wall-clock/);
   await until(() => children(executor.pid).length === 0);
   assert.deepEqual((await supervisor.request("a", "execute", { code: "1 + 2;" })).output, ["3"]);
+});
+
+const launcher = () => sandboxLauncher(SANDBOX, { helper: process.env.AGENT_EXECUTOR_SANDBOX_HELPER });
+const echo = [{ name: "echo", description: "Echoes", parameters: { type: "object" } }];
+const execute = (code: string, timeoutMs = 10_000) => ({ code, tools: echo, timeoutMs, maxOutputCharacters: 1_000 });
+function alive(pid: number | undefined) {
+  // EPERM: it exists, but is sudo's under runsc.
+  try { process.kill(pid!, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+test("a launched sandbox runs exactly one execution, then dies with its work directory", async () => {
+  const sandbox = await launcher().launch();
+  const directory = SANDBOX === "process" ? /TMPDIR=(\S+)/.exec(processEnvironment(sandbox.pid!))?.[1] : undefined;
+  sandbox.rpc.handler = async (method, params) => { assert.equal(method, "tool"); return params.args; };
+  const outputs: string[] = [];
+  sandbox.rpc.onEvent = event => outputs.push(event.text);
+  assert.deepEqual(await sandbox.rpc.request("execute", execute('console.log("hi"); return (await tools.echo({n: 7})).n;')), { output: ["hi", "7"], truncated: false });
+  assert.deepEqual(outputs, ["hi", "7"], "Output streams as events over the same pipe");
+  await assert.rejects(sandbox.rpc.request("execute", execute("return 1")), /accepts one execution/);
+  sandbox.kill();
+  sandbox.kill();
+  await sandbox.closed;
+  assert.ok(!alive(sandbox.pid));
+  if (directory) assert.ok(!existsSync(directory), "The work directory is removed");
+});
+
+test("killing sandboxes mid-execution, blocked or CPU-bound, leaves no process behind", async () => {
+  const sandboxes = await Promise.all(Array.from({ length: 6 }, () => launcher().launch()));
+  const entered = sandboxes.map(sandbox => {
+    const called = Promise.withResolvers<void>();
+    sandbox.rpc.handler = () => { called.resolve(); return new Promise(() => {}); };
+    return called.promise;
+  });
+  const runs = sandboxes.map((sandbox, i) => sandbox.rpc.request("execute", execute(i % 2 ? "while (true) {}" : "await tools.echo({});", 60_000)));
+  for (const run of runs) run.catch(() => {});
+  await Promise.all(entered.filter((_, i) => i % 2 === 0));
+  await sleep(300);
+  assert.ok(sandboxes.every(sandbox => alive(sandbox.pid)), "All still running");
+  for (const sandbox of sandboxes) sandbox.kill();
+  await Promise.all(sandboxes.map(sandbox => sandbox.closed));
+  for (const run of runs) await assert.rejects(run, /Process exited|disconnected/);
+  assert.deepEqual(sandboxes.filter(sandbox => alive(sandbox.pid)), []);
+  assert.deepEqual(children(process.pid).filter(pid => sandboxes.some(sandbox => sandbox.pid === pid)), []);
+});
+
+test("a sandbox inherits none of its launcher's environment", { skip: SANDBOX !== "process" && "the guest environment is fixed by the runsc helper" }, async () => {
+  process.env.EXECUTOR_TEST_CANARY = CANARY;
+  try {
+    const sandbox = await launcher().launch();
+    const environment = processEnvironment(sandbox.pid!);
+    sandbox.kill();
+    await sandbox.closed;
+    assert.match(environment, /TMPDIR=/);
+    assert.ok(!environment.includes(CANARY));
+    assert.ok(!environment.includes("NODE_OPTIONS"));
+  } finally { delete process.env.EXECUTOR_TEST_CANARY; }
+});
+
+test("the executor kills a sandbox at its deadline even when the runtime never disconnects", async t => {
+  const executor = await startExecutor(t);
+  // A callback that never answers, and a client that keeps reading.
+  const silent = createServer(() => {});
+  const callbackUrl = await listen(t, silent);
+  const started = Date.now();
+  const response = await fetch(`${executor.url}/execute`, {
+    method: "POST", headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ executionId: crypto.randomUUID(), ...execute("await tools.echo({});", 1_000), callback: { url: `${callbackUrl}/tools`, token: "x" } }),
+  });
+  const lines = (await response.text()).trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(lines, [{ type: "error", error: "Codemode timed out on the executor" }]);
+  assert.ok(Date.now() - started >= 3_000, "Deadline plus the executor's grace");
+  assert.deepEqual(children(executor.pid), []);
+});
+
+test("a rotating executor token accepts the new value at once and the old one only for a grace period", async () => {
+  const values = ["a".repeat(32)];
+  let reads = 0;
+  const token = await rotatingToken(async () => { reads++; return values.at(-1)!; }, { refreshMs: 60_000, retryMs: 50, graceMs: 200 });
+  try {
+    assert.equal(await token.matches("a".repeat(32)), true);
+    assert.equal(await token.matches("b".repeat(32)), false, "Unknown, and too soon to re-read");
+    assert.equal(reads, 1);
+    values.push("b".repeat(32));
+    await sleep(60);
+    assert.equal(await token.matches("b".repeat(32)), true, "An unknown token triggers a re-read");
+    assert.equal(reads, 2);
+    assert.equal(await token.matches("a".repeat(32)), true, "The previous token during the grace period");
+    await Promise.all(Array.from({ length: 20 }, () => token.matches("c".repeat(32))));
+    assert.equal(reads, 2, "Unknown tokens cannot drive reads");
+    await sleep(250);
+    assert.equal(await token.matches("a".repeat(32)), false, "Not after it");
+    values.push("short");
+    await sleep(60);
+    assert.equal(await token.matches("x".repeat(32)), false);
+    assert.equal(await token.matches("b".repeat(32)), true, "A bad read keeps the current token");
+  } finally { token.close?.(); }
+  await assert.rejects(rotatingToken(async () => "short"), /at least 32/);
 });
