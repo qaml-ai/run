@@ -383,9 +383,13 @@ process group. No deployed environment has been changed.
 Setting `AGENT_EXECUTOR_URL` and `AGENT_EXECUTOR_TOKEN` moves `js_exec` off the
 runtime host. With them set, `executeCode()` posts each program to an executor
 (`src/executor/server.ts`, the same image with a different command). The
-executor runs it in the same fresh code-child and QuickJS limits, and streams
-output back as NDJSON. The executor holds no credentials or agent state, and it
-clears its own environment at startup.
+executor starts a fresh sandbox for every execution (`src/executor/sandbox.ts`):
+on executor hosts, its own gVisor sandbox with no network, a read-only root and
+no host mounts; in development and tests, a plain child process. Inside runs the
+same code child and QuickJS limits, speaking the RPC over its stdin/stdout, and
+the executor streams output back as NDJSON. The executor holds no credentials
+or agent state. On hosts it reads its bearer token from Secrets Manager and
+re-reads it for rotation, and it clears its own environment at startup.
 
 Guest tool calls come back to a separate runtime listener
 (`AGENT_EXECUTOR_CALLBACK_PORT`, default 8791) at
@@ -398,7 +402,7 @@ execution. The supervisor then relays each callback over IPC into the owning
 agent's `executeCode`. That relay runs the same validation, quotas and
 `ToolBridge` path as a local child. The runtime never trusts the executor: it
 checks streamed output against the same limits. When the runtime aborts or
-times out, it disconnects, and the executor kills the child.
+times out, it disconnects, and the executor kills the sandbox.
 
 Without these variables, execution stays local and unchanged. Deployment is
 covered in [`infra/executor`](infra/executor/README.md),
