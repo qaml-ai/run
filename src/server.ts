@@ -19,6 +19,8 @@ import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
 import { telegram } from "./channels-telegram.ts";
+import { slack } from "./channels-slack.ts";
+import { discord } from "./channels-discord.ts";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -222,10 +224,14 @@ const scheduler = new Scheduler({
   },
 });
 scheduler.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
-// Messaging channels: webhooks in, replies out through a durable queue any node can drain.
+// Messaging channels: webhooks (or a gateway socket one node holds) in, replies out through a durable queue any node can drain.
 const channels = new Channels({
-  db, accounts, node, publicUrl,
-  providers: { telegram: telegram({ apiUrl: process.env.AGENT_TELEGRAM_API_URL }) },
+  db, accounts, node, publicUrl, ownership,
+  providers: {
+    telegram: telegram({ apiUrl: process.env.AGENT_TELEGRAM_API_URL }),
+    slack: slack({ apiUrl: process.env.AGENT_SLACK_API_URL }),
+    discord: discord({ apiUrl: process.env.AGENT_DISCORD_API_URL }),
+  },
   createAgent: (tenant, params, key) => createAgent(tenant, params, key) as Promise<{ id: string }>,
   live: (agent, tenant) => clients.owns(agent, tenant),
   submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),

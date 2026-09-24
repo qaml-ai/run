@@ -339,8 +339,8 @@ user messages; assistant and tool-result history is produced by the runtime.
 
 ## Channels
 
-A channel lets people talk to agents from a messaging service (Telegram for
-now). Tenants manage channels with `/v1/channels` or the console's Channels page:
+A channel lets people talk to agents from a messaging service: Telegram, Slack or
+Discord. Tenants manage channels with `/v1/channels` or the console's Channels page:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -350,32 +350,66 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   https://agents.camelai.dev/v1/channels
 ```
 
-Creating a channel checks the bot token (`getMe`) and registers
-`$AGENT_PUBLIC_URL/channels/telegram/<id>` as its webhook with a random secret,
-which each delivery must echo (compared in constant time). Credentials and the
-secret are encrypted with `AGENT_SECRETS_KEY`; the API returns only a masked
-token. Deleting the channel removes the webhook.
+| Service | Credentials | Messages arrive | A conversation (one agent) is |
+| --- | --- | --- | --- |
+| `telegram` | `botToken` | webhook, registered for you | a chat |
+| `slack` | `botToken` (`xoxb-…`), `signingSecret` | webhook, pasted into the app | a thread started by an @mention, or a DM |
+| `discord` | `botToken` | the Gateway (a WebSocket) | a DM, or a channel or thread where the bot is @mentioned |
+
+Creating a channel checks its credentials with the service. Credentials and a
+random webhook secret are encrypted with `AGENT_SECRETS_KEY`; the API returns
+only masked values.
+
+- **Telegram.** `$AGENT_PUBLIC_URL/channels/telegram/<id>` is registered as the
+  bot's webhook with the random secret, which each delivery must echo (compared
+  in constant time). Deleting the channel removes the webhook. `/start` gets the
+  channel's `greeting` without a model call.
+- **Slack.** Create an app with the bot scopes `app_mentions:read`, `chat:write`,
+  `im:history`, `channels:history` (and `groups:history` for private channels)
+  and `files:read`, and install it. Slack has no API to set an app's event URL,
+  so paste the channel's `webhookUrl` into Event Subscriptions and subscribe to
+  `app_mention`, `message.im` and `message.channels`. Deliveries must carry a
+  valid `X-Slack-Signature` from the signing secret, at most five minutes old; the
+  URL check is answered once it verifies. A mention starts a thread and replies go
+  there; later messages in that thread reach its agent without a mention. The
+  same message sent as both `app_mention` and `message` is handled once. Slack has
+  no typing indicator for bots.
+- **Discord.** Create an application, add a bot, and invite it with Send
+  Messages and Read Message History. There is no webhook for ordinary messages:
+  each Discord channel is an actor (`gateway:<id>` in `actor_owners`) and the node
+  that holds it keeps the Gateway connection, with heartbeats, resume after a
+  dropped link, and a fresh identify when the session is lost. Every node's
+  channel scan picks up connections that are not held, so when the holder
+  drains, fences or dies, another node connects within one scan of its
+  heartbeat expiring (at once after a drain). A token Discord rejects is retried
+  every five minutes, not in a loop. The bot needs no privileged intents: it
+  answers only DMs and messages that mention it. Replies never ping anyone
+  (`allowed_mentions` is empty).
+
+What all three share:
 
 - Each external conversation gets its own agent, created on first contact from
   the channel's template (model, system prompt, thinking level, client tools).
   Its prompts go through the agent's normal queue on whichever node serves it.
-- Senders must be on the allowlist (Telegram user ids or @usernames) unless the
-  channel sets `access.public`. Each sender is rate limited
-  (`limits.perSenderPerMinute`, default 10) and the channel has a daily turn
-  cap (`limits.turnsPerDay`, default 1000).
+- Senders must be on the allowlist unless the channel sets `access.public`:
+  Telegram and Discord user ids or @usernames, Slack member ids (`U0123ABCD`).
+  Each sender is rate limited (`limits.perSenderPerMinute`, default 10) and the
+  channel has a daily turn cap (`limits.turnsPerDay`, default 1000).
 - The prompt names the sender, and tool calls carry a runtime-set `origin`
   (`{channel, conversationId, sender}`, `context.origin` in the SDKs) that
-  tools can authorize against. Photos reach the model as images (up to 750 KB).
-- The turn's final answer is sent back when the turn ends (split into 4,096
-  character messages), with a typing indicator meanwhile. Channel agents also
-  get a `send_message` tool for updates mid-turn. `/start` gets the channel's
-  `greeting` without a model call.
-- A webhook is recorded in Postgres before it is acknowledged, and duplicates
-  (Telegram retries) are dropped by message id for seven days. Replies go
-  through a durable outbox: a failed send is retried with backoff by any node,
-  and a claim means one node sends each message.
+  tools can authorize against. Images reach the model (up to 750 KB each).
+- The turn's final answer is sent back when the turn ends, split to the
+  service's limit (4,096 characters on Telegram, 4,000 on Slack, 2,000 on
+  Discord), with a typing indicator meanwhile where the service has one. Channel
+  agents also get a `send_message` tool for updates mid-turn.
+- A message is recorded in Postgres before it is acknowledged, and duplicates
+  (provider retries, a Gateway resume) are dropped by message id for seven days.
+  Replies go through a durable outbox: a failed send is retried with backoff by
+  any node, a claim means one node sends each message, and a permanent failure
+  (the bot was removed from the chat) is not retried.
 
-`AGENT_TELEGRAM_API_URL` overrides the Bot API endpoint (tests use a local fake).
+`AGENT_TELEGRAM_API_URL`, `AGENT_SLACK_API_URL` and `AGENT_DISCORD_API_URL`
+override the services' API endpoints (tests use local fakes).
 
 ## Volumes
 

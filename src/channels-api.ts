@@ -26,13 +26,13 @@ export function channelRoutes(route: Route, channels: () => Channels | undefined
   };
   route(createRoute({ method: "get", path: "/v1/channels", responses: { 200: reply("The tenant's channels", z.array(schema.Channel)) } }),
     async c => json(c, 200, await service().list(c.var.principal.tenant)));
-  route(createRoute({ method: "post", path: "/v1/channels", request: { body: body(schema.ChannelInput) }, responses: { 201: reply("The channel, its webhook registered", schema.Channel) } }),
+  route(createRoute({ method: "post", path: "/v1/channels", request: { body: body(schema.ChannelInput) }, responses: { 201: reply("The channel, its credentials checked (and Telegram's webhook registered)", schema.Channel) } }),
     async c => json(c, 201, await service().create(c.var.principal.tenant, await parse(schema.ChannelInput, c))));
   route(createRoute({ method: "get", path: "/v1/channels/{id}", request: { params: channelId }, responses: { 200: reply("The channel", schema.Channel) } }),
     async c => json(c, 200, await service().get(c.var.principal.tenant, c.req.param("id")!)));
   route(createRoute({ method: "patch", path: "/v1/channels/{id}", request: { params: channelId, body: body(schema.ChannelUpdate) }, responses: { 200: reply("The updated channel", schema.Channel) } }),
     async c => json(c, 200, await service().update(c.var.principal.tenant, c.req.param("id")!, await parse(schema.ChannelUpdate, c))));
-  route(createRoute({ method: "delete", path: "/v1/channels/{id}", request: { params: channelId }, responses: { 200: reply("The channel is deleted and its webhook removed", schema.Deleted) } }), async c => {
+  route(createRoute({ method: "delete", path: "/v1/channels/{id}", request: { params: channelId }, responses: { 200: reply("The channel is deleted: it stops answering, and Telegram's webhook is removed", schema.Deleted) } }), async c => {
     await service().remove(c.var.principal.tenant, c.req.param("id")!);
     return json(c, 200, { deleted: true });
   });

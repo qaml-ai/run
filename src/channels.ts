@@ -11,12 +11,15 @@ import { HttpError, readText } from "./http.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { PreconditionFailed } from "../shared/storage.ts";
 import { transaction, type Db } from "./db.ts";
+import type { Claim, Ownership } from "./ownership.ts";
 
 /**
  * Channels let people talk to agents through messaging services. Each external
  * conversation gets its own agent, created on first contact from the channel's
  * template; a message becomes a prompt, and the turn's reply goes back the same way.
- * Everything is in Postgres, so any node can take a webhook or send a reply:
+ * Messages arrive by webhook (Telegram, Slack) or over a socket that one node holds
+ * for the channel (Discord). Everything is in Postgres, so any node can take a
+ * webhook or send a reply:
  *
  *   channels                the channel: template, access, limits, sealed credentials
  *   channel_conversations   the agent answering one external conversation
@@ -38,22 +41,41 @@ export interface Inbound {
   /** Provider references to images, fetched when the message is processed. */
   images: string[];
   command?: "start";
+  /** Only handled when the conversation already has an agent: a reply in a thread that does not mention the bot. */
+  continuation?: boolean;
 }
 type Credentials = Record<string, string>;
-/** What the core needs from a messaging service; everything provider-specific lives behind it. */
+/**
+ * What the core needs from a messaging service; everything provider-specific lives behind it.
+ * A service delivers messages either to a webhook (`verify` and `parse`) or over a socket (`connect`).
+ */
 export interface ChannelProvider {
   readonly label: string;
   readonly maxMessageLength: number;
-  /** Validate credentials and point the service's webhook at `webhook.url`. */
+  /** Validate credentials and, where the service allows it, point its webhook at `webhook.url`. */
   setup(credentials: Credentials, webhook: { url: string; secret: string }): Promise<{ account: Record<string, string>; masked: Record<string, string> }>;
   teardown(credentials: Credentials): Promise<void>;
-  verify(headers: Headers, body: string, secret: string): boolean;
+  /** Whether a webhook delivery is genuine, proven with the channel's random secret or a credential the service signs with. */
+  verify?(headers: Headers, body: string, secret: string, credentials: Credentials): boolean;
+  /** What to answer a verified delivery that is a handshake (a URL-verification challenge) rather than a message. */
+  handshake?(body: unknown): object | undefined;
   /** An inbound message, or undefined for updates the channel ignores. */
-  parse(body: unknown): Inbound | undefined;
+  parse?(body: unknown): Inbound | undefined;
+  /** Hold a connection that delivers the channel's messages, reconnecting on its own, until closed. */
+  connect?(credentials: Credentials, handlers: GatewayHandlers): Gateway;
   images(credentials: Credentials, references: string[]): Promise<ImageContent[]>;
   send(credentials: Credentials, conversationId: string, text: string): Promise<void>;
-  typing(credentials: Credentials, conversationId: string): Promise<void>;
+  /** Show that a reply is coming; a service without an indicator leaves it out. */
+  typing?(credentials: Credentials, conversationId: string): Promise<void>;
+  /** How often the indicator is refreshed while a turn runs (default 4 s). */
+  readonly typingMs?: number;
 }
+export interface GatewayHandlers {
+  message(inbound: Inbound): Promise<void>;
+  /** The connection cannot work (credentials rejected); it is retried after a pause. */
+  failed(error: Error): void;
+}
+export interface Gateway { close(): void }
 /** A failed send; permanent failures (blocked bot, unknown chat) are not retried. */
 export class SendError extends Error {
   permanent: boolean; retryAfterMs?: number;
@@ -62,7 +84,9 @@ export class SendError extends Error {
 
 export interface Template { model?: string; systemPrompt?: string; thinkingLevel?: string; tools?: ToolDefinition[] }
 export interface Channel {
-  id: string; tenant: string; type: string; name: string; webhookUrl: string;
+  id: string; tenant: string; type: string; name: string;
+  /** Where the service delivers messages; channels that receive over a socket have none. */
+  webhookUrl?: string;
   template: Template;
   /** Senders by id or @username; `public` lets anyone in. */
   access: { public: boolean; allow: string[] };
@@ -110,6 +134,8 @@ const PRUNE_EVERY_MS = 60 * 60_000;
 const MAX_ATTEMPTS = 8;
 const MAX_REPLY = 32_000;
 const TYPING_MS = 4_000;
+/** How long a gateway whose credentials were rejected waits before trying again. */
+const GATEWAY_RETRY_MS = 5 * 60_000;
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const held = (row: any): Held => ({ item: { ...row.item, due: row.due }, revision: row.revision });
@@ -133,6 +159,8 @@ export function chunks(text: string, max: number): string[] {
 export interface ChannelsOptions {
   db: Db; accounts: Accounts; node: string; publicUrl: string;
   providers: Record<string, ChannelProvider>;
+  /** Decides which node holds each gateway channel's connection; without it no gateway connects. */
+  ownership?: Ownership;
   createAgent(tenant: string, params: any, key: string): Promise<{ id: string }>;
   /** Whether the agent still exists and is the tenant's. */
   live(agent: string, tenant: string): Promise<boolean>;
@@ -146,6 +174,8 @@ export class Channels {
   private readonly options: ChannelsOptions;
   private readonly bindings = new Map<string, Promise<Binding | undefined>>();
   private readonly typing = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly gateways = new Map<string, { claim: Claim; updatedAt: number; gateway: Gateway }>();
+  private readonly gatewayRetry = new Map<string, number>();
   private timer?: ReturnType<typeof setInterval>;
   private scanning = false;
   private prunedAt = 0;
@@ -153,6 +183,8 @@ export class Channels {
   constructor(options: ChannelsOptions) {
     this.options = options;
     this.db = options.db;
+    // A fenced node's claims are void: another node connects while this one is cut off.
+    options.ownership?.onFence(() => { for (const id of [...this.gateways.keys()]) this.closeGateway(id, false); });
   }
 
   start(intervalMs = 5_000) {
@@ -164,6 +196,7 @@ export class Channels {
     this.timer = undefined;
     for (const timer of this.typing.values()) clearInterval(timer);
     this.typing.clear();
+    for (const id of [...this.gateways.keys()]) this.closeGateway(id, true);
   }
 
   // Configuration ---------------------------------------------------------------
@@ -206,7 +239,7 @@ export class Channels {
     const { account, masked } = await provider.setup(input.credentials, { url: webhookUrl, secret });
     const now = Date.now();
     const channel: Channel = {
-      id, tenant, type, name: input.name ?? `${provider.label} ${account.username ? `@${account.username}` : id}`, webhookUrl,
+      id, tenant, type, name: input.name ?? `${provider.label} ${account.username ? `@${account.username}` : id}`, ...(provider.verify ? { webhookUrl } : {}),
       template: settings.template ?? {}, access: { public: false, allow: [], ...settings.access }, limits: { ...DEFAULT_LIMITS, ...settings.limits },
       ...(settings.greeting ? { greeting: settings.greeting } : {}), account, masked,
       sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials: input.credentials, secret })), createdAt: now, updatedAt: now,
@@ -229,7 +262,7 @@ export class Channels {
       const provider = this.provider(channel.type);
       const old = this.secrets(channel).credentials;
       const secret = randomBytes(32).toString("hex");
-      Object.assign(next, await provider.setup(input.credentials, { url: channel.webhookUrl, secret }));
+      Object.assign(next, await provider.setup(input.credentials, { url: `${this.options.publicUrl}/channels/${channel.type}/${id}`, secret }));
       next.sealed = this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials: input.credentials, secret }));
       // A different bot keeps its webhook pointed here otherwise.
       if (next.account.id !== channel.account.id) await provider.teardown(old).catch(() => {});
@@ -265,22 +298,36 @@ export class Channels {
     let body: string;
     try { body = await readText(c.req.raw.body, 1_000_000); } catch { return c.body(null, 413); }
     const provider = this.provider(channel.type);
-    if (!provider.verify(c.req.raw.headers, body, this.secrets(channel).secret)) return c.body(null, 401);
-    let inbound: Inbound | undefined;
-    try { inbound = provider.parse(JSON.parse(body)); } catch { return c.body(null, 400); }
-    // Anything the channel does not handle, or from someone not allowed, is acknowledged and dropped.
-    if (!inbound || !validConversation(inbound.conversationId) || !this.allowed(channel, inbound.sender)) return c.body(null, 200);
-    const recorded = await this.record(channel, inbound);
-    if (recorded) void this.advance(recorded).catch(error => this.failed(recorded.item, error));
+    if (!provider.verify || !provider.parse) return c.body(null, 404);
+    const { credentials, secret } = this.secrets(channel);
+    if (!provider.verify(c.req.raw.headers, body, secret, credentials)) return c.body(null, 401);
+    let payload: unknown, inbound: Inbound | undefined;
+    try { payload = JSON.parse(body); } catch { return c.body(null, 400); }
+    const handshake = provider.handshake?.(payload);
+    if (handshake) return c.json(handshake);
+    try { inbound = provider.parse(payload); } catch { return c.body(null, 400); }
+    if (inbound) await this.accept(channel, inbound);
     return c.body(null, 200);
   });
+
+  /** Record a message and start on it. Anything the channel does not handle, or from someone not allowed, is dropped. */
+  private async accept(channel: Channel, inbound: Inbound) {
+    if (!validConversation(inbound.conversationId) || !this.allowed(channel, inbound.sender)) return;
+    if (inbound.continuation) {
+      const known = await this.db.query("select 1 from channel_conversations where channel = $1 and conversation = $2", [channel.id, inbound.conversationId]);
+      if (!known.rowCount) return;
+    }
+    const recorded = await this.record(channel, inbound);
+    if (recorded) void this.advance(recorded).catch(error => this.failed(recorded.item, error));
+  }
 
   allowed(channel: Channel, sender: Sender) {
     if (channel.access.public) return true;
     const username = sender.username?.toLowerCase();
     return channel.access.allow.some(entry => {
-      const normalized = entry.trim().replace(/^@/, "").toLowerCase();
-      return normalized === sender.id || (!!username && normalized === username);
+      const normalized = entry.trim().replace(/^@/, "");
+      // Ids match exactly (Slack's are upper case); usernames in any case.
+      return normalized === sender.id || (!!username && normalized.toLowerCase() === username);
     });
   }
 
@@ -307,6 +354,58 @@ export class Channels {
     return rows[0] && { item, revision: rows[0].revision };
   }
 
+  // Gateways --------------------------------------------------------------------
+
+  /**
+   * A service that pushes messages over a socket (Discord) needs one connection per
+   * channel. Each is an actor in `actor_owners`, so one node holds it, and when that
+   * node dies or fences the next node's scan takes it. Two connections for a moment
+   * during a takeover are harmless: messages are recorded once by id.
+   */
+  private async connectGateways() {
+    const ownership = this.options.ownership;
+    const types = Object.keys(this.options.providers).filter(type => this.options.providers[type].connect);
+    if (!ownership || !types.length) return;
+    const { rows } = await this.db.query("select channel from channels where channel->>'type' = any($1)", [types]);
+    const wanted = new Map(rows.map(row => [row.channel.id as string, row.channel as Channel]));
+    for (const [id, held] of this.gateways) {
+      const channel = wanted.get(id);
+      if (!ownership.holds(held.claim)) this.closeGateway(id, false);
+      // Deleted, or changed (credentials, access): reconnect with what is stored now.
+      else if (channel?.updatedAt !== held.updatedAt) this.closeGateway(id, !channel);
+    }
+    for (const id of this.gatewayRetry.keys()) if (!wanted.has(id)) this.gatewayRetry.delete(id);
+    for (const channel of wanted.values()) {
+      if (this.gateways.has(channel.id) || ownership.draining || (this.gatewayRetry.get(channel.id) ?? 0) > Date.now()) continue;
+      const taken = await ownership.acquire(`gateway:${channel.id}`).catch(() => undefined);
+      if (!taken || !("claim" in taken)) continue;
+      const { claim } = taken;
+      const current = () => this.gateways.get(channel.id)?.claim === claim;
+      const gateway = this.provider(channel.type).connect!(this.secrets(channel).credentials, {
+        message: async inbound => {
+          const latest = await this.read(channel.id);
+          if (latest && current()) await this.accept(latest, inbound);
+        },
+        // Kept claimed, so no other node tries the same credentials; this node retries after a pause.
+        failed: error => {
+          console.error(JSON.stringify({ type: "channel_gateway_failed", channel: channel.id, error: errorText(error) }));
+          this.gatewayRetry.set(channel.id, Date.now() + GATEWAY_RETRY_MS);
+          if (current()) this.closeGateway(channel.id, false);
+        },
+      });
+      this.gateways.set(channel.id, { claim, updatedAt: channel.updatedAt, gateway });
+    }
+  }
+
+  /** Close a channel's connection; releasing it lets any node take it at once. */
+  private closeGateway(id: string, release: boolean) {
+    const held = this.gateways.get(id);
+    if (!held) return;
+    this.gateways.delete(id);
+    held.gateway.close();
+    if (release) void this.options.ownership?.release(held.claim).catch(() => {});
+  }
+
   // Work items ------------------------------------------------------------------
 
   /** Advance every item that is due and unclaimed; any node may run this. */
@@ -314,6 +413,7 @@ export class Channels {
     if (this.scanning) return;
     this.scanning = true;
     try {
+      await this.connectGateways().catch(error => console.error(JSON.stringify({ type: "channel_gateways_failed", error: errorText(error) })));
       await this.prune();
       for (let batch; (batch = await this.claim(now)).length;) {
         for (const claimed of batch) await this.advance(claimed).catch(error => this.failed(claimed.item, error));
@@ -394,7 +494,7 @@ export class Channels {
     const today = await this.count(channel.id, `d${new Date().toISOString().slice(0, 10)}/turns`);
     if (today > channel.limits.turnsPerDay) return today === channel.limits.turnsPerDay + 1 ? reply("This assistant has reached its limit for today. Please try again tomorrow.") : this.finish(item);
     const { credentials } = this.secrets(channel);
-    void this.provider(channel.type).typing(credentials, item.conversationId).catch(() => {});
+    void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
     const agent = await this.agentFor(channel, item.conversationId, inbound.sender);
     const images = inbound.images.length ? await this.provider(channel.type).images(credentials, inbound.images) : [];
     const prompt = { text: this.promptText(channel, inbound, images.length), ...(images.length ? { images } : {}) };
@@ -516,11 +616,12 @@ export class Channels {
       void this.binding(agent.id).then(async binding => {
         const channel = binding && await this.read(binding.channel);
         if (!binding || !channel || this.typing.has(agent.id)) return;
-        const { credentials } = this.secrets(channel);
         const provider = this.provider(channel.type);
-        const show = () => void provider.typing(credentials, binding.conversationId).catch(() => {});
+        if (!provider.typing) return;
+        const { credentials } = this.secrets(channel);
+        const show = () => void provider.typing!(credentials, binding.conversationId).catch(() => {});
         // The service clears the indicator after a few seconds; keep it up while the turn runs.
-        const timer = setInterval(show, TYPING_MS);
+        const timer = setInterval(show, provider.typingMs ?? TYPING_MS);
         timer.unref();
         this.typing.set(agent.id, timer);
         setTimeout(() => this.stopTyping(agent.id, timer), 10 * 60_000).unref();

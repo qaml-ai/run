@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,16 +14,45 @@ import { api, formatTime, useApi, type Channel } from "@/lib/api";
 
 const senders = (value: string) => value.split(/[\s,]+/).map(entry => entry.trim()).filter(Boolean);
 
+type ChannelType = "telegram" | "slack" | "discord";
+/** What each service needs, and how to get it. */
+const TYPES: Record<ChannelType, { label: string; help: string; fields: { key: string; label: string; placeholder: string }[]; senders: string }> = {
+  telegram: {
+    label: "Telegram",
+    help: "Each Telegram chat gets its own agent. Create a bot with @BotFather and paste its token; the runtime registers the webhook.",
+    fields: [{ key: "botToken", label: "Bot token", placeholder: "123456789:AA…" }],
+    senders: "@username, 123456789",
+  },
+  slack: {
+    label: "Slack",
+    help: "Each thread where someone @mentions the app, and each DM, gets its own agent. Create a Slack app with the bot scopes app_mentions:read, chat:write, im:history, channels:history and files:read, install it, and paste its bot token and signing secret. Then paste the webhook URL into the app's Event Subscriptions and subscribe to app_mention, message.im and message.channels.",
+    fields: [{ key: "botToken", label: "Bot token", placeholder: "xoxb-…" }, { key: "signingSecret", label: "Signing secret", placeholder: "From Basic Information" }],
+    senders: "Member IDs: U0123ABCD",
+  },
+  discord: {
+    label: "Discord",
+    help: "Each DM, and each channel or thread where someone @mentions the bot, gets its own agent. Create an application in the Discord Developer Portal, add a bot, invite it to your server with Send Messages, and paste its token.",
+    fields: [{ key: "botToken", label: "Bot token", placeholder: "From the Bot page" }],
+    senders: "@username, 123456789012345678",
+  },
+};
+
 /** Create a channel, or edit one's prompt and access (credentials are write-only). */
-function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClose: () => void; onSaved: () => void }) {
+function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClose: () => void; onSaved: (created?: Channel) => void }) {
+  const [type, setType] = useState<ChannelType>((channel?.type as ChannelType) ?? "telegram");
   const [name, setName] = useState(channel?.name ?? "");
-  const [botToken, setBotToken] = useState("");
+  const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [model, setModel] = useState(channel?.template.model ?? "");
   const [systemPrompt, setSystemPrompt] = useState(channel?.template.systemPrompt ?? "");
   const [allow, setAllow] = useState(channel?.access.allow.join(", ") ?? "");
   const [open, setOpen] = useState(channel?.access.public ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const info = TYPES[type] ?? TYPES.telegram;
+  // Credentials are replaced whole: all of a service's fields, or none to keep the stored ones.
+  const entered = info.fields.map(field => credentials[field.key]?.trim() ?? "");
+  const complete = entered.every(Boolean);
+  const partial = entered.some(Boolean) && !complete;
   async function save(event: FormEvent) {
     event.preventDefault();
     setBusy(true); setError(undefined);
@@ -30,12 +60,12 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
     const template = { ...channel?.template, model: model.trim() || undefined, systemPrompt: systemPrompt.trim() || undefined };
     const body = {
       ...(name.trim() ? { name: name.trim() } : {}), template, access: { public: open, allow: senders(allow) },
-      ...(botToken.trim() ? { credentials: { botToken: botToken.trim() } } : {}),
+      ...(complete ? { credentials: Object.fromEntries(info.fields.map((field, index) => [field.key, entered[index]])) } : {}),
     };
     try {
-      if (channel) await api(`/v1/channels/${channel.id}`, { method: "PATCH", body });
-      else await api("/v1/channels", { body: { type: "telegram", ...body } });
-      onSaved(); onClose();
+      if (channel) { await api(`/v1/channels/${channel.id}`, { method: "PATCH", body }); onSaved(); }
+      else onSaved(await api<Channel>("/v1/channels", { body: { type, ...body } }));
+      onClose();
     } catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
   }
@@ -44,14 +74,32 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
       <DialogContent>
         <form onSubmit={save} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>{channel ? `Edit ${channel.name}` : "New Telegram channel"}</DialogTitle>
-            <DialogDescription>Each Telegram chat gets its own agent. Create a bot with @BotFather and paste its token; the runtime registers the webhook.</DialogDescription>
+            <DialogTitle>{channel ? `Edit ${channel.name}` : `New ${info.label} channel`}</DialogTitle>
+            <DialogDescription>{info.help}</DialogDescription>
           </DialogHeader>
           <ErrorAlert error={error} />
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="channel-token">Bot token{channel && <span className="text-muted-foreground font-normal"> (leave empty to keep {channel.credentials.botToken})</span>}</Label>
-            <Input id="channel-token" type="password" autoComplete="off" placeholder="123456789:AA…" value={botToken} onChange={event => setBotToken(event.target.value)} />
-          </div>
+          {!channel && (
+            <div className="flex flex-col gap-2">
+              <Label>Service</Label>
+              <Select value={type} onValueChange={value => { setType(value as ChannelType); setCredentials({}); }}>
+                <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                <SelectContent>{(Object.keys(TYPES) as ChannelType[]).map(key => <SelectItem key={key} value={key}>{TYPES[key].label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          )}
+          {channel?.webhookUrl && channel.type === "slack" && (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="channel-webhook">Webhook URL <span className="text-muted-foreground font-normal">(Event Subscriptions → Request URL)</span></Label>
+              <Input id="channel-webhook" readOnly value={channel.webhookUrl} onFocus={event => event.target.select()} className="font-mono text-xs" />
+            </div>
+          )}
+          {info.fields.map(field => (
+            <div key={field.key} className="flex flex-col gap-2">
+              <Label htmlFor={`channel-${field.key}`}>{field.label}{channel && <span className="text-muted-foreground font-normal"> (leave empty to keep {channel.credentials[field.key]})</span>}</Label>
+              <Input id={`channel-${field.key}`} type="password" autoComplete="off" placeholder={field.placeholder} value={credentials[field.key] ?? ""}
+                onChange={event => setCredentials(current => ({ ...current, [field.key]: event.target.value }))} />
+            </div>
+          ))}
           <div className="flex flex-col gap-2">
             <Label htmlFor="channel-name">Name</Label>
             <Input id="channel-name" placeholder="Defaults to the bot's username" value={name} onChange={event => setName(event.target.value)} />
@@ -66,7 +114,7 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="channel-allow">Allowed senders</Label>
-            <Input id="channel-allow" placeholder="@username, 123456789" value={allow} onChange={event => setAllow(event.target.value)} disabled={open} />
+            <Input id="channel-allow" placeholder={info.senders} value={allow} onChange={event => setAllow(event.target.value)} disabled={open} />
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={open} onChange={event => setOpen(event.target.checked)} />
               Public: anyone can message this bot (rate limits still apply)
@@ -74,7 +122,7 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={busy || (!channel && !botToken.trim())}>{busy && <Loader2 className="animate-spin" />}{channel ? "Save" : "Create channel"}</Button>
+            <Button type="submit" disabled={busy || partial || (!channel && !complete)}>{busy && <Loader2 className="animate-spin" />}{channel ? "Save" : "Create channel"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -92,7 +140,7 @@ export function ChannelsPage() {
         actions={<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button>} />
       <ErrorAlert error={channels.error ?? error} />
       {!channels.data ? <Skeleton className="h-32 w-full" /> : channels.data.length === 0 ? (
-        <EmptyState icon={<MessageCircle />} title="No channels">Connect a Telegram bot to talk to your agents from Telegram.</EmptyState>
+        <EmptyState icon={<MessageCircle />} title="No channels">Connect a Telegram, Slack or Discord bot to talk to your agents from there.</EmptyState>
       ) : (
         <div className="rounded-lg border">
           <Table>
@@ -106,7 +154,7 @@ export function ChannelsPage() {
                   <TableCell className="text-muted-foreground hidden text-xs lg:table-cell">{formatTime(channel.createdAt)}</TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Button size="xs" variant="outline" className="mr-2" onClick={() => setEditing(channel)}>Edit</Button>
-                    <ConfirmButton size="xs" label="Delete" title={`Delete “${channel.name}”?`} description="The bot's webhook is removed and it stops answering. Its conversations' agents are kept until they expire." confirm="Delete channel"
+                    <ConfirmButton size="xs" label="Delete" title={`Delete “${channel.name}”?`} description="The bot stops answering (a Telegram bot's webhook is removed). Its conversations' agents are kept until they expire." confirm="Delete channel"
                       onConfirm={async () => { try { await api(`/v1/channels/${channel.id}`, { method: "DELETE" }); await channels.reload(); } catch (caught) { setError((caught as Error).message); } }} />
                   </TableCell>
                 </TableRow>
@@ -115,7 +163,11 @@ export function ChannelsPage() {
           </Table>
         </div>
       )}
-      {editing && <ChannelDialog channel={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={() => void channels.reload()} />}
+      {editing && <ChannelDialog channel={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={created => {
+        void channels.reload();
+        // A Slack app needs the webhook URL pasted into its settings: show it straight away.
+        if (created?.type === "slack") setTimeout(() => setEditing(created));
+      }} />}
     </>
   );
 }

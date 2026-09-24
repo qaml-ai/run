@@ -71,7 +71,7 @@ export const formatNumber = (value: number) => new Intl.NumberFormat("en-US", { 
 export const formatCost = (value: number) => `$${value === 0 || value >= 1 ? value.toFixed(2) : value.toFixed(4)}`;
 export const formatTime = (value?: number) => value ? new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
 export interface Channel {
-  id: string; type: string; name: string; webhookUrl: string;
+  id: string; type: string; name: string; webhookUrl?: string;
   template: { model?: string; systemPrompt?: string; thinkingLevel?: string; tools?: unknown[] };
   access: { public: boolean; allow: string[] }; limits: { perSenderPerMinute: number; turnsPerDay: number };
   greeting?: string; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;

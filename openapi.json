@@ -880,7 +880,8 @@
             "type": "string"
           },
           "webhookUrl": {
-            "type": "string"
+            "type": "string",
+            "description": "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Discord channels have none: they connect to Discord's gateway"
           },
           "template": {
             "$ref": "#/components/schemas/ChannelTemplate"
@@ -947,7 +948,6 @@
           "tenant",
           "type",
           "name",
-          "webhookUrl",
           "template",
           "access",
           "limits",
@@ -997,7 +997,9 @@
           "type": {
             "type": "string",
             "enum": [
-              "telegram"
+              "telegram",
+              "slack",
+              "discord"
             ]
           },
           "name": {
@@ -1037,7 +1039,7 @@
                   "maxLength": 64
                 },
                 "maxItems": 1000,
-                "description": "Senders allowed in: user ids or @usernames"
+                "description": "Senders allowed in: user ids, or @usernames (Telegram, Discord)"
               }
             }
           },
@@ -1062,7 +1064,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4096,
-            "description": "Reply to /start"
+            "description": "Reply to /start (Telegram)"
           }
         },
         "required": [
@@ -1084,7 +1086,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. Stored encrypted and never returned"
           },
           "template": {
             "allOf": [
@@ -1111,7 +1113,7 @@
                   "maxLength": 64
                 },
                 "maxItems": 1000,
-                "description": "Senders allowed in: user ids or @usernames"
+                "description": "Senders allowed in: user ids, or @usernames (Telegram, Discord)"
               }
             }
           },
@@ -1136,7 +1138,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4096,
-            "description": "Reply to /start"
+            "description": "Reply to /start (Telegram)"
           }
         }
       },
@@ -2225,7 +2227,7 @@
         },
         "responses": {
           "201": {
-            "description": "The channel, its webhook registered",
+            "description": "The channel, its credentials checked (and Telegram's webhook registered)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2338,7 +2340,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The channel is deleted and its webhook removed",
+            "description": "The channel is deleted: it stops answering, and Telegram's webhook is removed",
             "content": {
               "application/json": {
                 "schema": {

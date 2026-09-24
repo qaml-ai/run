@@ -183,7 +183,7 @@ const ChannelTemplate = z.object({
 }).openapi("ChannelTemplate");
 const ChannelAccess = z.object({
   public: z.boolean().optional().openapi({ description: "Let anyone message the channel; off by default" }),
-  allow: z.array(z.string().trim().min(1).max(64)).max(1000).optional().openapi({ description: "Senders allowed in: user ids or @usernames" }),
+  allow: z.array(z.string().trim().min(1).max(64)).max(1000).optional().openapi({ description: "Senders allowed in: user ids, or @usernames (Telegram, Discord)" }),
 });
 const ChannelLimits = z.object({
   perSenderPerMinute: z.number().int().min(1).max(600).optional().openapi({ description: "Messages per sender per minute; default 10" }),
@@ -191,20 +191,20 @@ const ChannelLimits = z.object({
 });
 const channelFields = {
   name: z.string().trim().min(1).max(120).optional(),
-  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Stored encrypted and never returned" }),
+  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. Stored encrypted and never returned" }),
   template: ChannelTemplate.optional().openapi({ description: "How each conversation's agent is created" }),
   access: ChannelAccess.optional(),
   limits: ChannelLimits.optional(),
-  greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start" }),
+  greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start (Telegram)" }),
 };
-export const ChannelInput = z.object({ type: z.enum(["telegram"]), ...channelFields, credentials: channelFields.credentials.unwrap() }).openapi("ChannelInput");
+export const ChannelInput = z.object({ type: z.enum(["telegram", "slack", "discord"]), ...channelFields, credentials: channelFields.credentials.unwrap() }).openapi("ChannelInput");
 export const ChannelUpdate = z.object(channelFields).openapi("ChannelUpdate");
 export const Channel = z.object({
   id: z.string(),
   tenant: z.string(),
   type: z.string(),
   name: z.string(),
-  webhookUrl: z.string(),
+  webhookUrl: z.string().optional().openapi({ description: "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Discord channels have none: they connect to Discord's gateway" }),
   template: ChannelTemplate,
   access: z.object({ public: z.boolean(), allow: z.array(z.string()) }),
   limits: z.object({ perSenderPerMinute: z.number(), turnsPerDay: z.number() }),
