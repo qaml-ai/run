@@ -147,3 +147,23 @@ test("the owner cache is a hint: callers drop stale entries, and none outlives i
   await sleep(400);
   assert.equal(await b.ownership.route("client_e"), undefined);
 });
+
+test("a draining node takes nothing new, sends unowned actors to a live peer, and peers stop picking it", async t => {
+  const { url } = await testDatabase();
+  const a = await node(url, "http://a"), b = await node(url, "http://b"), c = await node(url, "http://c");
+  t.after(async () => { await a.stop(); await b.stop(); await c.stop(); });
+  const held = await a.ownership.acquire("client_kept");
+  assert.ok("claim" in held);
+  assert.ok("claim" in await b.ownership.acquire("client_elsewhere"));
+  await a.ownership.drain();
+
+  await assert.rejects(a.ownership.acquire("client_new"), (error: any) => error.status === 503);
+  assert.deepEqual(await a.ownership.acquire("client_elsewhere"), { owner: "http://b" });
+  assert.ok(["http://b", "http://c"].includes((await a.ownership.route("client_new"))!));
+  assert.equal(a.ownership.holds(held.claim), true, "what it owns it keeps serving");
+  assert.equal(await b.ownership.route("client_kept"), "http://a");
+  for (let index = 0; index < 10; index++) assert.equal(await b.ownership.peer(), "http://c");
+  await c.ownership.drain();
+  b.ownership.forget();
+  assert.equal(await b.ownership.peer(), undefined);
+});

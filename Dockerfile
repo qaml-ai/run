@@ -27,4 +27,7 @@ ENV NODE_ENV=production \
     PORT=8790
 EXPOSE 8790
 VOLUME ["/data"]
+# SIGTERM drains (see AGENT_DRAIN_TIMEOUT_MS): give the container longer than that before SIGKILL.
+# The load balancer checks /healthz, so the image has no HEALTHCHECK.
+STOPSIGNAL SIGTERM
 CMD ["node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "src/server.ts"]

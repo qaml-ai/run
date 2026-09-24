@@ -141,6 +141,8 @@ export class ClientSessions {
   readonly db: Db;
   readonly heartbeat: ReturnType<typeof setInterval>;
   private closed = false;
+  /** Set while the node drains: runs that have not begun stay queued for the next owner. */
+  draining = false;
 
   constructor(supervisor: AgentSupervisor, options: ClientSessionOptions) {
     if (!options.storage && !options.root) throw new Error("ClientSessions needs storage or root");
@@ -187,7 +189,7 @@ export class ClientSessions {
     }
   }
 
-  /** The live owner of an agent when it is another node; undefined when this node can serve it. */
+  /** The live owner of an agent when it is another node (or, while draining, a peer to take it); undefined when this node serves it. */
   async ownerElsewhere(id: string): Promise<string | undefined> {
     const ownership = this.options.ownership;
     if (!ownership || this.sessions.has(id)) return undefined;
@@ -733,8 +735,9 @@ export class ClientSessions {
     let value: Outcome;
     try {
       if (RUN_METHODS.includes(record.method)) {
-        if (this.closed || session.fault || session.requests.get(record.id)?.state !== "running") return;
+        if (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running") return;
         await this.ensureStarted(session);
+        if (this.draining) return;
         // Durable before any side effect: after a crash this run is "began", never repeated.
         const { params: _params, ...rest } = session.requests.get(record.id)!;
         record = this.upsertRequest(session, { ...rest, began: Date.now() });
@@ -916,8 +919,11 @@ export class ClientSessions {
     for (const session of [...this.sessions.values()]) {
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
-      session.response?.end();
+      // Stopped before release, so the next owner never shares the transcript with a live process.
+      await this.supervisor.stop(session.header.id).catch(() => {});
       await this.unload(session);
+      // Closed after release, so the client's reconnect finds the next owner rather than this node.
+      session.response?.end();
     }
   }
 }

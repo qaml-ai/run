@@ -219,7 +219,7 @@ export class VolumeService {
     return row && header(row);
   }
 
-  /** The live owner of a volume when it is another node; undefined when this node can serve it. */
+  /** The live owner of a volume when it is another node (or, while draining, a peer to take it); undefined when this node serves it. */
   async ownerElsewhere(id: string): Promise<string | undefined> {
     const ownership = this.options.ownership;
     if (!ownership || this.loaded.has(id)) return undefined;
@@ -238,7 +238,7 @@ export class VolumeService {
         return await this.options.peer(owner, `/internal/volumes/${id}/ops`, { tenant, op, args });
       } catch (error) {
         const status = (error as HttpError).status;
-        // The owner moved or is unreachable: look it up afresh.
+        // The owner moved, is draining, or is unreachable: look it up afresh.
         if (owner && (status === undefined || status === 503)) this.options.ownership?.forget(id);
         if (status !== 503 || attempt >= 4) throw error;
         await sleep(100 * 2 ** attempt);

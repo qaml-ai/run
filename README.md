@@ -91,6 +91,24 @@ heartbeat as last read, so forwarding costs no query per request. The cache is
 only a hint: a node that no longer owns an actor cannot serve it, and an entry
 is dropped when its node answers 503 or cannot be reached.
 
+<a id="draining"></a>**Draining.** On SIGTERM (or SIGINT) a node:
+
+1. fails `GET /healthz` with 503 `{ok:false, draining:true}` (it is 200 `{ok:true}`
+   otherwise), and marks its heartbeat row draining so peers stop picking it;
+2. takes no new agents or volumes: requests for ones it does not hold are
+   forwarded to a live peer that is not draining, or, with none, answered 503
+   with `Retry-After: 1`; ones it holds it keeps serving;
+3. waits, up to `AGENT_DRAIN_TIMEOUT_MS`, for turns and runs that began (and
+   other open requests) to finish; runs that never began stay queued for the
+   next owner, which starts them when it loads the agent;
+4. marks anything still running as uncertain, stops its agents, releases every
+   agent and volume, then closes event streams so clients reconnect to the next
+   owner, deletes its heartbeat, and exits 0.
+
+A second signal stops the wait. Every 503 carries `Retry-After`. Give the
+container a stop timeout longer than the drain (ECS `stopTimeout` 120 with the
+default 100 s).
+
 **Load.** Every minute each node logs a `node_load` line in CloudWatch Embedded
 Metric Format: namespace `AgentRuntime`, metrics `agents` (awake agents),
 `volumes` (volumes it serves), `runningTurns` and `rssBytes`, with no dimension
@@ -111,6 +129,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_STORAGE` | `file` (default), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 30000) |
+| `AGENT_DRAIN_TIMEOUT_MS` | how long SIGTERM waits for running turns before releasing everything (default 100000; see [Draining](#draining)) |
 | `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?}}}`), re-read on SIGHUP |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, e.g. from an ECS task definition's `secrets` (a JSON key of a secret is `<arn>:clientId::`) |

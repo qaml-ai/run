@@ -32,6 +32,8 @@ export class Ownership {
   /** Other nodes' actors, so forwarding needs no query per request; entries never outlive the owner's heartbeat. */
   private readonly owners = new Map<string, { node: string; until: number }>();
   private readonly cacheMs: number;
+  private peers?: { nodes: string[]; until: number };
+  draining = false;
 
   constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number }) {
     this.db = db;
@@ -56,7 +58,7 @@ export class Ownership {
       const started = performance.now();
       await this.db.query(`
         insert into runtime_nodes (node, session, expires_at) values ($1, $2, now() + $3 * interval '1 millisecond')
-        on conflict (node) do update set session = excluded.session, expires_at = excluded.expires_at`, [this.node, session, this.ttlMs]);
+        on conflict (node) do update set session = excluded.session, expires_at = excluded.expires_at, draining = false`, [this.node, session, this.ttlMs]);
       if (session !== this.session) return;
       this.arm(started + this.ttlMs);
       this.registered = true;
@@ -101,6 +103,11 @@ export class Ownership {
 
   /** Take an actor. Returns this node's claim on it, or the node that serves it now. */
   async acquire(actor: string): Promise<{ claim: Claim } | { owner: string }> {
+    if (this.draining) {
+      const owner = await this.owner(actor);
+      if (owner && owner !== this.node) return { owner };
+      throw new HttpError(503, "This node is shutting down; retry");
+    }
     await this.register();
     const session = this.session;
     // Only while this node's own heartbeat is live, so peers never see an owner they would call dead.
@@ -135,8 +142,9 @@ export class Ownership {
   }
 
   /**
-   * Where requests for an actor this node does not hold go: its live owner, cached
-   * for a few seconds. The cache is only a hint: a node that no longer owns an actor cannot serve it, and
+   * Where requests for an actor this node does not hold go: its live owner (cached
+   * for a few seconds), or while draining, any live peer, which then takes it. The
+   * cache is only a hint: a node that no longer owns an actor cannot serve it, and
    * callers `forget` an entry when its node answers 503 or cannot be reached.
    */
   async route(actor: string): Promise<string | undefined> {
@@ -153,11 +161,30 @@ export class Ownership {
       if (this.owners.size >= 10_000) for (const [key, entry] of this.owners) if (entry.until <= now) this.owners.delete(key);
       this.owners.set(actor, { node: owner, until: now + Math.min(this.cacheMs, Number(rows[0].remaining)) });
     }
-    return owner;
+    return owner ?? (this.draining ? this.peer() : undefined);
   }
 
-  /** Drop a cached owner that answered 503 or could not be reached. */
-  forget(actor: string) { this.owners.delete(actor); }
+  /** Drop what is cached about a node that answered 503 or could not be reached. */
+  forget(actor?: string) {
+    if (actor) this.owners.delete(actor);
+    this.peers = undefined;
+  }
+
+  /** A live peer that is not draining, if any. */
+  async peer(): Promise<string | undefined> {
+    const now = performance.now();
+    if (!this.peers || this.peers.until <= now) {
+      const { rows } = await this.db.query("select node from runtime_nodes where node <> $1 and expires_at > now() and not draining", [this.node]);
+      this.peers = { nodes: rows.map(row => row.node), until: now + this.cacheMs };
+    }
+    return this.peers.nodes[Math.floor(Math.random() * this.peers.nodes.length)];
+  }
+
+  /** Stop taking actors, and tell peers to stop sending this node work. What it owns it keeps serving. */
+  async drain() {
+    this.draining = true;
+    await this.db.query("update runtime_nodes set draining = true where node = $1 and session = $2", [this.node, this.session]);
+  }
 
   /** Leave the cluster: dropping the heartbeat frees every actor this node still names. */
   async close() {

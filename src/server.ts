@@ -40,6 +40,8 @@ if (!Number.isInteger(maxAgents) || maxAgents < 1) throw new Error("AGENT_MAX_PR
 const maxProcessesPerTenant = Number(process.env.AGENT_MAX_PROCESSES_PER_TENANT ?? Math.max(1, Math.ceil(maxAgents / 2)));
 if (!Number.isInteger(maxProcessesPerTenant) || maxProcessesPerTenant < 1) throw new Error("AGENT_MAX_PROCESSES_PER_TENANT must be a positive integer");
 const port = Number(process.env.PORT ?? 8790);
+const drainMs = Number(process.env.AGENT_DRAIN_TIMEOUT_MS ?? 100_000);
+if (!Number.isInteger(drainMs) || drainMs < 0) throw new Error("AGENT_DRAIN_TIMEOUT_MS must be a non-negative integer");
 // Control plane: coordination and small mutable state in Postgres.
 const db = await databaseFromEnvironment();
 await migrate(db);
@@ -115,17 +117,21 @@ async function serveConsole(c: Context) {
 }
 
 /**
- * The live owner elsewhere of the actor a request addresses, if any. Agents are
- * `/clients/<id>`, `/v1/agents/<id>`, `/registry/<id>` or `/internal/agents/<id>`;
- * volumes are `/v1/volumes/<id>` or `/internal/volumes/<id>`.
+ * Where a request goes instead of here: the live owner elsewhere of the actor it
+ * addresses, or while this node drains, a live peer for anything it does not hold.
+ * Agents are `/clients/<id>`, `/v1/agents/<id>`, `/registry/<id>` or
+ * `/internal/agents/<id>`; volumes are `/v1/volumes/<id>` or `/internal/volumes/<id>`.
  */
-async function ownerOf(url = ""): Promise<{ node: string; actor: string } | undefined> {
+async function route(url = ""): Promise<{ node: string; actor?: string } | undefined> {
   const agent = /^\/(?:clients|v1\/agents|registry|internal\/agents)\/(client_[a-f0-9]{40})(?:[/?]|$)/.exec(url)?.[1];
   const volume = agent ? undefined : /^\/(?:v1\/volumes|internal\/volumes)\/(vol_[a-f0-9]{24})(?:[/?]|$)/.exec(url)?.[1];
   const actor = agent ?? volume;
-  if (!actor) return undefined;
-  const owner = await (agent ? clients.ownerElsewhere(agent) : volumes.ownerElsewhere(actor));
-  return owner ? { node: owner, actor } : undefined;
+  if (actor) {
+    const owner = await (agent ? clients.ownerElsewhere(agent) : volumes.ownerElsewhere(actor));
+    return owner ? { node: owner, actor } : undefined;
+  }
+  const peer = ownership.draining ? await ownership.peer() : undefined;
+  return peer ? { node: peer } : undefined;
 }
 
 /** Node-to-node requests are signed with the session secret all nodes share. */
@@ -178,10 +184,10 @@ const volumes = new VolumeService({
 const FORWARDED = "x-agent-runtime-forwarded";
 
 /** Stream a request to the node that owns its actor, and stream the answer back (SSE included). */
-function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor: string) {
+function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor?: string) {
   const target = new URL(req.url ?? "/", owner);
   const upstream = httpRequest(target, { method: req.method, headers: { ...req.headers, host: target.host, [FORWARDED]: node } }, answer => {
-    // The node no longer serves the actor (it moved): look it up afresh next time.
+    // The node no longer serves the actor (it moved, or the node is draining): look it up afresh next time.
     if (answer.statusCode === 503) ownership.forget(actor);
     res.writeHead(answer.statusCode ?? 502, answer.headers);
     answer.pipe(res);
@@ -226,11 +232,17 @@ channels.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
-app.get("/healthz", c => c.json({ ok: true }));
+// The load balancer's health check: failing it while draining stops new requests arriving here.
+app.get("/healthz", c => ownership.draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true }));
+// Every 503 is worth retrying (capacity, an actor moving, this node draining); say when.
+app.use(async (c, next) => {
+  await next();
+  if (c.res.status === 503 && !c.res.headers.has("retry-after")) c.res.headers.set("Retry-After", "1");
+});
 // One node serves each agent and volume; anything addressed to one another node holds goes there.
 // Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
 app.use(async (c, next) => {
-  const target = !c.req.header(FORWARDED) ? await ownerOf(c.env.incoming.url).catch(() => undefined) : undefined;
+  const target = !c.req.header(FORWARDED) ? await route(c.env.incoming.url).catch(() => undefined) : undefined;
   if (!target) return next();
   forward(c.env.incoming, c.env.outgoing, target.node, target.actor);
   return RESPONSE_ALREADY_SENT;
@@ -317,7 +329,8 @@ app.all("/agents/:id{[a-zA-Z0-9_-]{1,80}}/:action{prompt|execute|abort}?", async
   return c.json(result);
 });
 app.notFound(c => c.body(null, 404));
-app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", 400, { "Content-Type": "application/json" }));
+// Only 503 keeps its status here: clients retry it (the node is draining, full, or an actor is moving).
+app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", error instanceof HttpError && error.status === 503 ? 503 : 400, { "Content-Type": "application/json" }));
 
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;
@@ -346,11 +359,48 @@ const loadTimer = setInterval(() => console.log(nodeLoadLine({
 }, process.env.AGENT_SERVICE_NAME, { node })), 60_000);
 loadTimer.unref();
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
-  server.close();
-  callbacks?.close();
+/**
+ * Leave the cluster without dropping work. ECS deregisters the task from the load
+ * balancer, sends SIGTERM, and SIGKILLs after the task's stopTimeout. /healthz fails
+ * at once and this node takes no new agents or volumes: requests for ones it does
+ * not hold go to a live peer, or get 503 and Retry-After. Turns and runs that began
+ * finish, for up to AGENT_DRAIN_TIMEOUT_MS; runs that never began stay queued for
+ * the next owner. Then everything is released, and only then are event streams
+ * closed, so clients reconnect to the next owner. A second signal stops waiting.
+ */
+let drainDeadline = 0;
+let draining: Promise<void> | undefined;
+async function drain(signal: string) {
+  const started = Date.now();
+  console.log(JSON.stringify({ type: "drain_started", signal, node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
   scheduler.stop();
   channels.stop();
-  void clients.close().then(() => supervisor.close()).then(() => volumes.close()).then(() => accounts.flushUsage())
-    .then(() => ownership.close()).catch(() => {}).then(() => db.end()).catch(() => {}).then(() => process.exit(0));
+  clearInterval(tenantsTimer);
+  clearInterval(loadTimer);
+  clients.draining = true;
+  let failed = false;
+  const step = async (name: string, work: () => Promise<unknown>) => {
+    try { await work(); }
+    catch (error) { failed = true; console.error(JSON.stringify({ type: "drain_step_failed", step: name, error: errorText(error) })); }
+  };
+  await step("drain", () => ownership.drain());
+  while (clients.inFlight() && Date.now() < drainDeadline) await new Promise(resolve => setTimeout(resolve, 100));
+  const unfinished = clients.inFlight();
+  await step("agents", () => clients.close());
+  await step("supervisor", () => supervisor.close());
+  await step("volumes", () => volumes.close());
+  await step("usage", () => accounts.flushUsage());
+  await step("heartbeat", () => ownership.close());
+  server.close();
+  server.closeAllConnections();
+  callbacks?.close();
+  callbacks?.closeAllConnections();
+  await step("database", () => db.end());
+  console.log(JSON.stringify({ type: "drain_finished", node, ms: Date.now() - started, unfinished }));
+  if (failed) throw new Error("Drain finished with errors");
+}
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
+  if (draining) { drainDeadline = 0; return; }
+  drainDeadline = Date.now() + drainMs;
+  draining = drain(signal).then(() => process.exit(0), () => process.exit(1));
 });
