@@ -1,14 +1,14 @@
 import {
   DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, S3ServiceException,
 } from "@aws-sdk/client-s3";
-import { PreconditionFailed, segmentLog, validKey, type SegmentStore, type Storage } from "./storage.ts";
+import { PreconditionFailed, segmentLog, validKey, type LogTail, type SegmentStore, type Storage } from "./storage.ts";
 
 /**
- * Storage on S3. Logs are `<prefix>/<key>.log/` holding immutable segment objects
- * (see `segmentLog`). Blobs are `<prefix>/<key>`, created with If-None-Match.
- * Credentials come from the default AWS chain (the instance role on EC2).
+ * Storage on S3. Logs are `<prefix>/<key>.log/` holding immutable segment objects,
+ * with their recent records in `tail` (see `segmentLog`). Blobs are `<prefix>/<key>`,
+ * created with If-None-Match. Credentials come from the default AWS chain.
  */
-export function s3Storage(options: { bucket: string; prefix?: string; region?: string; client?: S3Client }): Storage {
+export function s3Storage(options: { bucket: string; prefix?: string; region?: string; client?: S3Client; tail: LogTail }): Storage {
   const client = options.client ?? new S3Client({ region: options.region });
   const bucket = options.bucket;
   const base = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
@@ -64,11 +64,7 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
   }
 
   return {
-    log: key => segmentLog(segments(key), key),
-    async hasLog(key) {
-      const page = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: `${at(key)}.log/`, MaxKeys: 1 }));
-      return (page.KeyCount ?? 0) > 0;
-    },
+    log: (key, claim) => segmentLog(segments(key), key, options.tail, claim),
     async readBlob(key) {
       try {
         const object = await client.send(new GetObjectCommand({ Bucket: bucket, Key: at(key) }));

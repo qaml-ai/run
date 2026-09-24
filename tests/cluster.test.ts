@@ -112,7 +112,9 @@ test("any node serves any agent: requests are forwarded to the owner, and a surv
   assert.equal(again.status, 201, await again.clone().text());
   assert.equal((await again.json() as any).id, viaA.session.id);
 
-  // A dies without releasing anything. Once its heartbeat expires, B serves the agent from storage.
+  // A dies without releasing anything, its latest journal and transcript records still only in the tail.
+  // Once its heartbeat expires, B serves the agent from storage and the tail.
+  assert.ok((await c.db.query("select count(*) as count from log_records where actor = $1", [viaA.session.id])).rows[0].count > 0);
   a.child.kill("SIGKILL");
   await once(a.child, "close");
   await sleep(1500 + 500);

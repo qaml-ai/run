@@ -237,7 +237,7 @@ export class ClientSessions {
     const stored = await this.readHeader(id);
     if (!stored) return undefined;
     const header = stored.value;
-    const log = this.storage.log<JournalRecord>(this.journalKey(id));
+    const log = this.storage.log<JournalRecord>(this.journalKey(id), claim);
     const session: Session = {
       header, revision: stored.revision, claim, requests: new Map(), calls: new Map(), log,
       // Cursors restart above any cursor from an earlier process, so clients see a gap, never a repeat.
@@ -388,7 +388,7 @@ export class ClientSessions {
         call: (name, args, signal, context) => this.fileTools(session, session.header.definitions).some(tool => tool.name === name)
           ? this.options.volumes!.tool({ tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, mounts: session.header.mounts ?? [] }, name, args, signal)
           : this.call(session, name, args, signal, context),
-      });
+      }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
         delete session.header.config.initialMessages;
@@ -444,7 +444,7 @@ export class ClientSessions {
       }
       session = {
         header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
-        claim, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id)),
+        claim, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
         cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), lastActive: Date.now(),
       };
       // A conditional create: if a concurrent request made this agent first, retry as a load.

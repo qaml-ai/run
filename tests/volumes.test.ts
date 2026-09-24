@@ -21,13 +21,16 @@ import { searchLines } from "../src/volume-tools.ts";
 import { AgentError, AgentRuntime, memoryJournalStore, type AgentClient } from "../clients/node.ts";
 import type { Db } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
+import { postgresTail } from "../src/log-tail.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const bytes = (text: string) => Buffer.from(text, "utf8");
 const never = new AbortController().signal;
 
-async function service(t: Context, storage = memoryStorage(), db?: Db) {
-  const volumes = new VolumeService({ db: db ?? (await testDatabase()).db, storage });
+async function service(t: Context, storage?: ReturnType<typeof memoryStorage>, db?: Db) {
+  db ??= (await testDatabase()).db;
+  storage ??= memoryStorage(postgresTail(db));
+  const volumes = new VolumeService({ db, storage });
   t.after(() => volumes.close());
   const write = async (id: string, path: string, content: string | Buffer, ifMatch?: number, tenant = "acme") =>
     volumes.call(id, tenant, "commit", { path, ...await volumes.store(tenant, typeof content === "string" ? bytes(content) : content), ...(ifMatch !== undefined ? { ifMatch } : {}) });
@@ -85,8 +88,8 @@ test("versioned writes reject stale versions, and the tree keeps files and direc
 });
 
 test("the tree survives a reload from its log, including after folding", async t => {
-  const storage = memoryStorage();
   const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
   const first = await service(t, storage, db);
   const { id } = await first.volumes.create("acme");
   for (let index = 0; index < 1100; index++) await first.write(id, `/f/${index % 50}.txt`, `v${index}`);
@@ -177,11 +180,12 @@ test("file tools: mount paths, read-only mounts, subpaths and edit conflicts the
 });
 
 test("large files are read in bounded windows that fetch only the chunks they cover", async t => {
-  const storage = memoryStorage();
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
   const reads: string[] = [];
   const readBlob = storage.readBlob.bind(storage);
   storage.readBlob = key => { reads.push(key); return readBlob(key); };
-  const { volumes, write } = await service(t, storage);
+  const { volumes, write } = await service(t, storage, db);
   const { id } = await volumes.create("acme");
   // Three chunks of distinct text, with a multi-byte character straddling the read window's end.
   const line = (index: number) => `line ${String(index).padStart(7, "0")} ${"é".repeat(20)}\n`;

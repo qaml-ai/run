@@ -271,7 +271,7 @@ export class VolumeService {
     try {
       const stored = await this.readHeader(id);
       if (!stored || stored.deleted) { if (claim) await ownership!.release(claim); return undefined; }
-      const volume: Volume = { header: stored, claim, tree: new Tree(), seq: 0, log: this.storage.log<TreeRecord>(treeKey(id)), queue: Promise.resolve(), active: 0, lastActive: Date.now(), changes: [], pending: [] };
+      const volume: Volume = { header: stored, claim, tree: new Tree(), seq: 0, log: this.storage.log<TreeRecord>(treeKey(id), claim), queue: Promise.resolve(), active: 0, lastActive: Date.now(), changes: [], pending: [] };
       for (const record of await volume.log.read()) this.apply(volume, record);
       if (claim && !ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the volume; retry");
       this.loaded.set(id, volume);

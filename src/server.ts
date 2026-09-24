@@ -10,6 +10,7 @@ import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { databaseFromEnvironment, migrate } from "./db.ts";
+import { postgresTail } from "./log-tail.ts";
 import { Ownership } from "./ownership.ts";
 import { DEFAULT_TENANT, tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
@@ -49,8 +50,9 @@ if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RE
 const db = await databaseFromEnvironment();
 await migrate(db);
 // Data plane: logs and blobs in local files by default, or shared storage (S3) so any node can serve any agent.
+// Shared logs keep their recent records in Postgres until they are compacted into Storage.
 const storageDescriptor = storageFromEnvironment(root);
-const storage = await openStorage(storageDescriptor);
+const storage = await openStorage(storageDescriptor, postgresTail(db));
 const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
 const address = await taskAddress();
 const node = nodeUrl(process.env, port, address);

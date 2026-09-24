@@ -1,14 +1,15 @@
-import { fileStorage, type Storage } from "./storage.ts";
+import { fileStorage, type LogTail, type Storage } from "./storage.ts";
 
 /** Which storage the runtime uses. */
 export type StorageDescriptor =
   | { kind: "file"; root: string; shared?: boolean }
   | { kind: "s3"; bucket: string; prefix?: string; region?: string };
 
-export async function openStorage(descriptor: StorageDescriptor): Promise<Storage> {
-  if (descriptor.kind === "file") return fileStorage(descriptor.root, { shared: descriptor.shared });
+/** Shared storage keeps each log's recent records in `tail`; single-host files do not need one. */
+export async function openStorage(descriptor: StorageDescriptor, tail: LogTail): Promise<Storage> {
+  if (descriptor.kind === "file") return fileStorage(descriptor.root, descriptor.shared ? { tail } : {});
   const { s3Storage } = await import("./s3-storage.ts");
-  return s3Storage(descriptor);
+  return s3Storage({ ...descriptor, tail });
 }
 
 /** Storage from AGENT_STORAGE (file | shared-file | s3) with AGENT_S3_BUCKET / AGENT_S3_PREFIX / AWS_REGION. */

@@ -10,6 +10,7 @@ import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 import { readTranscript, readTranscriptLog, transcriptPath, type TranscriptRecord } from "./transcript.ts";
+import type { Claim } from "./ownership.ts";
 import { createAgentHost } from "./agent-host.ts";
 
 /**
@@ -36,7 +37,8 @@ export class AgentSupervisor {
    * `root` holds each agent's local working directory (its sandbox cwd). With
    * `storage`, transcripts live there under `sessions/<id>/transcript` instead of
    * in the working directory, so any host can load the agent. The supervisor
-   * writes the transcript; an agent process sends records over IPC.
+   * writes the transcript for its agent, which holds no claim or connection of its
+   * own: an agent process sends records over IPC.
    */
   constructor(root: string, options: SupervisorOptions = {}) {
     this.root = root;
@@ -67,7 +69,8 @@ export class AgentSupervisor {
   }
   private cancelTools(handle: Handle) { for (const call of handle.calls) call.abort(); return null; }
 
-  async start(id: string, config: Omit<AgentConfig, "id" | "directory" | "tools">, bridge: ToolBridge) {
+  /** Start an agent. `claim` is its owner's, which fences the transcript's writes. */
+  async start(id: string, config: Omit<AgentConfig, "id" | "directory" | "tools">, bridge: ToolBridge, claim?: Claim) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     await this.stopping.get(id);
     validateDefinitions(bridge.definitions);
@@ -78,7 +81,7 @@ export class AgentSupervisor {
       const directory = resolve(join(this.root, id));
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const storage = this.options.storage;
-      const transcript = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
+      const transcript = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
       const init = { ...config, ...(storage ? {} : { localTranscript: true }), id, directory, tools: bridge.definitions };
       return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript) : await this.startProcess(id, directory, init, bridge, transcript);
     } finally { this.starting.delete(id); }
@@ -178,6 +181,7 @@ export class AgentSupervisor {
       handle.stop(new Error("Agent stopped"));
       await handle.host.dispose();
     }
+    // Unloading compacts the transcript's tail into Storage.
     await handle.transcript.close();
   }
 

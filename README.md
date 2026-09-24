@@ -62,6 +62,7 @@ once. The runtime does not start without a database.
 | Postgres (`migrations/`) | Storage (`AGENT_STORAGE`) |
 | --- | --- |
 | node heartbeats and actor ownership | agent transcripts and request journals (append logs) |
+| the recent records of each append log (`log_records`) | |
 | agent headers: identity, configuration, mounts; the tenant index | volume trees (append logs) |
 | console tenants, sealed provider keys, API tokens, usage | volume chunks and snapshot file maps (blobs, written once) |
 | schedules and their claims | |
@@ -80,11 +81,31 @@ however many actors it serves. Each actor has one `actor_owners` row naming a
 node's session and an epoch. A node takes an actor in one statement that
 succeeds only when the row is released, already names this session, or names a
 session whose heartbeat has expired; every acquire advances the epoch. Header
-writes are conditional on the writer's session and epoch, and log segments are
-exclusive creates, so a node that lost an actor cannot write for it. A node
+and log writes are conditional on the writer's session and epoch, so a node
+that lost an actor cannot write for it. A node
 that cannot renew fences itself before its published expiry: it stops every
 agent and volume it owns and rejoins under a new session. Requests for an actor
 are forwarded to the node that `actor_owners` joined to live heartbeats names.
+
+**Logs.** Journals, transcripts and volume trees are append logs: immutable
+segment objects in Storage (`<key>.log/<seq>`, and `snapshot-<seq>` after a
+fold) plus a hot tail of rows in `log_records`, since an object write per
+durable flush would be most of what the runtime costs. A durable flush is one
+multi-row insert, fenced in the statement: it locks the actor's `actor_owners`
+row (`FOR SHARE`) and inserts only while that row names the writer's session and
+epoch, so a takeover waits for an insert in flight and a stale owner inserts
+nothing and fences itself. A record over 64 KiB is stored as a content-addressed
+blob beside the segments and the row points to it. Compaction moves the tail into
+one segment, or one snapshot if a fold is among the rows: when the actor unloads
+(idle, drain, retirement, a stopped agent) and when the tail passes 512 records
+or 4 MiB. It holds the ownership lock and a per-log advisory lock throughout,
+writes the object, then deletes the rows it covers in the same transaction.
+Readers take the tail first, then Storage, then only rows above the highest
+sequence Storage covers, so a crash between the object write and the delete
+repeats nothing, and a compaction between the two reads loses nothing. A turn
+writes nothing to Storage; unloading writes one object per log with new records.
+Logs written before the tail existed are read unchanged: their segments are
+ordinary segments.
 
 Nodes cache an actor's owner for up to 5 seconds, never past the owner's
 heartbeat as last read, so forwarding costs no query per request. The cache is
@@ -264,7 +285,8 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
 - `transcript.jsonl`: one durable record per finished native Pi message
   (`message_end`), plus turn start/end markers. Messages stay native instead of
   being converted to UI messages. A retried provider error is retracted. The
-  supervisor writes it; an agent in its own process sends records over IPC.
+  supervisor writes it under the agent's ownership claim; an agent in its own
+  process sends records over IPC and holds no database connection.
 - `<session>.journal.jsonl`: request and tool-call state changes. It is fsynced
   only where correctness needs it: accepting a request, claiming a tool call
   (before the application performs the side effect), and recording outcomes.
@@ -292,8 +314,8 @@ Context overflow is not retried.
 Sessions load lazily and unload after `AGENT_IDLE_MS` (default 5 minutes)
 without activity; the agent's process stops at the same point. When all
 `AGENT_MAX_PROCESSES` slots are in use, the least recently active idle agent is
-stopped to make room. Logs are local files, not replicated storage; the whole
-transcript of an active agent is still held in memory.
+stopped to make room. With `AGENT_STORAGE=file`, logs are local files, not
+replicated storage; the whole transcript of an active agent is still held in memory.
 
 The host provider key is only sent to trusted endpoints: the default model's,
 Pi's published endpoint for the requested provider and model, or an entry in
