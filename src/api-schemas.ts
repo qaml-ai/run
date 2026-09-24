@@ -223,6 +223,7 @@ const definitionFields = {
   tools: z.array(ToolDefinition).max(128).openapi({ description: "Client tools, answered by an application connected to the agent" }),
   limits: DefinitionLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
+  builtins: z.array(z.enum(["web_fetch", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text; schedule lets the agent set, list and cancel its own wake-ups" }),
   mcpServers: z.array(McpServerInput).max(16).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
   httpTools: z.array(HttpToolInput).max(64).openapi({ description: "Tools the runtime answers by sending their arguments to a URL, signed with the definition's signing secret (Standard Webhooks)" }),
 };

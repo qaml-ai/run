@@ -184,14 +184,14 @@ export class Outbound {
           continue;
         }
         if (stream) clearTimeout(timer);
-        return capped(response as unknown as Response, maxBytes, () => clearTimeout(timer));
+        return capped(response as unknown as Response, url, maxBytes, () => clearTimeout(timer));
       }
     } catch (error) { clearTimeout(timer); throw error; }
   }
 }
 
-/** The response with its body cut off, as an error, past `maxBytes`. */
-function capped(response: Response, maxBytes: number, done: () => void): Response {
+/** The response, from `url` (after redirects), with its body cut off, as an error, past `maxBytes`. */
+function capped(response: Response, url: URL, maxBytes: number, done: () => void): Response {
   if (!response.body) { done(); return response; }
   let bytes = 0;
   const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
@@ -202,7 +202,7 @@ function capped(response: Response, maxBytes: number, done: () => void): Respons
     },
     flush() { done(); },
   }));
-  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  return Object.defineProperty(new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers }), "url", { value: url.toString() });
 }
 
 /** The policy operators set: AGENT_OUTBOUND_ALLOW_HTTP, AGENT_OUTBOUND_ALLOW_CIDRS and AGENT_OUTBOUND_BLOCK_CIDRS. */

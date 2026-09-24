@@ -9,6 +9,7 @@ import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import type { Sealed } from "./accounts.ts";
+import { BUILTINS, builtinNames } from "./builtins.ts";
 import { httpToolsInput, httpToolView, mcpServersInput, mcpServerView, newSigningSecret, signingAad, type HttpToolSpec, type McpServerSpec, type Sources } from "./tool-sources.ts";
 
 /**
@@ -27,6 +28,8 @@ export interface DefinitionSpec {
   mounts?: unknown[];
   /** Remote MCP servers whose tools the runtime calls; credentials sealed. */
   mcpServers?: McpServerSpec[];
+  /** Built-in tools to enable: web_fetch, schedule. */
+  builtins?: string[];
   /** Tools the runtime answers by sending their arguments to a URL; headers sealed. */
   httpTools?: HttpToolSpec[];
   /** The secret HTTP tool requests are signed with, sealed; shown once, when made. */
@@ -42,13 +45,13 @@ export interface DefinitionRef { id: string; revision: number; extraTools?: stri
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools: ToolDefinition[] };
 
-const FIELDS = ["model", "systemPrompt", "thinkingLevel", "tools", "limits", "mounts", "mcpServers", "httpTools"] as const;
+const FIELDS = ["model", "systemPrompt", "thinkingLevel", "tools", "limits", "mounts", "builtins", "mcpServers", "httpTools"] as const;
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 /** The server-side tool sources an agent takes from a definition, if it has any. */
 export function sources(spec: DefinitionSpec): Sources | undefined {
-  if (!spec.mcpServers?.length && !spec.httpTools?.length) return undefined;
-  return { ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}), ...(spec.httpTools?.length ? { httpTools: spec.httpTools, ...(spec.signing ? { signing: spec.signing } : {}) } : {}) };
+  if (!spec.builtins?.length && !spec.mcpServers?.length && !spec.httpTools?.length) return undefined;
+  return { ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}), ...(spec.httpTools?.length ? { httpTools: spec.httpTools, ...(spec.signing ? { signing: spec.signing } : {}) } : {}) };
 }
 
 export function validTtl(ttl: unknown) {
@@ -229,8 +232,12 @@ export class Definitions {
       validTtl(spec.limits.ttlSeconds);
     }
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
-    const clash = spec.httpTools?.find(tool => spec.tools?.some(other => other.name === tool.name));
-    if (clash) throw new HttpError(400, `${clash.name} is both a client tool and an HTTP tool`);
+    if (spec.builtins !== undefined && (!Array.isArray(spec.builtins) || new Set(spec.builtins).size !== spec.builtins.length || spec.builtins.some(name => !Object.hasOwn(BUILTINS, name)))) {
+      throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);
+    }
+    const names = [...spec.tools ?? [], ...spec.httpTools ?? []].map(tool => tool.name);
+    const clash = names.find((name, index) => names.indexOf(name) !== index) ?? builtinNames(spec.builtins).find(name => names.includes(name));
+    if (clash) throw new HttpError(400, `${clash} is the name of two tools`);
     if (spec.httpTools?.length && !spec.signing && !this.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot sign HTTP tool requests");
     try { jsonWithinLimit(spec, 512 * 1024, "Definition"); } catch (error) { throw new HttpError(413, errorText(error)); }
     return spec;

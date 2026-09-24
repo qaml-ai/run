@@ -515,7 +515,7 @@ export class ClientSessions {
     return !!this.options.sources?.handles(session.header.sources, name) && !session.header.definitions.some(tool => tool.name === name);
   }
   private sourceContext(session: Session) {
-    return { tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, definition: session.header.definition!.id };
+    return { tenant: session.header.tenant ?? DEFAULT_TENANT, agent: session.header.id, definition: session.header.definition!.id, claim: session.claim };
   }
   /** Everything the agent can call: file tools, its sources' tools, then the application's `tools`, which win a clash of names. */
   private async toolset(session: Session, tools: ToolDefinition[], sources = session.header.sources) {

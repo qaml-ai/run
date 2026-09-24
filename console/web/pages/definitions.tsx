@@ -13,6 +13,10 @@ import { CodeBlock, ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/
 import { api, formatTime, useApi, type Definition } from "@/lib/api";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const BUILTINS = [
+  { id: "web_fetch", label: "web_fetch", help: "read public web pages as text" },
+  { id: "schedule", label: "schedule", help: "set, list and cancel its own wake-ups" },
+];
 const DEFAULT = "default";
 /** Pretty JSON for an optional list field, or empty. */
 const pretty = (value: unknown) => value === undefined ? "" : JSON.stringify(value, null, 2);
@@ -52,6 +56,7 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
   const [systemPrompt, setSystemPrompt] = useState(definition?.systemPrompt ?? "");
   const [ttl, setTtl] = useState(definition?.limits?.ttlSeconds === null ? "never" : String(definition?.limits?.ttlSeconds ?? ""));
   const [tools, setTools] = useState(pretty(definition?.tools));
+  const [builtins, setBuiltins] = useState(definition?.builtins ?? []);
   // Stored credentials are never shown; a server edited without headers or auth keeps them.
   const [servers, setServers] = useState(pretty(withoutCredentials(definition?.mcpServers)));
   const [httpTools, setHttpTools] = useState(pretty(withoutCredentials(definition?.httpTools)));
@@ -70,7 +75,7 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
     const clear = definition ? null : undefined;
     const body = {
       name: name.trim(), model: model.trim() || clear, systemPrompt: systemPrompt.trim() || clear,
-      thinkingLevel: thinking === DEFAULT ? clear : thinking, tools: parsedTools.value ?? clear, mcpServers: parsedServers.value ?? clear, httpTools: parsedHttp.value ?? clear,
+      thinkingLevel: thinking === DEFAULT ? clear : thinking, tools: parsedTools.value ?? clear, mcpServers: parsedServers.value ?? clear, httpTools: parsedHttp.value ?? clear, builtins: builtins.length ? builtins : clear,
       limits: ttlSeconds === undefined ? clear : { ttlSeconds },
       ...(definition ? { revision: definition.revision, ...(apply ? { apply: "all" } : {}) } : {}),
     };
@@ -145,6 +150,15 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
           <div className="flex flex-col gap-2">
             <Label htmlFor="definition-tools">Client tools <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, description, parameters{"}"}], answered by your connected app)</span></Label>
             <Textarea id="definition-tools" rows={4} className="font-mono text-xs" placeholder="[]" value={tools} onChange={event => setTools(event.target.value)} />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label>Built-in tools</Label>
+            {BUILTINS.map(builtin => (
+              <label key={builtin.id} className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={builtins.includes(builtin.id)} onChange={event => setBuiltins(current => event.target.checked ? [...current, builtin.id] : current.filter(entry => entry !== builtin.id))} />
+                <span className="font-mono">{builtin.label}</span><span className="text-muted-foreground">{builtin.help}</span>
+              </label>
+            ))}
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="definition-servers">MCP servers <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, url, auth?: {"{"}type: "bearer", token{"}"}, headers?, allowTools?, exposure?{"}"}], called by the runtime)</span></Label>

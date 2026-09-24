@@ -39,7 +39,7 @@ locals {
     AGENT_ECS_SERVICE = local.service_name
     # ServiceName dimension on the AgentRuntime EMF metrics.
     AGENT_SERVICE_NAME = local.service_name
-    # Tool sources (MCP servers) never reach the VPC, on top of the private ranges the runtime always refuses.
+    # Tool sources (MCP servers, HTTP tools, web_fetch) never reach the VPC, on top of the private ranges the runtime always refuses.
     AGENT_OUTBOUND_BLOCK_CIDRS = data.aws_vpc.default.cidr_block
   })
 }

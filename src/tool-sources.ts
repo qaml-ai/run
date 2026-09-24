@@ -7,6 +7,9 @@ import { HttpError } from "./http.ts";
 import { compiles, validateDefinitions } from "./tool-policy.ts";
 import type { McpConnections, McpServer } from "./mcp.ts";
 import type { Outbound } from "./outbound.ts";
+import type { Claim } from "./ownership.ts";
+import type { Scheduler } from "./scheduler.ts";
+import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 
 /**
  * Server-side tool sources: tools the runtime calls itself, configured in a
@@ -39,9 +42,9 @@ export interface HttpToolSpec {
   executionMode?: "sequential" | "parallel";
 }
 /** `signing` is the definition's HTTP tool signing secret, sealed under `definition:<id>:signing`. */
-export interface Sources { mcpServers?: McpServerSpec[]; httpTools?: HttpToolSpec[]; signing?: Sealed }
-/** The agent a tool call is for, and the definition whose secrets it may unseal. */
-export type SourceContext = { tenant: string; agent: string; definition: string };
+export interface Sources { builtins?: string[]; mcpServers?: McpServerSpec[]; httpTools?: HttpToolSpec[]; signing?: Sealed }
+/** The agent a tool call is for, its owner's claim on it, and the definition whose secrets it may unseal. */
+export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim };
 
 const SERVER_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -177,11 +180,14 @@ export class ToolSources {
   private readonly accounts?: Accounts;
   private readonly mcp: McpConnections;
   private readonly outbound: Outbound;
+  private readonly options: { scheduler?: Scheduler };
 
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound }) {
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
+    // Kept whole: the scheduler may be a getter for one made later.
+    this.options = options;
   }
 
   private headers(aad: string, sealed: Sealed | undefined): Record<string, string> {
@@ -197,7 +203,7 @@ export class ToolSources {
 
   /** Whether `name` is one of these sources' tools (by name alone: its source says whether it still exists). */
   handles(sources: Sources | undefined, name: string) {
-    return !!sources?.mcpServers?.some(server => name.startsWith(`${server.name}__`)) || !!sources?.httpTools?.some(tool => tool.name === name);
+    return !!sources?.mcpServers?.some(server => name.startsWith(`${server.name}__`)) || !!sources?.httpTools?.some(tool => tool.name === name) || builtinNames(sources?.builtins).includes(name);
   }
 
   /**
@@ -223,7 +229,7 @@ export class ToolSources {
     const chosen: ToolDefinition[] = [];
     const names = new Set(taken.map(tool => tool.name));
     let bytes = Buffer.byteLength(JSON.stringify(taken));
-    for (const tool of [...http, ...lists.flat()]) {
+    for (const tool of [...builtinDefinitions(sources?.builtins), ...http, ...lists.flat()]) {
       const size = Buffer.byteLength(JSON.stringify(tool)) + 1;
       if (names.has(tool.name) || names.size >= TOOL_BUDGET.count || bytes + size > TOOL_BUDGET.bytes) continue;
       try { validateDefinitions([tool]); } catch { continue; }
@@ -236,6 +242,7 @@ export class ToolSources {
   }
 
   async call(context: SourceContext, sources: Sources | undefined, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+    if (builtinNames(sources?.builtins).includes(name)) return runBuiltin({ outbound: this.outbound, scheduler: this.options.scheduler }, context, name, args, signal);
     const http = sources?.httpTools?.find(tool => tool.name === name);
     if (http) return this.send(context, sources!, http, args, signal);
     const spec = sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));

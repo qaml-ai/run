@@ -232,7 +232,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_CODE_WORKERS_MIN`, `AGENT_CODE_WORKERS_MAX` | codemode worker threads kept warm (default min(4, cores); none in each agent process under `process` hosting, which starts one on demand) and the most there may be (default 32); workers beyond the minimum stop after 30 s idle, and executions beyond the maximum queue within their own timeout. With sandbox processes, the totals are shared among them |
 | `AGENT_SANDBOX_PROCESSES` | read by `agent-launcher` (the image's entrypoint): how many [sandbox processes](#sandbox-boundary-and-remaining-production-work) run js_exec (default 2, at most 16; 0 runs it in the runtime process) |
 | `AGENT_SANDBOX_REQUIRED` | `1` (the image's default) refuses to start without sandbox processes |
-| `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers and HTTP tools use `http://` URLs (tests and development only) |
+| `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers, HTTP tools and `web_fetch` use `http://` URLs (tests and development only) |
 | `AGENT_OUTBOUND_BLOCK_CIDRS` | ranges no tool source may reach, on top of the built-in private and reserved ranges, e.g. the VPC's CIDR (see [Outbound calls](#outbound-calls)) |
 | `AGENT_OUTBOUND_ALLOW_CIDRS` | exceptions to the built-in ranges, e.g. `127.0.0.1/32` for a local test server; never set in production |
 | `AGENT_SANDBOX_SOCKETS` | set by `agent-launcher`: the sandbox processes' sockets. Without it, js_exec runs on worker threads in the runtime process, as in development on macOS; the `listening` log line's `sandbox` field says which |
@@ -420,7 +420,8 @@ An agent's tools come from four places:
 - **Client tools**, declared by an SDK application (or a definition's `tools`)
   and answered by that application over its SSE connection.
 - **Built-ins** the runtime answers itself: `js_exec` (the QuickJS sandbox), the
-  file tools over the agent's mounts, and `send_message` for channel agents.
+  file tools over the agent's mounts, `send_message` for channel agents, and
+  those a definition enables in `builtins` (below).
 - **MCP servers** a definition lists (`mcpServers`), which the runtime calls.
 - **HTTP tools** a definition declares (`httpTools`): the runtime sends their
   arguments to a URL, signed.
@@ -428,6 +429,26 @@ An agent's tools come from four places:
 The runtime's own tools work whether or not an application is connected, so
 they suit channel agents and anything scheduled. When two sources offer the same
 name, the application's tool wins.
+
+### Built-ins a definition enables
+
+`"builtins": ["web_fetch", "schedule"]`:
+
+- `web_fetch` (`{url, maxCharacters?}`) GETs a public URL through the outbound
+  guard. An `http://` link is tried as `https://`. Up to five redirects are
+  followed, each checked; the deadline is 20 s and the response cap 5 MiB. It
+  returns `{url, status, contentType, title?, text, truncated?}`: HTML reduced to
+  readable text, other text as is, 20,000 characters by default (at most
+  100,000). Other content types are refused.
+- `schedule` (`{text, inSeconds | at, everySeconds?}`), `list_schedules` and
+  `cancel_schedule` (`{id}`) let an agent manage its own wake-ups in the shared
+  scheduler; each one arrives as a new message. They write under the agent's
+  claim, so a node that lost the agent mid-turn cannot schedule or cancel for it.
+  The limits are those of `/v1/agents/:id/schedules`: 100 per agent, at most a
+  year ahead, and repeats at least a minute apart.
+- Web search is not built in: no provider-neutral search exists without a paid
+  API. A definition can add one as an MCP server (several search providers
+  publish one) or as an HTTP tool.
 
 ### MCP servers
 
@@ -507,7 +528,7 @@ const ok = headers["webhook-signature"].split(" ").includes(`v1,${expected}`)
 
 ### Outbound calls
 
-Every request to a URL a tenant configured (MCP servers, HTTP tools) goes through one guard (`src/outbound.ts`):
+Every request to a URL a tenant or model chose (MCP servers, HTTP tools, `web_fetch`) goes through one guard (`src/outbound.ts`):
 
 - Only `https://`, unless the operator sets `AGENT_OUTBOUND_ALLOW_HTTP=true`
   (tests and development). No credentials in URLs.
