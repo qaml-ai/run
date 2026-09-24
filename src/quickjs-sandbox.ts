@@ -26,8 +26,13 @@ export async function runSandbox(options: {
   cancel: Int32Array;
   /** Aborted when the main thread gives up, to wake a guest waiting on nothing. */
   signal: AbortSignal;
-  /** Plain JavaScript, already stripped of TypeScript. */
+  /** JavaScript: stripped of TypeScript already, or (`javascriptOnly`) not yet. */
   code: string;
+  /**
+   * The code may still hold TypeScript. If it does not compile, answer
+   * `{ typescript: true }` without running any of it, and the runtime strips it.
+   */
+  javascriptOnly?: boolean;
   tools: ToolDefinition[];
   timeoutMs: number;
   maxOutputCharacters: number;
@@ -81,6 +86,11 @@ export async function runSandbox(options: {
     try { if (vm.getNumber(length) > maxChars) throw new Error("Sandbox bridge string exceeds size limit"); }
     finally { length.dispose(); }
     return vm.getString(handle);
+  }
+  function errorName(handle: QuickJSHandle) {
+    const name = vm.getProp(handle, "name");
+    try { return vm.typeof(name) === "string" ? vm.getString(name) : undefined; }
+    finally { name.dispose(); }
   }
   let formatError: QuickJSHandle;
   function guestError(handle: QuickJSHandle): Error {
@@ -140,7 +150,13 @@ export async function runSandbox(options: {
     formatError = vm.unwrapResult(vm.callFunction(bootstrap, vm.undefined, call, emit, catalog));
     handles.push(formatError);
     const initial = run(() => vm.evalCode(`(async function() { "use strict";\n${options.code}\n})().then(value => { if (value !== undefined) text(value); })`, "codemode.js"));
-    if (initial.error) { try { throw guestError(initial.error); } finally { initial.dispose(); } }
+    // Only compiling can fail here: the code's own errors reject the promise.
+    if (initial.error) {
+      try {
+        if (options.javascriptOnly && errorName(initial.error) === "SyntaxError") return { typescript: true as const };
+        throw guestError(initial.error);
+      } finally { initial.dispose(); }
+    }
     const result = initial.value;
     handles.push(result);
     while (true) {

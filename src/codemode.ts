@@ -317,7 +317,9 @@ export async function executeCode(options: {
   onEvent?: (event: unknown) => void;
   /** Where to run: by default the sandbox processes, or without them this process's pool. */
   pool?: CodePool | { open(): Guest };
-}) {
+  /** Strip TypeScript here before running: set when the sandbox found the code does not compile as JavaScript. */
+  typescript?: boolean;
+}): Promise<{ output: string[]; truncated: boolean }> {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const maxOutputCharacters = options.maxOutputCharacters ?? 32_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new Error("timeoutMs must be 1..120000");
@@ -326,9 +328,16 @@ export async function executeCode(options: {
   // Loaded here: sandbox processes import this module for CodePool alone, and typebox would cost each about 25 MB.
   const { validateDefinitions, validateToolCall } = await import("./tool-policy.ts");
   validateDefinitions(options.bridge.definitions);
-  // Here rather than in the worker: sucrase would cost every worker its own copy,
-  // and it is linear in code already capped at 256 KB (tens of milliseconds at worst).
-  const code = prepareCodeModeUserCode(await stripTypeScriptFromUserCode(options.code));
+  // Most code is plain JavaScript, and sucrase is most of what preparing it costs. Code
+  // without a "<" goes to the sandbox as it is: QuickJS compiles it and, if that fails,
+  // answers without running any of it, and it comes back here to be stripped. Never
+  // V8: this process holds secrets, and no parser but QuickJS's (in WASM) and
+  // sucrase's (JavaScript) sees guest code. A "<" may be a generic call, which
+  // JavaScript reads as comparisons, so such code is always stripped first.
+  // Sucrase runs here rather than in the worker, which would cost every worker its
+  // own copy; it is linear in code already capped at 256 KB (tens of milliseconds at worst).
+  const javascriptOnly = !options.typescript && !options.code.includes("<");
+  const code = prepareCodeModeUserCode(javascriptOnly ? options.code : await stripTypeScriptFromUserCode(options.code));
   options.signal?.throwIfAborted();
   const pool = options.pool ?? sandboxProcesses() ?? codePool();
   const started = performance.now();
@@ -337,6 +346,7 @@ export async function executeCode(options: {
   let guest: Guest | undefined;
   let rpc: Rpc | undefined;
   let responded = false;
+  let typescript = false;
   const stop = (reason: string) => {
     if (controller.signal.aborted) return;
     controller.abort(new Error(reason));
@@ -392,9 +402,11 @@ export async function executeCode(options: {
     };
     const remainingMs = Math.max(1, Math.floor(timeoutMs - (performance.now() - started)));
     // The worker answers only after disposing the guest, so an answer means it is free again.
-    const result = await channel.request("execute", { code, tools: options.bridge.definitions, maxOutputCharacters, timeoutMs: remainingMs })
+    const result = await channel.request("execute", { code, tools: options.bridge.definitions, maxOutputCharacters, timeoutMs: remainingMs, ...(javascriptOnly ? { javascriptOnly } : {}) })
       .finally(() => { responded = !controller.signal.aborted; });
-    return guestResult(result, maxOutputCharacters);
+    // Believed only when asked, and when nothing ran: no tool call, no output.
+    if (javascriptOnly && result?.typescript === true && !calls && !events) typescript = true;
+    else return guestResult(result, maxOutputCharacters);
   } catch (error) {
     if (controller.signal.aborted) throw controller.signal.reason;
     // The guest's own deadline can report just before this side's timer fires.
@@ -406,6 +418,7 @@ export async function executeCode(options: {
     guest?.end(responded);
     stop("Codemode completed");
   }
+  return executeCode({ ...options, typescript, timeoutMs: Math.max(1, Math.floor(timeoutMs - (performance.now() - started))) });
 }
 
 /**
