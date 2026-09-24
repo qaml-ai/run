@@ -15,7 +15,6 @@ the provisioning shell scripts; the operational scripts stay.
 | `alb.tf` | **New**: public ALB, ACM certificate (validated through Cloudflare), target group, listeners, ALB security group |
 | `ecs.tf` | **New**: ECS cluster, Fargate service, task definition, task and execution roles, task security group, autoscaling, the RDS rule for tasks |
 | `alarms.tf` | **New**: ALB/ECS alarms and their us-west-2 SNS topic |
-| `executor.tf` | **New**: executor tier (private subnets, VPC endpoints, internal NLB, Auto Scaling group), created only when `executor_enabled` |
 
 `dns.tf` now takes `dns_target` (`host` or `alb`) to choose where the record points.
 
@@ -74,8 +73,6 @@ and `s3:ListBucket` limited to the `agents/` prefix. Conditional writes
 To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
 `AGENT_S3_PREFIX` from the `state_bucket` output.
 
-**Executor tier**: see "Executor tier" below.
-
 ## Architecture (ECS)
 
 ```text
@@ -90,11 +87,8 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
    ECS Fargate service camelai-agent-runtime  (ARM64, 1 vCPU / 2 GB, 2..10 tasks)
      tasks in the default subnets with public IPs (egress to model providers, no NAT)
      SG task: 8790 from the ALB and from itself (node-to-node forwarding)
-              8791 from executors (when enabled)
      ├── RDS Postgres (5432 from the task SG)
-     ├── S3 camelai-agent-runtime-state/agents/*  (task role)
-     └── internal NLB :8790 ──▶ executor ASG (private subnets, no internet)   [executor_enabled]
-                                     └── callbacks to task-ip:8791
+     └── S3 camelai-agent-runtime-state/agents/*  (task role)
 ```
 
 - **Task definition** (`ecs.tf`). Settings come from `var.runtime_env`, which
@@ -106,7 +100,7 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
 
   ECS injects `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, and
   `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`. The last two are JSON keys of
-  `github-oauth`. With executors enabled it also injects `AGENT_EXECUTOR_TOKEN`.
+  `github-oauth`.
   The runtime reads the RDS and tenants secrets itself, through the task role.
   Logs go to `/ecs/camelai-agent-runtime`, kept for 30 days.
 - **Roles**. The execution role has `AmazonECSTaskExecutionRolePolicy` and read
@@ -341,96 +335,6 @@ the hostname (`fqdn = agents.camelai.dev`), not the IP, so after the flip it
 checks through the ALB and needs no change. Its us-east-1 alarm and topic stay.
 The recover/reboot alarms are EC2-only and go with the host.
 
-## Executor tier
-
-`executor_enabled` stays `false` by default. **Enabling it needs sign-off from
-the owners of the other workloads in the default VPC** (the django-app ECS
-services, staging and production). See "VPC-wide effect" below: turning it on
-changes how those services reach ECR, Secrets Manager and CloudWatch Logs.
-
-Set `executor_enabled = true` and `executor_ami_id` (the Packer AMI from
-`infra/executor`, with Docker and gVisor preinstalled: the subnets have no
-internet). That creates:
-
-- **Private subnets**, one per AZ: `172.31.80.0/24`, `.81`, `.82` and `.83`
-  (`executor_private_subnets`). They share a route table with only the local
-  route and the S3 gateway endpoint.
-- **VPC endpoints** with private DNS: `ecr.api`, `ecr.dkr`, `secretsmanager` and
-  `logs` as interface endpoints, and `s3` as a gateway endpoint.
-  - The interface endpoints sit in `executor_endpoint_az_count` (2) AZs, since
-    each AZ costs extra.
-  - `ssm`, `ssmmessages` and `ec2messages` endpoints with private DNS **already
-    exist** in the default VPC (django-app-ecs-staging, SG `sg-0fc3387d0ca916343`,
-    443 from 172.31.0.0/16). A second endpoint with private DNS cannot be created,
-    so executors use those (`shared_ssm_endpoint_security_group_ids`). If that
-    stack ever removes them, add the three services to
-    `local.executor_interface_endpoints`.
-  - **VPC-wide effect:** private DNS applies to the whole default VPC. Once
-    these endpoints exist, every workload there resolves ECR, Secrets Manager
-    and CloudWatch Logs to them, including other stacks' ECS services and this
-    runtime. That's why the endpoint SG admits 443 from the VPC CIDR. Tightening
-    it would break those workloads.
-    - Their image pulls, secret reads and log shipping then go through
-      endpoints this stack owns.
-    - Destroying the tier, or an endpoint outage, affects them too. Private DNS
-      reverts to the public endpoints when the endpoints are deleted.
-    - Their traffic to these services is billed at $0.01/GB through the
-      endpoints.
-  - **Alternative (not built):** a dedicated VPC for the runtime and executors.
-    - It would hold its own public subnets (ALB, tasks), private executor
-      subnets and endpoints, so private DNS affects only this stack, and the
-      `ssm*` endpoints are its own rather than borrowed from django-app staging.
-    - The control-plane RDS either moves into it (a snapshot restore or blue/green
-      into a new subnet group, with a short write outage), or stays in the
-      default VPC and is reached over VPC peering or a Transit Gateway. Peering
-      needs non-overlapping CIDRs (for example 10.60.0.0/16), routes on both
-      sides, and the RDS SG admitting the new task CIDRs; SG references don't
-      cross peering in the same way.
-    - The cost is the same endpoints and NLB plus a re-cut of the ALB and
-      service networking. It's the cleaner design if the executor tier is
-      going to production.
-- **Internal NLB** `camelai-agent-executor` on :8790, with client IPs
-  preserved. It health-checks `/healthz`, and the runtime's `AGENT_EXECUTOR_URL`
-  points at it (with `AGENT_EXECUTOR_TOKEN` from `secrets`).
-  `AGENT_EXECUTOR_CALLBACK_URL` stays unset, because each runtime task derives
-  its own IP on ECS. Routing is
-  now health-aware, which closes the old "random executor" gap.
-- **Auto Scaling group**: `executor_min_size`..`executor_max_size` (2..6),
-  target-tracking CPU at 60%.
-  - A new launch template version (AMI, image, settings) triggers a rolling
-    instance refresh.
-  - The launch template: `t4g.small`, no public IP, IMDSv2 with hop limit 1,
-    an encrypted 16 GB gp3 root volume.
-  - The instance role has SSM core, reads the executor-token secret, pulls from
-    ECR, and writes to `/camelai/agent-executor`.
-  - User data is `templatefile("../executor/user-data.sh", {region, image,
-    token_secret_arn, log_group, runtime_callback_cidr, max_concurrency})`. It
-    holds no secret: hosts read the token at boot.
-- **Security groups**:
-  - tasks → NLB :8790 → executors :8790 (the executor SG admits the task SG and
-    the NLB SG);
-  - the host firewall in `user-data.sh` admits 8790 only from
-    `runtime_callback_cidr` and lets the executor call back only into it.
-    That variable is `172.31.0.0/17`, which holds the task subnets
-    (172.31.0.0/18) and the executor subnets (172.31.80.0/22, where NLB health
-    checks come from). A precondition checks that. The security groups do the
-    precise restriction;
-  - executors → task SG :8791 (callbacks), → endpoints :443, and → S3 prefix
-    list :443. Nothing else.
-
-After the first apply with executors enabled, set the token without printing it:
-
-```sh
-openssl rand -hex 32 | tr -d '\n' > /tmp/executor-token && chmod 600 /tmp/executor-token
-aws secretsmanager put-secret-value --region us-west-2 \
-  --secret-id camelai/agent-runtime/executor-token --secret-string file:///tmp/executor-token >/dev/null
-rm -f /tmp/executor-token
-```
-
-Then deploy the runtime (`infra/ecs-deploy.sh <running tag>`), so the tasks get
-the token and the executor URL. Tasks fail to start while the secret has no
-value, so set it before that deploy.
-
 ## Monthly cost (us-west-2, on-demand, before tax)
 
 | Item | Estimate |
@@ -441,10 +345,6 @@ value, so set it before that deploy.
 | CloudWatch Logs, Container Insights, 4 alarms | ~$10 |
 | **ECS runtime total at minimum** | **~$112** |
 | Removed with the host: t4g.medium, 40 GB gp3, EIP, snapshots | about −$33 |
-| Executor tier (when enabled): 2 × t4g.small + EBS | ~$27 |
-| 4 interface endpoints × 2 AZs ($0.01/h each) | ~$58 |
-| Internal NLB | ~$21 |
-| **Executor tier total at minimum** | **~$106** |
 
 ## Secrets
 
@@ -464,16 +364,13 @@ repo for now, but don't run them against resources Terraform manages:
   `secrets.tf`, `monitoring.tf` and `dns.tf`. The exceptions are the initial
   random values of `session-secret` and `secrets-key`, and the DLM default role
   (`aws dlm create-default-role`), which Terraform only references.
-- `infra/executor/provision.sh`: `executor.tf`.
-- After the cutover, `infra/deploy.sh`, `infra/instance/*` and
-  `infra/executor/deploy.sh` (host-based executors) are superseded by
-  `infra/ecs-deploy.sh` and the executor Auto Scaling group.
+- After the cutover, `infra/deploy.sh` and `infra/instance/*` are superseded by
+  `infra/ecs-deploy.sh`.
 
 These are operational and stay:
 
 - `infra/ecs-deploy.sh`: builds and pushes the image and rolls the ECS service (see "Deploying").
 - `infra/deploy.sh`: builds and pushes the image, installs `infra/instance/` over SSM (EC2 host, until it is removed).
-- `infra/executor/deploy.sh`: launches and replaces executor hosts.
 - `infra/tenant.sh`: tenant and operator-token secret values.
 - `infra/github-oauth.sh`: the GitHub OAuth secret value.
 - `infra/config.sh` and `infra/instance/*`: used by the scripts above.

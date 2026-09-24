@@ -14,7 +14,7 @@ Live at <https://agents.camelai.dev> (REST API under `/v1`, described by
 app (TypeScript / Python SDK, HTTP + SSE)
   -> any runtime node --forwarded to--> the node that owns the agent
       -> agent host (Pi loop, working-set transcript, compaction, retries)
-          -> QuickJS/WASM sandbox (local process, or a gVisor executor host)
+          -> QuickJS/WASM sandbox (a child process per execution)
               -> JSON tool calls -> back to the app's SDK callbacks
   control plane: Postgres (ownership, headers, accounts, schedules, channels, volume metadata)
   data plane: Storage (append logs and blobs, S3 in production)
@@ -22,7 +22,7 @@ app (TypeScript / Python SDK, HTTP + SSE)
 
 ## Layout
 
-- `src/` server, supervisor, agent host, sessions, scheduler, REST API, executor
+- `src/` server, supervisor, agent host, sessions, scheduler, REST API, sandbox
 - `migrations/` Postgres schema, applied at startup
 - `shared/` storage backends (file, S3), wire protocol
 - `clients/` TypeScript and Python SDKs; `sdk/` publishes `@camelai/agent-runtime`
@@ -170,8 +170,6 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, e.g. from an ECS task definition's `secrets` (a JSON key of a secret is `<arn>:clientId::`) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
-| `AGENT_EXECUTOR_URL` | run `js_exec` on executor hosts (see `infra/executor/README.md`) |
-| `AGENT_EXECUTOR_CALLBACK_URL` | where executors call tools back; unset on ECS, it is `http://<task private IPv4>:<AGENT_EXECUTOR_CALLBACK_PORT>` (default 8791), since only the task that started an execution holds its capabilities |
 
 Start the HTTP supervisor on a VM using a trusted terminal:
 
@@ -428,6 +426,11 @@ denied, including `node:`, `file:`, `data:` and HTTP URLs. `eval` and function
 constructors stay inside QuickJS; they never create host functions. Each
 invocation gets a separate WASM instance and interpreter heap.
 
+Code runs in QuickJS compiled to WebAssembly, in a per-execution child process;
+a separate isolation tier (gVisor/Firecracker) is only warranted if agents ever
+run native code. The child gets a fixed `PATH`/`HOME`/`TMPDIR` environment and
+is killed at its deadline or on abort.
+
 The WASM linear memory has equal initial and maximum sizes, and initialization
 checks that QuickJS actually uses that memory. This matters because the pinned
 QuickJS package's `setMemoryLimit` alone can undercount large arrays/strings:
@@ -445,40 +448,10 @@ Use DO/R2-backed tools or an OS-contained filesystem service for that threat.
 
 The tests cover known escape patterns and limits; they are not a security audit
 or proof against engine vulnerabilities. Production shared-VM operation still
-needs OS/container containment and resource quotas around the executor, tenant
+needs OS/container containment and resource quotas around the sandbox, tenant
 authentication, tool-specific authorization, controlled egress for tool hosts,
 and a maintained engine/security update process. Agent shutdown reaps its Unix
 process group. No deployed environment has been changed.
-
-### Remote executors
-
-Setting `AGENT_EXECUTOR_URL` and `AGENT_EXECUTOR_TOKEN` moves `js_exec` off the
-runtime host. With them set, `executeCode()` posts each program to an executor
-(`src/executor/server.ts`, the same image with a different command). The
-executor starts a fresh sandbox for every execution (`src/executor/sandbox.ts`):
-on executor hosts, its own gVisor sandbox with no network, a read-only root and
-no host mounts; in development and tests, a plain child process. Inside runs the
-same code child and QuickJS limits, speaking the RPC over its stdin/stdout, and
-the executor streams output back as NDJSON. The executor holds no credentials
-or agent state. On hosts it reads its bearer token from Secrets Manager and
-re-reads it for rotation, and it clears its own environment at startup.
-
-Guest tool calls come back to a separate runtime listener
-(`AGENT_EXECUTOR_CALLBACK_PORT`, default 8791) at
-`POST /internal/executions/:id/tools`. The executor reaches that listener
-through `AGENT_EXECUTOR_CALLBACK_URL`. Each call carries a random capability,
-minted for that one execution, that expires at its deadline.
-
-The agent process has no HTTP server, so the supervisor registers the
-execution. The supervisor then relays each callback over IPC into the owning
-agent's `executeCode`. That relay runs the same validation, quotas and
-`ToolBridge` path as a local child. The runtime never trusts the executor: it
-checks streamed output against the same limits. When the runtime aborts or
-times out, it disconnects, and the executor kills the sandbox.
-
-Without these variables, execution stays local and unchanged. Deployment is
-covered in [`infra/executor`](infra/executor/README.md),
-and the tests are in `tests/executor.test.ts`.
 
 ## Integration seam and next extraction
 
