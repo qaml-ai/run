@@ -45,7 +45,7 @@ export function useApi<T>(path: string | undefined, intervalMs?: number) {
 }
 
 export interface Me { tenant: string; via: "operator" | "token" | "console"; login?: string; canStoreKeys: boolean }
-export interface KeyStatus { provider: string; source: "tenant" | "admin"; last4?: string; setAt?: number }
+export interface KeyStatus { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number }
 export interface Provider { id: string; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
 export interface Model {
   id: string; provider: string; modelId: string; name: string; api: string; reasoning: boolean; input: string[];
@@ -65,8 +65,22 @@ export interface ApiToken { id: string; name: string; prefix: string; createdAt:
 export interface Usage {
   since: number;
   totals: { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
-  days: { day: string; model: string; kind: "turn" | "compaction"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }[];
+  days: { day: string; model: string; kind: "turn" | "compaction"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformCost: number }[];
 }
+/** Credit amounts are integer micro-USD. */
+export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustment" | "refund";
+export interface LedgerEntry { id: number; kind: LedgerKind; amount: number; metadata: Record<string, any>; createdAt: number }
+export interface Billing {
+  billing: "prepaid" | "none"; balance: number; freeCredit: boolean;
+  month: { since: number } & Record<LedgerKind, number>;
+  recent: LedgerEntry[];
+  rates: { agentHour: number; storageGbMonth: number; purchaseFeeBps: number; minPurchase: number; maxPurchase: number };
+}
+/** Micro-USD as dollars: cents, or finer for amounts under a cent. */
+export const formatMicros = (value: number) => {
+  const usd = Math.abs(value) / 1_000_000;
+  return `${value < 0 ? "−" : ""}$${usd === 0 || usd >= 0.01 ? usd.toFixed(2) : usd.toFixed(6).replace(/0+$/, "")}`;
+};
 
 export const formatNumber = (value: number) => new Intl.NumberFormat("en-US", { notation: value >= 100_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 export const formatCost = (value: number) => `$${value === 0 || value >= 1 ? value.toFixed(2) : value.toFixed(4)}`;

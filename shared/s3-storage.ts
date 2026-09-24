@@ -85,5 +85,13 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
       try { await client.send(new PutObjectCommand({ Bucket: bucket, Key: at(key), Body: data, ContentType: "application/octet-stream", IfNoneMatch: "*" })); }
       catch (error) { if (!conditionFailed(error)) throw error; }
     },
+    async *objects(prefix) {
+      let token: string | undefined;
+      do {
+        const page = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: objectKey(prefix), ContinuationToken: token }));
+        for (const item of page.Contents ?? []) if (item.Key) yield { key: base ? item.Key.slice(base.length + 1) : item.Key, bytes: item.Size ?? 0 };
+        token = page.IsTruncated ? page.NextContinuationToken : undefined;
+      } while (token);
+    },
   };
 }

@@ -107,8 +107,10 @@
             "type": "string",
             "enum": [
               "tenant",
-              "admin"
-            ]
+              "admin",
+              "platform"
+            ],
+            "description": "tenant: set by the tenant; admin: set by the runtime operator; platform: the platform's key, billed to prepaid credit"
           },
           "last4": {
             "type": "string"
@@ -824,6 +826,14 @@
               },
               "cost": {
                 "type": "number"
+              },
+              "platformResponses": {
+                "type": "number",
+                "description": "Responses that ran on a key that is not the tenant's own"
+              },
+              "platformCost": {
+                "type": "number",
+                "description": "Their cost (USD, list prices); prepaid tenants pay it from credit"
               }
             },
             "required": [
@@ -832,7 +842,9 @@
               "output",
               "cacheRead",
               "cacheWrite",
-              "cost"
+              "cost",
+              "platformResponses",
+              "platformCost"
             ]
           },
           "days": {
@@ -858,6 +870,14 @@
                 "cost": {
                   "type": "number"
                 },
+                "platformResponses": {
+                  "type": "number",
+                  "description": "Responses that ran on a key that is not the tenant's own"
+                },
+                "platformCost": {
+                  "type": "number",
+                  "description": "Their cost (USD, list prices); prepaid tenants pay it from credit"
+                },
                 "day": {
                   "type": "string"
                 },
@@ -880,6 +900,8 @@
                 "cacheRead",
                 "cacheWrite",
                 "cost",
+                "platformResponses",
+                "platformCost",
                 "day",
                 "model",
                 "kind"
@@ -891,6 +913,199 @@
           "since",
           "totals",
           "days"
+        ]
+      },
+      "Billing": {
+        "type": "object",
+        "properties": {
+          "billing": {
+            "type": "string",
+            "enum": [
+              "prepaid",
+              "none"
+            ],
+            "description": "prepaid: runs are paid from credit; none: not billed by the runtime"
+          },
+          "balance": {
+            "type": "integer",
+            "description": "Credit left; at zero or below, runs are refused with 402, in micro-USD (1 USD = 1000000)"
+          },
+          "freeCredit": {
+            "type": "boolean",
+            "description": "Whether the tenant has only ever had free credit, which comes with tighter limits"
+          },
+          "month": {
+            "type": "object",
+            "properties": {
+              "since": {
+                "type": "number"
+              },
+              "grant": {
+                "type": "integer",
+                "description": "Granted this UTC month, in micro-USD (1 USD = 1000000)"
+              },
+              "purchase": {
+                "type": "integer",
+                "description": "Bought, in micro-USD (1 USD = 1000000)"
+              },
+              "usage": {
+                "type": "integer",
+                "description": "Spent on model tokens and agent time, in micro-USD (1 USD = 1000000)"
+              },
+              "storage": {
+                "type": "integer",
+                "description": "Spent on storage, in micro-USD (1 USD = 1000000)"
+              },
+              "adjustment": {
+                "type": "integer",
+                "description": "Adjusted by the operator, in micro-USD (1 USD = 1000000)"
+              },
+              "refund": {
+                "type": "integer",
+                "description": "Refunded, in micro-USD (1 USD = 1000000)"
+              }
+            },
+            "required": [
+              "since",
+              "grant",
+              "purchase",
+              "usage",
+              "storage",
+              "adjustment",
+              "refund"
+            ]
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LedgerEntry"
+            }
+          },
+          "rates": {
+            "type": "object",
+            "properties": {
+              "agentHour": {
+                "type": "integer",
+                "description": "Per hour an agent spends in a turn, metered continuously, in micro-USD (1 USD = 1000000)"
+              },
+              "storageGbMonth": {
+                "type": "integer",
+                "description": "Per GB-month stored, charged daily, in micro-USD (1 USD = 1000000)"
+              },
+              "purchaseFeeBps": {
+                "type": "integer",
+                "description": "Fee on credit purchases, in basis points"
+              },
+              "minPurchase": {
+                "type": "integer",
+                "description": "Smallest purchase, in micro-USD (1 USD = 1000000)"
+              },
+              "maxPurchase": {
+                "type": "integer",
+                "description": "Largest purchase, in micro-USD (1 USD = 1000000)"
+              }
+            },
+            "required": [
+              "agentHour",
+              "storageGbMonth",
+              "purchaseFeeBps",
+              "minPurchase",
+              "maxPurchase"
+            ],
+            "description": "Model tokens are charged at the provider's list price when they run on the platform's keys"
+          }
+        },
+        "required": [
+          "billing",
+          "balance",
+          "freeCredit",
+          "month",
+          "recent",
+          "rates"
+        ]
+      },
+      "LedgerEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "grant",
+              "purchase",
+              "usage",
+              "storage",
+              "adjustment",
+              "refund"
+            ]
+          },
+          "amount": {
+            "type": "integer",
+            "description": "Positive adds credit, negative spends it, in micro-USD (1 USD = 1000000)"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "usage: tokens (micro-USD on platform keys) and activeMs; storage: day and bytes"
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "amount",
+          "metadata",
+          "createdAt"
+        ]
+      },
+      "Ledger": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LedgerEntry"
+            },
+            "description": "Newest first"
+          },
+          "next": {
+            "type": "integer",
+            "description": "Pass as `before` for the next page"
+          }
+        },
+        "required": [
+          "entries"
+        ]
+      },
+      "AdjustmentInput": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "integer",
+            "description": "Micro-USD to add (negative to remove)"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,120}$",
+            "description": "Repeating an adjustment with the same key applies it once"
+          }
+        },
+        "required": [
+          "tenant",
+          "amount",
+          "reason"
         ]
       },
       "Channel": {
@@ -2909,6 +3124,115 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Usage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Prepaid credit: balance, this month, recent entries and rates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Billing"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/ledger": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Entries older than this id"
+            },
+            "required": false,
+            "description": "Entries older than this id",
+            "name": "before",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "1–200, default 50"
+            },
+            "required": false,
+            "description": "1–200, default 50",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The credit ledger, newest first, a page at a time",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ledger"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/adjustments": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustmentInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The entry, or the earlier one with the same idempotency key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerEntry"
                 }
               }
             }

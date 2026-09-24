@@ -22,6 +22,8 @@ export interface Storage {
   /** Immutable binary objects, e.g. content-addressed chunks: writing a key that exists is a no-op. */
   readBlob(key: string): Promise<Uint8Array | undefined>;
   writeBlob(key: string, data: Uint8Array): Promise<void>;
+  /** Every stored object under `prefix`, with its size: for metering storage, not for reading state. */
+  objects?(prefix: string): AsyncIterable<{ key: string; bytes: number }>;
 }
 
 export class PreconditionFailed extends Error {
@@ -59,6 +61,17 @@ export function fileStorage(root: string, options: { tail?: LogTail } = {}): Sto
       try { await handle.writeFile(data); await handle.datasync(); } finally { await handle.close(); }
       // Same key, same bytes: a concurrent writer's rename is harmless.
       await rename(temporary, file);
+    },
+    async *objects(prefix) {
+      let entries;
+      try { entries = await readdir(join(root, prefix), { recursive: true, withFileTypes: true }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+      for (const entry of entries) {
+        if (!entry.isFile() || entry.name.endsWith(".tmp")) continue;
+        const file = join(entry.parentPath, entry.name);
+        try { yield { key: file.slice(root.length + 1), bytes: (await stat(file)).size }; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
     },
   };
 }
@@ -101,6 +114,10 @@ export function memoryStorage(tail: LogTail): Storage & { logs: Map<string, Map<
     async removeLog(key: string) { logs.delete(validKey(key)); },
     async readBlob(key: string) { const data = blobs.get(validKey(key)); return data && Uint8Array.from(data); },
     async writeBlob(key: string, data: Uint8Array) { if (!blobs.has(validKey(key))) { storage.puts++; blobs.set(key, Uint8Array.from(data)); } },
+    async *objects(prefix: string) {
+      for (const [key, objects] of logs) if (key.startsWith(prefix)) for (const [name, body] of objects) yield { key: `${key}.log/${name}`, bytes: Buffer.byteLength(body) };
+      for (const [key, data] of blobs) if (key.startsWith(prefix)) yield { key, bytes: data.byteLength };
+    },
   };
   return storage;
 }

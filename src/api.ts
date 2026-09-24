@@ -34,6 +34,8 @@ export interface ApiContext {
   channels?: Channels;
   volumes?: VolumeService;
   definitions?: Definitions;
+  /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
+  billingAdmins?: string[];
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
@@ -200,6 +202,32 @@ export function api(context: ApiContext) {
   }), async c => {
     const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
     return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000));
+  });
+
+  route(createRoute({ method: "get", path: "/v1/billing", responses: { 200: reply("Prepaid credit: balance, this month, recent entries and rates", schema.Billing) } }),
+    async c => json(c, 200, await accounts.billing.summary(c.var.principal.tenant)));
+  route(createRoute({
+    method: "get", path: "/v1/billing/ledger",
+    request: { query: z.object({ before: z.string().optional().openapi({ description: "Entries older than this id" }), limit: z.string().optional().openapi({ description: "1–200, default 50" }) }) },
+    responses: { 200: reply("The credit ledger, newest first, a page at a time", schema.Ledger) },
+  }), async c => {
+    const before = c.req.query("before") === undefined ? undefined : Number(c.req.query("before"));
+    if (before !== undefined && !Number.isSafeInteger(before)) throw new HttpError(400, "before must be a ledger entry id");
+    return json(c, 200, await accounts.billing.ledger(c.var.principal.tenant, { before, limit: Number(c.req.query("limit") ?? 50) || 50 }));
+  });
+  route(createRoute({
+    method: "post", path: "/v1/billing/adjustments", request: { body: content(schema.AdjustmentInput) },
+    responses: { 201: reply("The entry, or the earlier one with the same idempotency key", schema.LedgerEntry) },
+  }), async c => {
+    const principal = c.var.principal;
+    if (principal.via !== "operator" || !context.billingAdmins?.includes(principal.tenant)) throw new HttpError(403, "Only the platform operator can adjust credit");
+    const body = parse(schema.AdjustmentInput, await readJson(c.req.raw.body, 4096, {}));
+    if (!await accounts.exists(body.tenant)) throw new HttpError(404, `Unknown tenant ${body.tenant}`);
+    const key = `adjustment:${body.idempotencyKey ?? randomUUID()}`;
+    await accounts.billing.post([{ tenant: body.tenant, kind: "adjustment", amount: body.amount, key, metadata: { reason: body.reason, by: principal.tenant } }]);
+    const row = (await accounts.db.query("select id, tenant, kind, amount, metadata, created_at from credit_ledger where idempotency_key = $1", [key])).rows[0];
+    if (row.tenant !== body.tenant || row.amount !== body.amount) throw new HttpError(409, "Idempotency key reused with a different adjustment");
+    return json(c, 201, { id: row.id, kind: row.kind, amount: row.amount, metadata: row.metadata, createdAt: row.created_at });
   });
 
   channelRoutes(route, () => context.channels);

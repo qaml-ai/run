@@ -15,7 +15,7 @@ export const Me = z.object({
 
 const KeyStatus = z.object({
   provider: z.string(),
-  source: z.enum(["tenant", "admin"]),
+  source: z.enum(["tenant", "admin", "platform"]).openapi({ description: "tenant: set by the tenant; admin: set by the runtime operator; platform: the platform's key, billed to prepaid credit" }),
   last4: z.string().optional(),
   setAt: z.number().optional(),
 }).openapi("KeyStatus");
@@ -170,7 +170,11 @@ export const TokenInput = z.object({ name: z.string().openapi({ description: "1â
 export const Token = z.object({ id: z.string(), name: z.string(), prefix: z.string(), createdAt: z.number() }).openapi("Token");
 export const TokenCreated = Token.extend({ token: z.string().openapi({ description: "The secret; shown only once" }) }).openapi("TokenCreated");
 
-const Totals = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), cost: z.number() });
+const Totals = z.object({
+  responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), cost: z.number(),
+  platformResponses: z.number().openapi({ description: "Responses that ran on a key that is not the tenant's own" }),
+  platformCost: z.number().openapi({ description: "Their cost (USD, list prices); prepaid tenants pay it from credit" }),
+});
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
@@ -316,3 +320,39 @@ export const Changes = z.object({
   changes: z.array(z.object({ seq: z.number(), path: z.string(), kind: z.enum(["write", "delete"]), version: z.number().optional(), size: z.number().optional(), by: z.string().optional(), at: z.number() })),
   gap: z.boolean().optional().openapi({ description: "Older changes are no longer kept; list the files instead" }),
 }).openapi("Changes");
+
+const micros = (description: string) => z.number().int().openapi({ description: `${description}, in micro-USD (1 USD = 1000000)` });
+export const LedgerEntry = z.object({
+  id: z.number().int(),
+  kind: z.enum(["grant", "purchase", "usage", "storage", "adjustment", "refund"]),
+  amount: micros("Positive adds credit, negative spends it"),
+  metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: tokens (micro-USD on platform keys) and activeMs; storage: day and bytes" }),
+  createdAt: z.number(),
+}).openapi("LedgerEntry");
+export const Ledger = z.object({
+  entries: z.array(LedgerEntry).openapi({ description: "Newest first" }),
+  next: z.number().int().optional().openapi({ description: "Pass as `before` for the next page" }),
+}).openapi("Ledger");
+export const Billing = z.object({
+  billing: z.enum(["prepaid", "none"]).openapi({ description: "prepaid: runs are paid from credit; none: not billed by the runtime" }),
+  balance: micros("Credit left; at zero or below, runs are refused with 402"),
+  freeCredit: z.boolean().openapi({ description: "Whether the tenant has only ever had free credit, which comes with tighter limits" }),
+  month: z.object({
+    since: z.number(),
+    grant: micros("Granted this UTC month"), purchase: micros("Bought"), usage: micros("Spent on model tokens and agent time"),
+    storage: micros("Spent on storage"), adjustment: micros("Adjusted by the operator"), refund: micros("Refunded"),
+  }),
+  recent: z.array(LedgerEntry),
+  rates: z.object({
+    agentHour: micros("Per hour an agent spends in a turn, metered continuously"),
+    storageGbMonth: micros("Per GB-month stored, charged daily"),
+    purchaseFeeBps: z.number().int().openapi({ description: "Fee on credit purchases, in basis points" }),
+    minPurchase: micros("Smallest purchase"), maxPurchase: micros("Largest purchase"),
+  }).openapi({ description: "Model tokens are charged at the provider's list price when they run on the platform's keys" }),
+}).openapi("Billing");
+export const AdjustmentInput = z.object({
+  tenant: z.string(),
+  amount: z.number().int().refine(value => value !== 0 && Math.abs(value) <= 1e12, "amount must be a non-zero integer of micro-USD").openapi({ description: "Micro-USD to add (negative to remove)" }),
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_.:-]{1,120}$/).optional().openapi({ description: "Repeating an adjustment with the same key applies it once" }),
+}).openapi("AdjustmentInput");

@@ -35,6 +35,7 @@ import { VersionConflict, VolumeService } from "./volumes.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
+import { pricingFromEnvironment } from "./pricing.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -98,7 +99,8 @@ if (!Number.isInteger(idleMs) || idleMs < 1000) throw new Error("AGENT_IDLE_MS m
 const allowedBaseUrls = (process.env.AGENT_ALLOWED_BASE_URLS ?? "").split(",").map(value => value.trim()).filter(Boolean);
 const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
 // Tenant-set provider keys are encrypted with AGENT_SECRETS_KEY; without it tenants cannot store keys.
-const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey });
+// Prepaid tenants pay from credit at the rates in src/pricing.ts, which the environment may override.
+const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing: pricingFromEnvironment(), publicUrl });
 const github = secrets.github && { ...secrets.github, org: process.env.GITHUB_ORG ?? "qaml-ai", webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL };
 const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
@@ -242,9 +244,14 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 
 const clients = new ClientSessions(supervisor, {
   secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, agentLimitFor: tenant => tenants.maxAgents(tenant),
-  apiKeyFor: (tenant, provider) => accounts.apiKey(tenant, provider),
+  apiKeyFor: async (tenant, provider) => {
+    const resolved = await accounts.providerKey(tenant, provider);
+    return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
+  },
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
-  spendLimit: tenant => accounts.spendLimit(tenant),
+  onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
+  spendLimit: tenant => accounts.runLimit(tenant),
+  creditLimit: tenant => accounts.billing.creditLimit(tenant),
   db, storage, prefix: "client-sessions/", ownership, volumes,
   get scheduler() { return scheduler; },
   get hooks() { return channels.hooks; },
@@ -325,7 +332,8 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
 app.route("/", channels.app);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, volumes, definitions, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false" }));
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, volumes, definitions, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+  billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
 app.get("/", c => c.redirect("/console/", 302));
@@ -412,6 +420,13 @@ const purgeMs = Number(process.env.AGENT_PURGE_INTERVAL_MS ?? 60_000);
 if (!Number.isInteger(purgeMs) || purgeMs < 1000) throw new Error("AGENT_PURGE_INTERVAL_MS must be an integer of at least 1000");
 const purgeTimer = setInterval(() => void clients.sweep(), purgeMs);
 purgeTimer.unref();
+// Storage is charged to prepaid tenants once a UTC day, by whichever node claims the day's job first.
+const billingMs = Number(process.env.AGENT_BILLING_INTERVAL_MS ?? 60 * 60_000);
+if (!Number.isInteger(billingMs) || billingMs < 1000) throw new Error("AGENT_BILLING_INTERVAL_MS must be an integer of at least 1000");
+const chargeStorage = () => void accounts.billing.chargeStorage(storage, node).catch(error => console.error(JSON.stringify({ type: "storage_charge_failed", error: errorText(error) })));
+const billingTimer = setInterval(chargeStorage, billingMs);
+billingTimer.unref();
+setTimeout(chargeStorage, Math.min(billingMs, 60_000)).unref();
 
 /**
  * Deploys and scale-in on ECS. While a turn runs the task is protected, so ECS
@@ -465,6 +480,7 @@ async function drain(signal: string) {
   clearInterval(loadTimer);
   clearInterval(sweepTimer);
   clearInterval(purgeTimer);
+  clearInterval(billingTimer);
   clearInterval(workTimer);
   if (retireTimer) clearInterval(retireTimer);
   clients.draining = true;

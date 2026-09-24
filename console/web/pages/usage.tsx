@@ -13,7 +13,7 @@ export function UsagePage() {
   const totals = usage.data?.totals;
   return (
     <>
-      <PageHeader title="Usage" description="Model responses from your agents, billed to your provider keys. Costs are estimates from list prices."
+      <PageHeader title="Usage" description="Model responses from your agents. Costs are estimates from list prices; responses on the platform's keys are paid from your credit (see Billing)."
         actions={
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>

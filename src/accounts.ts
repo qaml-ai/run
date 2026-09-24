@@ -1,7 +1,9 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Db } from "./db.ts";
+import { transaction, type Db } from "./db.ts";
 import type { Tenants } from "./tenants.ts";
 import type { UsageRecord } from "./client-sessions.ts";
+import { Billing, postLedger, type LedgerEntry } from "./billing.ts";
+import { activeCharge, MICROS, type Pricing } from "./pricing.ts";
 
 /**
  * Tenant state that tenants manage themselves: provider keys (encrypted at rest),
@@ -11,17 +13,27 @@ import type { UsageRecord } from "./client-sessions.ts";
  * any node can serve any tenant.
  */
 export interface Principal { tenant: string; via: "operator" | "token" | "console"; tokenId?: string }
-export interface KeyStatus { provider: string; source: "tenant" | "admin"; last4?: string; setAt?: number }
+/** Whose key an agent calls a provider with: the tenant's own, one an admin set for the tenant, or the platform's (billed to prepaid credit). */
+export type KeySource = "tenant" | "admin" | "platform";
+export interface KeyStatus { provider: string; source: KeySource; last4?: string; setAt?: number }
 export interface ApiToken { id: string; name: string; sha256: string; prefix: string; createdAt: number }
 export type Sealed = { iv: string; tag: string; ciphertext: string };
-type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
+/**
+ * Usage recorded and not yet written, applied as one transaction under `id` (a row in
+ * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
+ * `charges` is what prepaid tenants pay for it: model cost on platform keys (USD) and active agent time.
+ */
+type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, { platformCost: number; activeMs: number }> };
+const batch = (): Batch => ({ id: randomUUID(), usage: new Map(), charges: new Map() });
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const validTenant = (id: string) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(id);
-const zero = (): Totals => ({ responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+const zero = (): Totals => ({ responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, platformResponses: 0, platformCost: 0 });
 const add = (target: Totals, source: Totals) => {
   target.responses += source.responses; target.input += source.input; target.output += source.output;
   target.cacheRead += source.cacheRead; target.cacheWrite += source.cacheWrite; target.cost += source.cost;
+  target.platformResponses += source.platformResponses; target.platformCost += source.platformCost;
 };
 const COMPACTION = "compaction:";
 /** Revocations reach other nodes within this long. */
@@ -34,16 +46,20 @@ export class Accounts {
   readonly db: Db;
   private readonly secretsKey?: Buffer;
   private readonly tokenCache = new Map<string, { principal: Principal; until: number }>();
-  /** Usage not yet written: JSON [tenant, day, model] → totals. */
-  private pendingUsage = new Map<string, Totals>();
+  /** Usage not yet written, by JSON [tenant, day, model]; batches taken for writing stay in `unflushed` until they commit. */
+  private pending = batch();
+  private unflushed: Batch[] = [];
+  private flushes: Promise<void> = Promise.resolve();
   private usageTimer?: ReturnType<typeof setTimeout>;
+  readonly billing: Billing;
   /** This UTC month's spend per tenant, as last read plus what this node recorded since. */
   private readonly spend = new Map<string, { month: string; cost: number; until: number }>();
   private readonly spendReads = new Map<string, Promise<number>>();
 
-  constructor(options: { tenants: Tenants; db: Db; secretsKey?: string }) {
+  constructor(options: { tenants: Tenants; db: Db; secretsKey?: string; pricing?: Pricing; publicUrl?: string }) {
     this.tenants = options.tenants;
     this.db = options.db;
+    this.billing = new Billing({ db: this.db, tenants: this.tenants, pricing: options.pricing, publicUrl: options.publicUrl, pending: tenant => this.pendingCharges(tenant), flush: () => this.flushUsage() });
     if (options.secretsKey !== undefined) {
       if (!/^[a-f0-9]{64}$/.test(options.secretsKey)) throw new Error("AGENT_SECRETS_KEY must be 64 hex characters (32 bytes)");
       this.secretsKey = Buffer.from(options.secretsKey, "hex");
@@ -81,8 +97,12 @@ export class Accounts {
     if (!validTenant(id)) throw new Error(`GitHub login ${login} cannot be used as a tenant id`);
     if (this.tenants.has(id)) throw new Error(`Tenant ${id} exists but is not linked to GitHub user ${login}; ask an admin to add "github": "${login}" to it`);
     await this.db.query("insert into tenants (id, github, created_at) values ($1, $2, $3) on conflict (id) do nothing", [id, login, Date.now()]);
-    const existing = (await this.db.query("select github from tenants where id = $1", [id])).rows[0];
+    const existing = (await this.db.query("select github, billing from tenants where id = $1", [id])).rows[0];
     if (existing.github?.toLowerCase() !== login.toLowerCase()) throw new Error(`Tenant ${id} belongs to another account`);
+    // Starting credit, once: the key makes a repeat (every later sign-in, or a retry after a failure here) a no-op.
+    if (existing.billing === "prepaid" && this.billing.pricing.startingGrant > 0) {
+      await this.billing.post([{ tenant: id, kind: "grant", amount: this.billing.pricing.startingGrant, key: `grant:signup:${id}`, metadata: { reason: "Starting credit" } }]);
+    }
     return id;
   }
 
@@ -93,24 +113,32 @@ export class Accounts {
     return (await this.db.query("select provider, sealed, last4, set_at from provider_keys where tenant = $1", [tenant])).rows as { provider: string; sealed: Sealed; last4: string; set_at: number }[];
   }
 
-  /** The key an agent uses: the tenant's own key, else one an admin configured. */
-  async apiKey(tenant: string, provider: string): Promise<string | undefined> {
+  /** The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid tenant, the platform's. */
+  async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource } | undefined> {
     const stored = this.secretsKey && validTenant(tenant) ? (await this.db.query("select sealed from provider_keys where tenant = $1 and provider = $2", [tenant, provider])).rows[0] : undefined;
-    if (stored) return this.unseal(`${tenant}:${provider}`, stored.sealed);
-    return this.tenants.apiKey(tenant, provider);
+    if (stored) return { key: this.unseal(`${tenant}:${provider}`, stored.sealed), source: "tenant" };
+    const admin = this.tenants.apiKey(tenant, provider);
+    if (admin) return { key: admin, source: "admin" };
+    const platform = this.tenants.platformKey(provider);
+    if (platform && await this.billing.mode(tenant) === "prepaid") return { key: platform, source: "platform" };
+    return undefined;
   }
+
+  async apiKey(tenant: string, provider: string) { return (await this.providerKey(tenant, provider))?.key; }
 
   async keyStatus(tenant: string): Promise<KeyStatus[]> {
     const statuses = new Map<string, KeyStatus>();
+    if (await this.billing.mode(tenant) === "prepaid") for (const provider of this.tenants.platformProviders()) statuses.set(provider, { provider, source: "platform" });
     for (const provider of this.tenants.providers(tenant)) statuses.set(provider, { provider, source: "admin" });
     for (const key of await this.storedKeys(tenant)) statuses.set(key.provider, { provider: key.provider, source: "tenant", last4: key.last4, setAt: key.set_at });
     return [...statuses.values()].sort((a, b) => a.provider.localeCompare(b.provider));
   }
 
-  /** Providers an agent of `tenant` can call (its own key, an admin key, or an admin `*` key). */
+  /** Providers an agent of `tenant` can call (its own key, an admin key or `*` key, or for a prepaid tenant the platform's). */
   async keyedProviders(tenant: string): Promise<(provider: string) => boolean> {
     const own = this.canStoreKeys && validTenant(tenant) ? new Set((await this.storedKeys(tenant)).map(key => key.provider)) : new Set<string>();
-    return provider => own.has(provider) || !!this.tenants.apiKey(tenant, provider);
+    const platform = await this.billing.mode(tenant) === "prepaid";
+    return provider => own.has(provider) || !!this.tenants.apiKey(tenant, provider) || (platform && !!this.tenants.platformKey(provider));
   }
 
   async hasKey(tenant: string, provider: string) { return (await this.keyedProviders(tenant))(provider); }
@@ -180,49 +208,114 @@ export class Accounts {
    * Count a model response. Totals are added to the database in batches, a few seconds later.
    * Compaction summaries are rows of their own, their model prefixed with `compaction:`
    * (provider ids never contain a colon), so the table's key stays as older nodes write it.
+   * `platform` responses ran on a key that is not the tenant's own; a prepaid tenant pays for them.
    */
   recordUsage(tenant: string, _agent: string, message: UsageRecord) {
     const usage = message.usage ?? {};
     const day = new Date(message.timestamp ?? Date.now()).toISOString().slice(0, 10);
     const model = `${message.provider ?? "unknown"}/${message.model ?? "unknown"}`;
     const key = JSON.stringify([tenant, day, message.kind === "compaction" ? `${COMPACTION}${model}` : model]);
-    const totals = this.pendingUsage.get(key) ?? zero();
-    add(totals, { responses: 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost: usage.cost?.total ?? 0 });
-    this.pendingUsage.set(key, totals);
+    const totals = this.pending.usage.get(key) ?? zero();
+    const cost = usage.cost?.total ?? 0;
+    add(totals, {
+      responses: 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost,
+      platformResponses: message.platform ? 1 : 0, platformCost: message.platform ? cost : 0,
+    });
+    this.pending.usage.set(key, totals);
+    if (message.platform) this.charge(tenant).platformCost += cost;
     const spent = this.spend.get(tenant);
-    if (spent?.month === day.slice(0, 7)) spent.cost += usage.cost?.total ?? 0;
+    if (spent?.month === day.slice(0, 7)) spent.cost += cost;
+    this.scheduleFlush();
+  }
+
+  /** Count `ms` an agent of `tenant` spent in a turn: model calls and tool execution. */
+  recordActive(tenant: string, _agent: string, ms: number) {
+    if (!(ms > 0)) return;
+    this.charge(tenant).activeMs += ms;
+    this.scheduleFlush();
+  }
+
+  private charge(tenant: string) {
+    let charge = this.pending.charges.get(tenant);
+    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, activeMs: 0 });
+    return charge;
+  }
+
+  private scheduleFlush() {
     this.usageTimer ??= setTimeout(() => void this.flushUsage().catch(error => console.error(JSON.stringify({ type: "usage_flush_failed", error: String(error) }))), 5_000);
     this.usageTimer.unref?.();
   }
 
-  /** Add pending usage to the per-tenant daily totals, in one statement. */
-  async flushUsage() {
+  /** What `charges` come to in micro-USD. */
+  private amount(charge: { platformCost: number; activeMs: number }) {
+    return Math.round(charge.platformCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
+  }
+
+  /** What this node has recorded for `tenant` and not yet written, in micro-USD, as if the tenant were prepaid. */
+  pendingCharges(tenant: string) {
+    let total = 0;
+    for (const { charges } of [this.pending, ...this.unflushed]) {
+      const charge = charges.get(tenant);
+      if (charge) total += this.amount(charge);
+    }
+    return total;
+  }
+
+  /**
+   * Write pending usage: add it to the per-tenant daily totals, and debit prepaid tenants,
+   * in one transaction per batch. Flushes run one at a time; a batch that fails stays
+   * queued, under the same id, for the next flush.
+   */
+  flushUsage(): Promise<void> {
+    const run = this.flushes.then(() => this.flushPending());
+    this.flushes = run.catch(() => {});
+    return run;
+  }
+
+  private async flushPending() {
     if (this.usageTimer) { clearTimeout(this.usageTimer); this.usageTimer = undefined; }
-    const pending = this.pendingUsage;
-    if (!pending.size) return;
-    this.pendingUsage = new Map();
-    const rows = [...pending].map(([key, totals]) => {
+    if (this.pending.usage.size || this.pending.charges.size) {
+      this.unflushed.push(this.pending);
+      this.pending = batch();
+    }
+    try {
+      while (this.unflushed.length) {
+        await this.apply(this.unflushed[0]);
+        this.unflushed.shift();
+      }
+    } catch (error) {
+      // Retry later even if nothing new is recorded.
+      this.scheduleFlush();
+      throw error;
+    }
+  }
+
+  private async apply({ id, usage, charges }: Batch) {
+    const rows = [...usage].map(([key, totals]) => {
       const [tenant, day, model] = JSON.parse(key);
       return { tenant, day, model, ...totals };
     });
-    try {
-      await this.db.query(`
-        insert into usage (tenant, day, model, responses, input, output, cache_read, cache_write, cost)
-        select tenant, day::date, model, responses, input, output, "cacheRead", "cacheWrite", cost
-        from jsonb_to_recordset($1::jsonb) as t(tenant text, day text, model text, responses bigint, input bigint, output bigint, "cacheRead" bigint, "cacheWrite" bigint, cost double precision)
+    const entries: LedgerEntry[] = [];
+    for (const [tenant, charge] of charges) {
+      const amount = this.amount(charge);
+      if (amount > 0 && await this.billing.mode(tenant) === "prepaid") {
+        entries.push({ tenant, kind: "usage", amount: -amount, key: `usage:${id}:${tenant}`, metadata: { tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs) } });
+      }
+    }
+    await transaction(this.db, async sql => {
+      if (!(await sql.query("insert into usage_flushes (id) values ($1) on conflict (id) do nothing returning id", [id])).rowCount) return;
+      if (rows.length) await sql.query(`
+        insert into usage (tenant, day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost)
+        select tenant, day::date, model, responses, input, output, "cacheRead", "cacheWrite", cost, "platformResponses", "platformCost"
+        from jsonb_to_recordset($1::jsonb) as t(tenant text, day text, model text, responses bigint, input bigint, output bigint, "cacheRead" bigint, "cacheWrite" bigint, cost double precision, "platformResponses" bigint, "platformCost" double precision)
         on conflict (tenant, day, model) do update set
           responses = usage.responses + excluded.responses, input = usage.input + excluded.input, output = usage.output + excluded.output,
-          cache_read = usage.cache_read + excluded.cache_read, cache_write = usage.cache_write + excluded.cache_write, cost = usage.cost + excluded.cost`,
+          cache_read = usage.cache_read + excluded.cache_read, cache_write = usage.cache_write + excluded.cache_write, cost = usage.cost + excluded.cost,
+          platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
       [JSON.stringify(rows)]);
-    } catch (error) {
-      // Keep the counts for the next flush rather than losing them.
-      for (const [key, totals] of pending) {
-        const merged = this.pendingUsage.get(key) ?? zero();
-        add(merged, totals);
-        this.pendingUsage.set(key, merged);
-      }
-      throw error;
-    }
+      await postLedger(sql, entries);
+    });
+    this.billing.invalidate(charges.keys());
   }
 
   /** The tenant's model spend this UTC month, turns and compaction, read from the database at most every few seconds. */
@@ -253,15 +346,20 @@ export class Accounts {
     return `This tenant has reached its monthly spend limit of $${cap.toFixed(2)} ($${spent.toFixed(2)} spent this UTC month); ask the runtime operator to raise it`;
   }
 
+  /** Why the tenant may not start or continue model work: a reached monthly cap, or spent prepaid credit. */
+  async runLimit(tenant: string): Promise<string | undefined> {
+    return await this.spendLimit(tenant) ?? await this.billing.creditLimit(tenant);
+  }
+
   /** Usage since `since`, summed per UTC day and model. */
   async usage(tenant: string, since: number) {
     await this.flushUsage();
     const { rows } = await this.db.query(`
-      select to_char(day, 'YYYY-MM-DD') as day, model, responses, input, output, cache_read, cache_write, cost
+      select to_char(day, 'YYYY-MM-DD') as day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost
       from usage where tenant = $1 and day >= $2::date order by day, model`, [tenant, new Date(since).toISOString().slice(0, 10)]);
     const totals = zero();
     const days = rows.map(row => {
-      const value = { responses: row.responses, input: row.input, output: row.output, cacheRead: row.cache_read, cacheWrite: row.cache_write, cost: row.cost };
+      const value = { responses: row.responses, input: row.input, output: row.output, cacheRead: row.cache_read, cacheWrite: row.cache_write, cost: row.cost, platformResponses: row.platform_responses, platformCost: row.platform_cost };
       add(totals, value);
       const compaction = row.model.startsWith(COMPACTION);
       return { day: row.day, model: compaction ? row.model.slice(COMPACTION.length) : row.model, kind: compaction ? "compaction" : "turn", ...value };

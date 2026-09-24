@@ -80,6 +80,10 @@ type Session = {
   /** A header write failed with the database unreachable, so the stored revision is unknown. */
   unsettled?: boolean;
   lastActive: number;
+  /** Whether the agent's current model key is the platform's, not the tenant's own. */
+  platformKey?: boolean;
+  /** Since when a run's active time has not been reported (`onActive`). */
+  activeSince?: number;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -89,6 +93,8 @@ const RUN_METHODS = ["prompt", "execute", "continue"];
 /** Runs that call the model; code executions do not, so spend limits leave them alone. */
 const MODEL_RUNS = ["prompt", "continue"];
 const FILE_TOOL_NAMES = new Set(volumeToolDefinitions([]).map(tool => tool.name));
+/** A running run's active time is reported at least this often. */
+const ACTIVE_REPORT_MS = 60_000;
 /** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. */
 const MAX_RESUMES = 2;
 /** A model turn that began can continue from its transcript on another node; a code execution cannot. */
@@ -136,8 +142,8 @@ export interface ClientSessionOptions {
   ownership?: Ownership;
   /** Fallback provider key when `apiKeyFor` is absent (single-tenant hosts and tests). */
   apiKey?: string;
-  /** The provider key an agent uses, resolved per tenant at process start; never persisted. */
-  apiKeyFor?: (tenant: string, provider: string) => Promise<string | undefined> | string | undefined;
+  /** The provider key an agent uses, resolved per tenant at process start; never persisted. `platform` keys are not the tenant's own. */
+  apiKeyFor?: (tenant: string, provider: string) => Promise<ProviderKey | string | undefined> | ProviderKey | string | undefined;
   /** At most this many hosted agents per tenant at once on this node (default: no per-tenant limit). */
   maxAgentsPerTenant?: number;
   /** @deprecated The older name of `maxAgentsPerTenant`. */
@@ -154,8 +160,12 @@ export interface ClientSessionOptions {
    * accepted (402), when it starts, and after each model response in a turn that would continue.
    */
   spendLimit?: (tenant: string) => Promise<string | undefined>;
+  /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted (402) and when it starts. */
+  creditLimit?: (tenant: string) => Promise<string | undefined>;
   /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
   onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
+  /** Called with time an agent spent in runs (model calls and tool execution), at least every minute while one runs. */
+  onActive?: (tenant: string, agentId: string, ms: number) => void;
   hooks?: SessionHooks;
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
@@ -167,7 +177,9 @@ export interface ClientSessionOptions {
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; tools: ToolDefinition[]; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
-export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" };
+export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean };
+/** A provider key and whether it is the platform's rather than the tenant's own. */
+export type ProviderKey = { key: string; platform: boolean };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
 export type AgentRef = { id: string; tenant: string; claim?: Claim };
 /** Runtime features layered on agents (channels): they observe runs and may answer tools themselves. */
@@ -460,8 +472,9 @@ export class ClientSessions {
     }
   }
 
-  private async apiKey(session: Session, provider: string) {
-    return this.options.apiKeyFor ? this.options.apiKeyFor(session.header.tenant ?? DEFAULT_TENANT, provider) : this.options.apiKey;
+  private async apiKey(session: Session, provider: string): Promise<{ key?: string; platform: boolean }> {
+    const resolved = this.options.apiKeyFor ? await this.options.apiKeyFor(session.header.tenant ?? DEFAULT_TENANT, provider) : this.options.apiKey;
+    return typeof resolved === "object" ? resolved : { key: resolved, platform: false };
   }
 
   private ensureStarted(session: Session) {
@@ -472,7 +485,8 @@ export class ClientSessions {
     const id = session.header.id;
     return session.starting ??= (async () => {
       await this.makeRoom(id, session.header.tenant ?? DEFAULT_TENANT);
-      const apiKey = await this.apiKey(session, session.header.config.model.provider);
+      const { key: apiKey, platform } = await this.apiKey(session, session.header.config.model.provider);
+      session.platformKey = platform;
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: await this.toolset(session, session.header.definitions),
         spendLimit: () => this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT),
@@ -876,11 +890,9 @@ export class ClientSessions {
     const retried = existing();
     if (retried) return { status: 200, record: visible(retried) };
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
-    if (MODEL_RUNS.includes(body.method)) {
-      const limited = await this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT);
-      if (limited) throw new HttpError(402, limited);
-    }
     const isRun = RUN_METHODS.includes(body.method);
+    const limited = await this.runLimit(session, body.method);
+    if (limited) throw new HttpError(402, limited);
     // Reads, aborts and applied definitions never need a process; runs start it when their turn comes.
     if (!isRun && !applying && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
     // Concurrent retries may have waited on the same process startup.
@@ -917,7 +929,8 @@ export class ClientSessions {
       const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
       const update = applied?.update ?? configurationUpdate(params);
       // A new model may belong to another provider: the agent needs that provider's key.
-      const apiKey = update.model ? await this.apiKey(session, update.model.provider) : undefined;
+      const resolved = update.model ? await this.apiKey(session, update.model.provider) : undefined;
+      const apiKey = resolved?.key;
       if (update.model && this.options.apiKeyFor && !apiKey) throw new Error(`No ${update.model.provider} API key is configured for this tenant; set one with PUT /v1/providers/${update.model.provider}/key`);
       // An agent that is not running takes its new configuration when it next starts.
       const result = live || params.definition === undefined ? await this.supervisor.request(id, "configure", {
@@ -926,6 +939,7 @@ export class ClientSessions {
         ...update.tools ? { tools: await this.toolset(session, update.tools, applied ? applied.sources : session.header.sources) } : {},
       }) : { configured: true };
       const { tools, ...config } = update;
+      if (resolved && live) session.platformKey = resolved.platform;
       if (tools !== undefined) session.header.definitions = tools;
       session.header.config = { ...session.header.config, ...config };
       if (applied) {
@@ -939,9 +953,9 @@ export class ClientSessions {
       ? event => {
           // Failed calls report zero usage; count only responses the provider completed.
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
-            this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, event.message);
+            this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, { ...event.message, platform: !!session.platformKey });
           }
-          if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, { ...event, kind: "compaction" });
+          if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, { ...event, kind: "compaction", platform: !!session.platformKey });
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
   }
@@ -977,8 +991,8 @@ export class ClientSessions {
       if (RUN_METHODS.includes(record.method)) {
         if (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running") return;
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
-        if (MODEL_RUNS.includes(record.method) && !session.resuming.has(record.id)) {
-          const limited = await this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT);
+        if (!session.resuming.has(record.id)) {
+          const limited = await this.runLimit(session, record.method);
           if (limited) throw new HttpError(402, limited);
         }
         await this.ensureStarted(session);
@@ -994,9 +1008,11 @@ export class ClientSessions {
         else await this.commit(session, true);
         this.hook("runStarted", session, record);
       }
+      if (RUN_METHODS.includes(record.method)) session.activeSince = Date.now();
       value = session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
     }
     catch (error) { value = { error: errorText(error) }; }
+    this.reportActive(session, false);
     session.beginning = undefined;
     if (this.closed || session.fault || session.requests.get(record.id)?.state !== "running") return;
     const { params: _params, ...finished } = record;
@@ -1011,6 +1027,23 @@ export class ClientSessions {
       this.publish(session, { type: "response", id: record.id, outcome: value });
     } finally { session.settling--; }
     await this.fold(session);
+  }
+
+  /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
+  private async runLimit(session: Session, method: string) {
+    const tenant = session.header.tenant ?? DEFAULT_TENANT;
+    if (MODEL_RUNS.includes(method)) return this.options.spendLimit?.(tenant);
+    if (RUN_METHODS.includes(method)) return this.options.creditLimit?.(tenant);
+    return undefined;
+  }
+
+  /** Report the running run's active time so far; `running` keeps counting from now. */
+  private reportActive(session: Session, running: boolean, now = Date.now()) {
+    if (session.activeSince === undefined) return;
+    const ms = now - session.activeSince;
+    session.activeSince = running ? now : undefined;
+    try { this.options.onActive?.(session.header.tenant ?? DEFAULT_TENANT, session.header.id, ms); }
+    catch (error) { console.error(JSON.stringify({ type: "active_report_failed", error: errorText(error) })); }
   }
 
   /** Make a pending execution's start durable before anything outside its sandbox acts for it. */
@@ -1257,6 +1290,7 @@ export class ClientSessions {
         continue;
       }
       if (session.response && !session.response.write(": heartbeat\n\n")) session.response.destroy();
+      if (session.activeSince !== undefined && now - session.activeSince >= ACTIVE_REPORT_MS) this.reportActive(session, true, now);
       if (this.busy(session) || now - session.lastActive < idleMs) continue;
       if (this.supervisor.agents.has(id)) void this.supervisor.stop(id).catch(() => {});
       else if (!session.response && !session.fault) {

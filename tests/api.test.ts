@@ -269,7 +269,7 @@ test("usage is recorded per response and summed per day and model across nodes",
   nodeA.recordUsage("alice", "agent-1", message(Date.UTC(2026, 8, 2, 9), 1));
   await nodeB.flushUsage();
   const usage = await nodeA.usage("alice", Date.UTC(2026, 8, 1));
-  assert.deepEqual(usage.totals, { responses: 3, input: 151, output: 30, cacheRead: 0, cacheWrite: 0, cost: 1.5 });
+  assert.deepEqual(usage.totals, { responses: 3, input: 151, output: 30, cacheRead: 0, cacheWrite: 0, cost: 1.5, platformResponses: 0, platformCost: 0 });
   assert.deepEqual(usage.days.map(day => [day.day, day.responses]), [["2026-09-01", 2], ["2026-09-02", 1]]);
   assert.equal((await nodeA.usage("bob", 0)).totals.responses, 0);
 });

@@ -55,6 +55,7 @@ function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose
 function KeyBadge({ provider }: { provider: Provider }) {
   if (!provider.key) return <Badge variant="outline">No key</Badge>;
   if (provider.key.source === "admin") return <Badge variant="secondary">Set by admin</Badge>;
+  if (provider.key.source === "platform") return <Badge variant="secondary">Platform key · billed to credit</Badge>;
   return <Badge><CheckCircle2 />…{provider.key.last4}</Badge>;
 }
 

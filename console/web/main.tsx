@@ -1,6 +1,6 @@
 import { StrictMode, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog } from "lucide-react";
+import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,7 @@ import { DefinitionsPage } from "@/pages/definitions";
 import { ModelsPage } from "@/pages/models";
 import { TokensPage } from "@/pages/tokens";
 import { UsagePage } from "@/pages/usage";
+import { BillingPage } from "@/pages/billing";
 import { QuickstartPage } from "@/pages/quickstart";
 import "./style.css";
 
@@ -33,6 +34,7 @@ const NAV = [
   { to: "models", label: "Models & keys", icon: Boxes },
   { to: "tokens", label: "API tokens", icon: KeyRound },
   { to: "usage", label: "Usage", icon: BarChart3 },
+  { to: "billing", label: "Billing", icon: Wallet },
   { to: "quickstart", label: "Quickstart", icon: Rocket },
 ];
 
@@ -48,6 +50,7 @@ function App() {
     : section === "models" ? <ModelsPage me={me.data} />
     : section === "tokens" ? <TokensPage />
     : section === "usage" ? <UsagePage />
+    : section === "billing" ? <BillingPage />
     : section === "quickstart" ? <QuickstartPage />
     : <AgentsPage />;
   const active = section || "agents";

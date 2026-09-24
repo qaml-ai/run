@@ -34,20 +34,29 @@ export async function listen(t: T, handler: Parameters<typeof createServer>[1]) 
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
 
-/** An OpenAI-compatible model that answers each request with `respond`'s message delta. */
+/**
+ * An OpenAI-compatible model that answers each request with `respond`'s message delta. A delta's
+ * `usage` (prompt_tokens, completion_tokens) is reported with the last chunk, and `delayMs` holds the answer back.
+ */
 export async function fakeModel(t: T, respond: (body: any, index: number) => object) {
   const bodies: any[] = [];
+  /** The Authorization header of each request: which key the agent called with. */
+  const keys: string[] = [];
   const url = await listen(t, async (req, res) => {
     let text = "";
     for await (const chunk of req) text += chunk;
     const body = JSON.parse(text);
     bodies.push(body);
-    const delta = respond(body, bodies.length - 1) as any;
+    keys.push(req.headers.authorization ?? "");
+    const { usage, delayMs, ...delta } = respond(body, bodies.length - 1) as any;
+    if (delayMs) await sleep(delayMs);
     res.writeHead(200, { "Content-Type": "text/event-stream" });
-    for (const [content, finish_reason] of [[delta, null], [{}, delta.tool_calls ? "tool_calls" : "stop"]]) res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }] })}\n\n`);
+    for (const [content, finish_reason] of [[delta, null], [{}, delta.tool_calls ? "tool_calls" : "stop"]]) {
+      res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }], ...(finish_reason && usage ? { usage } : {}) })}\n\n`);
+    }
     res.end("data: [DONE]\n\n");
   });
-  return { url: `${url}/v1`, bodies };
+  return { url: `${url}/v1`, bodies, keys };
 }
 export const toolCall = (name: string, args: unknown, id = `call_${name}`) => ({ role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
 export const lastUser = (body: any) => {
@@ -56,9 +65,10 @@ export const lastUser = (body: any) => {
 };
 export const toolResults = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""));
 
-export async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}) {
+/** `tenantsFile` replaces the tenants file (alice and bob, with admin keys). */
+export async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}, tenantsFile?: object) {
   const root = await mkdtemp(join(tmpdir(), "agent-runtime-server-"));
-  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: {
+  writeFileSync(join(root, "tenants.json"), JSON.stringify(tenantsFile ?? { tenants: {
     alice: { tokenSha256: sha(OPERATOR), apiKeys: { "*": "fixture-model-key" } },
     bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { "*": "fixture-model-key" } },
   } }));
