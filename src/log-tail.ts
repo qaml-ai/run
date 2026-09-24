@@ -1,7 +1,7 @@
-import { transaction, type Db } from "./db.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+import { databaseUnavailable, transaction, type Db } from "./db.ts";
 import type { LogTail, TailRow } from "../shared/storage.ts";
-
-const UNIQUE_VIOLATION = "23505";
+import type { Claim } from "./ownership.ts";
 
 /**
  * Logs' hot tails in `log_records`. An append is one multi-row insert, fenced in
@@ -12,8 +12,15 @@ const UNIQUE_VIOLATION = "23505";
  *
  * A compaction holds that lock, and a per-log advisory lock, for the whole move to
  * Storage: no one takes the actor over, or compacts the same log, meanwhile.
+ *
+ * An append is idempotent: rows already there with the same content count as
+ * written, so an append whose connection dropped may be repeated. While the
+ * database is unreachable (a failover) it is repeated for up to `retryMs`, so a
+ * durable flush waits the outage out instead of failing the turn or session that
+ * made it. The fence still holds: a node that lost the actor meanwhile inserts
+ * nothing, and its rows already there do not count.
  */
-export function postgresTail(db: Db): LogTail {
+export function postgresTail(db: Db, options: { retryMs?: number } = {}): LogTail {
   return {
     async rows(key) {
       return (await db.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key])).rows;
@@ -22,17 +29,13 @@ export function postgresTail(db: Db): LogTail {
       return (await db.query("select max(seq) as seq from log_records where log_key = $1", [key])).rows[0].seq ?? undefined;
     },
     async append(key, claim, rows) {
-      try {
-        const { rowCount } = await db.query(`
-          with owner as (select from actor_owners where actor = $2 and session = $3 and epoch = $4 for share)
-          insert into log_records (log_key, seq, actor, snapshot, body, blob)
-          select $1, r.seq, $2, r.snapshot, r.body, r.blob from unnest($5::bigint[], $6::boolean[], $7::text[], $8::text[]) as r(seq, snapshot, body, blob)
-          where $3::uuid is null or exists (select from owner)`,
-          [key, claim?.actor ?? null, claim?.session ?? null, claim?.epoch ?? null, ...columns(rows)]);
-        return rowCount === rows.length;
-      } catch (error) {
-        if ((error as { code?: string }).code === UNIQUE_VIOLATION) return false;
-        throw error;
+      const deadline = Date.now() + (options.retryMs ?? 0);
+      for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
+        try { return await insert(db, key, claim, rows); }
+        catch (error) {
+          if (!databaseUnavailable(error) || Date.now() + delay > deadline) throw error;
+          await sleep(delay);
+        }
       }
     },
     compact(key, claim, fold) {
@@ -49,6 +52,27 @@ export function postgresTail(db: Db): LogTail {
       });
     },
   };
+}
+
+/**
+ * Insert rows under the claim. Rows present before this statement count when they
+ * match exactly (this writer's own earlier attempt); any other row at one of these
+ * sequence numbers, or a claim that is no longer current, makes the append fail.
+ */
+async function insert(db: Db, key: string, claim: Claim | undefined, rows: TailRow[]) {
+  const { rows: [result] } = await db.query(`
+    with owner as (select from actor_owners where actor = $2 and session = $3 and epoch = $4 for share),
+    held as (select $3::uuid is null or exists (select from owner) as ok),
+    r as (select * from unnest($5::bigint[], $6::boolean[], $7::text[], $8::text[]) as r(seq, snapshot, body, blob)),
+    inserted as (
+      insert into log_records (log_key, seq, actor, snapshot, body, blob)
+      select $1, r.seq, $2, r.snapshot, r.body, r.blob from r where (select ok from held)
+      on conflict (log_key, seq) do nothing
+      returning seq)
+    select (select ok from held) as ok, (select count(*) from inserted)::int + (select count(*) from r join log_records l
+      on l.log_key = $1 and l.seq = r.seq and l.snapshot = r.snapshot and l.body is not distinct from r.body and l.blob is not distinct from r.blob)::int as written`,
+    [key, claim?.actor ?? null, claim?.session ?? null, claim?.epoch ?? null, ...columns(rows)]);
+  return result.ok && result.written === rows.length;
 }
 
 function columns(rows: TailRow[]) {

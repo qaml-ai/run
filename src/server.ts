@@ -52,11 +52,13 @@ await migrate(db);
 // Data plane: logs and blobs in local files by default, or shared storage (S3) so any node can serve any agent.
 // Shared logs keep their recent records in Postgres until they are compacted into Storage.
 const storageDescriptor = storageFromEnvironment(root);
-const storage = await openStorage(storageDescriptor, postgresTail(db));
+const leaseTtlMs = Number(process.env.AGENT_LEASE_TTL_MS ?? 90_000);
+// A durable flush while the database is away waits up to a lease for it; by then the node has fenced anyway.
+const storage = await openStorage(storageDescriptor, postgresTail(db, { retryMs: leaseTtlMs }));
 const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
 const address = await taskAddress();
 const node = nodeUrl(process.env, port, address);
-const ownership = new Ownership(db, { node, ttlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 90_000) });
+const ownership = new Ownership(db, { node, ttlMs: leaseTtlMs });
 await ownership.start();
 const hosting = (process.env.AGENT_HOSTING ?? "process") as Hosting;
 if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");

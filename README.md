@@ -113,11 +113,12 @@ read unchanged: their segments are ordinary segments.
 Multi-AZ failover (60–120 s direct; shorter through RDS Proxy, which holds
 client connections and queues statements while the writer moves). A node
 survives an outage of up to about 0.9 × TTL less the time since its last renewal
-(between 63 and 78 s at the default); its running turns carry on meanwhile,
-since they need only storage. Requests that need the database answer 503 with
-`Retry-After`, and the pool replaces broken connections by itself. A longer
-outage fences the node, and it takes its actors back under a higher epoch once
-the database returns. A longer lease survives longer outages but delays
+(between 63 and 78 s at the default). Running turns pause at their next
+durable write, whose tail insert is repeated (it is idempotent and fenced) for
+up to a lease, and carry on once the database is back. Requests that need the
+database answer 503 with `Retry-After`, and the pool replaces broken
+connections by itself. A longer outage fences the node, and it takes its actors
+back under a higher epoch once the database returns. A longer lease survives longer outages but delays
 takeover after a crash; planned stops release explicitly and are unaffected.
 
 Nodes cache an actor's owner for up to 5 seconds, never past the owner's

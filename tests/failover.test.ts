@@ -143,7 +143,7 @@ const waiting = () => {
 };
 
 for (const how of ["reset", "stall"] as const) {
-  test(`a database outage shorter than the lease (${how}): no fence, running work finishes, requests get 503 and Retry-After, then succeed`, { timeout: 60_000 }, async t => {
+  test(`a database outage shorter than the lease (${how}): no fence, a running turn waits it out, requests get 503 and Retry-After, then succeed`, { timeout: 60_000 }, async t => {
     const n = await node(t);
     const { gate, entered, tools } = waiting();
     const agent = await new AgentRuntime({ url: n.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: `short-${how}` });
@@ -154,12 +154,13 @@ for (const how of ["reset", "stall"] as const) {
 
     n.link.down(how);
     const restored = sleep(TTL_MS * 0.4).then(() => n.link.up());
-    // The turn in flight needs no database: its tool result is recorded and it finishes during the outage.
+    // The turn's tool result arrives mid-outage. Recording it durably needs the database (the journal's
+    // tail is in Postgres), so the turn waits the outage out and then finishes; it does not fail.
     setTimeout(() => gate.resolve(), 300);
-    assert.equal((await running).output[0], "waited");
     // Stalled requests may simply finish once the database is back; refused ones answer 503. Many at once
     // fill the node's pool: its heartbeat must not queue behind them.
     const statuses = new Set((await Promise.all(Array.from({ length: 30 }, () => probe(n.url, Date.now() + TTL_MS * 0.3)))).flatMap(set => [...set]));
+    assert.equal((await running).output[0], "waited");
     await restored;
     if (how === "reset") assert.ok(statuses.has(503), "requests needing the database were refused with 503");
 

@@ -267,3 +267,26 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   const history = (await supervisor.history(agent.session.id)).map(message => message.role);
   assert.deepEqual(history, ["user", "assistant", "toolResult", "assistant", "toolResult", "assistant"]);
 });
+
+test("an append may be repeated after its connection dropped: its own rows count, anyone else's and a lost claim do not", async t => {
+  const { db } = await testDatabase();
+  const tail = postgresTail(db);
+  const { claim } = await claimed(t, db, "http://a", "client_repeat");
+  const batch = [{ seq: 0, snapshot: false, body: '{"n":0}', blob: null }, { seq: 1, snapshot: false, body: '{"n":1}', blob: null }];
+  assert.equal(await tail.append("agents/r/log", claim, batch), true);
+  // The first attempt landed but its answer was lost; the repeat, with a record added, succeeds.
+  assert.equal(await tail.append("agents/r/log", claim, [...batch, { seq: 2, snapshot: false, body: '{"n":2}', blob: null }]), true);
+  assert.deepEqual(await rows(db, "agents/r/log"), [0, 1, 2]);
+  assert.equal(await tail.append("agents/r/log", claim, [{ seq: 2, snapshot: false, body: '{"n":"other"}', blob: null }]), false, "another writer's row at that position");
+  const stale = { ...claim, epoch: claim.epoch - 1 };
+  assert.equal(await tail.append("agents/r/log", stale, batch), false, "a lost claim counts nothing, not even its own rows");
+
+  // While the database is unreachable an append is retried for up to retryMs, then fails.
+  let calls = 0;
+  const flaky = { query: async (...args: unknown[]) => { if (++calls <= 2) throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }); return (db.query as (...a: unknown[]) => unknown)(...args); } } as unknown as pg.Pool;
+  assert.equal(await postgresTail(flaky, { retryMs: 5_000 }).append("agents/r/log", claim, [{ seq: 3, snapshot: false, body: '{"n":3}', blob: null }]), true);
+  assert.equal(calls, 3);
+  const down = { query: async () => { throw Object.assign(new Error("Connection terminated unexpectedly"), {}); } } as unknown as pg.Pool;
+  await assert.rejects(postgresTail(down, { retryMs: 300 }).append("agents/r/log", claim, batch), /Connection terminated/);
+  await assert.rejects(postgresTail(down).append("agents/r/log", claim, batch), /Connection terminated/, "no retries by default");
+});
