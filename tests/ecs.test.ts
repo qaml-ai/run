@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { callbackUrl, nodeLoadLine, nodeUrl, taskAddress } from "../src/ecs.ts";
+import { callbackUrl, nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "../src/ecs.ts";
 import { tenantsFromEnvironment } from "../src/tenants.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -45,6 +45,74 @@ test("the node and executor callback addresses are explicit, else the ECS task's
   await assert.rejects(taskAddress(ecs), /no private IPv4 address; set AGENT_NODE_URL/);
   status = 500;
   await assert.rejects(taskAddress(ecs), /HTTP 500/);
+});
+
+test("a task is superseded when the service's primary deployment runs another revision or started after it", async t => {
+  const task = { Cluster: "arn:aws:ecs:us-west-2:123456789012:cluster/camelai-agent-runtime", Family: "camelai-agent-runtime", Revision: "7", PullStartedAt: "2026-09-23T10:00:00.000Z" };
+  const endpoint = await fake(t, (req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(req.url!.endsWith("/task") ? task : {})));
+  const asked: string[][] = [];
+  let primary: { taskDefinition?: string; createdAt?: Date } | undefined;
+  const describe = async (cluster: string, service: string) => { asked.push([cluster, service]); return primary; };
+  const env = { ECS_CONTAINER_METADATA_URI_V4: `${endpoint}/v4/0123`, AGENT_ECS_SERVICE: "camelai-agent-runtime" };
+  assert.equal(await supersession({ ECS_CONTAINER_METADATA_URI_V4: env.ECS_CONTAINER_METADATA_URI_V4 }, describe), undefined, "no service named: nothing to watch");
+  const superseded = (await supersession(env, describe))!;
+  const revision = (n: number) => `arn:aws:ecs:us-west-2:123456789012:task-definition/camelai-agent-runtime:${n}`;
+
+  primary = { taskDefinition: revision(7), createdAt: new Date("2026-09-23T09:55:00Z") };
+  assert.equal(await superseded(), false);
+  assert.deepEqual(asked[0], [task.Cluster, "camelai-agent-runtime"], "the cluster comes from the task when AGENT_ECS_CLUSTER is unset");
+  primary = { taskDefinition: revision(17), createdAt: new Date("2026-09-23T09:55:00Z") };
+  assert.equal(await superseded(), true, "revision 17 does not end with :7");
+  primary = { taskDefinition: revision(8), createdAt: new Date("2026-09-23T11:00:00Z") };
+  assert.equal(await superseded(), true);
+  primary = { taskDefinition: revision(7), createdAt: new Date("2026-09-23T11:00:00Z") };
+  assert.equal(await superseded(), true, "a forced deployment of the same revision");
+  primary = undefined;
+  assert.equal(await superseded(), false);
+  await supersession({ ...env, AGENT_ECS_CLUSTER: "other" }, describe).then(check => check!());
+  assert.equal(asked.at(-1)![0], "other");
+});
+
+test("task protection turns on with work, renews before it expires, and turns off only after a quiet period", async t => {
+  const writes: any[] = [];
+  let fail = false;
+  const endpoint = await fake(t, (req, res, body) => {
+    writes.push({ method: req.method, path: req.url, body: JSON.parse(body) });
+    if (fail) return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ failure: { Arn: "arn", Reason: "TASK_NOT_VALID" } }));
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ protection: { ProtectionEnabled: true } }));
+  });
+  let now = 0;
+  const protection = new TaskProtection({ uri: `${endpoint}/api/task-1234/`, idleMs: 30_000, expiresMinutes: 60, now: () => now });
+  const tick = async (busy: boolean, at: number) => { now = at; await protection.update(busy); };
+  const states = () => writes.map(write => write.body.ProtectionEnabled);
+
+  await tick(false, 0);
+  assert.deepEqual(writes, [], "idle from the start: nothing to clear");
+  await tick(true, 1_000);
+  assert.deepEqual(writes[0], { method: "PUT", path: "/api/task-1234/task-protection/v1/state", body: { ProtectionEnabled: true, ExpiresInMinutes: 60 } });
+  for (let at = 2_000; at < 60_000; at += 1_000) await tick(at % 20_000 < 10_000, at);
+  assert.deepEqual(states(), [true], "gaps shorter than the quiet period never clear it");
+  await tick(true, 1_000 + 15 * 60_000);
+  assert.deepEqual(states(), [true, true], "renewed a quarter into its lifetime");
+  const renewed = 1_000 + 15 * 60_000;
+  await tick(false, renewed + 10_000);
+  await tick(false, renewed + 29_000);
+  assert.deepEqual(states(), [true, true]);
+  await tick(false, renewed + 30_000);
+  await tick(false, renewed + 90_000);
+  assert.deepEqual(states(), [true, true, false], "cleared once, after 30 s without work");
+  assert.equal(protection.enabled, false);
+
+  fail = true;
+  await tick(true, 20 * 60_000);
+  assert.equal(protection.enabled, false, "a refused write is not taken as protection");
+  fail = false;
+  await tick(true, 20 * 60_000 + 1_000);
+  assert.equal(protection.enabled, true, "and is retried on the next tick");
+
+  const off = new TaskProtection({});
+  await off.update(true);
+  assert.equal(off.enabled, false, "a no-op off ECS");
 });
 
 test("node load is a CloudWatch Embedded Metric Format line", () => {

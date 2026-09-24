@@ -618,6 +618,11 @@ export class VolumeService {
     }
   }
 
+  /** Give up every volume not in use now, so any node can serve it next. */
+  async releaseIdle() {
+    for (const volume of [...this.loaded.values()]) if (!volume.active && !volume.notifying) await this.unload(volume);
+  }
+
   /** Volumes this node serves now. */
   get size() { return this.loaded.size; }
 

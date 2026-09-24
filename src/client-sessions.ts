@@ -149,8 +149,9 @@ export class ClientSessions {
   readonly db: Db;
   readonly heartbeat: ReturnType<typeof setInterval>;
   private closed = false;
-  /** Set while the node drains: runs that have not begun stay queued for the next owner. */
+  /** Set while the node drains or retires: runs that have not begun stay queued for the next owner. */
   draining = false;
+  private releasing = false;
 
   constructor(supervisor: AgentSupervisor, options: ClientSessionOptions) {
     if (!options.storage && !options.root) throw new Error("ClientSessions needs storage or root");
@@ -898,13 +899,33 @@ export class ClientSessions {
   /** Requests being worked on: runs that began and other open requests, but not queued runs or resumes. */
   inFlight() {
     let count = 0;
-    for (const session of this.sessions.values()) {
-      if (session.starting) count++;
-      for (const request of session.requests.values()) {
-        if (request.state === "running" && (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method))) count++;
-      }
+    for (const session of this.sessions.values()) count += this.working(session);
+    return count;
+  }
+
+  private working(session: Session) {
+    let count = session.starting ? 1 : 0;
+    for (const request of session.requests.values()) {
+      if (request.state === "running" && (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method))) count++;
     }
     return count;
+  }
+
+  /**
+   * Give up every agent with nothing running, leaving queued runs for its next owner,
+   * and close its stream after the release so the client reconnects to that owner.
+   */
+  async releaseIdle() {
+    if (this.releasing) return;
+    this.releasing = true;
+    try {
+      for (const session of [...this.sessions.values()]) {
+        if (this.working(session) || session.pending.size) continue;
+        await this.supervisor.stop(session.header.id).catch(() => {});
+        await this.unload(session);
+        session.response?.end();
+      }
+    } finally { this.releasing = false; }
   }
 
   /** Expire sessions, keep SSE alive, and release idle agents' processes and memory. */

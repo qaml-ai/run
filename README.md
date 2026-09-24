@@ -110,6 +110,28 @@ A second signal stops the wait. Every 503 carries `Retry-After`. Give the
 container a stop timeout longer than the drain (ECS `stopTimeout` 120 with the
 default 100 s).
 
+<a id="deploys"></a>**Deploys and scale-in on ECS.** Fargate stops a task at most 120 s after
+SIGTERM, and turns can run far longer, so tasks avoid being stopped mid-turn:
+
+- *Protection.* While any turn runs (a run that began, including its tool calls),
+  the task sets ECS task scale-in protection through the agent endpoint
+  (`PUT $ECS_AGENT_URI/task-protection/v1/state`, 60 minutes, renewed every 15),
+  and clears it after `AGENT_PROTECTION_IDLE_MS` (default 30 s) without work.
+  Scale-in and deployments leave protected tasks alone, so scale-in picks idle
+  tasks and needs nothing more.
+- *Retirement.* Every `AGENT_ECS_POLL_MS` (default 30 s) a task compares itself
+  with its service's primary deployment (task metadata and `ecs:DescribeServices`
+  on `AGENT_ECS_SERVICE` in `AGENT_ECS_CLUSTER`, else the task's own cluster).
+  When that deployment runs another task definition, or was created after the task
+  started, the task retires: it takes no new agents or volumes (requests for them
+  go to a live peer, as when draining), lets running turns finish for up to
+  `AGENT_RETIRE_MAX_MS` (default 6 h), gives up each agent and volume as soon as
+  nothing runs on it (closing its event stream so the client reconnects to the new
+  owner), and clears protection once idle. ECS then stops it and the drain finds
+  nothing to do. `/healthz` stays 200 while retiring: ECS replaces tasks that fail
+  their health check, protected or not, so the task keeps the load balancer's
+  traffic and hands it on.
+
 <a id="turn-handoff"></a>**Turn handoff.** When a node loads an agent whose last
 run began and never finished (its node crashed, was killed, or drained out of
 time), the turn resumes there under the same request ID instead of failing: an
@@ -140,6 +162,9 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 30000) |
 | `AGENT_DRAIN_TIMEOUT_MS` | how long SIGTERM waits for running turns before handing them off (default 100000; see [Draining](#draining)) |
+| `AGENT_ECS_SERVICE`, `AGENT_ECS_CLUSTER` | the ECS service this task belongs to, for retirement (see [Deploys](#deploys)); the cluster defaults to the task's own; without the service, tasks never retire |
+| `AGENT_RETIRE_MAX_MS` | how long a retiring task keeps protection for running turns (default 21600000, 6 h) |
+| `AGENT_ECS_POLL_MS`, `AGENT_PROTECTION_IDLE_MS` | how often to check the service's deployment (default 30000), and how long without work before task protection is cleared (default 30000) |
 | `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?}}}`), re-read on SIGHUP |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, e.g. from an ECS task definition's `secrets` (a JSON key of a secret is `<arn>:clientId::`) |

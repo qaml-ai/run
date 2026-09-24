@@ -28,6 +28,86 @@ export function callbackUrl(env: NodeJS.ProcessEnv, port: number, address?: stri
   return (env.AGENT_EXECUTOR_CALLBACK_URL ?? (address ? `http://${address}:${port}` : "")).replace(/\/+$/, "");
 }
 
+/**
+ * Whether a newer deployment of this task's ECS service has replaced it: the
+ * primary deployment runs another task definition, or was created after this task
+ * started (a forced deployment of the same revision). The service is
+ * AGENT_ECS_SERVICE; the cluster is AGENT_ECS_CLUSTER or the task's own.
+ * Undefined when this is not an ECS service task.
+ */
+export async function supersession(env = process.env, describe?: (cluster: string, service: string) => Promise<{ taskDefinition?: string; createdAt?: Date } | undefined>) {
+  if (!env.ECS_CONTAINER_METADATA_URI_V4 || !env.AGENT_ECS_SERVICE) return undefined;
+  const task = await metadata(`${env.ECS_CONTAINER_METADATA_URI_V4}/task`);
+  const cluster = env.AGENT_ECS_CLUSTER ?? task.Cluster;
+  const service = env.AGENT_ECS_SERVICE;
+  const own = `:task-definition/${task.Family}:${task.Revision}`;
+  const started = task.PullStartedAt ? Date.parse(task.PullStartedAt) : undefined;
+  if (!describe) {
+    const { DescribeServicesCommand, ECSClient } = await import("@aws-sdk/client-ecs");
+    const client = new ECSClient({ region: env.AWS_REGION ?? env.AWS_DEFAULT_REGION });
+    describe = async (cluster, service) => {
+      const { services } = await client.send(new DescribeServicesCommand({ cluster, services: [service] }));
+      return services?.[0]?.deployments?.find(deployment => deployment.status === "PRIMARY");
+    };
+  }
+  return async () => {
+    const primary = await describe!(cluster, service);
+    if (!primary?.taskDefinition) return false;
+    return !primary.taskDefinition.endsWith(own) || (started !== undefined && !!primary.createdAt && primary.createdAt.getTime() > started);
+  };
+}
+
+/**
+ * ECS task scale-in protection through the ECS agent endpoint (ECS_AGENT_URI), so
+ * neither scale-in nor a deployment stops a task mid-turn. It is set as soon as
+ * work runs, renewed well before it expires, and cleared only after `idleMs`
+ * without work, so short gaps between turns do not flap it. A no-op off ECS.
+ */
+export class TaskProtection {
+  private readonly uri?: string;
+  private readonly idleMs: number;
+  private readonly expiresMinutes: number;
+  private readonly now: () => number;
+  private enabledAt?: number;
+  private lastBusy = -Infinity;
+  private writing = false;
+
+  constructor(options: { uri?: string; idleMs?: number; expiresMinutes?: number; now?: () => number }) {
+    this.uri = options.uri?.replace(/\/+$/, "");
+    this.idleMs = options.idleMs ?? 30_000;
+    this.expiresMinutes = options.expiresMinutes ?? 60;
+    this.now = options.now ?? Date.now;
+  }
+
+  get enabled() { return this.enabledAt !== undefined; }
+
+  /** Called on every tick with whether any turn is running. Failed writes retry on the next tick. */
+  async update(busy: boolean) {
+    if (!this.uri || this.writing) return;
+    const now = this.now();
+    if (busy) this.lastBusy = now;
+    const renew = this.enabledAt !== undefined && now - this.enabledAt >= this.expiresMinutes * 60_000 / 4;
+    if (busy && (this.enabledAt === undefined || renew)) await this.write(true, now);
+    else if (!busy && this.enabledAt !== undefined && (renew || now - this.lastBusy >= this.idleMs)) await this.write(now - this.lastBusy < this.idleMs, now);
+  }
+
+  private async write(enabled: boolean, now: number) {
+    this.writing = true;
+    try {
+      const response = await fetch(`${this.uri}/task-protection/v1/state`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(5_000),
+        body: JSON.stringify(enabled ? { ProtectionEnabled: true, ExpiresInMinutes: this.expiresMinutes } : { ProtectionEnabled: false }),
+      });
+      const body = await response.json().catch(() => ({})) as { failure?: { Reason?: string } };
+      if (!response.ok || body.failure) throw new Error(body.failure?.Reason ?? `HTTP ${response.status}`);
+      this.enabledAt = enabled ? now : undefined;
+      console.log(JSON.stringify({ type: "task_protection", enabled }));
+    } catch (error) {
+      console.error(JSON.stringify({ type: "task_protection_failed", enabled, error: (error as Error).message }));
+    } finally { this.writing = false; }
+  }
+}
+
 export type NodeLoad = { agents: number; volumes: number; runningTurns: number; rssBytes: number };
 
 /**

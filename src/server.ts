@@ -26,7 +26,7 @@ import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
-import { callbackUrl, nodeLoadLine, nodeUrl, taskAddress } from "./ecs.ts";
+import { callbackUrl, nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -42,6 +42,8 @@ if (!Number.isInteger(maxProcessesPerTenant) || maxProcessesPerTenant < 1) throw
 const port = Number(process.env.PORT ?? 8790);
 const drainMs = Number(process.env.AGENT_DRAIN_TIMEOUT_MS ?? 100_000);
 if (!Number.isInteger(drainMs) || drainMs < 0) throw new Error("AGENT_DRAIN_TIMEOUT_MS must be a non-negative integer");
+const retireMaxMs = Number(process.env.AGENT_RETIRE_MAX_MS ?? 6 * 60 * 60_000);
+if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RETIRE_MAX_MS must be a non-negative integer");
 // Control plane: coordination and small mutable state in Postgres.
 const db = await databaseFromEnvironment();
 await migrate(db);
@@ -239,8 +241,9 @@ channels.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
-// The load balancer's health check: failing it while draining stops new requests arriving here.
-app.get("/healthz", c => ownership.draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true }));
+// The load balancer's health check: failing it while draining stops new requests arriving here. A retiring
+// node stays healthy (ECS replaces tasks that fail it, protected or not) and hands new work to its peers instead.
+app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
 // Every 503 is worth retrying (capacity, an actor moving, this node draining); say when.
 app.use(async (c, next) => {
   await next();
@@ -363,8 +366,40 @@ tenantsTimer?.unref();
 // Load for autoscaling, as a CloudWatch metric extracted from the log line.
 const loadTimer = setInterval(() => console.log(nodeLoadLine({
   agents: supervisor.agents.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: process.memoryUsage.rss(),
-}, process.env.AGENT_SERVICE_NAME, { node })), 60_000);
+}, process.env.AGENT_SERVICE_NAME, { node, retiring: retiringSince !== undefined })), 60_000);
 loadTimer.unref();
+
+/**
+ * Deploys and scale-in on ECS. While a turn runs the task is protected, so ECS
+ * stops idle tasks instead. A task a newer deployment superseded retires: it takes
+ * nothing new (its peers do), lets running turns finish for up to
+ * AGENT_RETIRE_MAX_MS, gives up each agent and volume once idle, and drops its
+ * protection when nothing runs, so ECS stops it and the SIGTERM drain is empty.
+ */
+const protection = new TaskProtection({ uri: process.env.ECS_AGENT_URI, idleMs: Number(process.env.AGENT_PROTECTION_IDLE_MS ?? 30_000) });
+let retiringSince: number | undefined;
+let retired = false;
+const workTimer = setInterval(() => {
+  if (retiringSince !== undefined) {
+    void clients.releaseIdle().then(() => volumes.releaseIdle()).catch(error => console.error(JSON.stringify({ type: "retire_release_failed", error: errorText(error) })));
+    if (!retired && !clients.inFlight() && !clients.sessions.size && !volumes.size) {
+      retired = true;
+      console.log(JSON.stringify({ type: "retired", node, ms: Date.now() - retiringSince }));
+    }
+  }
+  const capped = retiringSince !== undefined && Date.now() - retiringSince > retireMaxMs;
+  void protection.update(clients.inFlight() > 0 && !capped);
+}, 1_000);
+workTimer.unref();
+const superseded = await supersession().catch(error => { console.error(JSON.stringify({ type: "ecs_service_unavailable", error: errorText(error) })); return undefined; });
+const retireTimer = superseded && setInterval(() => void superseded().then(async yes => {
+  if (!yes || retiringSince !== undefined) return;
+  retiringSince = Date.now();
+  console.log(JSON.stringify({ type: "retiring", node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
+  clients.draining = true;
+  await ownership.drain();
+}).catch(error => console.error(JSON.stringify({ type: "ecs_service_check_failed", error: errorText(error) }))), Number(process.env.AGENT_ECS_POLL_MS ?? 30_000));
+if (retireTimer) retireTimer.unref();
 
 /**
  * Leave the cluster without dropping work. ECS deregisters the task from the load
@@ -384,6 +419,8 @@ async function drain(signal: string) {
   channels.stop();
   clearInterval(tenantsTimer);
   clearInterval(loadTimer);
+  clearInterval(workTimer);
+  if (retireTimer) clearInterval(retireTimer);
   clients.draining = true;
   let failed = false;
   const step = async (name: string, work: () => Promise<unknown>) => {

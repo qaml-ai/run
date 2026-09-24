@@ -393,6 +393,74 @@ test("a turn that keeps killing its node is resumed at most twice, then fails as
   assert.equal(request.outcome.uncertain, true);
 });
 
+/** Stand-ins for what a task sees on ECS: container and task metadata, the ECS API, and the agent's task-protection endpoint. */
+async function fakeEcs(t: { after(fn: () => Promise<void>): void }) {
+  const state = { revision: 1, created: Date.now() / 1000 - 60, protection: [] as boolean[] };
+  const task = { Cluster: "arn:aws:ecs:us-west-2:123456789012:cluster/runtime", Family: "runtime", Revision: "1", PullStartedAt: new Date().toISOString() };
+  const server = createHttpServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const json = (value: unknown, type = "application/json") => res.writeHead(200, { "Content-Type": type }).end(JSON.stringify(value));
+    if (req.url === "/metadata") return json({ Networks: [{ NetworkMode: "awsvpc", IPv4Addresses: ["127.0.0.1"] }] });
+    if (req.url === "/metadata/task") return json(task);
+    if (req.url === "/agent/task-protection/v1/state") { state.protection.push(JSON.parse(text).ProtectionEnabled); return json({ protection: {} }); }
+    assert.equal(req.headers["x-amz-target"], "AmazonEC2ContainerServiceV20141113.DescribeServices");
+    json({ services: [{ serviceName: "runtime", deployments: [{ status: "PRIMARY", taskDefinition: `arn:aws:ecs:us-west-2:123456789012:task-definition/runtime:${state.revision}`, createdAt: state.created }] }], failures: [] }, "application/x-amz-json-1.1");
+  }).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const env = {
+    AGENT_NODE_URL: "", ECS_CONTAINER_METADATA_URI_V4: `${url}/metadata`, ECS_AGENT_URI: `${url}/agent`, AWS_ENDPOINT_URL_ECS: url,
+    AWS_REGION: "us-west-2", AWS_ACCESS_KEY_ID: "AKIDEXAMPLE", AWS_SECRET_ACCESS_KEY: "fixture-secret", AGENT_ECS_SERVICE: "runtime",
+    AGENT_ECS_POLL_MS: "200", AGENT_PROTECTION_IDLE_MS: "500",
+  };
+  return { state, env };
+}
+
+test("on ECS a task is protected while turns run, and once superseded it retires: new work goes to peers, turns finish, idle agents move", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const ecs = await fakeEcs(t);
+  const a = await c.start("a", ecs.env);
+  const b = await c.start("b");
+  assert.equal(a.logs.find(entry => entry.type === "listening").node, a.url, "the node address came from the task metadata");
+  const gate = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  const tools = { slow: tool({ description: "Wait", input: schema.Object({}, { additionalProperties: false }), execute: async () => { entered.resolve(); await gate.promise; return "finished-on-a"; } }) };
+  const viaA = new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() });
+  const busy = await viaA.createAgent({ tools, idempotencyKey: "long-turn" });
+  t.after(() => busy.close());
+  const running = busy.execute("return await tools.slow({})", { timeoutMs: 60_000 });
+  await entered.promise;
+  await until(() => ecs.state.protection.includes(true), "the task is protected while the turn runs");
+
+  // A deployment replaces the task definition: A retires but stays healthy, so ECS does not replace it mid-turn.
+  ecs.state.revision = 2;
+  ecs.state.created = Date.now() / 1000;
+  await until(() => a.logs.some(entry => entry.type === "retiring"), "A saw it was superseded");
+  const health = await fetch(`${a.url}/healthz`);
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { ok: true, retiring: true });
+  const fresh = await viaA.createAgent({ tools: {}, idempotencyKey: "created-while-retiring" });
+  await fresh.close();
+  assert.equal(await c.owner(fresh.session.id), b.url, "new agents start on a peer");
+  await sleep(1_500);
+  assert.equal(await c.owner(busy.session.id), a.url, "the running turn keeps its agent on A");
+  assert.deepEqual(ecs.state.protection, [true], "no flapping while the turn runs");
+
+  gate.resolve();
+  assert.equal((await running).output[0], "finished-on-a");
+  await until(() => a.logs.some(entry => entry.type === "retired"), "A gave everything up once idle");
+  await until(() => ecs.state.protection.at(-1) === false, "protection cleared once nothing runs");
+  // The agent's client reconnects and carries on, now served by B.
+  assert.equal((await busy.execute('return "on b"', { timeoutMs: 30_000 })).output[0], "on b");
+  assert.equal(await c.owner(busy.session.id), b.url);
+
+  a.child.kill("SIGTERM");
+  assert.equal((await once(a.child, "exit"))[0], 0);
+  assert.deepEqual(a.logs.find(entry => entry.type === "drain_started")?.agents, 0, "the drain found nothing to do");
+});
+
 test("a turn still running when the drain times out is handed off and resumed by the next owner", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "resumed after the drain" });
