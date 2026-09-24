@@ -77,15 +77,10 @@ variable "noncurrent_version_days" {
 
 # --- Executor tier (executor.tf) ---
 
-variable "executor_count" {
-  description = "Number of code executor hosts infra/executor/deploy.sh launches. 0 leaves the executor tier (secret, security groups, launch template) uncreated."
-  type        = number
-  default     = 0
-
-  validation {
-    condition     = var.executor_count >= 0 && floor(var.executor_count) == var.executor_count
-    error_message = "executor_count must be a whole number >= 0."
-  }
+variable "executor_enabled" {
+  description = "Create the code executor tier: private subnets, VPC endpoints, the executor Auto Scaling group and its security rules."
+  type        = bool
+  default     = false
 }
 
 variable "executor_name" {
@@ -93,13 +88,47 @@ variable "executor_name" {
   default = "camelai-agent-executor"
 }
 
+variable "executor_ami_id" {
+  description = "Executor AMI (the Packer image with Docker and gVisor preinstalled; the private subnets have no internet). Required when executor_enabled."
+  type        = string
+  default     = null
+}
+
+variable "executor_image" {
+  description = "Image the executors run. null runs the ECS service's initial image (runtime_image_tag)."
+  type        = string
+  default     = null
+}
+
 variable "executor_instance_type" {
   type    = string
   default = "t4g.small"
 }
 
+variable "executor_min_size" {
+  type    = number
+  default = 2
+}
+
+variable "executor_max_size" {
+  type    = number
+  default = 6
+}
+
+variable "executor_cpu_target" {
+  description = "Average CPU utilization the executor group scales to hold."
+  type        = number
+  default     = 60
+}
+
+variable "executor_max_concurrency" {
+  description = "Concurrent executions per executor host (AGENT_EXECUTOR_MAX_CONCURRENCY)."
+  type        = number
+  default     = 8
+}
+
 variable "executor_port" {
-  description = "Port executors listen on; only the runtime group may reach it."
+  description = "Port executors listen on; only the runtime tasks may reach it."
   type        = number
   default     = 8790
 }
@@ -108,6 +137,35 @@ variable "executor_callback_port" {
   description = "Runtime callback listener port; only the executor group may reach it."
   type        = number
   default     = 8791
+}
+
+variable "executor_private_subnets" {
+  description = "Executor subnets (AZ => CIDR) in the default VPC, one per AZ. 172.31.0.0/18 holds the default subnets; 172.31.64.0/23, .78.0/24, .100-.103 and .106-.107 are taken by other stacks."
+  type        = map(string)
+  default = {
+    "us-west-2a" = "172.31.80.0/24"
+    "us-west-2b" = "172.31.81.0/24"
+    "us-west-2c" = "172.31.82.0/24"
+    "us-west-2d" = "172.31.83.0/24"
+  }
+}
+
+variable "executor_endpoint_az_count" {
+  description = "Interface endpoints cost per AZ; place them in this many of the executor subnets (cross-AZ use still works)."
+  type        = number
+  default     = 2
+}
+
+variable "executor_runtime_callback_cidr" {
+  description = "CIDR executors may send callbacks to: the default subnets the Fargate tasks run in."
+  type        = string
+  default     = "172.31.0.0/18"
+}
+
+variable "shared_ssm_endpoint_security_group_ids" {
+  description = "Security groups of the ssm/ssmmessages/ec2messages interface endpoints that already exist in the default VPC with private DNS (django-app-ecs-staging). A second endpoint with private DNS cannot be created, so executors use these; they admit 443 from 172.31.0.0/16."
+  type        = list(string)
+  default     = ["sg-0fc3387d0ca916343"]
 }
 
 variable "database_instance_class" {
@@ -120,4 +178,95 @@ variable "database_engine_version" {
   description = "Postgres major version; minor versions upgrade automatically."
   type        = string
   default     = "17"
+}
+
+# --- ECS service (ecs.tf, alb.tf) ---
+
+variable "runtime_image_tag" {
+  description = "Image tag for the task definition Terraform registers. Deploys (infra/ecs-deploy.sh) register later revisions outside Terraform; the service ignores task_definition."
+  type        = string
+  default     = "cd9d81af31ea"
+}
+
+variable "task_cpu" {
+  type    = number
+  default = 1024
+}
+
+variable "task_memory" {
+  type    = number
+  default = 2048
+}
+
+variable "service_min_count" {
+  description = "Minimum (and initial) number of runtime tasks."
+  type        = number
+  default     = 2
+}
+
+variable "service_max_count" {
+  type    = number
+  default = 10
+}
+
+variable "service_cpu_target" {
+  type    = number
+  default = 60
+}
+
+variable "service_memory_target" {
+  type    = number
+  default = 70
+}
+
+variable "container_insights" {
+  description = "ECS Container Insights; the RunningTaskCount alarm needs it."
+  type        = string
+  default     = "enabled"
+}
+
+variable "alb_idle_timeout" {
+  description = "Seconds an idle ALB connection stays open. SSE streams heartbeat every few seconds."
+  type        = number
+  default     = 360
+}
+
+variable "alb_access_logs_bucket" {
+  description = "S3 bucket for ALB access logs, or null for none. The bucket needs the ELB log delivery policy."
+  type        = string
+  default     = null
+}
+
+variable "runtime_env" {
+  description = "Non-secret runtime settings (from instance/runtime.defaults.env). Storage, database and public URL settings are derived in ecs.tf."
+  type        = map(string)
+  default = {
+    AGENT_PROVIDER                 = "anthropic"
+    AGENT_MODEL                    = "claude-sonnet-5"
+    AGENT_MAX_PROCESSES            = "16"
+    AGENT_MAX_PROCESSES_PER_TENANT = "8"
+    AGENT_IDLE_MS                  = "300000"
+    AGENT_TOOL_TIMEOUT_MS          = "60000"
+    GITHUB_ORG                     = "qaml-ai"
+    AGENT_HOSTING                  = "inline"
+  }
+}
+
+# --- DNS (dns.tf) ---
+
+variable "dns_target" {
+  description = "Where agents.camelai.dev points: \"host\" (A record at the EC2 Elastic IP) or \"alb\" (CNAME at the load balancer). Flip deliberately; see README.md, Cutover."
+  type        = string
+  default     = "host"
+
+  validation {
+    condition     = contains(["host", "alb"], var.dns_target)
+    error_message = "dns_target must be \"host\" or \"alb\"."
+  }
+}
+
+variable "dns_ttl" {
+  description = "TTL of the runtime record. Lower it to 60 at least one old TTL before flipping dns_target."
+  type        = number
+  default     = 300
 }

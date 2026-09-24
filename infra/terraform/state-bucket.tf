@@ -70,27 +70,32 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
 # writes (PutObject with If-None-Match or If-Match) need only s3:PutObject; no
 # statement here denies or restricts on the s3:if-none-match / s3:if-match keys.
 # DeleteObjects (batch) is authorized per key by s3:DeleteObject.
+# The ECS task role (ecs.tf) gets the same statements.
+locals {
+  state_bucket_statements = [
+    {
+      Sid      = "StateObjects"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      Resource = "${aws_s3_bucket.state.arn}/${var.state_prefix}/*"
+    },
+    {
+      Sid      = "ListStatePrefix"
+      Effect   = "Allow"
+      Action   = "s3:ListBucket"
+      Resource = aws_s3_bucket.state.arn
+      Condition = {
+        StringLike = { "s3:prefix" = ["${var.state_prefix}/*"] }
+      }
+    },
+  ]
+}
+
 resource "aws_iam_role_policy" "runtime_state_bucket" {
   name = "agent-state-bucket"
   role = aws_iam_role.runtime.name
   policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "StateObjects"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-        Resource = "${aws_s3_bucket.state.arn}/${var.state_prefix}/*"
-      },
-      {
-        Sid      = "ListStatePrefix"
-        Effect   = "Allow"
-        Action   = "s3:ListBucket"
-        Resource = aws_s3_bucket.state.arn
-        Condition = {
-          StringLike = { "s3:prefix" = ["${var.state_prefix}/*"] }
-        }
-      },
-    ]
+    Version   = "2012-10-17"
+    Statement = local.state_bucket_statements
   })
 }

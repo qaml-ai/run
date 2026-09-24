@@ -36,12 +36,14 @@ output "secret_arns" {
 }
 
 output "executor" {
-  description = "Executor tier ids, or null while executor_count = 0."
+  description = "Executor tier ids, or null while executor_enabled = false."
   value = local.executor_enabled ? {
-    security_group           = aws_security_group.executor[0].id
-    bootstrap_security_group = aws_security_group.executor_bootstrap[0].id
-    launch_template          = aws_launch_template.executor[0].name
-    count                    = var.executor_count
+    security_group    = aws_security_group.executor[0].id
+    subnets           = local.executor_subnet_ids
+    launch_template   = aws_launch_template.executor[0].name
+    autoscaling_group = aws_autoscaling_group.executor[0].name
+    url               = local.executor_url
+    log_group         = aws_cloudwatch_log_group.executor[0].name
   } : null
 }
 
@@ -53,4 +55,25 @@ output "database" {
     name       = aws_db_instance.control.db_name
     secret_arn = aws_db_instance.control.master_user_secret[0].secret_arn
   }
+}
+
+output "alb_dns_name" {
+  description = "Verify before the DNS flip: curl --connect-to <hostname>:443:<this>:443 https://<hostname>/healthz"
+  value       = aws_lb.runtime.dns_name
+}
+
+output "ecs" {
+  description = "Names infra/ecs-deploy.sh uses."
+  value = {
+    cluster   = aws_ecs_cluster.runtime.name
+    service   = aws_ecs_service.runtime.name
+    family    = aws_ecs_task_definition.runtime.family
+    container = local.container_name
+    log_group = aws_cloudwatch_log_group.runtime.name
+  }
+}
+
+output "alerts_topic_arn_regional" {
+  description = "us-west-2 alerts topic for the ALB/ECS alarms; subscribe like alerts_topic_arn (with --region us-west-2)."
+  value       = aws_sns_topic.alerts_regional.arn
 }

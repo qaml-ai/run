@@ -3,7 +3,7 @@
 
 locals {
   secret_arn_prefix = "arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${var.secret_prefix}"
-  executor_enabled  = var.executor_count > 0
+  executor_enabled  = var.executor_enabled
 }
 
 data "aws_vpc" "default" {
@@ -57,9 +57,9 @@ resource "aws_iam_role_policy_attachment" "runtime_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# Secrets, and pull access to the runtime's own repository. The executor-token
-# grant is added only once the executor tier is enabled (executor.tf); S3 access
-# for agent state is a separate policy (state-bucket.tf).
+# Secrets, and pull access to the runtime's own repository. S3 access for agent
+# state is a separate policy (state-bucket.tf). Executors serve the ECS tasks
+# only (ecs.tf), so this host never gets the executor token.
 resource "aws_iam_role_policy" "runtime" {
   name = "agent-runtime"
   role = aws_iam_role.runtime.name
@@ -67,12 +67,9 @@ resource "aws_iam_role_policy" "runtime" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = "secretsmanager:GetSecretValue"
-        Resource = concat(
-          [for secret in ["session-secret", "tenants", "secrets-key", "github-oauth"] : "${local.secret_arn_prefix}/${secret}-*"],
-          local.executor_enabled ? ["${local.secret_arn_prefix}/executor-token-*"] : [],
-        )
+        Effect   = "Allow"
+        Action   = "secretsmanager:GetSecretValue"
+        Resource = [for secret in ["session-secret", "tenants", "secrets-key", "github-oauth"] : "${local.secret_arn_prefix}/${secret}-*"]
       },
       {
         Effect   = "Allow"
@@ -95,8 +92,7 @@ resource "aws_iam_instance_profile" "runtime" {
 
 # --- Network ---
 
-# Rules are separate resources (below and in executor.tf) so the executor tier
-# can add its callback rule without fighting inline rules.
+# Rules are separate resources (below) rather than inline.
 resource "aws_security_group" "runtime" {
   name        = var.name
   description = "Agent runtime: HTTPS only, no SSH"
