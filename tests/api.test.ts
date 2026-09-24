@@ -39,7 +39,7 @@ async function fakeGithub(t: { after(fn: () => Promise<void>): void }, members: 
   return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, signInAs(login: string) { nextLogin = login; } };
 }
 
-async function runtime(t: { after(fn: () => Promise<void>): void }, github?: string) {
+async function runtime(t: { after(fn: () => Promise<void>): void }, github?: string, env: Record<string, string> = {}) {
   const root = await mkdtemp(join(tmpdir(), "agent-runtime-api-"));
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: {
     alice: { tokenSha256: sha(alice), apiKeys: {} },
@@ -51,6 +51,7 @@ async function runtime(t: { after(fn: () => Promise<void>): void }, github?: str
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: url, PORT: "0", HOST: "127.0.0.1",
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "api-test-session-secret-with-32-characters",
       AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), AGENT_VERIFY_KEYS: "false",
+      ...env,
       ...(github ? { GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", GITHUB_ORG: "qaml-ai", AGENT_GITHUB_WEB_URL: github, AGENT_GITHUB_API_URL: github } : {}),
     } as NodeJS.ProcessEnv,
     stdio: ["ignore", "pipe", "inherit"],
@@ -283,4 +284,36 @@ test("the OpenAPI document is served without credentials", async t => {
   const served = await call("/v1/openapi.json");
   assert.equal(served.status, 200);
   assert.deepEqual(served.json, JSON.parse(await readFile(new URL("../openapi.json", import.meta.url), "utf8")));
+});
+
+test("a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees", async t => {
+  const { db, call } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "4", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "3000" });
+  const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
+  const busy = await call("/client-sessions", { token: bob, body: { tools: [hold] }, headers: { "Idempotency-Key": "busy" } });
+  assert.equal(busy.status, 201);
+  // An offered call nobody claims keeps the agent busy until the tool timeout, so it cannot be evicted.
+  const run = await call(`/clients/${busy.json.id}/requests`, { token: busy.json.token, body: { id: "hold-1", method: "execute", params: { code: "return await tools.hold({})" } } });
+  assert.equal(run.status, 202);
+  for (let tries = 0; !(await call(`/clients/${busy.json.id}/state`, { token: busy.json.token })).json.calls.length; tries++) {
+    assert.ok(tries < 100, "the call was offered");
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  const agents = async () => Number((await db.query("select count(*) as count from agents where tenant = 'bob'")).rows[0].count);
+  for (const [path, key] of [["/client-sessions", "second"], ["/v1/agents", "third"]]) {
+    const refused = await call(path, { token: bob, body: {}, headers: { "Idempotency-Key": key } });
+    assert.equal(refused.status, 429, path);
+    assert.equal(refused.headers.get("retry-after"), "5");
+    assert.match(JSON.stringify(refused.json), /already has 1 agents running/);
+  }
+  assert.equal(await agents(), 1, "a refused create persists nothing");
+  // Other statuses keep theirs too: a reused key with other settings conflicts, not "bad request".
+  assert.equal((await call("/client-sessions", { token: bob, body: { name: "different" }, headers: { "Idempotency-Key": "busy" } })).status, 409);
+  // The tool times out, the busy agent goes idle, and the refused create's retry takes its slot.
+  let retried;
+  for (let tries = 0; (retried = await call("/client-sessions", { token: bob, body: {}, headers: { "Idempotency-Key": "second" } })).status === 429; tries++) {
+    assert.ok(tries < 100, "the slot frees");
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(retried.status, 201);
+  assert.equal(await agents(), 2);
 });

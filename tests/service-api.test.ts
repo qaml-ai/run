@@ -126,7 +126,7 @@ test('tenants provision and see only their own agents, billed to their own provi
   assert.match((await missingKey.json() as any).error, /No .* API key is configured for tenant bob/);
   assert.deepEqual((await (await f.get('/registry', alice)).json() as any[]).map(a => a.name), ['Alice agent']);
   assert.deepEqual(await (await f.get('/registry', bob)).json(), []);
-  assert.equal((await f.get(`/registry/${agent.id}`, bob)).status, 400);
+  assert.equal((await f.get(`/registry/${agent.id}`, bob)).status, 404, "another tenant's agent is not found");
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'cross', method: 'status', params: {} }, bob)).status, 401);
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'own', method: 'status', params: {} }, alice)).status, 202);
   // The same idempotency key in another tenant is a different agent.

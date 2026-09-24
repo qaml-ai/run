@@ -1,5 +1,6 @@
 import { DEFAULT_TENANT } from "../src/tenants.ts";
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -409,4 +410,30 @@ test("runs queue per agent: a busy agent accepts more work, and runs that never 
   assert.equal(beganRecord.state, "completed");
   assert.equal(beganRecord.outcome && "error" in beganRecord.outcome && beganRecord.outcome.uncertain, true);
   assert.equal(executions, 1);
+});
+
+test("concurrent starts never take a tenant past its quota, and refused creates leave no agent behind", async t => {
+  const f = await fixture(t, { maxAgents: 8, perTenant: 2 });
+  const supervisor = f.supervisor;
+  const start = supervisor.start.bind(supervisor);
+  // A slow start (a process spawning, a key lookup) widens the window between the quota check and the agent registering.
+  let peak = 0, starting = 0;
+  supervisor.start = (async (...args: Parameters<typeof start>) => {
+    starting++;
+    peak = Math.max(peak, supervisor.agents.size + starting);
+    try { await sleep(50); return await start(...args); } finally { starting--; }
+  }) as typeof supervisor.start;
+  // So is a slow header write: every create reserves its slot before any is loaded.
+  const sessions = f.sessions as unknown as { writeHeader: (...args: unknown[]) => Promise<void> };
+  const writeHeader = sessions.writeHeader.bind(sessions);
+  sessions.writeHeader = async (...args) => { await sleep(50); return writeHeader(...args); };
+  const results = await Promise.allSettled(Array.from({ length: 6 }, (_, index) => f.sessions.create([], { model: configuredModel() }, `concurrent-${index}`)));
+  assert.ok(peak <= 2, `at most 2 agents were hosted at once, saw ${peak}`);
+  for (const result of results) if (result.status === "rejected") assert.equal(result.reason.status, 429, String(result.reason));
+  const created = results.filter(result => result.status === "fulfilled").map(result => (result as PromiseFulfilledResult<{ id: string }>).value.id);
+  assert.ok(created.length >= 2);
+  // Nothing was persisted for a refused create.
+  const stored = await Promise.all(Array.from({ length: 6 }, (_, index) => f.header(`client_${createHash("sha256").update(`concurrent-${index}`).digest("hex").slice(0, 40)}`)));
+  assert.deepEqual(stored.map(header => header?.id).filter(Boolean).sort(), created.sort());
+  assert.equal(supervisor.reserved.size, 0, "no slot stays reserved");
 });

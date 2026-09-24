@@ -17,7 +17,7 @@ import { FRAME_BYTES, type CallRecord, type ClientEvent, type Outcome, type Requ
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { HttpError, readJson } from "./http.ts";
+import { errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
 import { databaseUnavailable, type Db } from "./db.ts";
 import type { Claim, Ownership } from "./ownership.ts";
@@ -361,26 +361,48 @@ export class ClientSessions {
   }
 
   /**
-   * Make room to start `starting`'s process: first within its tenant's quota, so one
-   * tenant cannot take every slot, then on the host. Only idle agents are stopped,
-   * least recently active first.
+   * Make room to start `starting`'s agent, and reserve its slot: first within its
+   * tenant's quota, so one tenant cannot take every slot, then on the host. Only
+   * idle agents are stopped, least recently active first. Agents still starting
+   * count, and the last check and the reservation happen with no await between
+   * them, so concurrent starts cannot together pass either limit. The slot is
+   * held until the supervisor starts the agent or `unreserve` gives it back.
    */
-  private async makeRoom(starting: Session) {
+  private async makeRoom(id: string, tenant: string) {
     const tenantOf = (session: Session) => session.header.tenant ?? DEFAULT_TENANT;
+    const hosted = (session: Session) => this.supervisor.agents.has(session.header.id);
     const live = (filter: (session: Session) => boolean) => [...this.sessions.values()]
-      .filter(session => session !== starting && this.supervisor.agents.has(session.header.id) && filter(session));
+      .filter(session => session.header.id !== id && hosted(session) && filter(session));
+    // The tenant's agents on this node: hosted, starting, or with a slot reserved (a create not yet loaded).
+    const tenantCount = () => {
+      const ids = new Set<string>();
+      for (const session of this.sessions.values()) {
+        const other = session.header.id;
+        if (tenantOf(session) === tenant && (this.supervisor.agents.has(other) || this.supervisor.starting.has(other))) ids.add(other);
+      }
+      for (const [other, owner] of this.supervisor.reserved) if ((owner ?? DEFAULT_TENANT) === tenant) ids.add(other);
+      ids.delete(id);
+      return ids.size;
+    };
     const evictIdle = async (candidates: Session[]) => {
       const idle = candidates.filter(session => !this.busy(session)).sort((a, b) => a.lastActive - b.lastActive)[0];
       if (idle) await this.supervisor.stop(idle.header.id);
       return !!idle;
     };
     const quota = this.options.maxAgentsPerTenant ?? this.options.maxProcessesPerTenant;
-    const sameTenant = (session: Session) => tenantOf(session) === tenantOf(starting);
-    while (quota && live(sameTenant).length >= quota) {
-      if (!await evictIdle(live(sameTenant))) throw new HttpError(429, `This tenant already has ${quota} agents running; retry when one finishes`);
-    }
-    while (this.supervisor.full) {
-      if (!await evictIdle(live(() => true))) throw new HttpError(503, "Agent capacity reached; retry when another agent is idle");
+    const sameTenant = (session: Session) => tenantOf(session) === tenant;
+    const reject = (status: 429 | 503, limit: string, value: number, message: string) => {
+      console.log(JSON.stringify({ type: "quota_rejected", level: "info", tenant, agent: id, limit, value, status }));
+      return new HttpError(status, message);
+    };
+    for (;;) {
+      if (this.supervisor.reserved.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) return;
+      if (quota && tenantCount() >= quota) {
+        if (!await evictIdle(live(sameTenant))) throw reject(429, "agentsPerTenant", quota, `This tenant already has ${quota} agents running; retry when one finishes`);
+        continue;
+      }
+      if (this.supervisor.reserve(id, tenant)) return;
+      if (!await evictIdle(live(() => true))) throw reject(503, "agentsPerNode", this.supervisor.options.maxAgents ?? 8, "Agent capacity reached; retry when another agent is idle");
     }
   }
 
@@ -393,8 +415,9 @@ export class ClientSessions {
     if (session.fault) return Promise.reject(session.fault);
     session.lastActive = Date.now();
     if (this.supervisor.agents.has(session.header.id) && !session.starting) return Promise.resolve();
+    const id = session.header.id;
     return session.starting ??= (async () => {
-      await this.makeRoom(session);
+      await this.makeRoom(id, session.header.tenant ?? DEFAULT_TENANT);
       const apiKey = await this.apiKey(session, session.header.config.model.provider);
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: [...this.fileTools(session, session.header.definitions), ...session.header.definitions],
@@ -414,7 +437,7 @@ export class ClientSessions {
       // Starting can take longer than the idle timeout; the agent is fresh, not idle.
       session.lastActive = Date.now();
       return result;
-    })().finally(() => { session.starting = undefined; });
+    })().finally(() => { session.starting = undefined; this.supervisor.unreserve(id); });
   }
 
   /** The runtime's file tools for a session with mounts; application tools of the same name take precedence. */
@@ -443,37 +466,84 @@ export class ClientSessions {
       }
     }
     let session = await this.load(id);
+    let created = false;
     if (session) {
       if ((session.header.tenant ?? DEFAULT_TENANT) !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       if (session.header.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
       if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
     } else {
-      const granted = this.options.volumes ? await this.options.volumes.mountsFor(tenant, id, mounts) : undefined;
-      const ownership = this.options.ownership;
+      // Capacity is reserved before anything is persisted: an agent refused for it leaves nothing behind.
+      await this.makeRoom(id, tenant);
       let claim: Claim | undefined;
-      if (ownership) {
-        const acquired = await ownership.acquire(id);
-        if ("owner" in acquired) throw new NotOwner(acquired.owner);
-        claim = acquired.claim;
-      }
-      session = {
-        header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
-        claim, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
-        cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
-      };
-      // A conditional create: if a concurrent request made this agent first, retry as a load.
-      try { await this.writeHeader(session); }
-      catch (error) {
-        if (claim) await ownership!.release(claim).catch(() => {});
-        if (session.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts);
+      try {
+        const granted = this.options.volumes ? await this.options.volumes.mountsFor(tenant, id, mounts) : undefined;
+        const ownership = this.options.ownership;
+        if (ownership) {
+          const acquired = await ownership.acquire(id);
+          if ("owner" in acquired) throw new NotOwner(acquired.owner);
+          claim = acquired.claim;
+        }
+        session = {
+          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}) },
+          claim, requests: new Map(), calls: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
+          cursor: Date.now() * 1000, events: [], eventBytes: 0, pending: new Map(), runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
+        };
+        // A conditional create: if a concurrent request made this agent first, retry as a load.
+        await this.writeHeader(session);
+        this.sessions.set(id, session);
+        created = true;
+        if (granted) await this.options.volumes!.watch(id, tenant, [], granted);
+      } catch (error) {
+        if (!created) {
+          this.supervisor.unreserve(id);
+          if (claim) await this.options.ownership!.release(claim).catch(() => {});
+          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts);
+          throw error;
+        }
+        await this.discard(session!);
         throw error;
       }
-      this.sessions.set(id, session);
-      if (granted) await this.options.volumes!.watch(id, tenant, [], granted);
     }
-    await this.ensureStarted(session);
-    const status = await this.supervisor.request(id, "status");
-    return { id, token, expiresAt: session.header.expiresAt, ...status };
+    try {
+      await this.ensureStarted(session);
+      const status = await this.supervisor.request(id, "status");
+      return { id, token, expiresAt: session.header.expiresAt, ...status };
+    } catch (error) {
+      // From the caller's view creation is atomic: an agent that never started is gone, so a retry with the same key starts afresh.
+      if (created) await this.discard(session);
+      throw error;
+    }
+  }
+
+  /**
+   * Undo a create whose agent never started: its header, tail rows and whatever
+   * starting wrote go, and its claim is released. Best effort; what is left is an
+   * agent a retry with the same key loads and starts.
+   */
+  private async discard(session: Session) {
+    const id = session.header.id;
+    this.supervisor.unreserve(id);
+    try {
+      await this.supervisor.stop(id);
+      if (this.sessions.get(id) === session) this.sessions.delete(id);
+      await session.log.close();
+      const deleted = await this.db.query("delete from agents where id = $1 and revision = $2 and not revoked", [id, session.revision]);
+      if (deleted.rowCount) {
+        if (session.header.mounts?.length) await this.options.volumes?.watch(id, session.header.tenant ?? DEFAULT_TENANT, session.header.mounts, []);
+        await this.purgeData(id);
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ type: "agent_discard_failed", agent: id, error: errorText(error) }));
+    } finally {
+      if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
+    }
+  }
+
+  /** Delete everything an agent stored: its journal, its transcript (and local directory), and their tail rows. */
+  private async purgeData(id: string) {
+    await this.storage.removeLog(this.journalKey(id));
+    await this.supervisor.purge(id);
+    await deleteTail(this.db, id);
   }
 
   /** A tenant's live agents. `running` covers agents served by any node. */
@@ -664,7 +734,7 @@ export class ClientSessions {
     });
     app.all(`${agent}/*`, () => { throw new HttpError(404, "Unknown client route"); });
     app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
-    app.onError((error, c) => json(c, error instanceof HttpError ? error.status : databaseUnavailable(error) ? 503 : 500, { error: errorText(error) }));
+    app.onError((error, c) => json(c, errorStatus(error, 500), { error: errorText(error) }));
     return app;
   }
 

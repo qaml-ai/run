@@ -65,6 +65,11 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
 
   return {
     log: (key, claim) => segmentLog(segments(key), key, options.tail, claim),
+    async removeLog(key) {
+      const store = segments(key);
+      const directory = `${at(key)}.log/`;
+      await store.remove((await list(`${key}.log/`)).map(name => name.slice(directory.length)));
+    },
     async readBlob(key) {
       try {
         const object = await client.send(new GetObjectCommand({ Bucket: bucket, Key: at(key) }));

@@ -7,7 +7,9 @@ export class HttpError extends Error {
 
 /** The status to answer an error with: its own, else 503 (retry) when the database is unreachable, else `fallback`. */
 export function errorStatus(error: unknown, fallback: number): number {
-  return (error as { status?: number } | undefined)?.status ?? (databaseUnavailable(error) ? 503 : fallback);
+  const status = (error as { status?: unknown } | undefined)?.status;
+  if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599) return status;
+  return databaseUnavailable(error) ? 503 : fallback;
 }
 
 /** Read a request body as text, failing with 413 past `limit` bytes rather than buffering it all. */

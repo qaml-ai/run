@@ -10,7 +10,7 @@ import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
-import { databaseFromEnvironment, databaseUnavailable, migrate } from "./db.ts";
+import { databaseFromEnvironment, migrate } from "./db.ts";
 import { Ownership } from "./ownership.ts";
 import { DEFAULT_TENANT, tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
@@ -254,10 +254,12 @@ const app = new Hono<Env>();
 // The load balancer's health check: failing it while draining stops new requests arriving here. A retiring
 // node stays healthy (ECS replaces tasks that fail it, protected or not) and hands new work to its peers instead.
 app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
-// Every 503 is worth retrying (capacity, an actor moving, this node draining); say when.
+// Every 503 is worth retrying (capacity, an actor moving, this node draining), and so is a 429 (a
+// tenant at its agent quota, or an agent with too many queued requests) once work finishes; say when.
 app.use(async (c, next) => {
   await next();
   if (c.res.status === 503 && !c.res.headers.has("retry-after")) c.res.headers.set("Retry-After", "1");
+  if (c.res.status === 429 && !c.res.headers.has("retry-after")) c.res.headers.set("Retry-After", "5");
 });
 // One node serves each agent and volume; anything addressed to one another node holds goes there.
 // Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
@@ -349,8 +351,9 @@ app.all("/agents/:id{[a-zA-Z0-9_-]{1,80}}/:action{prompt|execute|abort}?", async
   return c.json(result);
 });
 app.notFound(c => c.body(null, 404));
-// Only 503 keeps its status here: clients retry it (the node is draining, full, an actor is moving, or the database is unreachable).
-app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", (error instanceof HttpError && error.status === 503) || databaseUnavailable(error) ? 503 : 400, { "Content-Type": "application/json" }));
+// Errors keep their own status (429 quota, 409 conflict, 410 revoked, 503 retry...); an unreachable database is 503, and
+// anything else is a request the runtime could not accept (invalid configuration or tools): 400.
+app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", errorStatus(error, 400) as ContentfulStatusCode, { "Content-Type": "application/json" }));
 
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;

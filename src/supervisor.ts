@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { childProcess, type Rpc } from "./rpc.ts";
@@ -29,6 +29,8 @@ export type SupervisorOptions = { runtime?: string; maxAgents?: number; storage?
 export class AgentSupervisor {
   readonly agents = new Map<string, Handle>();
   readonly starting = new Set<string>();
+  /** Slots held for agents about to start (see `reserve`), with the tenant each is for; they count against capacity. */
+  readonly reserved = new Map<string, string | undefined>();
   /** Agents being stopped. They are already out of `agents`, so no new work reaches a dying agent. */
   private readonly stopping = new Map<string, Promise<void>>();
   readonly root: string;
@@ -55,6 +57,15 @@ export class AgentSupervisor {
     return readTranscriptLog(this.options.storage.log(AgentSupervisor.transcriptKey(id)));
   }
 
+  /** Delete a stopped agent's transcript and local directory. */
+  async purge(id: string) {
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    await this.stopping.get(id);
+    if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
+    await this.options.storage?.removeLog(AgentSupervisor.transcriptKey(id));
+    await rm(resolve(join(this.root, id)), { recursive: true, force: true });
+  }
+
   /** Validate and dispatch an agent's application tool call, with the same limits in either hosting mode. */
   private async dispatchTool(handle: Handle, params: { name: string; args: unknown; toolCallId?: string }) {
     const checked = validateToolCall(handle.bridge.definitions, params.name, params.args);
@@ -75,7 +86,7 @@ export class AgentSupervisor {
     await this.stopping.get(id);
     validateDefinitions(bridge.definitions);
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent already exists");
-    if (this.full) throw new Error("Agent capacity reached");
+    if (!this.reserved.delete(id) && this.full) throw Object.assign(new Error("Agent capacity reached"), { status: 503 });
     this.starting.add(id);
     try {
       const directory = resolve(join(this.root, id));
@@ -144,7 +155,19 @@ export class AgentSupervisor {
   }
 
   /** No capacity for another agent; callers may stop an idle agent first. */
-  get full() { return this.agents.size + this.starting.size >= (this.options.maxAgents ?? 8); }
+  get full() { return this.agents.size + this.starting.size + this.reserved.size >= (this.options.maxAgents ?? 8); }
+
+  /**
+   * Hold a slot for `id` until `start` takes it or `unreserve` gives it back, so
+   * concurrent starts cannot together pass the capacity check. False when full.
+   */
+  reserve(id: string, tenant?: string) {
+    if (this.reserved.has(id) || this.agents.has(id) || this.starting.has(id)) return true;
+    if (this.full) return false;
+    this.reserved.set(id, tenant);
+    return true;
+  }
+  unreserve(id: string) { this.reserved.delete(id); }
 
   async request(id: string, method: RequestMethod, params: any = {}, onEvent?: (event: any) => void) {
     const handle = this.agents.get(id);

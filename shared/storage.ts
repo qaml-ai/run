@@ -17,6 +17,8 @@ import type { Claim } from "../src/ownership.ts";
 export interface Storage {
   /** `claim` fences appends: once it is no longer current, every write fails. */
   log<T>(key: string, claim?: Claim): AppendLog<T>;
+  /** Delete a log's objects (segments, snapshots and blobs), for an actor that is gone. Its tail rows are the caller's. */
+  removeLog(key: string): Promise<void>;
   /** Immutable binary objects, e.g. content-addressed chunks: writing a key that exists is a no-op. */
   readBlob(key: string): Promise<Uint8Array | undefined>;
   writeBlob(key: string, data: Uint8Array): Promise<void>;
@@ -40,6 +42,10 @@ export function fileStorage(root: string, options: { tail?: LogTail } = {}): Sto
   const path = (key: string, extension: string) => join(root, `${validKey(key)}${extension}`);
   return {
     log: (key, claim) => options.tail ? segmentLog(fileSegments(path(key, ".log")), key, options.tail, claim) : fileAppendLog(path(key, ".jsonl")),
+    async removeLog(key) {
+      await rm(path(key, ".log"), { recursive: true, force: true });
+      await rm(path(key, ".jsonl"), { force: true });
+    },
     async readBlob(key) {
       try { return await readFile(path(key, ".bin")); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
@@ -87,6 +93,7 @@ export function memoryStorage(tail: LogTail): Storage & { logs: Map<string, Map<
   const storage = {
     logs, blobs, puts: 0,
     log<T>(key: string, claim?: Claim) { return segmentLog<T>(memorySegments(logs, validKey(key), () => storage.puts++), key, tail, claim); },
+    async removeLog(key: string) { logs.delete(validKey(key)); },
     async readBlob(key: string) { const data = blobs.get(validKey(key)); return data && Uint8Array.from(data); },
     async writeBlob(key: string, data: Uint8Array) { if (!blobs.has(validKey(key))) { storage.puts++; blobs.set(key, Uint8Array.from(data)); } },
   };
