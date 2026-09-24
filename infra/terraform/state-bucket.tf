@@ -91,11 +91,3 @@ locals {
   ]
 }
 
-resource "aws_iam_role_policy" "runtime_state_bucket" {
-  name = "agent-state-bucket"
-  role = aws_iam_role.runtime.name
-  policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = local.state_bucket_statements
-  })
-}

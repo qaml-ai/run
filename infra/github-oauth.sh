@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Store the GitHub OAuth app used for console sign-in, then reload the runtime.
+# Store the GitHub OAuth app used for console sign-in, then roll the ECS service.
 #
 # Create the app first (organization owners only):
 #   https://github.com/organizations/qaml-ai/settings/applications/new
@@ -31,10 +31,7 @@ else
   aws secretsmanager create-secret --name "$id" --description "GitHub OAuth app for agent runtime console sign-in" --secret-string "file://$work/github.json" >/dev/null
 fi
 echo "Stored $id."
-instance=$(aws ec2 describe-instances --filters Name=tag:Name,Values="$NAME" Name=instance-state-name,Values=running --query 'Reservations[0].Instances[0].InstanceId' --output text)
-if [[ "$instance" != "None" ]]; then
-  # Environment changes need a restart, not a reload.
-  aws ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --comment "enable GitHub sign-in" \
-    --parameters '{"commands":["systemctl restart agent-runtime.service"]}' >/dev/null
-  echo "Runtime restarting with GitHub sign-in enabled."
-fi
+# Tasks read this secret at startup; roll the service so new tasks pick it up.
+# Running turns finish on the old tasks (they retire, not stop).
+aws ecs update-service --region "$REGION" --cluster "$NAME" --service "$NAME" --force-new-deployment >/dev/null
+echo "Rolling the ECS service to pick up GitHub sign-in."

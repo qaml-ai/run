@@ -40,16 +40,6 @@ variable "operator_token_tenants" {
   default     = ["miguel"]
 }
 
-variable "instance_type" {
-  type    = string
-  default = "t4g.medium"
-}
-
-variable "root_volume_gb" {
-  type    = number
-  default = 40
-}
-
 # --- Agent state bucket (state-bucket.tf) ---
 
 variable "state_bucket_name" {
@@ -161,19 +151,8 @@ variable "runtime_env" {
 
 # --- DNS (dns.tf) ---
 
-variable "dns_target" {
-  description = "Where agents.camelai.dev points: \"host\" (A record at the EC2 Elastic IP) or \"alb\" (CNAME at the load balancer). Flip deliberately; see README.md, Cutover."
-  type        = string
-  default     = "alb"
-
-  validation {
-    condition     = contains(["host", "alb"], var.dns_target)
-    error_message = "dns_target must be \"host\" or \"alb\"."
-  }
-}
-
 variable "dns_ttl" {
-  description = "TTL of the runtime record. Lower it to 60 at least one old TTL before flipping dns_target."
+  description = "TTL of the runtime record."
   type        = number
   default     = 60
 }

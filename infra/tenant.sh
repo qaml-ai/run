@@ -68,12 +68,8 @@ store_token() {
   echo "Retrieve it with: aws secretsmanager get-secret-value --region $REGION --secret-id $id --query SecretString --output text"
 }
 reload() {
-  local instance
-  instance=$(aws ec2 describe-instances --filters Name=tag:Name,Values="$NAME" Name=instance-state-name,Values=running --query 'Reservations[0].Instances[0].InstanceId' --output text)
-  if [[ "$instance" == "None" ]]; then echo "No running instance; the change applies at the next deploy."; return; fi
-  aws ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --comment "reload tenants" \
-    --parameters '{"commands":["systemctl reload agent-runtime.service"]}' >/dev/null
-  echo "Runtime reloading tenants (no restart, running agents unaffected)."
+  # ECS tasks re-read the tenants secret every minute (AGENT_TENANTS_SECRET_ARN).
+  echo "The runtime picks this up within a minute (no restart, running agents unaffected)."
 }
 
 case "$command" in

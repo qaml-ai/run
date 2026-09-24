@@ -24,15 +24,6 @@ resource "aws_security_group" "database" {
   vpc_id      = data.aws_vpc.default.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "database_from_runtime" {
-  security_group_id            = aws_security_group.database.id
-  referenced_security_group_id = aws_security_group.runtime.id
-  ip_protocol                  = "tcp"
-  from_port                    = 5432
-  to_port                      = 5432
-  description                  = "Postgres from runtime nodes"
-}
-
 resource "aws_db_instance" "control" {
   identifier     = "${var.name}-control"
   engine         = "postgres"
@@ -68,16 +59,3 @@ resource "aws_db_instance" "control" {
   }
 }
 
-# The runtime reads the generated credentials when its container starts (instance/refresh-config.sh).
-resource "aws_iam_role_policy" "runtime_database_secret" {
-  name = "agent-database-secret"
-  role = aws_iam_role.runtime.name
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "secretsmanager:GetSecretValue"
-      Resource = aws_db_instance.control.master_user_secret[0].secret_arn
-    }]
-  })
-}

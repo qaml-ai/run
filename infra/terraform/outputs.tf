@@ -1,15 +1,3 @@
-output "instance_id" {
-  value = aws_instance.runtime.id
-}
-
-output "public_ip" {
-  value = aws_eip.runtime.public_ip
-}
-
-output "private_ip" {
-  value = aws_instance.runtime.private_ip
-}
-
 output "ecr_repository_url" {
   value = aws_ecr_repository.runtime.repository_url
 }
