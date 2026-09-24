@@ -1,9 +1,12 @@
 """Hosted agents over SSE + HTTP, with local tool functions and replay receipts."""
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import inspect
 import json
 import os
+import random
 from pathlib import Path
 from typing import get_type_hints
 from urllib.parse import quote, urlencode, urlparse
@@ -16,9 +19,11 @@ _DEFAULT = object()
 
 
 class AgentError(RuntimeError):
-    def __init__(self, message, status=0, request_id=None):
+    def __init__(self, message, status=0, request_id=None, retry_after=None):
         super().__init__(message)
         self.status, self.request_id = status, request_id
+        # Seconds the runtime asked to wait before retrying (its Retry-After), for 429 and 503.
+        self.retry_after = retry_after
 
 
 @dataclass
@@ -91,22 +96,50 @@ def _save(path, value):
         os.close(fd)
 
 
+def _retry_after(response):
+    """Retry-After in seconds (delta or HTTP date), capped so a bad value cannot stall a caller."""
+    value = response.headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        seconds = float(value) if value.strip().isdigit() else (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return min(max(0.0, seconds), 60.0)
+
+
+# A 429 (quota, or an agent's queue is full) was refused before anything happened, so any request may be retried after it.
+_RATE_LIMIT_ATTEMPTS = 8
+
+
 async def _http(client, base, path, token, method="GET", body=None, retry=True, headers=None):
     encoded = None if body is None else json.dumps(body, allow_nan=False).encode()
     if encoded and len(encoded) > 1_100_000:
         raise AgentError("Request exceeds transport limit")
-    for attempt in range(4):
+    attempt = 0
+    while True:
         try:
             response = await client.request(method, base + path, content=encoded, headers={
                 "Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})})
-            value = response.json()
             if not response.is_success:
-                raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code)
-            return value
+                try:
+                    value = response.json()
+                except ValueError:
+                    value = {}
+                raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response))
+            return response.json()
         except Exception as error:
-            if not retry or attempt == 3 or (isinstance(error, AgentError) and error.status < 500):
+            limited = isinstance(error, AgentError) and error.status == 429
+            if limited:
+                if attempt >= _RATE_LIMIT_ATTEMPTS - 1:
+                    raise
+            elif not retry or attempt >= 3 or (isinstance(error, AgentError) and error.status < 500):
                 raise
-            await asyncio.sleep(0.1 * 2 ** attempt)
+            # Honour the runtime's Retry-After, with jitter so refused callers do not return together; else back off exponentially.
+            backoff = min(10.0, (0.5 if limited else 0.1) * 2 ** attempt)
+            hinted = error.retry_after if isinstance(error, AgentError) else None
+            await asyncio.sleep(hinted + random.random() * min(1.0, backoff) if hinted is not None else backoff)
+            attempt += 1
 
 
 class AgentRuntime:

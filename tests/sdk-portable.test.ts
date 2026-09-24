@@ -148,3 +148,24 @@ test("SSE transport uses manual redirects and cancels redirect bodies without fo
   await assert.rejects(runtime.connectAgent(session, { tools: {} }), /redirects are not allowed/);
   assert.equal(calls, 1); assert.equal(cancelled, true);
 });
+
+test("the SDK retries 429s, honouring Retry-After, even for requests it does not otherwise retry", async () => {
+  const seen: number[] = [];
+  let refusals = 2;
+  const fetcher: typeof fetch = async () => {
+    seen.push(Date.now());
+    if (refusals-- > 0) return Response.json({ error: "This tenant already has 1 agents running" }, { status: 429, headers: { "Retry-After": "1" } });
+    return Response.json({ id: `vol_${"b".repeat(24)}`, name: "v", createdAt: 1 }, { status: 201 });
+  };
+  const runtime = new AgentRuntime({ fetch: fetcher, apiKey: "operator" });
+  const volume = await runtime.createVolume({ name: "v" });
+  assert.equal(volume.name, "v");
+  assert.equal(seen.length, 3);
+  assert.ok(seen[1] - seen[0] >= 1000 && seen[2] - seen[1] >= 1000, "waited for Retry-After");
+
+  // A runtime that keeps refusing is given up on, with the status.
+  let attempts = 0;
+  const refusing = new AgentRuntime({ apiKey: "operator", fetch: async () => { attempts++; return Response.json({ error: "busy" }, { status: 429, headers: { "Retry-After": "0" } }); } });
+  await assert.rejects(refusing.listVolumes(), (error: any) => error.status === 429 && error.retryAfterMs === 0);
+  assert.equal(attempts, 8);
+});

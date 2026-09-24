@@ -69,8 +69,19 @@ export interface RequestOptions { idempotencyKey?: string; timeoutMs?: number }
 export class AgentError extends Error {
   status: number;
   requestId?: string;
+  /** Milliseconds the runtime asked to wait before retrying (its Retry-After), for 429 and 503. */
+  retryAfterMs?: number;
   constructor(message: string, status = 0, requestId?: string) { super(message); this.name = "AgentError"; this.status = status; this.requestId = requestId; }
 }
+/** Retry-After as milliseconds (seconds or an HTTP date), capped so a bad value cannot stall a caller. */
+function retryAfter(response: Response): number | undefined {
+  const value = response.headers.get("retry-after");
+  if (value === null) return undefined;
+  const ms = /^\d+$/.test(value.trim()) ? Number(value) * 1000 : Date.parse(value) - Date.now();
+  return Number.isFinite(ms) ? Math.min(Math.max(0, ms), 60_000) : undefined;
+}
+/** A 429 (quota, or an agent's queue is full) was refused before anything happened, so any request may be retried after it. */
+const RATE_LIMIT_ATTEMPTS = 8;
 const byteLength = (value: string) => new TextEncoder().encode(value).byteLength;
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const definitions = (tools: Tools): ToolDefinition[] => Object.entries(tools).map(([name, tool]) => ({ name, description: tool.description, parameters: tool.input, ...(tool.resultFormat ? { resultFormat: tool.resultFormat } : {}), ...(tool.exposure ? { exposure: tool.exposure } : {}), ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) }));
@@ -103,12 +114,16 @@ class Transport {
           redirect: "manual", signal: AbortSignal.timeout(10_000),
         });
         await rejectRedirect(response);
-        const value = await response.json() as any;
-        if (!response.ok) throw new AgentError(value.error ?? `HTTP ${response.status}`, response.status);
+        const value = await (response.ok ? response.json() : response.json().catch(() => ({}))) as any;
+        if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response) });
         return value;
       } catch (error) {
-        if (!retry || attempt >= 3 || (error instanceof AgentError && error.status < 500)) throw error;
-        await pause(100 * 2 ** attempt);
+        const limited = error instanceof AgentError && error.status === 429;
+        if (limited ? attempt >= RATE_LIMIT_ATTEMPTS - 1 : !retry || attempt >= 3 || (error instanceof AgentError && error.status < 500)) throw error;
+        // Honour the runtime's Retry-After, with jitter so refused callers do not return together; else back off exponentially.
+        const backoff = Math.min(10_000, (limited ? 500 : 100) * 2 ** attempt);
+        const hinted = error instanceof AgentError ? error.retryAfterMs : undefined;
+        await pause(hinted !== undefined ? hinted + Math.random() * Math.min(1000, backoff) : backoff);
       }
     }
   }

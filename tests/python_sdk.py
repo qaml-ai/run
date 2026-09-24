@@ -136,5 +136,45 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(volume.id, [entry["id"] for entry in await self.runtime.list_volumes()])
 
 
+
+class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
+    """429s are retried, honouring Retry-After, without a runtime."""
+
+    async def test_rate_limited_requests_wait_and_retry(self):
+        import time
+        import httpx
+        seen = []
+
+        def answer(request):
+            seen.append(time.monotonic())
+            if len(seen) <= 2:
+                return httpx.Response(429, json={"error": "This tenant already has 1 agents running"}, headers={"Retry-After": "1"})
+            return httpx.Response(201, json={"id": "vol_" + "b" * 24, "name": "v", "createdAt": 1})
+
+        runtime = AgentRuntime(url="http://127.0.0.1:1", api_key="operator")
+        await runtime.http.aclose()
+        runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        try:
+            # create_volume does not retry other failures; a 429 was refused before anything happened.
+            self.assertEqual((await runtime.create_volume(name="v"))["name"], "v")
+            self.assertEqual(len(seen), 3)
+            self.assertTrue(seen[1] - seen[0] >= 0.99 and seen[2] - seen[1] >= 0.99)
+
+            refusals = []
+
+            def refuse(request):
+                refusals.append(request)
+                return httpx.Response(429, json={"error": "busy"}, headers={"Retry-After": "0"})
+
+            await runtime.http.aclose()
+            runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+            with self.assertRaises(Exception) as refused:
+                await runtime.list_volumes()
+            self.assertEqual((refused.exception.status, refused.exception.retry_after), (429, 0))
+            self.assertEqual(len(refusals), 8)
+        finally:
+            await runtime.close()
+
+
 if __name__ == "__main__":
     unittest.main()

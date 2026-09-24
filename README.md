@@ -334,7 +334,9 @@ without activity; the agent's process stops at the same point. When all
 `AGENT_MAX_AGENTS` slots are in use (hosted agents per node, processes or inline;
 `AGENT_MAX_AGENTS_PER_TENANT` per tenant; the older names `AGENT_MAX_PROCESSES`
 and `AGENT_MAX_PROCESSES_PER_TENANT` still work), the least recently active idle
-agent is stopped to make room. With `AGENT_STORAGE=file`, logs are local files, not
+agent is stopped to make room. If none is idle, creating or waking an agent is
+refused with 429 (the tenant's limit) or 503 (the node's), with `Retry-After`;
+the SDKs retry both. With `AGENT_STORAGE=file`, logs are local files, not
 replicated storage; the whole transcript of an active agent is still held in memory.
 
 The host provider key is only sent to trusted endpoints: the default model's,
