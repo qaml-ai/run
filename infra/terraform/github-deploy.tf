@@ -1,7 +1,8 @@
 # GitHub Actions deploys main (.github/workflows/deploy.yml) by assuming this role
-# through the account's existing GitHub OIDC provider. Only jobs in the repository's
-# `production` environment can assume it; add required reviewers to that environment
-# in GitHub to gate deploys on an approval.
+# through the account's existing GitHub OIDC provider; CI's publish job
+# (.github/workflows/ci.yml) assumes it too, to push main's image. Only jobs in the
+# repository's `production` environment can assume it; required reviewers on that
+# environment would gate both the image push and the deploy.
 
 data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"

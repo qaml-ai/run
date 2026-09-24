@@ -56,8 +56,8 @@ jobs:
       - run: npm run test:shard -- ${{ matrix.shard }}/4
   image:
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
-    # with js_exec isolated in sandbox processes.
-    runs-on: ubuntu-latest
+    # with js_exec isolated in sandbox processes. Built natively for production's ARM64 (Graviton).
+    runs-on: ubuntu-24.04-arm
     services:
       postgres:
         image: postgres:16-alpine
@@ -74,14 +74,16 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/arm64
+          provenance: false
           load: true
           tags: agent-runtime:ci
-          cache-from: type=gha,scope=image-amd64
-          cache-to: type=gha,mode=max,scope=image-amd64
+          cache-from: type=gha,scope=image-arm64
+          cache-to: type=gha,mode=max,scope=image-arm64
       - run: |
           docker run -d --name runtime --network host -e AGENT_RUNTIME_TOKEN=ci-boot-token-at-least-24-chars \
             -e AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres agent-runtime:ci
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8790/healthz; then
               docker logs runtime 2>&1 | grep '"type":"listening"' | grep -q '"sandbox":{"mode":"isolated"' && exit 0
               docker logs runtime; echo "js_exec is not running in sandbox processes"; exit 1
@@ -94,3 +96,45 @@ jobs:
       # then js_exec end to end, and a killed sandbox process restarted.
       - run: node --experimental-strip-types --disable-warning=ExperimentalWarning tests/image-isolation.ts
         env: { IMAGE: "agent-runtime:ci", DATABASE_URL: "postgres://postgres:test@127.0.0.1:5432/postgres" }
+  publish:
+    # Main's production image goes to ECR while the tests run, from the layers the image job caches, so the
+    # deploy (which waits for all of CI) only rolls it out. The deploy role trusts only the production
+    # environment. Tags are immutable: a re-run finds its image already pushed.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2
+      - id: image
+        run: |
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          if aws ecr describe-images --repository-name camelai-agent-runtime --image-ids imageTag="${GITHUB_SHA::12}" >/dev/null 2>&1; then
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.image.outputs.pushed != 'true'
+        uses: actions/checkout@v4
+      - if: steps.image.outputs.pushed != 'true'
+        uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - if: steps.image.outputs.pushed != 'true'
+        run: npm ci && npm run build:console
+      - if: steps.image.outputs.pushed != 'true'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - if: steps.image.outputs.pushed != 'true'
+        uses: docker/setup-buildx-action@v3
+      - if: steps.image.outputs.pushed != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
+          cache-from: type=gha,scope=image-arm64
