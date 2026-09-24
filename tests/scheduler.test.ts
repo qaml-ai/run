@@ -35,6 +35,15 @@ test("many due wake-ups are each delivered once when three nodes scan concurrent
   assert.deepEqual(new Set(deliveries), new Set(created.map(schedule => `schedule-${schedule.id}-${schedule.dueAt}`)));
 });
 
+test("an agent's cap of 100 schedules holds when creates race on separate connections", async () => {
+  const { db, schedulers } = await nodes(3, () => {});
+  const now = Date.now();
+  for (let index = 0; index < 97; index++) await db.query("insert into schedules (id, agent, tenant, text, due_at, created_at) values (gen_random_uuid(), 'client_cap', 'alice', 'x', $1, $1)", [now + 60_000]);
+  const results = await Promise.allSettled(Array.from({ length: 12 }, (_, index) => schedulers[index % 3].create({ agent: "client_cap", tenant: "alice", text: `race ${index}`, dueAt: now + 60_000 })));
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 3);
+  assert.equal(Number((await db.query("select count(*) as count from schedules where agent = 'client_cap'")).rows[0].count), 100);
+});
+
 test("a wake-up claimed by a node that died is delivered by another once the claim lapses, with the same request id", async () => {
   const deliveries: [string, string][] = [];
   let crash = true;

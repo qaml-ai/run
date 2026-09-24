@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Db } from "./db.ts";
+import { transaction, type Db } from "./db.ts";
 
 /**
  * Durable timers that wake agents with a prompt, on any node. Each schedule is a
@@ -7,6 +7,11 @@ import type { Db } from "./db.ts";
  * node delivers each wake-up, and a claim left by a crashed node lapses after a
  * minute. Delivery submits a request whose id is derived from the schedule and due
  * time, so a repeated delivery (after a crash) is a no-op.
+ *
+ * Schedules are API state any node writes, not state an agent's owner holds: they
+ * are kept consistent by their own conditions. Creates for one agent take turns
+ * (an advisory lock), so its cap holds; a claim is a token of its own, so only the
+ * scan that took a wake-up moves it on, even after its node restarted under the same name.
  */
 /** A wake-up either prompts the agent (`text`) or runs sandboxed code with its tools (`code`). */
 export interface Schedule {
@@ -49,10 +54,13 @@ export class Scheduler {
     if ((input.text === undefined) === (input.code === undefined) || typeof content !== "string" || !content.trim() || content.length > 32_000) throw new Error("Give exactly one of text or code (1–32000 characters)");
     if (!Number.isFinite(input.dueAt)) throw new Error("A schedule needs a due time");
     if (input.everySeconds !== undefined && (!Number.isInteger(input.everySeconds) || input.everySeconds < MIN_REPEAT_SECONDS)) throw new Error(`everySeconds must be an integer of at least ${MIN_REPEAT_SECONDS}`);
-    if ((await this.db.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
     const created: Schedule = { id: randomUUID(), ...input, dueAt: Math.round(input.dueAt), createdAt: Date.now() };
-    await this.db.query(`insert into schedules (${COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt]);
+    await transaction(this.db, async sql => {
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`schedules:${input.agent}`]);
+      if ((await sql.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
+      await sql.query(`insert into schedules (${COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt]);
+    });
     return created;
   }
 
@@ -77,33 +85,34 @@ export class Scheduler {
     } finally { this.scanning = false; }
   }
 
-  private async claim(now: number): Promise<Schedule[]> {
+  private async claim(now: number): Promise<(Schedule & { claim: string })[]> {
+    const claim = `${this.node} ${randomUUID()}`;
     const { rows } = await this.db.query(`
       update schedules set claimed_by = $2, claimed_until = now() + $3 * interval '1 millisecond'
       where id in (
         select id from schedules where due_at <= $1 and (claimed_until is null or claimed_until <= now())
         order by due_at limit ${CLAIM_BATCH} for update skip locked)
-      returning ${COLUMNS}`, [now, this.node, CLAIM_TIMEOUT_MS]);
-    return rows.map(schedule);
+      returning ${COLUMNS}`, [now, claim, CLAIM_TIMEOUT_MS]);
+    return rows.map(row => ({ ...schedule(row), claim }));
   }
 
   /** Deliver a claimed wake-up, then move it to its next occurrence or drop it. Only the claim holder advances it. */
-  private async fire(due: Schedule) {
+  private async fire({ claim, ...due }: Schedule & { claim: string }) {
     try { await this.deliver(due, `schedule-${due.id}-${due.dueAt}`); }
     catch (error) {
       // The agent was deleted or expired: drop its schedule. Anything else retries after the claim times out.
       const status = (error as { status?: number }).status;
       if (status !== 404 && status !== 410) throw error;
-      await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, this.node]);
+      await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]);
       return;
     }
     if (due.everySeconds) {
       // Next occurrence after now, skipping any missed while nothing was running.
       const step = due.everySeconds * 1000;
       const next = due.dueAt + Math.max(1, Math.ceil((Date.now() - due.dueAt + 1) / step)) * step;
-      await this.db.query("update schedules set due_at = $3, claimed_by = null, claimed_until = null where id = $1 and due_at = $2 and claimed_by = $4", [due.id, due.dueAt, next, this.node]);
+      await this.db.query("update schedules set due_at = $3, claimed_by = null, claimed_until = null where id = $1 and due_at = $2 and claimed_by = $4", [due.id, due.dueAt, next, claim]);
     } else {
-      await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, this.node]);
+      await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]);
     }
   }
 }
