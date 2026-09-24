@@ -60,13 +60,13 @@ test("portable SDK waits for journal loading and propagates storage failures bef
   assert.equal(fetched, false);
 });
 
-test("async journals commit before claiming side effects and before delivering tool outcomes", async () => {
+test("async journals commit before running a tool and before delivering its outcome", async () => {
   const backing = memoryJournalStore();
   const gate = Promise.withResolvers<void>();
   const saving = Promise.withResolvers<void>();
   const delivered = Promise.withResolvers<void>();
   let executions = 0;
-  let claimed = false;
+  let clientId = "";
   let eventStream: ReadableStreamDefaultController<Uint8Array>;
   const store: JournalStore = {
     load: id => backing.load(id),
@@ -78,15 +78,12 @@ test("async journals commit before claiming side effects and before delivering t
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url.endsWith("/events")) return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      clientId = (init?.headers as Record<string, string>)["X-Agent-Client"];
       eventStream = controller;
       controller.enqueue(new TextEncoder().encode('event: ready\ndata: {}\n\n'));
       init?.signal?.addEventListener("abort", () => controller.close(), { once: true });
     } }), { headers: { "Content-Type": "text/event-stream" } });
     if (url.endsWith("/state")) return Response.json({ cursor: 0, calls: [], requests: [] });
-    if (url.endsWith("/claim")) {
-      assert.equal((await backing.load(session.id))?.calls["call-1"].state, "started");
-      claimed = true; return Response.json({ execute: true });
-    }
     assert.ok(url.endsWith("/outcome"));
     assert.equal((await backing.load(session.id))?.calls["call-1"].state, "done");
     delivered.resolve(); return Response.json({ ok: true });
@@ -95,10 +92,10 @@ test("async journals commit before claiming side effects and before delivering t
     tools: { echo: { description: "echo", input: { type: "object" }, execute() { executions++; return "ok"; } } },
   });
   try {
-    const event = { type: "tool_call", call: { id: "call-1", name: "echo", args: {}, state: "offered", deadline: Date.now() + 5000 } };
+    const event = { type: "tool_call", call: { id: "call-1", name: "echo", args: {}, state: "started", client: clientId, deadline: Date.now() + 5000 } };
     eventStream!.enqueue(new TextEncoder().encode(`id: 1\ndata: ${JSON.stringify(event)}\n\n`));
     await saving.promise; await tick();
-    assert.equal(claimed, false); assert.equal(executions, 0);
+    assert.equal(executions, 0, "the tool waits for its receipt to be committed");
     gate.resolve(); await delivered.promise;
     assert.equal(executions, 1);
   } finally { gate.resolve(); await client.close(); }

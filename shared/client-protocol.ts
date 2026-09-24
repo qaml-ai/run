@@ -6,11 +6,16 @@ export interface SessionCredentials { id: string; token: string; expiresAt: numb
 export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "history" | "continue" | "steer" | "followUp" | "configure";
 export type CallRecord = {
   id: string; toolCallId?: string; requestId?: string; createdAt?: number; name: string; args: Record<string, unknown>; deadline: number;
-  /** `uncertain`: claimed, but the outcome was lost; the model was told it is unknown. */
+  /**
+   * `started`: delivered to the application, which runs it at most once. `uncertain`: delivered,
+   * but the outcome was lost; the model was told it is unknown. `offered` is only in older journals.
+   */
   state: "offered" | "started" | "completed" | "cancelled" | "uncertain";
   outcome?: Outcome;
   /** A result that arrived after the call was already settled as uncertain. */
   lateOutcome?: Outcome;
+  /** The client (`X-Agent-Client` on its event stream) the call was delivered to: only it runs the call. */
+  client?: string;
   /** Where the turn came from, set by the runtime (e.g. a channel and its sender), so tools can authorize. */
   origin?: Record<string, unknown>;
 };

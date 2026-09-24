@@ -284,6 +284,8 @@ export class AgentClient {
   private readonly pending = new Map<string, Pending>();
   private readonly active = new Map<string, { controller: AbortController; task: Promise<void> }>();
   private readonly delivered = new Set<string>();
+  /** Identifies this client on its event stream: the runtime delivers each call to one client only. */
+  private readonly clientId = globalThis.crypto.randomUUID();
   private stream?: AbortController;
   private loop?: Promise<void>;
   private closed = false;
@@ -335,7 +337,7 @@ export class AgentClient {
       touch();
       try {
         const response = await this.transport.fetcher(this.transport.base + this.path("/events"), {
-          headers: { Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor) },
+          headers: { Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor), "X-Agent-Client": this.clientId },
           signal: this.stream.signal, redirect: "manual",
         });
         await rejectRedirect(response);
@@ -422,42 +424,40 @@ export class AgentClient {
 
   private dispatch(call: CallRecord) {
     if (this.closed || this.active.has(call.id) || this.delivered.has(call.id) || ["completed", "cancelled"].includes(call.state)) return;
+    // Only calls delivered to this client run here; a result this client saved is still resent.
+    if (call.client !== this.clientId && this.journal.calls[call.id]?.state !== "done") return;
     const controller = new AbortController();
     // Defer execution until the active entry exists; replay can arrive immediately.
     const task = Promise.resolve().then(() => this.runTool(call, controller)).catch(error => this.report(error)).finally(() => this.active.delete(call.id));
     this.active.set(call.id, { controller, task });
   }
 
+  /**
+   * Run a delivered call at most once: the receipt is saved before the callback runs, so a
+   * replayed or re-synced call is never run again. A call this client started but never
+   * finished (it restarted meanwhile) has an unknown outcome.
+   */
   private async runTool(call: CallRecord, controller: AbortController) {
     let receipt = this.journal.calls[call.id];
     if (receipt?.state === "done") {
       await this.http(`/calls/${call.id}/outcome`, "POST", receipt.outcome);
       this.delivered.add(call.id); return;
     }
-    if (call.state === "uncertain") return; // Already settled as unknown; never execute again.
+    if (call.state !== "started") return; // Settled already (unknown, cancelled or completed); never execute.
     let value: Outcome;
-    if (call.state === "started") value = { error: "The application lost this tool call's outcome; it may or may not have taken effect", uncertain: true };
+    if (receipt?.state === "started") value = { error: "The application restarted during this tool call; it may or may not have taken effect", uncertain: true };
     else {
       this.journal.calls[call.id] = { state: "started" }; await this.save();
+      const timer = setTimeout(() => controller.abort(), Math.max(1, call.deadline - Date.now()));
+      // A callback that ignores cancellation must not keep a closed client's process alive until the deadline.
+      (timer as { unref?: () => void }).unref?.();
       try {
-        // Claim is deliberately NOT retried. A lost acknowledgement is ambiguous.
-        const claim = await this.http(`/calls/${call.id}/claim`, "POST", {}, false);
-        if (!claim.execute) {
-          if (claim.call.state !== "started") return;
-          value = { error: "Tool execution was already claimed; outcome unknown", uncertain: true };
-        } else {
-          const timer = setTimeout(() => controller.abort(), Math.max(1, call.deadline - Date.now()));
-          // A callback that ignores cancellation must not keep a closed client's process alive until the deadline.
-          (timer as { unref?: () => void }).unref?.();
-          try {
-            controller.signal.throwIfAborted();
-            const result = await this.server.callTool(call.name, call.args, { callId: call.id, toolCallId: call.toolCallId, signal: controller.signal, ...(call.origin ? { origin: call.origin } : {}) });
-            if (!isRecord(result) || !Array.isArray(result.content) || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
-            value = { result };
-          } catch (error) { value = { error: String(error).slice(0, 2048), ...(controller.signal.aborted ? { uncertain: true } : {}) }; }
-          finally { clearTimeout(timer); }
-        }
-      } catch (error) { value = { error: `Execution claim failed: ${String(error).slice(0, 1800)}`, uncertain: true }; }
+        controller.signal.throwIfAborted();
+        const result = await this.server.callTool(call.name, call.args, { callId: call.id, toolCallId: call.toolCallId, signal: controller.signal, ...(call.origin ? { origin: call.origin } : {}) });
+        if (!isRecord(result) || !Array.isArray(result.content) || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
+        value = { result };
+      } catch (error) { value = { error: String(error).slice(0, 2048), ...(controller.signal.aborted ? { uncertain: true } : {}) }; }
+      finally { clearTimeout(timer); }
     }
     // Persist before POST; reconnect resends this receipt, never the side effect.
     receipt = { state: "done", outcome: value };

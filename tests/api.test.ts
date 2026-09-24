@@ -298,15 +298,18 @@ test("the OpenAPI document is served without credentials", async t => {
 });
 
 test("a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees", async t => {
-  const { db, call } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "4", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "3000" });
+  const { db, base, call } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "4", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "3000" });
   const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
   const busy = await call("/client-sessions", { token: bob, body: { tools: [hold] }, headers: { "Idempotency-Key": "busy" } });
   assert.equal(busy.status, 201);
-  // An offered call nobody claims keeps the agent busy until the tool timeout, so it cannot be evicted.
+  // A call delivered to an application that never answers keeps the agent busy until the tool timeout, so it cannot be evicted.
+  const stream = new AbortController();
+  t.after(async () => stream.abort());
+  await fetch(`${base}/clients/${busy.json.id}/events`, { headers: { Authorization: `Bearer ${busy.json.token}` }, signal: stream.signal });
   const run = await call(`/clients/${busy.json.id}/requests`, { token: busy.json.token, body: { id: "hold-1", method: "execute", params: { code: "return await tools.hold({})" } } });
   assert.equal(run.status, 202);
   for (let tries = 0; !(await call(`/clients/${busy.json.id}/state`, { token: busy.json.token })).json.calls.length; tries++) {
-    assert.ok(tries < 100, "the call was offered");
+    assert.ok(tries < 100, "the call was delivered");
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   const agents = async () => Number((await db.query("select count(*) as count from agents where tenant = 'bob'")).rows[0].count);
@@ -335,7 +338,7 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
     bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "bob-admin-anthropic-key" }, maxAgents: bobLimit },
   });
   // The held calls are never answered: shut down without draining them for the tool timeout.
-  const { root, call, child, logged } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "20000", AGENT_DRAIN_TIMEOUT_MS: "0" }, tenants(2));
+  const { root, base, call, child, logged } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "20000", AGENT_DRAIN_TIMEOUT_MS: "0" }, tenants(2));
   const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
   const create = (token: string, key: string) => call("/client-sessions", { token, body: { tools: [hold] }, headers: { "Idempotency-Key": key } });
   const statuses = (results: { status: number }[]) => results.map(result => result.status).sort();
@@ -348,11 +351,14 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
   await Promise.all(logs);
   const refused = ["b1", "b2", "b3"][bobs.findIndex(result => result.status === 429)];
 
-  // Bob's two agents are busy, so nothing can be evicted for the refused one.
+  // Bob's two agents are busy, each with a call delivered to an application that never answers, so nothing can be evicted for the refused one.
+  const stream = new AbortController();
+  t.after(async () => stream.abort());
   for (const agent of bobs.filter(result => result.status === 201).map(result => result.json)) {
+    await fetch(`${base}/clients/${agent.id}/events`, { headers: { Authorization: `Bearer ${agent.token}` }, signal: stream.signal });
     assert.equal((await call(`/clients/${agent.id}/requests`, { token: agent.token, body: { id: "hold", method: "execute", params: { code: "return await tools.hold({})" } } })).status, 202);
     for (let tries = 0; !(await call(`/clients/${agent.id}/state`, { token: agent.token })).json.calls.length; tries++) {
-      assert.ok(tries < 100, "the call was offered");
+      assert.ok(tries < 100, "the call was delivered");
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   }

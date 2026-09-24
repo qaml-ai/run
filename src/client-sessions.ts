@@ -68,6 +68,8 @@ type Session = {
   /** Streamed events live only in memory; durable state is recovered through /state. */
   cursor: number; events: BufferedEvent[]; eventBytes: number;
   response?: ServerResponse; starting?: Promise<unknown>;
+  /** The client whose stream `response` is: calls delivered on it are that client's alone. */
+  client?: string;
   pending: Map<string, (outcome: Outcome) => void>;
   /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
   runs: Promise<void>;
@@ -109,6 +111,8 @@ const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "history", "steer", 
 const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
 const MAX_BUFFERED_EVENTS = 512;
+/** How long a tool call waits for an application to reconnect before failing as not run. */
+const RECONNECT_GRACE_MS = 3_000;
 
 /**
  * A request's body straight from Node's request stream: reaching it through the Fetch
@@ -332,7 +336,8 @@ export class ClientSessions {
     }
     for (const call of session.calls.values()) {
       if (call.state === "started") this.upsertCall(session, { ...call, state: "uncertain", outcome: { error: "The runtime restarted during this tool call; its outcome is unknown", uncertain: true } });
-      else if (call.state === "offered") this.upsertCall(session, { ...call, state: "cancelled", outcome: { error: "The runtime restarted before this tool call was claimed" } });
+      // Only journals from before delivery counted as starting have offered calls.
+      else if (call.state === "offered") this.upsertCall(session, { ...call, state: "cancelled", outcome: { error: "The runtime restarted before this tool call was delivered" } });
     }
     await log.flush(true);
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
@@ -802,12 +807,20 @@ export class ClientSessions {
       // Cursor 0 means a new client: it takes whatever is buffered. Anything else must be contiguous.
       const first = session.events[0]?.id ?? session.cursor + 1;
       if (cursor !== 0 && (cursor > session.cursor || cursor < first - 1)) throw new HttpError(409, "REPLAY_GAP: recover from session state");
+      const client = c.req.header("x-agent-client");
+      if (client !== undefined && !validId(client)) throw new HttpError(400, "Invalid X-Agent-Client");
       const res = c.env.outgoing;
       session.response?.end();
       session.response = res;
+      session.client = client ?? `stream_${randomUUID()}`;
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
       res.write(`event: ready\ndata: ${JSON.stringify({ version: 3, agentId: session.header.id })}\n\n`);
       for (const event of session.events) if (event.id > cursor) {
+        // A call is delivered once, to one client: replays leave out calls settled since or delivered to another.
+        if (event.data.type === "tool_call") {
+          const call = session.calls.get(event.data.call.id);
+          if (call?.state !== "started" || call.client !== session.client) continue;
+        }
         const frame = `id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`;
         if (res.writableLength + Buffer.byteLength(frame) > 2 * FRAME_BYTES) { res.destroy(); break; }
         res.write(frame);
@@ -840,16 +853,6 @@ export class ClientSessions {
       const record = c.var.session.requests.get(c.req.param("request"));
       if (!record) throw new HttpError(404, "Unknown request");
       return json(c, 200, visible(record));
-    });
-    app.post(`${agent}/calls/:call/claim`, async c => {
-      const session = c.var.session;
-      const call = this.toolCall(session, c.req.param("call"));
-      await readJson(body(c), FRAME_BYTES);
-      if (call.state !== "offered" || call.deadline <= Date.now()) return json(c, 200, { execute: false, call });
-      this.upsertCall(session, { ...call, state: "started" });
-      // The claim must be durable before the client performs the side effect.
-      await this.commit(session, true);
-      return json(c, 200, { execute: true });
     });
     app.post(`${agent}/calls/:call/outcome`, async c => {
       const session = c.var.session;
@@ -1010,8 +1013,8 @@ export class ClientSessions {
         const { params: _params, ...rest } = session.requests.get(record.id)!;
         record = this.upsertRequest(session, { ...rest, began: Date.now() });
         // Code has no effect outside its sandbox until it calls a tool, and every tool call
-        // makes this record durable first (`beforeEffect`; the application's tools do it with
-        // their claim, which is appended after it). So an execution needs no commit of its
+        // makes this record durable first (`beforeEffect`; the application's tools do it when
+        // their call is recorded, which is appended after it). So an execution needs no commit of its
         // own here: one that crashes before a tool call is simply run again.
         if (record.method === "execute") session.beginning = {};
         else await this.commit(session, true);
@@ -1066,8 +1069,7 @@ export class ClientSessions {
       if (canonical(call.outcome) !== canonical(value)) throw new HttpError(409, "Conflicting tool outcome");
       return;
     }
-    if (call.state === "cancelled") throw new HttpError(409, "Tool cancelled before execution claim");
-    if (call.state === "offered") throw new HttpError(409, "Tool has not been claimed");
+    if (call.state === "cancelled" || call.state === "offered") throw new HttpError(409, "Tool call was not delivered");
     if (call.state === "uncertain") {
       if (call.lateOutcome && canonical(call.lateOutcome) !== canonical(value)) throw new HttpError(409, "Conflicting late outcome");
       if (call.lateOutcome) return;
@@ -1101,13 +1103,39 @@ export class ClientSessions {
     return contentResult(value);
   }
 
-  private offer(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }, request?: RequestRecord, origin?: Record<string, unknown>): Promise<unknown> {
+  /**
+   * Hand a call to the connected application. Like a call sent to a remote MCP server, it
+   * counts as started once delivered: recorded durably first (with the run's start, appended
+   * before it), so after a crash its outcome is unknown and it is never sent again. With no
+   * application connected, after a short wait for a reconnect, it fails without running.
+   */
+  /** Whether an application is connected to the agent's stream, waiting briefly for one that is reconnecting. */
+  private async connected(session: Session, signal: AbortSignal) {
+    const live = () => !!session.response && !session.response.destroyed;
+    for (const until = Date.now() + RECONNECT_GRACE_MS; !live() && Date.now() < until && !signal.aborted && !this.closed;) await new Promise(resolve => setTimeout(resolve, 50));
+    return live();
+  }
+
+  private async offer(session: Session, name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }, request?: RequestRecord, origin?: Record<string, unknown>): Promise<unknown> {
     signal.throwIfAborted();
-    if (this.closed || session.fault || session.header.revoked) return Promise.reject(new Error("Client session unavailable"));
-    if (session.pending.size >= 32) return Promise.reject(new Error("Too many pending client tools"));
-    const call = this.upsertCall(session, { ...(context ? { toolCallId: context.toolCallId } : {}), ...(request ? { requestId: request.id } : {}), ...(origin ? { origin } : {}), createdAt: Date.now(), id: randomUUID(), name, args, state: "offered", deadline: Date.now() + (this.options.toolTimeoutMs ?? 15_000) });
-    // An offer needs no durable commit: after a restart, unclaimed offers are cancelled.
-    this.commitLater(session);
+    if (this.closed || session.fault || session.header.revoked) throw new Error("Client session unavailable");
+    if (session.pending.size >= 32) throw new Error("Too many pending client tools");
+    const record = { ...(context ? { toolCallId: context.toolCallId } : {}), ...(request ? { requestId: request.id } : {}), ...(origin ? { origin } : {}), createdAt: Date.now(), id: randomUUID(), name, args, deadline: Date.now() + (this.options.toolTimeoutMs ?? 15_000) };
+    if (!await this.connected(session, signal)) {
+      // Recorded all the same, so the attempt (and who asked) shows in the agent's calls.
+      const error = "No application is connected to answer this tool call; it did not run";
+      this.upsertCall(session, { ...record, state: "cancelled", outcome: { error } });
+      this.commitLater(session);
+      throw new Error(error);
+    }
+    const call = this.upsertCall(session, { ...record, state: "started", client: session.client });
+    await this.commit(session, true);
+    if (signal.aborted) {
+      // Never delivered, so it certainly did not run.
+      this.upsertCall(session, { ...call, state: "cancelled", outcome: { error: "Tool call cancelled before it was delivered" } });
+      this.commitLater(session);
+      signal.throwIfAborted();
+    }
     return new Promise((resolve, reject) => {
       const finish = (value: Outcome) => {
         if (!session.pending.delete(call.id)) return;
@@ -1116,11 +1144,8 @@ export class ClientSessions {
       };
       const cancel = (reason: string) => {
         const current = session.calls.get(call.id)!;
-        if (!["offered", "started"].includes(current.state)) return;
-        const uncertain = current.state === "started";
-        const settledCall = this.upsertCall(session, { ...current, state: uncertain ? "uncertain" : "cancelled", outcome: uncertain
-          ? { error: `${reason} after the application started it. Its outcome is unknown: it may or may not have taken effect.`, uncertain: true }
-          : { error: `${reason} before the application started it` } });
+        if (current.state !== "started") return;
+        const settledCall = this.upsertCall(session, { ...current, state: "uncertain", outcome: { error: `${reason} after it was delivered to the application. Its outcome is unknown: it may or may not have taken effect.`, uncertain: true } });
         this.commitLater(session);
         this.publish(session, { type: "tool_cancel", id: call.id });
         // The model receives the unknown outcome and decides what to do; the turn keeps going.

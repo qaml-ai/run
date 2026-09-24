@@ -101,7 +101,8 @@ requiring applications to handle messages, request IDs, or raw HTTP.
 ## Tools are an attached MCP server
 
 Both SDKs serve an application's tools to its agent as an MCP server, attached
-over the agent's own connection (see [the sketch](../plans/mcp-only-tools.md)).
+over the agent's own connection. The runtime treats it like a remote MCP server
+it calls itself: the same tool names, results and "outcome unknown" handling.
 `tool({...})` and `@tool` build that server; a TypeScript application can attach
 one written with the MCP SDK instead:
 
@@ -220,14 +221,20 @@ Display events (token deltas, progress) outside that window are not
 reconstructed, and SDKs persist their cursor only for tool calls and responses,
 never once per streamed token.
 
-A tool must obtain a **one-time execution claim** before running. The SDK saves
-its result locally before POSTing it. If the result acknowledgement is lost, it
-resends that saved result. Replayed events do not re-execute a completed tool.
+A tool call counts as started once the runtime delivers it to the connected
+application, as a call to a remote MCP server does once it is sent; with no
+application connected (after a few seconds' grace for a reconnect) it fails
+without running. The SDK runs each call at most once: it saves a receipt before
+running the tool, and its result before POSTing it. If the result
+acknowledgement is lost, it resends that saved result. Replayed events never
+re-execute a tool. Use one connected client per agent: two processes answering
+the same agent could both run a call delivered to the first just before the
+second connected.
 A brief SSE disconnect leaves already-running callbacks and their HTTP uploads
 active, so it doesn't automatically turn a successful write into a failure.
 
-If a client dies after starting a tool but before saving its result, or a tool
-times out after being claimed, the runtime cannot know whether the side effect
+If a client dies after starting a tool but before saving its result, or a
+delivered call times out, the runtime cannot know whether the side effect
 happened. It settles the call as `uncertain` and gives the model an explicit
 "outcome unknown" result, so the turn continues and the model can check the
 real state before repeating anything. Nothing waits for an operator. A result
@@ -244,7 +251,7 @@ execution. Keep handlers and schemas trusted.
 ## Persistence and prototype limits
 
 - Host journals are append-only logs under `AGENT_DATA_DIR/client-sessions`,
-  fsynced when a request is accepted, a tool call is claimed, and an outcome
+  fsynced when a request is accepted, a tool call is delivered, and an outcome
   is recorded.
   SDK receipts/cursors default to `.agent-runtime/client-sdk`, configurable with
   `stateDirectory` / `state_directory` or `AGENT_CLIENT_STATE_DIR`. Use persistent,
@@ -269,8 +276,8 @@ execution. Keep handlers and schemas trusted.
   separate work. No browser or production application route has been switched.
 
 The wire transport is ordinary HTTP: `GET /clients/:id/events` streams SSE;
-`POST /clients/:id/requests` accepts idempotent requests; call-specific `claim` and
-`outcome` endpoints manage execution. Application code should
+`POST /clients/:id/requests` accepts idempotent requests; `POST /clients/:id/calls/:call/outcome`
+answers a delivered tool call. Application code should
 use the SDK rather than implement this protocol itself.
 
 Validation: `npm test` covers the host and TypeScript SDK;

@@ -315,6 +315,8 @@ class AgentClient:
             raise AgentError("Unsupported client journal")
         self.pending, self.active = {}, {}
         self.delivered = set()
+        # Identifies this client on its event stream: the runtime delivers each call to one client only.
+        self.client_id = str(uuid.uuid4())
         self.ready = asyncio.Event()
         self.runner = None
         self.closed = False
@@ -345,7 +347,7 @@ class AgentClient:
             try:
                 async with self.http.stream("GET", self.base + self.path + "/events", headers={
                     "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream",
-                    "Last-Event-ID": str(self.journal["cursor"])}, timeout=20) as response:
+                    "Last-Event-ID": str(self.journal["cursor"]), "X-Agent-Client": self.client_id}, timeout=20) as response:
                     if response.status_code == 409:
                         state = await self._sync()
                         self.journal["cursor"] = state["cursor"]
@@ -434,6 +436,9 @@ class AgentClient:
         call_id = call["id"]
         if self.closed or call_id in self.active or call_id in self.delivered or call["state"] in ("completed", "cancelled"):
             return
+        # Only calls delivered to this client run here; a result this client saved is still resent.
+        if call.get("client") != self.client_id and self.journal["calls"].get(call_id, {}).get("state") != "done":
+            return
         task = asyncio.create_task(self._run_tool(call))
         self.active[call_id] = task
         def finished(task):
@@ -443,47 +448,38 @@ class AgentClient:
         task.add_done_callback(finished)
 
     async def _run_tool(self, call):
+        """Run a delivered call at most once: the receipt is saved before the tool runs, so a replayed
+        call never runs again, and one this client started but never finished has an unknown outcome."""
         call_id = call["id"]
         receipt = self.journal["calls"].get(call_id)
         if receipt and receipt["state"] == "done":
             await self._http(f"/calls/{call_id}/outcome", "POST", receipt["outcome"])
             self.delivered.add(call_id)
             return
-        if call["state"] == "uncertain":
+        if call["state"] != "started":
             return
-        if call["state"] == "started":
-            value = {"error": "The application lost this tool call's outcome; it may or may not have taken effect", "uncertain": True}
+        if receipt and receipt["state"] == "started":
+            value = {"error": "The application restarted during this tool call; it may or may not have taken effect", "uncertain": True}
         else:
             self.journal["calls"][call_id] = {"state": "started"}
             self._save()
             try:
-                claim = await self._http(f"/calls/{call_id}/claim", "POST", {}, retry=False)
-                if not claim["execute"]:
-                    if claim["call"]["state"] != "started":
-                        return
-                    value = {"error": "Tool already claimed; outcome unknown", "uncertain": True}
-                else:
-                    try:
-                        definition = self.tools[call["name"]]
-                        args = dict(call["args"])
-                        if definition.with_context:
-                            args["context"] = ToolContext(call_id=call_id, origin=call.get("origin"))
-                        import time
-                        remaining = max(0.001, call["deadline"] / 1000 - time.time())
-                        result = await asyncio.wait_for(definition.function(**args), remaining)
-                        answer = _call_tool_result(result)
-                        if len(json.dumps(answer).encode()) > 1024 * 1024:
-                            raise ValueError("Tool result too large")
-                        value = {"result": answer}
-                    except (asyncio.CancelledError, TimeoutError):
-                        value = {"error": "Tool cancelled; verify any side effects", "uncertain": True}
-                    except Exception as error:
-                        # The tool's own failure is an MCP error result, not a transport failure.
-                        value = {"result": {"content": [{"type": "text", "text": str(error)[:2048]}], "isError": True}}
-            except asyncio.CancelledError:
-                value = {"error": "Tool cancelled during claim; outcome unknown", "uncertain": True}
+                definition = self.tools[call["name"]]
+                args = dict(call["args"])
+                if definition.with_context:
+                    args["context"] = ToolContext(call_id=call_id, origin=call.get("origin"))
+                import time
+                remaining = max(0.001, call["deadline"] / 1000 - time.time())
+                result = await asyncio.wait_for(definition.function(**args), remaining)
+                answer = _call_tool_result(result)
+                if len(json.dumps(answer).encode()) > 1024 * 1024:
+                    raise ValueError("Tool result too large")
+                value = {"result": answer}
+            except (asyncio.CancelledError, TimeoutError):
+                value = {"error": "Tool cancelled; verify any side effects", "uncertain": True}
             except Exception as error:
-                value = {"error": f"Execution claim failed: {str(error)[:1800]}", "uncertain": True}
+                # The tool's own failure is an MCP error result, not a transport failure.
+                value = {"result": {"content": [{"type": "text", "text": str(error)[:2048]}], "isError": True}}
         self.journal["calls"][call_id] = {"state": "done", "outcome": value}
         self._save()
         await self._http(f"/calls/{call_id}/outcome", "POST", value)

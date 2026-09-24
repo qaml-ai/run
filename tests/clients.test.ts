@@ -209,30 +209,48 @@ test("a run stays in flight until its outcome is durable and published, so a dra
   assert.deepEqual((await running).output, ["done"]);
 });
 
-test("execution claims are one-time; a timed-out claimed call settles as unknown without blocking the agent", async t => {
+test("a call is delivered to one client: another that connects meanwhile, with its own journal, never runs it", async t => {
+  const f = await fixture(t, { timeout: 5000 });
+  let executions = 0;
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const tools = { echo: echo(async ({ value }) => { executions++; entered.resolve(); await gate.promise; return value; }) };
+  const first = await f.start(tools);
+  const running = first.execute('return await tools.echo({value:"once"})');
+  await entered.promise;
+  // A second process (a new container, say) attaches with an empty journal and replays everything buffered.
+  const second = await new AgentRuntime({ ...f.runtimeOptions, stateDirectory: join(f.root, "second-sdk") }).connectAgent(first.session, { tools });
+  t.after(() => second.close());
+  await sleep(300);
+  assert.equal(executions, 1, "the call delivered to the first client did not run again");
+  gate.resolve();
+  assert.deepEqual((await running).output, ["once"]);
+  assert.equal(executions, 1);
+});
+
+test("a call with no application connected fails as not run; a delivered call that times out settles as unknown", async t => {
   const f = await fixture(t, { timeout: 400 });
   const agent = await f.start({ echo: echo(() => "must not execute") });
   await agent.close();
-  const running = f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' });
-  const rejected = assert.rejects(running, /timed out/);
-  let callId = "";
-  for (let i = 0; i < 100; i++) {
-    callId = [...f.sessions.sessions.get(agent.session.id)!.calls.keys()][0] ?? "";
-    if (callId) break;
-    await sleep(10);
-  }
-  assert.ok(callId);
-  const claims = await Promise.all([f.post(agent, `/calls/${callId}/claim`, {}), f.post(agent, `/calls/${callId}/claim`, {})]);
-  const values = await Promise.all(claims.map(response => response.json())) as { execute: boolean }[];
-  assert.equal(values.filter(value => value.execute).length, 1);
-  await rejected;
-  const [call] = (await agent.outcomes()).calls;
+  await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /No application is connected[\s\S]*did not run/);
+  const [undelivered] = (await agent.outcomes()).calls;
+  assert.equal(undelivered.state, "cancelled", "a call nobody could receive is recorded as not run");
+  assert.match(String(undelivered.outcome?.error), /did not run/);
+
+  // A stream nobody answers: the call counts as started once delivered, and its deadline passes.
+  const stream = new AbortController();
+  t.after(() => stream.abort());
+  await fetch(`${f.url}/clients/${agent.session.id}/events`, { headers: { Authorization: `Bearer ${agent.session.token}` }, signal: stream.signal });
+  await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /timed out/);
+  const call = (await agent.outcomes()).calls.find(entry => entry.id !== undelivered.id)!;
+  const callId = call.id;
   assert.equal(call.state, "uncertain");
   assert.equal(call.outcome && "error" in call.outcome && call.outcome.uncertain, true);
   // Nothing waits for an operator: the next run is accepted straight away.
   assert.equal((await f.post(agent, "/requests", { id: "next", method: "execute", params: { code: "return 1" } })).status, 202);
   assert.equal((await f.post(agent, `/calls/${callId}/outcome`, { result: "verified late write" })).status, 200);
-  assert.equal((await agent.outcomes()).calls[0].lateOutcome?.result, "verified late write");
+  assert.equal((await agent.outcomes()).calls.find(entry => entry.id === callId)?.lateOutcome?.result, "verified late write");
   assert.equal((await f.post(agent, `/calls/${callId}/outcome`, { result: "conflicting result" })).status, 409);
 });
 
@@ -479,9 +497,9 @@ test("an execution's start is durable before its first tool call takes effect, a
   const computing = (await durable(agent.session.id)).filter(entry => entry.t === "request" && entry.record.id === "slow-start");
   assert.deepEqual(computing.map(entry => [entry.record.state, entry.record.began]), [["running", undefined]]);
   assert.equal((await run).output[0], "x");
-  // The application ran the tool only once the start and its claim were durable, in that order.
+  // The application got the call only once the start and the call's delivery were durable, in that order.
   const [atEffect] = seen;
   const began = atEffect.findIndex(entry => entry.t === "request" && entry.record.id === "slow-start" && entry.record.began);
-  const claimed = atEffect.findIndex(entry => entry.t === "call" && entry.record.state === "started");
-  assert.ok(began >= 0 && claimed > began, JSON.stringify(atEffect));
+  const delivered = atEffect.findIndex(entry => entry.t === "call" && entry.record.state === "started");
+  assert.ok(began >= 0 && delivered > began, JSON.stringify(atEffect));
 });
