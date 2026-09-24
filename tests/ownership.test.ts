@@ -27,6 +27,18 @@ async function node(url: string, name: string, ttlMs = 30_000) {
   return { ownership, link, fences, stop: async () => { await ownership.close().catch(() => {}); await pool.end(); } };
 }
 
+/** Bounds on the database's clock minus this process's, from the quickest of a few round trips. */
+async function databaseClock(db: pg.Pool) {
+  let best = { low: -Infinity, high: Infinity };
+  for (let index = 0; index < 5; index++) {
+    const sent = Date.now();
+    const { rows } = await db.query("select extract(epoch from clock_timestamp()) * 1000 as ms");
+    const received = Date.now(), at = Number(rows[0].ms);
+    if (received - sent < best.high - best.low) best = { low: at - received - 1, high: at - sent + 1 };
+  }
+  return best;
+}
+
 test("one node owns an actor at a time, even when nodes race for many actors", async t => {
   const { url } = await testDatabase();
   const a = await node(url, "http://a"), b = await node(url, "http://b");
@@ -74,34 +86,33 @@ test("renewal is one write per node, however many actors it owns", async t => {
 
 test("a node that cannot renew fences itself before its published expiry, and a peer then takes over with a new epoch", async t => {
   const { db, url } = await testDatabase();
-  // The node fences a tenth of the TTL before its published expiry; the checks below must reach the database within that margin.
   const a = await node(url, "http://a", 1_500), b = await node(url, "http://b", 1_500);
   t.after(async () => { await a.stop(); await b.stop(); });
   const held = await a.ownership.acquire("client_z");
   assert.ok("claim" in held);
 
-  // Asked the moment the node fences, so no test delay eats into the margin.
-  let atFence: Promise<[boolean, unknown]> | undefined;
-  a.ownership.onFence(() => {
-    atFence = Promise.all([
-      db.query("select expires_at > now() as live from runtime_nodes where node = 'http://a'").then(({ rows }) => rows[0].live as boolean),
-      b.ownership.acquire("client_z"),
-    ]);
-  });
+  // Times are taken here and compared with the database's clock afterwards, so a slow query cannot fail the test, only a late fence or an early takeover.
+  let fencedAt = 0;
+  a.ownership.onFence(() => { fencedAt = Date.now(); });
   a.link.partitioned = true;
-  for (let waited = 0; !a.fences.length; waited += 25) { assert.ok(waited < 3_000, "the node fenced"); await sleep(25); }
+  for (let waited = 0; !fencedAt; waited += 5) { assert.ok(waited < 3_000, "the node fenced"); await sleep(5); }
   assert.deepEqual(a.fences, ["heartbeat_expired"]);
   assert.equal(a.ownership.holds(held.claim), false);
-  const [liveAtFence, peerAtFence] = await atFence!;
-  assert.equal(liveAtFence, true, "the node stopped serving while its heartbeat still looked live to peers");
-  assert.deepEqual(peerAtFence, { owner: "http://a" }, "peers wait for the published expiry");
 
-  for (let waited = 0; ; waited += 50) {
-    const taken = await b.ownership.acquire("client_z");
-    if ("claim" in taken) { assert.equal(taken.claim.epoch, held.claim.epoch + 1); break; }
-    assert.ok(waited < 3_000, "a peer took over once the heartbeat expired");
-    await sleep(50);
+  // From the fence on, a peer keeps trying to take the actor.
+  const attempts: { sent: number; received: number; taken: boolean }[] = [];
+  for (let taken = false; !taken; await sleep(25)) {
+    assert.ok(attempts.length < 120, "a peer took over once the heartbeat expired");
+    const sent = Date.now(), result = await b.ownership.acquire("client_z");
+    taken = "claim" in result;
+    if (taken) assert.equal((result as { claim: { epoch: number } }).claim.epoch, held.claim.epoch + 1);
+    attempts.push({ sent, received: Date.now(), taken });
   }
+  const expires = Number((await db.query("select extract(epoch from expires_at) * 1000 as ms from runtime_nodes where node = 'http://a'")).rows[0].ms);
+  const clock = await databaseClock(db);
+  assert.ok(fencedAt + clock.high < expires, "the node stopped serving while its heartbeat still looked live to peers");
+  const takeover = attempts.at(-1)!;
+  assert.ok(takeover.received + clock.high >= expires, "peers wait for the published expiry");
 
   // Reconnected, the fenced node rejoins under a new session; the actor stays where it moved.
   a.link.partitioned = false;
