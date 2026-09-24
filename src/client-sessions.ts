@@ -91,6 +91,12 @@ const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
 const MAX_BUFFERED_EVENTS = 512;
 
+/**
+ * A request's body straight from Node's request stream: reaching it through the Fetch
+ * Request builds an undici Request and a web stream first, a noticeable part of a
+ * small request's cost. The operator bridge hands its body on as a Request.
+ */
+const body = (c: Context<ClientEnv>) => c.env.operatorTenant === undefined && c.env.incoming ? c.env.incoming : c.req.raw.body;
 const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });
 function outcome(value: any): Outcome {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "Invalid outcome");
@@ -687,7 +693,7 @@ export class ClientSessions {
     });
     app.post(`${agent}/metadata`, async c => {
       const session = c.var.session;
-      session.header.metadata = agentMetadata(await readJson(c.req.raw.body, 4096));
+      session.header.metadata = agentMetadata(await readJson(body(c), 4096));
       await this.writeHeader(session);
       return json(c, 200, session.header.metadata);
     });
@@ -723,7 +729,7 @@ export class ClientSessions {
       const scheduler = this.scheduler();
       const tenant = c.var.session.header.tenant ?? DEFAULT_TENANT;
       let input;
-      try { input = scheduleInput(await readJson(c.req.raw.body, 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
+      try { input = scheduleInput(await readJson(body(c), 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
       try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input })); } catch (error) { throw new HttpError(400, errorText(error)); }
     });
     app.delete(`${agent}/schedules/:schedule`, async c => {
@@ -736,7 +742,7 @@ export class ClientSessions {
       return json(c, 200, { cursor: session.cursor, calls: [...session.calls.values()], requests: [...session.requests.values()].map(visible) });
     });
     app.post(`${agent}/requests`, async c => {
-      const { status, record } = await this.accept(c.var.session, await readJson(c.req.raw.body, FRAME_BYTES));
+      const { status, record } = await this.accept(c.var.session, await readJson(body(c), FRAME_BYTES));
       return json(c, status, record);
     });
     app.get(`${agent}/requests/:request`, c => {
@@ -747,7 +753,7 @@ export class ClientSessions {
     app.post(`${agent}/calls/:call/claim`, async c => {
       const session = c.var.session;
       const call = this.toolCall(session, c.req.param("call"));
-      await readJson(c.req.raw.body, FRAME_BYTES);
+      await readJson(body(c), FRAME_BYTES);
       if (call.state !== "offered" || call.deadline <= Date.now()) return json(c, 200, { execute: false, call });
       this.upsertCall(session, { ...call, state: "started" });
       // The claim must be durable before the client performs the side effect.
@@ -757,7 +763,7 @@ export class ClientSessions {
     app.post(`${agent}/calls/:call/outcome`, async c => {
       const session = c.var.session;
       const call = this.toolCall(session, c.req.param("call"));
-      await this.recordOutcome(session, call, outcome(await readJson(c.req.raw.body, FRAME_BYTES)));
+      await this.recordOutcome(session, call, outcome(await readJson(body(c), FRAME_BYTES)));
       return json(c, 200, { recorded: true, state: session.calls.get(call.id)!.state });
     });
     app.all(`${agent}/*`, () => { throw new HttpError(404, "Unknown client route"); });
