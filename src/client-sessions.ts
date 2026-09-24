@@ -212,9 +212,11 @@ export class ClientSessions {
         ? await this.db.query(`
             insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision) values ($1, $2, $3, $4, $5, $6, $7, $8, 1)
             on conflict (id) do nothing returning revision`, columns)
+        // The ownership row is locked (FOR SHARE) as in a journal append, so a takeover waits for this write instead of racing it.
         : await this.db.query(`
+            with owner as (select from actor_owners where actor = $1 and session = $10 and epoch = $11 for share)
             update agents set tenant = $2, header = $3, name = $4, type = $5, model = $6, expires_at = $7, revoked = $8, revision = revision + 1
-            where id = $1 and (revision = $9 or $12) and ($10::uuid is null or exists (select 1 from actor_owners where actor = $1 and session = $10 and epoch = $11))
+            where id = $1 and (revision = $9 or $12) and ($10::uuid is null or exists (select from owner))
             returning revision`, [...columns, session.revision, session.claim?.session ?? null, session.claim?.epoch ?? null, !!session.unsettled]);
       if (!rows[0]) throw new Error("Another node changed this agent; it moved");
       session.revision = rows[0].revision;
