@@ -272,7 +272,7 @@ test("native tools preserve content and imported history is owned by the service
   await supervisor.request("native", "prompt", { text: "Next" });
   assert.equal(requests.at(-1).tools.length, 1);
   assert.ok(requests.at(-1).messages[0].content.includes("Changed role."));
-  // Each run rebuilds the prompt and tool declarations from configuration; they never become history.
+  // The change follows the history as a system message; a provider without mid-conversation system messages gets it folded into the leading one.
   await supervisor.request("native", "prompt", { text: "Again" });
   assert.equal(requests.at(-1).tools.length, 1);
   assert.equal(requests.at(-1).messages.filter((message: any) => ["system", "developer"].includes(message.role)).length, 1);

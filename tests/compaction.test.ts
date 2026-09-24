@@ -14,6 +14,7 @@ import { ClientSessions } from "../src/client-sessions.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
+import { fileStorage } from "../shared/storage.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
@@ -183,6 +184,69 @@ test("compaction summaries bill their tokens and cost to the tenant, apart from 
   assert.ok(Math.abs(compaction[0].cost - summaries * (3000 * 1 + 200 * 10) / 1e6) < 1e-12, "priced at the summarizing model's rates");
   assert.deepEqual(turns.map(row => [row.model, row.responses, row.input]), [["openai/turns", 4, 40]]);
   assert.equal(usage.totals.responses, 4 + summaries);
+});
+
+test("a prompt or tool change on an agent with history is appended after the cached prefix, and reloads and compaction keep it", async t => {
+  const fake = await provider(t);
+  const root = await mkdtemp(join(tmpdir(), "configure-cache-"));
+  const storage = fileStorage(join(root, "state"));
+  const nodes: AgentSupervisor[] = [];
+  const node = (name: string) => {
+    const supervisor = new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+    nodes.push(supervisor);
+    return supervisor;
+  };
+  t.after(async () => { for (const supervisor of nodes) await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
+  const model = { ...fake.model(8000), compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolAdditions: true } } as Model<Api>;
+  const lookup = { name: "lookup", description: "Look something up", parameters: { type: "object" }, exposure: "direct" as const };
+  const tools = (definitions: typeof lookup[]) => ({ definitions, async call() { return "found"; } });
+  const last = () => fake.chat().at(-1) as Body & { tools: unknown[] };
+  const updates = (body: Body) => body.messages.filter(message => JSON.stringify(message).includes('Updated system prompt section \\"instructions\\"'));
+
+  const a = node("a");
+  await a.start("agent", { model, apiKey: "fixture", systemPrompt: "Original rules" }, tools([]));
+  await a.request("agent", "prompt", { text: "one" });
+  const first = last();
+  assert.match(text(first), /Original rules/);
+  await a.request("agent", "configure", { systemPrompt: "New rules", tools: [lookup] });
+  await a.request("agent", "prompt", { text: "two" });
+  const second = last();
+  assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages, "the prefix the provider cached is byte-identical");
+  assert.deepEqual(second.tools, first.tools, "the added tool is declared in place, not in the request's tool list");
+  const change = second.messages.slice(first.messages.length + 1, -1);
+  assert.match(JSON.stringify(change), /"name":"lookup"/);
+  assert.equal(updates(second).length, 1);
+  assert.match(JSON.stringify(updates(second)), /New rules/);
+  assert.match(JSON.stringify(second.messages.at(-1)), /"role":"user".*"two"/);
+  assert.ok((await a.request("agent", "history")).messages.every((message: any) => message.role !== "system"), "system messages are not history");
+
+  // Another node loads the agent with its current configuration, as the stored header gives it.
+  await a.stop("agent");
+  const b = node("b");
+  await b.start("agent", { model, apiKey: "fixture", systemPrompt: "New rules" }, tools([lookup]));
+  await b.request("agent", "prompt", { text: "three" });
+  const third = last();
+  assert.deepEqual(third.messages.slice(0, second.messages.length), second.messages, "the reloaded context is the same");
+  assert.equal(third.messages.length, second.messages.length + 2, "nothing was declared again");
+  assert.deepEqual(third.tools, second.tools);
+
+  // Compaction folds the change into the leading system message.
+  const events: any[] = [];
+  for (let index = 0; !events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0); index++) {
+    assert.ok(index < 6, "compaction ran");
+    assert.equal((await b.request("agent", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
+  }
+  const compacted = last();
+  assert.equal(updates(compacted).length, 0);
+  assert.match(JSON.stringify(compacted.messages[0]), /New rules/);
+  assert.doesNotMatch(JSON.stringify(compacted.messages[0]), /Original rules/);
+  assert.match(JSON.stringify(compacted.tools), /"name":"lookup"/);
+  await b.stop("agent");
+  const c = node("c");
+  await c.start("agent", { model, apiKey: "fixture", systemPrompt: "New rules" }, tools([lookup]));
+  await c.request("agent", "prompt", { text: "after reload" });
+  assert.deepEqual(last().messages[0], compacted.messages[0]);
+  assert.deepEqual(last().tools, compacted.tools);
 });
 
 test("model calls require the agent's explicit key and never read provider keys from the environment", async () => {

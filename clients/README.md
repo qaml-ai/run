@@ -265,4 +265,14 @@ behavior; no `js_exec` instructions are needed. The stored application prompt is
 kept separate from the assembled prompt, so reconnects do not duplicate instructions.
 Prompts must be nonblank strings of at most 32,000 characters.
 Sandbox capability restrictions are enforced independently of the prompt.
+
+Changing the prompt or tools of an agent that has history (a `configure` request)
+never rewrites the start of its context, so the provider's prompt cache stays
+valid. The change is appended as a system message where the conversation stands,
+replacing the application's instructions section and adding or removing tools
+from that point. Providers that accept system messages mid-conversation get it in
+place; others get it folded into the leading system message (and lose the cache
+once, as before). The runtime records the change in the agent's transcript, so
+a reload on any node rebuilds the same context. Compaction folds earlier changes
+into the leading message. An agent without history just gets a new leading message.
 Editing an existing agent's prompt through the Studio UI is not implemented yet.

@@ -1,3 +1,5 @@
+import type { SystemMessage, Tool } from "@earendil-works/pi-ai";
+
 /** Harness mechanics belong to the runtime, not each application's prompt. */
 const runtimeInstructions = `You operate through an application agent runtime.
 
@@ -11,6 +13,17 @@ Runtime tools and execution:
 
 Application instructions follow. They define your role, task-specific behavior and response style.`;
 
-export function buildSystemPrompt(applicationPrompt?: string): string {
-  return `${runtimeInstructions}\n\n${applicationPrompt ?? "You are a helpful application assistant. Keep responses concise and useful."}`;
+/** The system prompt section holding the application's instructions; a later system message replaces it. */
+export const INSTRUCTIONS = "instructions";
+
+export function applicationInstructions(applicationPrompt?: string): string {
+  return applicationPrompt ?? "You are a helpful application assistant. Keep responses concise and useful.";
+}
+
+/**
+ * The context's first system message: the runtime's instructions, then the application's as a
+ * named section. Rendered, it is the two joined by a blank line.
+ */
+export function leadingSystemMessage(applicationPrompt: string | undefined, tools: Tool[]): SystemMessage {
+  return { role: "system", content: runtimeInstructions, sections: { [INSTRUCTIONS]: applicationInstructions(applicationPrompt) }, ...(tools.length ? { toolsAdded: tools } : {}), timestamp: 0 };
 }

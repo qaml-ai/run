@@ -1,10 +1,13 @@
 import { mkdir } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Agent, convertToLlm, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
-import { createInitialSystemMessage, isContextOverflow, isRetryableAssistantError, toToolDeclaration, type AssistantMessage } from "@earendil-works/pi-ai";
+import {
+  getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration,
+  type AssistantMessage, type SystemMessage, type Tool,
+} from "@earendil-works/pi-ai";
 import { executeCode } from "./codemode.ts";
 import type { AgentConfig, ToolBridge } from "./protocol.ts";
-import { buildSystemPrompt } from "./system-prompt.ts";
+import { applicationInstructions, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, legacySnapshotPath, readTranscriptLog, summaryMessage, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
@@ -48,19 +51,54 @@ export function createAgentHost(io: HostIO) {
     return [summary.message];
   }
 
-  /** The model's context: the current summary plus live messages not yet folded into it. */
+  /**
+   * The context's first system message, the start of the provider's cached prefix. It is built
+   * from configuration until the prompt or tools change with history; the transcript then pins
+   * it, and each change follows as a system message of its own where the conversation stood.
+   */
+  function leading(tools: Tool[] = agent!.state.tools.map(toToolDeclaration)): SystemMessage {
+    return transcript.system ?? leadingSystemMessage(config.systemPrompt, tools);
+  }
+
+  /** Pi's messages from the transcript: what a run starts from. */
+  function stateMessages(): AgentMessage[] { return [leading(), ...transcript.view()]; }
+
+  /** The model's context: the leading system message, the current summary, and live messages not yet folded into it. */
   function liveView(messages: AgentMessage[]): AgentMessage[] {
-    return [...summaryView(), ...messages.filter(message => message.role !== "system" && message.role !== "compactionSummary" && !dropped.has(message))];
+    return [leading(), ...summaryView(), ...messages.filter((message, index) => !(index === 0 && message.role === "system") && message.role !== "compactionSummary" && !dropped.has(message))];
   }
 
   /**
-   * Pi carries the system prompt and tool declarations as a leading system message.
-   * They come from the agent's configuration, so the message is rebuilt from it and
-   * never enters the transcript.
+   * Record a system message after the leading one, pinning that first so any node rebuilds the same
+   * context. Both appends happen before the first await, so a run cannot slip in between.
    */
-  function withSystemMessage(messages: AgentMessage[]): AgentMessage[] {
-    const system = createInitialSystemMessage(buildSystemPrompt(config.systemPrompt), agent!.state.tools.map(toToolDeclaration));
-    return [...(system ? [system] : []), ...messages.filter(message => message.role !== "system")];
+  function declare(message: SystemMessage, current: SystemMessage): Promise<unknown> {
+    const writes = [...(transcript.system ? [] : [transcript.declareSystem(current, true)]), transcript.declareSystem(message)];
+    return Promise.all(writes).catch(error => { persistenceError = error; throw error; });
+  }
+
+  /**
+   * Bring the system messages in line with the configuration. Without history the leading message
+   * is rebuilt; with history a change is appended, so the cached prefix stays byte-identical.
+   */
+  function declareConfiguration(): Promise<unknown> {
+    const messages = agent!.state.messages;
+    const tools = agent!.state.tools.map(toToolDeclaration);
+    if (!transcript.total && !transcript.compaction) {
+      agent!.state.messages = [leadingSystemMessage(config.systemPrompt, tools), ...messages.filter(message => message.role !== "system")];
+      return Promise.resolve();
+    }
+    const instructions = applicationInstructions(config.systemPrompt);
+    const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
+    const promptChanged = getCurrentSystemMessage(messages)?.sections?.[INSTRUCTIONS] !== instructions;
+    if (!promptChanged && !toolsAdded.length && !toolsRemoved.length) return Promise.resolve();
+    const change: SystemMessage = {
+      role: "system", content: "", timestamp: Date.now(), ...(promptChanged ? { sections: { [INSTRUCTIONS]: instructions } } : {}),
+      ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}),
+    };
+    const written = declare(change, messages[0] as SystemMessage);
+    agent!.state.messages = [...messages, change];
+    return written;
   }
 
   /** Summarize older context into the transcript. Failures leave the context as is; the next request retries. */
@@ -71,7 +109,7 @@ export function createAgentHost(io: HostIO) {
       const context = transcript.context.slice();
       const offset = transcript.offset;
       // An overflow means the real limit is lower than assumed: keep about a fifth of the context.
-      const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens(liveView(context)) * 0.2)) : undefined;
+      const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
       const outcome = await runCompaction({
         context, offset, previous: transcript.compaction, model: config.model, apiKey: config.apiKey, signal, keepRecentTokens,
         onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp }),
@@ -80,8 +118,11 @@ export function createAgentHost(io: HostIO) {
         io.emit({ type: "compaction_end", reason, skipped: outcome.skipped });
         return false;
       }
-      for (const message of context.slice(0, outcome.state.cut - offset)) dropped.add(message);
-      await transcript.compact(outcome.state);
+      // System messages before the cut fold into the leading one: the summary starts a new prefix anyway.
+      const folded = transcript.updates.filter(update => update.at <= outcome.state.cut).map(update => update.message);
+      const system = folded.length ? getCurrentSystemMessage([leading(), ...folded]) : undefined;
+      for (const message of [...context.slice(0, outcome.state.cut - offset), ...folded]) dropped.add(message);
+      await transcript.compact(outcome.state, system);
       io.emit({ type: "compaction_end", reason, tokensBefore: outcome.state.tokensBefore, summarizedMessages: outcome.state.cut - offset, keptMessages: transcript.context.length });
       return true;
     } catch (error) {
@@ -93,15 +134,19 @@ export function createAgentHost(io: HostIO) {
 
   /** Before every model request: compact when the context is too big, trimming only as a last resort. */
   async function contextFor(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> {
-    const system = messages.filter(message => message.role === "system");
-    let view = liveView(messages);
-    const systemTokens = Math.ceil(agent!.state.systemPrompt.length / 4);
-    if (needsCompaction(view, config.model, systemTokens) && await compactNow("threshold", signal)) view = liveView(messages);
+    let [system, ...view] = liveView(messages) as [SystemMessage, ...AgentMessage[]];
+    const systemTokens = Math.ceil(getSystemMessageText(system).length / 4);
+    if (needsCompaction(view, config.model, systemTokens) && await compactNow("threshold", signal)) [system, ...view] = liveView(messages) as [SystemMessage, ...AgentMessage[]];
     // Same budget as the compaction threshold, so this only trims when compaction could not run.
     const budget = config.model.contextWindow - compactionSettings(config.model).reserveTokens - systemTokens;
     const bounded = boundedContext(view, budget);
-    if (bounded.length !== view.length) io.emit({ type: "context_trimmed", retainedMessages: bounded.length, omittedMessages: view.length - bounded.length });
-    return [...system, ...bounded];
+    if (bounded.length !== view.length) {
+      io.emit({ type: "context_trimmed", retainedMessages: bounded.length, omittedMessages: view.length - bounded.length });
+      // Changes in the trimmed part still apply.
+      const trimmed = view.slice(0, view.length - bounded.length).filter(message => message.role === "system");
+      if (trimmed.length) system = getCurrentSystemMessage([system, ...trimmed])!;
+    }
+    return [system, ...bounded];
   }
 
   function bridge(signal: AbortSignal): ToolBridge {
@@ -237,11 +282,11 @@ export function createAgentHost(io: HostIO) {
           } finally { await io.cancelTools(); }
         },
       };
+      const tools = [jsExec, ...directTools];
       agent = new Agent({
         initialState: {
           model: config.model,
-          systemPrompt: buildSystemPrompt(config.systemPrompt),
-          tools: [jsExec, ...directTools], messages: transcript.view(),
+          tools, messages: [leading(tools.map(toToolDeclaration)), ...transcript.view()],
           thinkingLevel: config.thinkingLevel ?? "off",
         },
         getApiKey: () => config.apiKey,
@@ -265,8 +310,14 @@ export function createAgentHost(io: HostIO) {
         toolExecution: "parallel",
       });
       agent.subscribe(async event => {
-        // Pi announces a changed prompt or tool set as a system message; ours are rebuilt from configuration.
-        if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end") && event.message.role === "system") return;
+        if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end") && event.message.role === "system") {
+          // Pi declares a tool set that no longer matches the context's; it stays in place like the runtime's own changes.
+          if (event.type === "message_end") {
+            try { await declare(event.message, agent!.state.messages[0] as SystemMessage); }
+            catch (error) { agent!.abort(); throw error; }
+          }
+          return;
+        }
         if (event.type === "message_end") {
           // One durable append per finished message. Streaming deltas are never persisted.
           try { await transcript.push(event.message); }
@@ -274,6 +325,8 @@ export function createAgentHost(io: HostIO) {
         }
         io.emit(event);
       });
+      // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
+      await declareConfiguration();
       return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}) };
     }
     if (!agent) throw new Error("Agent is not initialized");
@@ -285,7 +338,7 @@ export function createAgentHost(io: HostIO) {
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
       if (params.tools !== undefined) { config.tools = params.tools; agent.state.tools = [agent.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools)]; }
-      if (params.systemPrompt !== undefined || params.tools !== undefined) agent.state.messages = withSystemMessage(agent.state.messages);
+      if (params.systemPrompt !== undefined || params.tools !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Full history comes from the log; memory holds only the working set.
@@ -320,7 +373,7 @@ export function createAgentHost(io: HostIO) {
     } finally {
       // Release what compaction folded away: the next run starts from summary + kept messages.
       if (method !== "execute" && !persistenceError) {
-        agent.state.messages = withSystemMessage(transcript.view());
+        agent.state.messages = stateMessages();
         dropped = new WeakSet();
       }
       await io.cancelTools();
