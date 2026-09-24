@@ -140,8 +140,8 @@ variable "runtime_env" {
   default = {
     AGENT_PROVIDER                 = "anthropic"
     AGENT_MODEL                    = "claude-sonnet-5"
-    AGENT_MAX_PROCESSES            = "16"
-    AGENT_MAX_PROCESSES_PER_TENANT = "8"
+    AGENT_MAX_PROCESSES            = "1000"
+    AGENT_MAX_PROCESSES_PER_TENANT = "500"
     AGENT_IDLE_MS                  = "300000"
     AGENT_TOOL_TIMEOUT_MS          = "60000"
     GITHUB_ORG                     = "qaml-ai"
