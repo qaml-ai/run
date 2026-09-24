@@ -1,0 +1,6 @@
+# The executor's user may start per-execution gVisor sandboxes, and nothing else.
+# The helper validates its arguments and fixes every sandbox setting itself.
+# No pty, PAM session or syslog line per execution: each would slow sandbox
+# startup, and the executor logs every execution itself.
+Defaults:agent-executor !requiretty, !use_pty, !pam_session, !pam_setcred, !syslog
+agent-executor ALL=(root) NOPASSWD: /usr/local/libexec/agent-executor/sandbox run *, /usr/local/libexec/agent-executor/sandbox kill *

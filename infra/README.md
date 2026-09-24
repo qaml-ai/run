@@ -38,8 +38,9 @@ proxies to the runtime container (`agent-runtime.service`). Agent state lives in
 ## Terraform
 
 The resources above are described in [`terraform/`](terraform/README.md). Once
-its imports have been applied, `provision.sh` and `executor/provision.sh` are
-superseded; the deploy, tenant and GitHub OAuth scripts below stay.
+its imports have been applied, `provision.sh` is superseded; the deploy, tenant
+and GitHub OAuth scripts below stay. Executor hosts are Terraform-only (an ASG
+from the AMI that `executor/build-ami.sh` bakes).
 
 ## First-time setup
 
@@ -146,6 +147,6 @@ curl https://agents.camelai.dev/healthz
   host's).
 - Unless executor hosts are deployed, sandboxed code runs on the same host as
   agent state. That's acceptable for trusted teammates, but not for untrusted
-  tenants. [`executor/`](executor/README.md) moves `js_exec` onto separate hosts
-  that have no credentials, no IAM role and no network beyond the runtime's
-  callback port.
+  tenants. [`executor/`](executor/README.md) moves `js_exec` onto separate hosts,
+  one gVisor sandbox per execution, with no network in the sandbox and none on
+  the host beyond the runtime's callback port and AWS endpoints.

@@ -1,9 +1,7 @@
 # Hosted agent runtime: the HTTP/SSE service, agent processes and the QuickJS sandbox.
 # Build from the repository root: docker build -t agent-runtime .
-# The same image runs a code executor host (no credentials, no agent state) with:
-#   docker run --runtime=runsc -e AGENT_EXECUTOR_TOKEN=... agent-runtime \
-#     node --experimental-strip-types --disable-warning=ExperimentalWarning src/executor/server.ts
-# See infra/executor/README.md.
+# Code executor hosts use the same image: its filesystem is the read-only root of
+# every per-execution gVisor sandbox, and /app runs the executor. See infra/executor/README.md.
 FROM node:22-bookworm-slim
 
 WORKDIR /app
