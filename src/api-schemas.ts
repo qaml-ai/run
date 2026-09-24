@@ -197,6 +197,28 @@ const McpServerInput = z.object({
   headers: z.record(z.string(), z.string()).optional().openapi({ description: "Sent with every request to the server; stored encrypted and never returned. Leave out with auth to keep the ones stored for a server of this name and origin" }),
   auth: z.object({ type: z.literal("bearer"), token: z.string() }).optional().openapi({ description: "A bearer token; stored encrypted and never returned" }),
 }).openapi("McpServerInput");
+const openApiFields = {
+  name: z.string().openapi({ description: "Its operations reach the model as <name>__<operationId>: 1–32 letters and digits, single underscores between them" }),
+  baseUrl: z.string().optional().openapi({ description: "Where requests go; default the spec's first server. https, on a public address" }),
+  allowTools: z.array(z.string()).max(128).optional().openapi({ description: "Only these operations (by operationId); at most 128 in all" }),
+  denyTools: z.array(z.string()).max(4096).optional().openapi({ description: "None of these operations" }),
+  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its operations: directly, from js_exec (the default), or both" }),
+  timeoutMs: z.number().int().min(1_000).max(300_000).optional().openapi({ description: "Per call; default 30000" }),
+};
+const OpenApiInput = z.object({
+  ...openApiFields,
+  spec: z.union([z.string(), z.record(z.string(), z.unknown())]).optional().openapi({ description: "The OpenAPI 3 document (JSON or YAML) as a URL, fetched each time the definition is saved, or the document itself. Leave out to keep a source's current operations" }),
+  headers: z.record(z.string(), z.string()).optional().openapi({ description: "Sent with every request to the API; stored encrypted and never returned. Leave out with auth to keep the ones stored for a source of this name and origin" }),
+  auth: z.object({ type: z.literal("bearer"), token: z.string() }).optional().openapi({ description: "A bearer token; stored encrypted and never returned" }),
+}).openapi("OpenApiInput");
+const OpenApi = z.object({
+  ...openApiFields,
+  spec: z.string().optional().openapi({ description: "The spec's URL; absent for a spec given inline" }),
+  baseUrl: z.string(),
+  tools: z.array(z.string()).openapi({ description: "The operations the agent gets, by name" }),
+  headerNames: z.array(z.string()).optional(),
+  auth: z.object({ type: z.literal("bearer") }).optional(),
+}).openapi("OpenApi");
 const McpServer = z.object({
   ...mcpServerFields,
   headerNames: z.array(z.string()).optional().openapi({ description: "Headers the server gets; their values are never returned" }),
@@ -210,6 +232,7 @@ const definitionFields = {
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
   builtins: z.array(z.enum(["web_fetch", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text; schedule lets the agent set, list and cancel its own wake-ups" }),
   mcpServers: z.array(McpServerInput).max(16).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
+  openApi: z.array(OpenApiInput).max(16).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
 };
 const optional = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.optional()])) as { [K in keyof T]: z.ZodOptional<T[K]> };
 const removable = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.nullable().optional()])) as { [K in keyof T]: z.ZodOptional<z.ZodNullable<T[K]>> };
@@ -226,6 +249,7 @@ export const Definition = z.object({
   revision: z.number().openapi({ description: "Increases with every change" }),
   ...optional(definitionFields),
   mcpServers: z.array(McpServer).optional(),
+  openApi: z.array(OpenApi).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 }).openapi("Definition");

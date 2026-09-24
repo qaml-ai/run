@@ -400,7 +400,7 @@ user messages; assistant and tool-result history is produced by the runtime.
 ## Agent definitions
 
 A definition is a tenant's reusable agent configuration: name, model, system
-prompt, thinking level, tool sources (built-ins and remote MCP servers), limits
+prompt, thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs), limits
 (`ttlSeconds`) and optional mounts. Tenants manage them with `/v1/definitions` or the console's
 Definitions page, and make agents from one with `POST /v1/agents
 {"definition": "def_…"}` (or `createAgent({ definition })` in the SDKs). The
@@ -430,8 +430,9 @@ In order of precedence (a name an earlier server lists is left out of later ones
 2. **The application's attached MCP server**: an SDK application serves its
    tools over its connection to the agent (see the [SDK guide](clients/README.md)).
 3. **File tools** over the agent's mounts.
-4. **The definition's sources**: the built-ins it enables (`builtins`, below)
-   and its remote MCP servers (`mcpServers`), which the runtime calls itself.
+4. **The definition's sources**: the built-ins it enables (`builtins`, below),
+   its remote MCP servers (`mcpServers`) and its OpenAPI specs (`openApi`),
+   which the runtime calls itself.
 
 `js_exec` (the QuickJS sandbox) reaches all of them. Every result is an MCP
 result: the model gets its content (text and images) and `isError`; code in
@@ -439,8 +440,8 @@ result: the model gets its content (text and images) and `isError`; code in
 it is JSON), and a tool error throws. Each call gets the turn's `origin` (a
 channel, its conversation and sender) so tools can authorize: MCP servers as
 `_meta["agent-runtime/origin"]`. Only the attached server needs its application
-connected; the rest suit channel agents and anything scheduled. A tool for an
-HTTP API is a remote MCP server; a small one is a single POST handler.
+connected; the rest suit channel agents and anything scheduled. An HTTP API gets
+its tools from its OpenAPI spec, or from a remote MCP server.
 
 ### Built-ins a definition enables
 
@@ -502,9 +503,46 @@ HTTP API is a remote MCP server; a small one is a single POST handler.
 - A server that cannot be reached when an agent starts contributes no tools
   that time (logged as `mcp_tools_unavailable`); the agent starts anyway.
 
+### OpenAPI specs
+
+```json
+{"name": "Support", "openApi": [{
+  "name": "shop", "spec": "https://api.example.com/openapi.json",
+  "auth": {"type": "bearer", "token": "…"}, "allowTools": ["listOrders", "getOrder", "refundOrder"]
+}]}
+```
+
+As in [Executor](https://github.com/UsefulSoftwareCo/executor)'s openapi plugin,
+every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
+
+- Named `<name>__<operationId>` (or `<name>__<method>_<path>` without one); its
+  input is the operation's path, query and header parameters by name, plus `body`
+  for the request body: sent as JSON, or form-encoded with nested values in
+  brackets (`metadata[key]=v`, `expand[]=x`, as Stripe reads them). Local `$ref`s
+  in an operation's input are inlined up to a depth and size budget (past it, or
+  a reference back into itself, a schema is `{}`: any value, which the API still
+  checks), and 3.0's `nullable` becomes a JSON Schema type. Operations whose body
+  is neither (multipart, octet streams) are left out, as are cookie parameters
+  and the bodies GET and HEAD declare. Read-only methods (GET, HEAD, OPTIONS) may run in
+  parallel.
+- The spec is fetched (through the outbound guard, up to five redirects, 8 MiB)
+  and checked when the definition is saved, and its operations, after
+  `allowTools` and `denyTools` (at most 128, the agent's whole catalog), are stored with it: an agent's tools
+  do not change under it, and saving the definition again takes a spec's
+  changes. `spec` may also be the document itself; a source saved without `spec`
+  keeps the operations it has.
+- Requests go to `baseUrl`, by default the spec's first server (its variables at
+  their defaults, resolved against the spec's URL), through the outbound guard
+  with no redirects, `timeoutMs` (default 30 s) and a 1 MiB response cap.
+  `headers` and `auth` are sealed as for MCP servers and sent to that origin only.
+- A 2xx answer is the result: its JSON, else its text. Any other status is a tool
+  error quoting the method, path, status and the start of the body.
+- `exposure` is `codemode` by default, as for MCP servers. The API shows each
+  source's `tools` (operation names) and `baseUrl`, never its credentials.
+
 ### Outbound calls
 
-Every request to a URL a tenant or model chose (MCP servers, `web_fetch`) goes through one guard (`src/outbound.ts`):
+Every request to a URL a tenant or model chose (MCP servers, OpenAPI specs and APIs, `web_fetch`) goes through one guard (`src/outbound.ts`):
 
 - Only `https://`, unless the operator sets `AGENT_OUTBOUND_ALLOW_HTTP=true`
   (tests and development). No credentials in URLs.
@@ -526,8 +564,9 @@ Every request to a URL a tenant or model chose (MCP servers, `web_fetch`) goes t
   address the name returns must pass, and the socket connects to the address
   that was checked. A name that later resolves elsewhere (DNS rebinding) is
   checked again on the next connection, and each new connection resolves afresh.
-- MCP servers get no redirects. Where redirects are followed, each hop is
-  checked the same way, and credentials are never sent to another origin.
+- MCP servers and OpenAPI API calls get no redirects. Where redirects are
+  followed (`web_fetch`, spec downloads), each hop is checked the same way, and
+  credentials are never sent to another origin.
 - Requests have a deadline (an event stream is timed until it starts) and
   responses a byte cap.
 

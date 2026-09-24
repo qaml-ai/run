@@ -42,21 +42,24 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
   const [builtins, setBuiltins] = useState(definition?.builtins ?? []);
   // Stored credentials are never shown; a server edited without headers or auth keeps them.
   const [servers, setServers] = useState(pretty(withoutCredentials(definition?.mcpServers)));
-  const secured = (definition?.mcpServers ?? []).filter(entry => entry.headerNames || entry.auth).map(entry => entry.name);
+  // A spec is fetched again on save; the listed operations are for reading, not sending back.
+  const [apis, setApis] = useState(pretty(withoutCredentials(definition?.openApi)?.map(({ tools: _tools, ...api }) => api)));
+  const secured = [...definition?.mcpServers ?? [], ...definition?.openApi ?? []].filter(entry => entry.headerNames || entry.auth).map(entry => entry.name);
   const [apply, setApply] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [applied, setApplied] = useState<{ accepted: string[]; failed: { agent: string; error: string }[] }>();
   async function save(event: FormEvent) {
     event.preventDefault();
-    const parsedServers = parseList("MCP servers", servers);
-    if (parsedServers.error) { setError(parsedServers.error); return; }
+    const parsedServers = parseList("MCP servers", servers), parsedApis = parseList("OpenAPI", apis);
+    const invalid = parsedServers.error ?? parsedApis.error;
+    if (invalid) { setError(invalid); return; }
     const ttlSeconds = ttl.trim() === "never" ? null : ttl.trim() ? Number(ttl) : undefined;
     // On edit, a cleared field is null: the definition drops it.
     const clear = definition ? null : undefined;
     const body = {
       name: name.trim(), model: model.trim() || clear, systemPrompt: systemPrompt.trim() || clear,
-      thinkingLevel: thinking === DEFAULT ? clear : thinking, mcpServers: parsedServers.value ?? clear, builtins: builtins.length ? builtins : clear,
+      thinkingLevel: thinking === DEFAULT ? clear : thinking, mcpServers: parsedServers.value ?? clear, openApi: parsedApis.value ?? clear, builtins: builtins.length ? builtins : clear,
       limits: ttlSeconds === undefined ? clear : { ttlSeconds },
       ...(definition ? { revision: definition.revision, ...(apply ? { apply: "all" } : {}) } : {}),
     };
@@ -139,6 +142,11 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
           <div className="flex flex-col gap-2">
             <Label htmlFor="definition-servers">MCP servers <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, url, auth?: {"{"}type: "bearer", token{"}"}, headers?, allowTools?, exposure?{"}"}], called by the runtime)</span></Label>
             <Textarea id="definition-servers" rows={4} className="font-mono text-xs" placeholder='[{"name": "kb", "url": "https://…/mcp", "auth": {"type": "bearer", "token": "…"}}]' value={servers} onChange={event => setServers(event.target.value)} />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="definition-openapi">OpenAPI <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, spec: URL, baseUrl?, auth?, headers?, allowTools?, exposure?{"}"}]; each operation becomes a tool, and saving fetches the spec again)</span></Label>
+            <Textarea id="definition-openapi" rows={4} className="font-mono text-xs" placeholder='[{"name": "pets", "spec": "https://…/openapi.json", "auth": {"type": "bearer", "token": "…"}}]' value={apis} onChange={event => setApis(event.target.value)} />
+            {definition?.openApi?.map(api => <p key={api.name} className="text-muted-foreground text-xs"><span className="font-mono">{api.name}</span>: {api.tools.length} operation{api.tools.length === 1 ? "" : "s"} at {api.baseUrl}</p>)}
           </div>
           {secured.length > 0 && <p className="text-muted-foreground -mt-2 text-xs">Credentials stored for {secured.join(", ")} are kept unless you give headers or auth for it.</p>}
           {definition && (

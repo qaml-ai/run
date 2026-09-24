@@ -9,7 +9,7 @@ import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import { BUILTINS } from "./builtins.ts";
-import { mcpServersInput, mcpServerView, type McpServerSpec, type Sources } from "./tool-sources.ts";
+import { mcpServersInput, mcpServerView, openApiInput, openApiView, type McpServerSpec, type OpenApiSpec, type Sources } from "./tool-sources.ts";
 
 /**
  * Agent definitions: reusable, tenant-level agent configurations (`definitions`).
@@ -25,6 +25,8 @@ export interface DefinitionSpec {
   mounts?: unknown[];
   /** Remote MCP servers whose tools the runtime calls; credentials sealed. */
   mcpServers?: McpServerSpec[];
+  /** OpenAPI specs whose operations the runtime calls; credentials sealed. */
+  openApi?: OpenApiSpec[];
   /** Built-in tools to enable: web_fetch, schedule. */
   builtins?: string[];
   /** Made from this channel's inline template, so that channel may rewrite it. */
@@ -38,13 +40,16 @@ export interface DefinitionRef { id: string; revision: number }
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["model", "systemPrompt", "thinkingLevel", "limits", "mounts", "builtins", "mcpServers"] as const;
+const FIELDS = ["model", "systemPrompt", "thinkingLevel", "limits", "mounts", "builtins", "mcpServers", "openApi"] as const;
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 /** The server-side tool sources an agent takes from a definition, if it has any. */
 export function sources(spec: DefinitionSpec): Sources | undefined {
-  if (!spec.builtins?.length && !spec.mcpServers?.length) return undefined;
-  return { ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}) };
+  const found: Sources = {
+    ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
+    ...(spec.openApi?.length ? { openApi: spec.openApi } : {}),
+  };
+  return Object.keys(found).length ? found : undefined;
 }
 
 export function validTtl(ttl: unknown) {
@@ -72,8 +77,8 @@ export class Definitions {
 
   /** What callers see: the spec's fields, with secrets left out. */
   view({ tenant: _tenant, spec, ...definition }: Definition) {
-    const { channel: _channel, mcpServers, ...visible } = spec;
-    return { ...definition, ...visible, ...(mcpServers ? { mcpServers: mcpServers.map(mcpServerView) } : {}) };
+    const { channel: _channel, mcpServers, openApi, ...visible } = spec;
+    return { ...definition, ...visible, ...(mcpServers ? { mcpServers: mcpServers.map(mcpServerView) } : {}), ...(openApi ? { openApi: openApi.map(openApiView) } : {}) };
   }
 
   async list(tenant: string) {
@@ -88,7 +93,7 @@ export class Definitions {
     if (!name) throw new HttpError(400, "A definition needs a name");
     if ((await this.db.query("select count(*) as count from definitions where tenant = $1", [tenant])).rows[0].count >= MAX_DEFINITIONS) throw new HttpError(400, `A tenant can have at most ${MAX_DEFINITIONS} definitions`);
     const id = `def_${randomBytes(10).toString("hex")}`;
-    const spec: DefinitionSpec = { ...this.merge(id, {}, input), ...internal };
+    const spec: DefinitionSpec = { ...await this.merge(id, {}, input), ...internal };
     const now = Date.now();
     const definition: Definition = { id, tenant, name, revision: 1, spec, createdAt: now, updatedAt: now };
     await this.db.query("insert into definitions (id, tenant, name, revision, spec, created_at, updated_at) values ($1, $2, $3, $4, $5, $6, $7)",
@@ -101,7 +106,7 @@ export class Definitions {
     const current = await this.read(tenant, id);
     if (input.revision !== undefined && input.revision !== current.revision) throw new HttpError(409, `The definition is at revision ${current.revision}, not ${input.revision}`);
     if (input.name === undefined && FIELDS.every(key => input[key] === undefined)) return current;
-    const spec = this.merge(id, current.spec, input);
+    const spec = await this.merge(id, current.spec, input);
     return this.write(current, this.name(input.name) ?? current.name, spec);
   }
 
@@ -187,13 +192,15 @@ export class Definitions {
   }
 
   /** `current` with `input`'s fields applied, checked as agent configuration is. */
-  private merge(id: string, current: DefinitionSpec, input: DefinitionInput): DefinitionSpec {
+  private async merge(id: string, current: DefinitionSpec, input: DefinitionInput): Promise<DefinitionSpec> {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "Send a definition object");
     for (const key of Object.keys(input)) if (![...FIELDS, "name", "revision", "apply"].includes(key)) throw new HttpError(400, `Unknown definition field: ${key}`);
     const spec: DefinitionSpec = { ...current };
     for (const key of FIELDS) {
       if (input[key] === null) delete spec[key];
       else if (key === "mcpServers" && input[key] !== undefined) spec.mcpServers = mcpServersInput(input[key], current.mcpServers, id, { accounts: this.accounts, outbound: this.outbound! });
+      // Saving fetches the specs again: that is how a definition takes a spec's changes.
+      else if (key === "openApi" && input[key] !== undefined) spec.openApi = await openApiInput(input[key], current.openApi, id, { accounts: this.accounts, outbound: this.outbound! });
       else if (input[key] !== undefined) (spec as Record<string, unknown>)[key] = input[key];
     }
     try {
@@ -208,6 +215,9 @@ export class Definitions {
     if (spec.builtins !== undefined && (!Array.isArray(spec.builtins) || new Set(spec.builtins).size !== spec.builtins.length || spec.builtins.some(name => !Object.hasOwn(BUILTINS, name)))) {
       throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);
     }
+    const prefixes = [...spec.mcpServers ?? [], ...spec.openApi ?? []].map(source => source.name);
+    const twice = prefixes.find((name, index) => prefixes.indexOf(name) !== index);
+    if (twice) throw new HttpError(400, `${twice} names both an MCP server and an OpenAPI source; their tools would share ${twice}__`);
     try { jsonWithinLimit(spec, 512 * 1024, "Definition"); } catch (error) { throw new HttpError(413, errorText(error)); }
     return spec;
   }

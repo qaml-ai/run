@@ -89,6 +89,7 @@ export interface Definition {
   id: string; name: string; revision: number; model?: string; systemPrompt?: string; thinkingLevel?: string;
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; createdAt: number; updatedAt: number; builtins?: string[];
   mcpServers?: { name: string; url: string; headerNames?: string[]; auth?: { type: "bearer" } }[];
+  openApi?: { name: string; spec?: string; baseUrl: string; tools: string[]; allowTools?: string[]; denyTools?: string[]; exposure?: string; timeoutMs?: number; headerNames?: string[]; auth?: { type: "bearer" } }[];
 }
 export interface Channel {
   id: string; type: string; name: string; webhookUrl?: string; definition?: string;

@@ -10,6 +10,7 @@ import type { Scheduler } from "./scheduler.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { jsonResult, type ToolServer } from "./tool-servers.ts";
+import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, RESULT_BYTES, type Operation } from "./openapi.ts";
 
 /**
  * Server-side tool sources: tools the runtime calls itself, configured in a
@@ -29,8 +30,26 @@ export interface McpServerSpec {
   exposure?: Exposure;
   timeoutMs?: number;
 }
-/** Built-in tools a definition enables, and its remote MCP servers. */
-export interface Sources { builtins?: string[]; mcpServers?: McpServerSpec[] }
+/**
+ * An OpenAPI spec as a definition stores it: fetched and checked when the definition is saved,
+ * its operations (after allowTools and denyTools) kept, its credentials sealed.
+ */
+export interface OpenApiSpec {
+  name: string;
+  /** Where the spec came from; an inline spec has none. Saving the definition fetches it again. */
+  spec?: string;
+  baseUrl: string;
+  operations: Operation[];
+  headerNames?: string[];
+  auth?: { type: "bearer" };
+  /** `{ headers, token }`, sealed under `definition:<id>:openapi:<name>`. */
+  sealed?: Sealed;
+  allowTools?: string[]; denyTools?: string[];
+  exposure?: Exposure;
+  timeoutMs?: number;
+}
+/** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
+export interface Sources { builtins?: string[]; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[] }
 /** The agent a tool call is for, its owner's claim on it, and the definition whose secrets it may unseal. */
 export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim };
 
@@ -43,7 +62,11 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const LIST_TIMEOUT_MS = 10_000;
 const MAX_DESCRIPTION = 4_000;
 
-const sealedAad = (definition: string, name: string) => `definition:${definition}:mcp:${name}`;
+const sealedAad = (definition: string, name: string, kind: "mcp" | "openapi" = "mcp") => `definition:${definition}:${kind}:${name}`;
+const SPEC_BYTES = 8 * 1024 * 1024;
+/** At most the agent's whole tool catalog: a bigger API chooses its operations with allowTools. */
+const MAX_OPERATIONS = 128;
+const API_TIMEOUT_MS = 30_000;
 type Context = { accounts?: Accounts; outbound: Outbound };
 const bad = (message: string) => new HttpError(400, message);
 const strings = (value: unknown, label: string, max: number) => {
@@ -99,6 +122,57 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
     return { ...spec, ...sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context) };
   });
 }
+
+/**
+ * A definition's `openApi` specs from what a tenant sent: each spec fetched (or given inline),
+ * checked, and turned into its operations, with credentials sealed as for MCP servers.
+ */
+export async function openApiInput(input: unknown, previous: OpenApiSpec[] | undefined, definition: string, context: Context): Promise<OpenApiSpec[]> {
+  if (!Array.isArray(input) || input.length > 16) throw bad("openApi must be a list of at most 16 specs");
+  const names = new Set<string>();
+  return Promise.all(input.map(async (entry: any) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw bad("An OpenAPI source is { name, spec (a URL or the document), baseUrl?, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs? }");
+    const { name, spec, baseUrl, headers, auth, allowTools, denyTools, exposure, timeoutMs } = entry;
+    if (typeof name !== "string" || name.length > 32 || !SERVER_NAME.test(name)) throw bad("An OpenAPI source's name is 1–32 letters and digits, single underscores between them, starting with a letter");
+    if (names.has(name)) throw bad(`Two OpenAPI sources are named ${name}`);
+    names.add(name);
+    if (exposure !== undefined && !["direct", "codemode", "both"].includes(exposure)) throw bad("exposure is direct, codemode or both");
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 300_000)) throw bad("timeoutMs is an integer from 1000 to 300000");
+    const allow = strings(allowTools, "allowTools", MAX_OPERATIONS), deny = strings(denyTools, "denyTools", 4_096);
+    const fail = (error: unknown): never => { throw bad(`OpenAPI source ${name}: ${errorText(error)}`); };
+    const kept = previous?.find(other => other.name === name);
+    let doc: Record<string, unknown> | undefined;
+    let specUrl: string | undefined;
+    // Without `spec`, the source keeps the operations it has (an inline spec is not sent back).
+    if (spec === undefined && kept) specUrl = kept.spec;
+    else if (typeof spec === "string") {
+      specUrl = (() => { try { return context.outbound.check(spec).toString(); } catch (error) { return fail(error); } })();
+      try {
+        const response = await context.outbound.fetch(specUrl, { timeoutMs: 20_000, maxBytes: SPEC_BYTES, maxRedirects: 5, headers: { Accept: "application/json, application/yaml, text/yaml, */*" } });
+        if (!response.ok) throw new Error(`fetching the spec answered HTTP ${response.status}`);
+        doc = parseSpec(await response.text());
+      } catch (error) { return fail(error); }
+    } else {
+      try { doc = checkDocument(spec); } catch (error) { return fail(error); }
+    }
+    const api = doc ? operations(doc, specUrl) : { baseUrl: kept!.baseUrl, operations: kept!.operations };
+    const base = baseUrl ?? api.baseUrl;
+    if (typeof base !== "string" || base.length > 2048) return fail("the spec names no server; give baseUrl");
+    let checked: URL;
+    try { checked = context.outbound.check(base); } catch (error) { return fail(error); }
+    const chosen = api.operations.filter(operation => (!allow || allow.includes(operation.name)) && !deny?.includes(operation.name));
+    if (!chosen.length) return fail("no operations left (the spec has none, or allowTools and denyTools leave none out)");
+    if (chosen.length > MAX_OPERATIONS) return fail(`${chosen.length} operations; choose at most ${MAX_OPERATIONS} with allowTools`);
+    const stored: OpenApiSpec = {
+      name, ...(specUrl ? { spec: specUrl } : {}), baseUrl: checked.toString(), operations: chosen,
+      ...(allow ? { allowTools: allow } : {}), ...(deny ? { denyTools: deny } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
+    };
+    return { ...stored, ...sealCredentials(headers, auth, kept && { ...kept, url: kept.baseUrl }, checked, sealedAad(definition, name, "openapi"), context) };
+  }));
+}
+
+/** What callers see of an OpenAPI source: its tools' names, never its credentials. */
+export const openApiView = ({ sealed: _sealed, operations: list, ...source }: OpenApiSpec) => ({ ...source, tools: list.map(operation => operation.name) });
 
 /**
  * Sealed credentials for a server at `url`. Sent without `headers` and `auth`, it keeps
@@ -168,10 +242,18 @@ export class ToolSources {
             return [];
           }
         }));
-        return [...builtinDefinitions(sources?.builtins), ...lists.flat()];
+        const apis = (sources?.openApi ?? []).flatMap(api => api.operations.map(operation => operationTool(api.name, operation, api.exposure)));
+        return [...builtinDefinitions(sources?.builtins), ...apis, ...lists.flat()];
       },
       call: async ({ name, args, signal, origin }) => {
         if (builtins.includes(name)) return jsonResult(await runBuiltin({ outbound: this.outbound, scheduler: this.options.scheduler }, context, name, args, signal));
+        const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));
+        const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
+        if (api && operation) {
+          const { url, init } = operationRequest(api.baseUrl, operation, args);
+          const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: RESULT_BYTES, secrets: this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed) });
+          return operationResult(operation, response);
+        }
         const spec = mcpServer(name);
         if (!spec) throw new Error(`Unknown tool ${name}`);
         const server = this.endpoint(context, spec);
