@@ -21,18 +21,41 @@ export type Credentials = { username: string; password: string };
 const AUTH_FAILED = "28P01";
 const REFRESH_MS = 10 * 60_000;
 
+// Connection refused, reset or unreachable; SQLSTATE class 08 (connection exception), the server
+// shutting down or starting (57P01-3, as in a failover), too many connections, and a failed login
+// (a password mid-rotation). The request itself was fine: retrying it later can succeed.
+const UNAVAILABLE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "57P01", "57P02", "57P03", "53300", AUTH_FAILED]);
+const UNAVAILABLE_MESSAGES = /^(Connection terminated|Query read timeout|timeout exceeded when trying to connect|Client has encountered a connection error)/;
+
+/**
+ * Whether an error means the database could not be reached (a failover, a restart,
+ * a network blip) rather than that the query was wrong. Requests that fail this way
+ * answer 503 so clients retry; the pool replaces broken connections by itself.
+ */
+export function databaseUnavailable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && (UNAVAILABLE_CODES.has(code) || code.startsWith("08"))) return true;
+  if (error instanceof AggregateError && error.errors.some(databaseUnavailable)) return true;
+  return UNAVAILABLE_MESSAGES.test(error.message);
+}
+
 /**
  * The control-plane pool, from either
  * - AGENT_DATABASE_URL (development and tests), or
  * - AGENT_DATABASE_HOST + AGENT_DATABASE_SECRET_ARN (production: the login is read
  *   from Secrets Manager; AGENT_DATABASE_NAME, AGENT_DATABASE_PORT, AWS_REGION).
  * AGENT_DATABASE_CA names a PEM bundle, such as RDS's, to verify the server with.
+ * AGENT_DATABASE_QUERY_TIMEOUT_MS bounds a query (default 30000; 0 for none), so a
+ * connection that went dark in a failover fails the query instead of hanging it.
  */
 export async function databaseFromEnvironment(env = process.env): Promise<Db> {
   const max = Number(env.AGENT_DATABASE_POOL_SIZE ?? 10);
   if (!Number.isInteger(max) || max < 1) throw new Error("AGENT_DATABASE_POOL_SIZE must be a positive integer");
+  const queryTimeout = Number(env.AGENT_DATABASE_QUERY_TIMEOUT_MS ?? 30_000);
+  if (!Number.isInteger(queryTimeout) || queryTimeout < 0) throw new Error("AGENT_DATABASE_QUERY_TIMEOUT_MS must be a non-negative integer");
   const ssl = env.AGENT_DATABASE_CA ? { ca: readFileSync(env.AGENT_DATABASE_CA, "utf8"), rejectUnauthorized: true } : undefined;
-  const common = { max, connectionTimeoutMillis: 10_000, ...(ssl ? { ssl } : {}) };
+  const common = { max, connectionTimeoutMillis: 10_000, keepAlive: true, ...(queryTimeout ? { query_timeout: queryTimeout } : {}), ...(ssl ? { ssl } : {}) };
   if (env.AGENT_DATABASE_URL) {
     const url = new URL(env.AGENT_DATABASE_URL);
     // TLS settings in the URL would replace the ssl object when pg parses it.
@@ -109,15 +132,21 @@ export async function migrate(db: Db, directory = MIGRATIONS) {
 
 export async function transaction<T>(db: Db, work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
   const client = await db.connect();
+  // A checked-out client whose connection drops emits 'error'; unheard, that would crash the process.
+  // The statement in flight fails too, and a broken client is dropped from the pool, not reused.
+  let broken: Error | undefined;
+  const lost = (error: Error) => { broken = error; };
+  client.on("error", lost);
   try {
     await client.query("begin");
     const result = await work(client);
     await client.query("commit");
     return result;
   } catch (error) {
-    await client.query("rollback").catch(() => {});
+    await client.query("rollback").catch(() => { broken ??= error as Error; });
     throw error;
   } finally {
-    client.release();
+    client.off("error", lost);
+    client.release(broken);
   }
 }

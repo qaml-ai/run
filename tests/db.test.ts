@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
-import { databaseFromEnvironment, migrate, rotatingPool } from "../src/db.ts";
+import { databaseFromEnvironment, databaseUnavailable, migrate, rotatingPool, transaction } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
 
 const MIGRATIONS = readdirSync(fileURLToPath(new URL("../migrations", import.meta.url))).filter(name => name.endsWith(".sql")).sort();
@@ -46,6 +46,31 @@ test("the connection takes a URL or a host and secret, verifies TLS against AGEN
   assert.deepEqual(options.ssl, { ca: readFileSync(ca, "utf8"), rejectUnauthorized: true });
   assert.equal(new URL(options.connectionString).search, "", "no TLS settings in the URL to override the ssl object");
   assert.equal(options.max, 4);
+});
+
+test("a connection lost mid-transaction fails the transaction without crashing, and the pool reconnects", async t => {
+  const { url } = await testDatabase({ migrate: false });
+  const pool = await databaseFromEnvironment({ AGENT_DATABASE_URL: url, AGENT_DATABASE_POOL_SIZE: "1", AGENT_DATABASE_QUERY_TIMEOUT_MS: "5000" });
+  t.after(() => pool.end());
+  assert.equal((pool.options as pg.PoolConfig).query_timeout, 5000);
+  assert.equal((pool.options as pg.PoolConfig).keepAlive, true);
+  // The backend is killed between statements, as in a failover: the client emits 'error' while checked out.
+  const failed = await transaction(pool, async sql => {
+    const { rows } = await sql.query("select pg_backend_pid() as pid");
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    await admin.query("select pg_terminate_backend($1)", [rows[0].pid]);
+    await admin.end();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await sql.query("select 1");
+  }).then(() => undefined, error => error);
+  assert.ok(databaseUnavailable(failed), `a connection failure: ${failed?.code} ${failed?.message}`);
+  assert.equal((await pool.query("select 1 as one")).rows[0].one, 1, "the broken client was dropped and replaced");
+  await assert.rejects(pool.query("select * from no_such_table"), (error: Error) => !databaseUnavailable(error), "a wrong query is not an outage");
+  assert.ok(databaseUnavailable(Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" })));
+  assert.ok(databaseUnavailable(Object.assign(new Error("the database system is starting up"), { code: "57P03" })));
+  assert.ok(databaseUnavailable(new Error("timeout exceeded when trying to connect")));
+  assert.ok(!databaseUnavailable(Object.assign(new Error("duplicate key"), { code: "23505" })));
 });
 
 test("a pool on rotating credentials re-reads the secret when a connection fails authentication", async t => {
