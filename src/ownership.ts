@@ -29,11 +29,15 @@ export class Ownership {
   private readonly fenced = new Set<(reason: string) => void>();
   private timer?: ReturnType<typeof setInterval>;
   private watchdog?: ReturnType<typeof setTimeout>;
+  /** Other nodes' actors, so forwarding needs no query per request; entries never outlive the owner's heartbeat. */
+  private readonly owners = new Map<string, { node: string; until: number }>();
+  private readonly cacheMs: number;
 
-  constructor(db: Db, options: { node: string; ttlMs?: number }) {
+  constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number }) {
     this.db = db;
     this.node = options.node;
     this.ttlMs = options.ttlMs ?? 30_000;
+    this.cacheMs = options.cacheMs ?? 5_000;
   }
 
   async start() {
@@ -107,6 +111,7 @@ export class Ownership {
       where o.session is null or o.session = excluded.session
         or not exists (select 1 from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())
       returning epoch`, [actor, this.node, session]);
+    this.owners.delete(actor);
     if (rows[0]) return { claim: { actor, session, epoch: rows[0].epoch } };
     const owner = await this.owner(actor);
     if (owner && owner !== this.node) return { owner };
@@ -128,6 +133,31 @@ export class Ownership {
       where o.actor = $1 and n.expires_at > now()`, [actor]);
     return rows[0]?.node;
   }
+
+  /**
+   * Where requests for an actor this node does not hold go: its live owner, cached
+   * for a few seconds. The cache is only a hint: a node that no longer owns an actor cannot serve it, and
+   * callers `forget` an entry when its node answers 503 or cannot be reached.
+   */
+  async route(actor: string): Promise<string | undefined> {
+    const now = performance.now();
+    const hit = this.owners.get(actor);
+    if (hit && hit.until > now) return hit.node;
+    this.owners.delete(actor);
+    const { rows } = await this.db.query(`
+      select o.node, extract(epoch from n.expires_at - now()) * 1000 as remaining from actor_owners o
+      join runtime_nodes n on n.node = o.node and n.session = o.session
+      where o.actor = $1 and n.expires_at > now()`, [actor]);
+    const owner = rows[0]?.node as string | undefined;
+    if (owner && owner !== this.node) {
+      if (this.owners.size >= 10_000) for (const [key, entry] of this.owners) if (entry.until <= now) this.owners.delete(key);
+      this.owners.set(actor, { node: owner, until: now + Math.min(this.cacheMs, Number(rows[0].remaining)) });
+    }
+    return owner;
+  }
+
+  /** Drop a cached owner that answered 503 or could not be reached. */
+  forget(actor: string) { this.owners.delete(actor); }
 
   /** Leave the cluster: dropping the heartbeat frees every actor this node still names. */
   async close() {

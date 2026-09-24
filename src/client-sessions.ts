@@ -191,7 +191,7 @@ export class ClientSessions {
   async ownerElsewhere(id: string): Promise<string | undefined> {
     const ownership = this.options.ownership;
     if (!ownership || this.sessions.has(id)) return undefined;
-    const owner = await ownership.owner(id);
+    const owner = await ownership.route(id);
     return owner !== ownership.node ? owner : undefined;
   }
 

@@ -86,6 +86,11 @@ that cannot renew fences itself before its published expiry: it stops every
 agent and volume it owns and rejoins under a new session. Requests for an actor
 are forwarded to the node that `actor_owners` joined to live heartbeats names.
 
+Nodes cache an actor's owner for up to 5 seconds, never past the owner's
+heartbeat as last read, so forwarding costs no query per request. The cache is
+only a hint: a node that no longer owns an actor cannot serve it, and an entry
+is dropped when its node answers 503 or cannot be reached.
+
 **Load.** Every minute each node logs a `node_load` line in CloudWatch Embedded
 Metric Format: namespace `AgentRuntime`, metrics `agents` (awake agents),
 `volumes` (volumes it serves), `runningTurns` and `rssBytes`, with no dimension

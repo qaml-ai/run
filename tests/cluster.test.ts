@@ -30,23 +30,31 @@ async function cluster(t: { after(fn: () => Promise<void>): void }) {
   const { db, url: databaseUrl } = await testDatabase();
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { "*": "fixture-key" } } } }));
   const children: ChildProcess[] = [];
-  const start = async (name: string) => {
+  const start = async (name: string, env: Record<string, string> = {}) => {
     const port = await freePort();
     const url = `http://127.0.0.1:${port}`;
     const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
       env: {
         PATH: process.env.PATH, HOME: root, PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: url, AGENT_DATABASE_URL: databaseUrl,
         AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
-        AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "cluster-session-secret-with-32-characters!",
+        AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "cluster-session-secret-with-32-characters!", ...env,
       } as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "inherit"],
     });
     children.push(child);
     const ready = Promise.withResolvers<void>();
-    child.stdout!.on("data", chunk => { if (String(chunk).includes("listening")) ready.resolve(); });
+    const logs: any[] = [];
+    let pending = "";
+    child.stdout!.on("data", chunk => {
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop()!;
+      for (const line of lines) { try { logs.push(JSON.parse(line)); } catch { /* not a log record */ } }
+      if (logs.some(entry => entry.type === "listening")) ready.resolve();
+    });
     child.on("exit", code => ready.reject(new Error(`node ${name} exited: ${code}`)));
     await ready.promise;
-    return { name, url, child };
+    return { name, url, child, logs };
   };
   t.after(async () => {
     for (const child of children) if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGKILL"); await closed; }
@@ -54,7 +62,7 @@ async function cluster(t: { after(fn: () => Promise<void>): void }) {
   });
   /** Which node owns an actor, read straight from the database. */
   const owner = async (id: string) => (await db.query("select node from actor_owners where actor = $1", [id])).rows[0]?.node as string | undefined;
-  return { start, owner };
+  return { start, owner, db };
 }
 
 const lookup = (calls: string[]) => ({
@@ -150,4 +158,24 @@ test("a volume is served by one node: other nodes forward to it, agents anywhere
   assert.equal(JSON.parse((await agent.execute('return await tools.read({ path: "/shared/plan.md" })', { timeoutMs: 20_000 })).output[0]).version, edited.version);
   await agent.execute('await tools.write({ path: "/shared/after.md", content: "written after takeover" })');
   assert.deepEqual((await viaB.volume(id).list()).files.map(file => file.path), ["/after.md", "/plan.md"]);
+});
+
+test("a stale owner cache entry heals: a request to a dead owner drops it, and the next is served by a live node", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  // A long lease, so only the cache (not heartbeat expiry) can send B to the dead node.
+  const a = await c.start("a", { AGENT_LEASE_TTL_MS: "60000" });
+  const b = await c.start("b", { AGENT_LEASE_TTL_MS: "60000" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "cached-agent" });
+  await created.close();
+  const state = () => fetch(`${b.url}/clients/${created.session.id}/state`, { headers: { Authorization: `Bearer ${created.session.token}` } });
+  assert.equal((await state()).status, 200, "served by A through B, which now caches A as the owner");
+
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  // A's heartbeat lapses; the database no longer names it, but B's cache entry is still fresh.
+  await c.db.query("update runtime_nodes set expires_at = now() - interval '1 second' where node = $1", [a.url]);
+  assert.equal((await state()).status, 502, "the cached owner was unreachable");
+  const healed = await state();
+  assert.equal(healed.status, 200, await healed.clone().text());
+  assert.equal(await c.owner(created.session.id), b.url);
 });

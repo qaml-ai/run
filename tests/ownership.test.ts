@@ -115,3 +115,35 @@ test("a node whose heartbeat row was replaced fences at once", async t => {
   const taken = await impostor.ownership.acquire("client_q");
   assert.ok("claim" in taken && taken.claim.epoch === 2, "the old session's claims are dead at once");
 });
+
+test("the owner cache is a hint: callers drop stale entries, and none outlives its owner's heartbeat", async t => {
+  const { db, url } = await testDatabase();
+  const a = await node(url, "http://a", 60_000), b = await node(url, "http://b");
+  t.after(async () => { await a.stop(); await b.stop(); });
+  const held = await a.ownership.acquire("client_c");
+  assert.ok("claim" in held);
+  assert.equal(await b.ownership.route("client_c"), "http://a");
+  b.link.statements.length = 0;
+  assert.equal(await b.ownership.route("client_c"), "http://a");
+  assert.deepEqual(b.link.statements, [], "a fresh entry needs no query");
+
+  // The actor moved on: the entry still names the old owner until a caller forgets it, and ownership itself is never cached.
+  await a.ownership.release(held.claim);
+  assert.equal(await b.ownership.route("client_c"), "http://a");
+  assert.ok("claim" in await b.ownership.acquire("client_c"));
+  assert.equal(await b.ownership.route("client_c"), "http://b", "taking the actor drops the entry");
+
+  const again = await a.ownership.acquire("client_d");
+  assert.ok("claim" in again);
+  assert.equal(await b.ownership.route("client_d"), "http://a");
+  b.ownership.forget("client_d");
+  await a.ownership.release(again.claim);
+  assert.equal(await b.ownership.route("client_d"), undefined);
+
+  // An entry lasts only as long as the heartbeat looked live when it was read.
+  assert.ok("claim" in await a.ownership.acquire("client_e"));
+  await db.query("update runtime_nodes set expires_at = now() + interval '300 milliseconds' where node = 'http://a'");
+  assert.equal(await b.ownership.route("client_e"), "http://a");
+  await sleep(400);
+  assert.equal(await b.ownership.route("client_e"), undefined);
+});

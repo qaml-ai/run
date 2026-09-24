@@ -223,20 +223,24 @@ export class VolumeService {
   async ownerElsewhere(id: string): Promise<string | undefined> {
     const ownership = this.options.ownership;
     if (!ownership || this.loaded.has(id)) return undefined;
-    const owner = await ownership.owner(id);
+    const owner = await ownership.route(id);
     return owner !== ownership.node ? owner : undefined;
   }
 
   /** Run an owner operation here or on the owning node, following a moved volume a few times. */
   async call(id: string, tenant: string, op: string, args: Record<string, unknown> = {}): Promise<any> {
     for (let attempt = 0; ; attempt++) {
+      let owner: string | undefined;
       try {
-        const owner = await this.ownerElsewhere(id);
+        owner = await this.ownerElsewhere(id);
         if (!owner) return await this.handle(id, tenant, op, args);
         if (!this.options.peer) throw new NotOwner(owner);
         return await this.options.peer(owner, `/internal/volumes/${id}/ops`, { tenant, op, args });
       } catch (error) {
-        if ((error as HttpError).status !== 503 || attempt >= 4) throw error;
+        const status = (error as HttpError).status;
+        // The owner moved or is unreachable: look it up afresh.
+        if (owner && (status === undefined || status === 503)) this.options.ownership?.forget(id);
+        if (status !== 503 || attempt >= 4) throw error;
         await sleep(100 * 2 ** attempt);
       }
     }

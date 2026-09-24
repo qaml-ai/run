@@ -119,11 +119,13 @@ async function serveConsole(c: Context) {
  * `/clients/<id>`, `/v1/agents/<id>`, `/registry/<id>` or `/internal/agents/<id>`;
  * volumes are `/v1/volumes/<id>` or `/internal/volumes/<id>`.
  */
-function ownerOf(url = "") {
+async function ownerOf(url = ""): Promise<{ node: string; actor: string } | undefined> {
   const agent = /^\/(?:clients|v1\/agents|registry|internal\/agents)\/(client_[a-f0-9]{40})(?:[/?]|$)/.exec(url)?.[1];
-  if (agent) return clients.ownerElsewhere(agent);
-  const volume = /^\/(?:v1\/volumes|internal\/volumes)\/(vol_[a-f0-9]{24})(?:[/?]|$)/.exec(url)?.[1];
-  return volume ? volumes.ownerElsewhere(volume) : undefined;
+  const volume = agent ? undefined : /^\/(?:v1\/volumes|internal\/volumes)\/(vol_[a-f0-9]{24})(?:[/?]|$)/.exec(url)?.[1];
+  const actor = agent ?? volume;
+  if (!actor) return undefined;
+  const owner = await (agent ? clients.ownerElsewhere(agent) : volumes.ownerElsewhere(actor));
+  return owner ? { node: owner, actor } : undefined;
 }
 
 /** Node-to-node requests are signed with the session secret all nodes share. */
@@ -153,8 +155,11 @@ async function signedBody(c: Context): Promise<string | undefined> {
 async function submitAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) {
   const owner = await clients.ownerElsewhere(agent);
   if (!owner) return clients.submit(agent, tenant, request);
-  const response = await signedPost(owner, `/internal/agents/${agent}/requests`, { tenant, request });
-  if (!response.ok) throw Object.assign(new Error(`Owner rejected the request: HTTP ${response.status}`), { status: response.status });
+  const response = await signedPost(owner, `/internal/agents/${agent}/requests`, { tenant, request }).catch(error => { ownership.forget(agent); throw error; });
+  if (!response.ok) {
+    ownership.forget(agent);
+    throw Object.assign(new Error(`Owner rejected the request: HTTP ${response.status}`), { status: response.status });
+  }
   return response.json();
 }
 
@@ -172,16 +177,21 @@ const volumes = new VolumeService({
 
 const FORWARDED = "x-agent-runtime-forwarded";
 
-/** Stream a request to the node that owns its agent, and stream the answer back (SSE included). */
-function forward(req: IncomingMessage, res: ServerResponse, owner: string) {
+/** Stream a request to the node that owns its actor, and stream the answer back (SSE included). */
+function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor: string) {
   const target = new URL(req.url ?? "/", owner);
   const upstream = httpRequest(target, { method: req.method, headers: { ...req.headers, host: target.host, [FORWARDED]: node } }, answer => {
+    // The node no longer serves the actor (it moved): look it up afresh next time.
+    if (answer.statusCode === 503) ownership.forget(actor);
     res.writeHead(answer.statusCode ?? 502, answer.headers);
     answer.pipe(res);
     // Piping does not end the client's response when the owner dies mid-stream; cut it so the client reconnects now.
     answer.on("close", () => { if (!answer.complete) res.destroy(); });
   });
-  upstream.on("error", () => { if (!res.headersSent) res.writeHead(502, { "Content-Type": "application/json" }).end('{"error":"The node serving this agent is unreachable; retry"}'); else res.destroy(); });
+  upstream.on("error", () => {
+    ownership.forget(actor);
+    if (!res.headersSent) res.writeHead(502, { "Content-Type": "application/json" }).end('{"error":"The node serving this agent is unreachable; retry"}'); else res.destroy();
+  });
   res.on("close", () => upstream.destroy());
   req.pipe(upstream);
 }
@@ -220,9 +230,9 @@ app.get("/healthz", c => c.json({ ok: true }));
 // One node serves each agent and volume; anything addressed to one another node holds goes there.
 // Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
 app.use(async (c, next) => {
-  const owner = !c.req.header(FORWARDED) ? await ownerOf(c.env.incoming.url)?.catch(() => undefined) : undefined;
-  if (!owner) return next();
-  forward(c.env.incoming, c.env.outgoing, owner);
+  const target = !c.req.header(FORWARDED) ? await ownerOf(c.env.incoming.url).catch(() => undefined) : undefined;
+  if (!target) return next();
+  forward(c.env.incoming, c.env.outgoing, target.node, target.actor);
   return RESPONSE_ALREADY_SENT;
 });
 
