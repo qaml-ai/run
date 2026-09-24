@@ -28,7 +28,8 @@ jobs:
       - run: npm run test:python
       - run: npm run build:console && npm run build
   image:
-    # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves.
+    # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
+    # with js_exec isolated in sandbox processes.
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -45,5 +46,16 @@ jobs:
       - run: |
           docker run -d --name runtime --network host -e AGENT_RUNTIME_TOKEN=ci-boot-token-at-least-24-chars \
             -e AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres agent-runtime:ci
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8790/healthz && exit 0; sleep 1; done
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8790/healthz; then
+              docker logs runtime 2>&1 | grep '"type":"listening"' | grep -q '"sandbox":{"mode":"isolated"' && exit 0
+              docker logs runtime; echo "js_exec is not running in sandbox processes"; exit 1
+            fi
+            sleep 1
+          done
           docker logs runtime; exit 1
+      - run: docker rm -f runtime
+      # From inside a sandbox process: its uid, empty environment, seccomp filter and what it cannot reach;
+      # then js_exec end to end, and a killed sandbox process restarted.
+      - run: node --experimental-strip-types --disable-warning=ExperimentalWarning tests/image-isolation.ts
+        env: { IMAGE: "agent-runtime:ci", DATABASE_URL: "postgres://postgres:test@127.0.0.1:5432/postgres" }

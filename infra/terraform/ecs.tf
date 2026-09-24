@@ -214,7 +214,11 @@ resource "aws_ecs_task_definition" "runtime" {
     environment  = [for name in sort(keys(local.runtime_environment)) : { name = name, value = local.runtime_environment[name] }]
     # SIGTERM starts the runtime's drain (about 100 s); SIGKILL follows after this.
     stopTimeout = 120
-    # An init as PID 1 forwards signals and reaps the sandbox children.
+    # An init as PID 1 forwards signals and reaps the sandbox children. The
+    # image's entrypoint (agent-launcher) starts as root and needs Fargate's
+    # default SETUID, SETGID, CHOWN and KILL capabilities to run the runtime and
+    # the js_exec sandbox processes as their own uids: set no `user` here and
+    # drop none of those.
     linuxParameters = { initProcessEnabled = true }
     logConfiguration = {
       logDriver = "awslogs"
