@@ -97,7 +97,7 @@ while :; do
   ips=()
   if [[ -n "$tasks" && "$tasks" != None ]]; then
     read -r -a ips <<<"$(aws ecs describe-tasks --cluster "$cluster" --tasks $tasks \
-      --query 'tasks[?lastStatus==`RUNNING`].attachments[0].details[?name==`privateIPv4Address`].value[]' --output text)"
+      --query 'tasks[?lastStatus==`RUNNING`].attachments[].details[?name==`privateIPv4Address`].value[]' --output text)"
   fi
   healthy=" $(aws elbv2 describe-target-health --target-group-arn "$tg" \
     --query 'TargetHealthDescriptions[?TargetHealth.State==`healthy`].Target.Id' --output text | tr '\t' ' ') "
