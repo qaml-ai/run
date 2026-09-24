@@ -32,10 +32,12 @@ JSON
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/agent-executor.json
 
-# The executor's user reaches the runtime's callback listener, the instance role's
-# credentials (IMDS) and HTTPS (Secrets Manager; the security group allows only
-# the VPC endpoints), and nothing else. Port 8790 answers the runtime only.
-# The unit loads this on every start.
+# Host firewall, loaded by the unit on every start. The executor's user reaches
+# the runtime's callback port, the instance role's credentials (IMDS) and HTTPS
+# (Secrets Manager; the security group allows only the VPC endpoints), and
+# nothing else. No other unprivileged user reaches IMDS, and nothing is
+# forwarded (sandboxes have no network; Docker is off once boot is done).
+# runtime_callback_cidr covers the runtime tasks and the NLB's health checks.
 install -d -m 755 /etc/agent-executor
 cat > /etc/agent-executor/egress.nft <<'NFT'
 table inet agent_executor
@@ -45,15 +47,19 @@ table inet agent_executor {
     type filter hook input priority filter; policy accept;
     tcp dport 8790 ip saddr != ${runtime_callback_cidr} drop
   }
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+  }
   chain output {
     type filter hook output priority filter; policy accept;
     meta skuid "agent-executor" jump executor
+    ip daddr 169.254.169.254 meta skuid != 0 reject
   }
   chain executor {
     ct state established,related accept
     oifname "lo" accept
     ip daddr 169.254.169.254 tcp dport 80 accept
-    ip daddr ${runtime_callback_cidr} meta l4proto tcp accept
+    ip daddr ${runtime_callback_cidr} tcp dport 8791 accept
     tcp dport 443 accept
     counter reject
   }

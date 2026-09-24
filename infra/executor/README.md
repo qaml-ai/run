@@ -90,7 +90,7 @@ builds from the AMI below and the user-data template.
 - **AMI** ([`ami.pkr.hcl`](ami.pkr.hcl), built by [`build-ami.sh`](build-ami.sh)):
   AL2023 arm64 with:
   - Docker, used only at first boot to pull the image;
-  - `amazon-ecr-credential-helper` and the CloudWatch agent;
+  - `amazon-ecr-credential-helper`, the AWS CLI and the CloudWatch agent;
   - nftables, with sshd disabled and the SSM agent enabled;
   - gVisor, from a release pinned by date, verified against a pinned SHA-512
     and installed in `/usr/local/lib/gvisor`;
@@ -106,11 +106,14 @@ builds from the AMI below and the user-data template.
   the instance role, and exports its filesystem as the sandbox root, with a copy
   of `/app` for the executor itself. It then disables Docker (its socket is
   root-equivalent) and starts `agent-executor.service`.
-- **Host firewall** (nftables, loaded by the unit on every start): the executor's
-  user may reach only loopback (DNS through the local resolver), IMDS (the
-  instance role's credentials), `runtime_callback_cidr`, and TCP/443, which the
-  security group narrows to the VPC endpoints. Port 8790 accepts connections
-  from `runtime_callback_cidr` only.
+- **Host firewall** (nftables, loaded by the unit on every start):
+  - the executor's user may reach only loopback (DNS through the local
+    resolver), IMDS (the instance role's credentials), TCP/8791 in
+    `runtime_callback_cidr`, and TCP/443, which the security group narrows to
+    the VPC endpoints;
+  - no other non-root user reaches IMDS, and nothing is forwarded, so no
+    container or sandbox path gets out even if one had a network;
+  - port 8790 accepts connections from `runtime_callback_cidr` only.
 - **Logs**: the executor's log (`/var/log/agent-executor/executor.log`: one line
   per execution with its outcome and duration, plus errors) and
   `cloud-init-output.log` go to CloudWatch Logs, in the streams
@@ -128,7 +131,7 @@ contains no secrets.
 | `image` | `904534089871.dkr.ecr.us-west-2.amazonaws.com/camelai-agent-runtime:<tag>` | the full ECR URI of the runtime image; its filesystem is the sandbox root |
 | `token_secret_arn` | `arn:aws:secretsmanager:…:secret:camelai/agent-runtime/executor-token-…` | `AGENT_EXECUTOR_TOKEN_SECRET_ARN` |
 | `log_group` | `/camelai/agent-executor` | CloudWatch Logs group for the agent (Terraform creates it, with retention) |
-| `runtime_callback_cidr` | `10.0.0.0/20` | an IPv4 CIDR covering the runtime tasks. Executors send callbacks only there and accept :8790 only from there. A load balancer in front of the executors must have its nodes inside it too |
+| `runtime_callback_cidr` | `172.31.0.0/17` | an IPv4 CIDR covering the runtime tasks and the NLB's nodes: the only source accepted on :8790 (data and health checks), and the only destination for callbacks (:8791). Security groups make the exact cut |
 | `max_concurrency` | `4` | `AGENT_EXECUTOR_MAX_CONCURRENCY`: executions per host; beyond it, 503 |
 
 For sizing, each sandbox may use up to 512 MiB. A `t4g.small` (2 GiB) takes

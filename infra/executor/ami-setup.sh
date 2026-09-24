@@ -6,7 +6,7 @@ set -euo pipefail
 : "${GVISOR_RELEASE:?}" "${GVISOR_SHA512:?}" "${NODE_VERSION:?}" "${NODE_SHA256:?}"
 [[ "$(uname -m)" == aarch64 ]] || { echo "The pinned checksums are for arm64" >&2; exit 1; }
 
-dnf install -y docker amazon-ecr-credential-helper amazon-cloudwatch-agent nftables logrotate sudo tar xz bzip2
+dnf install -y awscli-2 docker amazon-ecr-credential-helper amazon-cloudwatch-agent nftables logrotate sudo tar xz bzip2
 dnf clean all
 
 work=$(mktemp -d)
