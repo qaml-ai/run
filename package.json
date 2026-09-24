@@ -9,6 +9,7 @@
     "demo:typescript": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/release-board.ts",
     "demo:python": "python3 examples/inventory.py",
     "test": "node --experimental-strip-types --test --test-timeout=120000 tests/*.test.ts",
+    "test:shard": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-shard.ts",
     "test:python": "python3 tests/python_sdk.py",
     "typecheck": "tsc -p tsconfig.json && tsc -p studio/tsconfig.json && tsc -p console/tsconfig.json",
     "studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/server.ts",

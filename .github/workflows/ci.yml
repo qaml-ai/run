@@ -31,10 +31,12 @@ jobs:
       - run: npm run test:python
       - run: npm run build:console && npm run build
   test:
-    # Both hosting modes run the full suite side by side.
+    # Both hosting modes run the full suite side by side, each split over four shards balanced by
+    # tests/timings.json (scripts/test-shard.ts). A 2-vCPU runner runs test files one at a time.
+    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/4)
     strategy:
       fail-fast: false
-      matrix: { hosting: [process, inline] }
+      matrix: { hosting: [process, inline], shard: [1, 2, 3, 4] }
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -51,7 +53,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - run: npm test
+      - run: npm run test:shard -- ${{ matrix.shard }}/4
   image:
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
     # with js_exec isolated in sandbox processes.
