@@ -13,10 +13,21 @@ COPY migrations ./migrations
 # Built on the host first (npm run build:console); served at /console/.
 COPY console/dist ./console/dist
 
-# CA bundle for verifying the RDS control-plane database over TLS (AGENT_DATABASE_CA).
+# CA bundle for verifying the control-plane database over TLS (AGENT_DATABASE_CA): the RDS CAs, which sign
+# the instance's own endpoint, and the Amazon Trust Services roots, which sign RDS Proxy's (ACM) certificates.
+# The runtime connects through RDS Proxy; the instance endpoint stays for migrations and debugging.
 # Create the directory first: ADD would create it with the file mode, and Node could no longer read /etc/ssl/openssl.cnf.
 RUN mkdir -p /etc/ssl
-ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /etc/ssl/rds-global-bundle.pem
+ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /tmp/database-ca/rds.pem
+ADD --chmod=644 --checksum=sha256:2c43952ee9e000ff2acc4e2ed0897c0a72ad5fa72c3d934e81741cbd54f05bd1 https://www.amazontrust.com/repository/AmazonRootCA1.pem /tmp/database-ca/
+ADD --chmod=644 --checksum=sha256:a3a7fe25439d9a9b50f60af43684444d798a4c869305bf615881e5c84a44c1a2 https://www.amazontrust.com/repository/AmazonRootCA2.pem /tmp/database-ca/
+ADD --chmod=644 --checksum=sha256:3eb7c3258f4af9222033dc1bb3dd2c7cfa0982b98e39fb8e9dc095cfeb38126c https://www.amazontrust.com/repository/AmazonRootCA3.pem /tmp/database-ca/
+ADD --chmod=644 --checksum=sha256:b0b7961120481e33670315b2f843e643c42f693c7a1010eb9555e06ddc730214 https://www.amazontrust.com/repository/AmazonRootCA4.pem /tmp/database-ca/
+ADD --chmod=644 --checksum=sha256:870f56d009d8aeb95b716b0e7b0020225d542c4b283b9ed896edf97428d6712e https://www.amazontrust.com/repository/SFSRootCAG2.pem /tmp/database-ca/
+# Some of the files lack a final newline, so join them one per line; then refuse to build a bundle without both kinds of root.
+RUN for pem in /tmp/database-ca/*.pem; do cat "$pem"; echo; done | sed '/^$/d' > /etc/ssl/rds-global-bundle.pem \
+ && chmod 644 /etc/ssl/rds-global-bundle.pem && rm -rf /tmp/database-ca \
+ && node -e 'const { X509Certificate } = require("node:crypto"); const pems = require("node:fs").readFileSync("/etc/ssl/rds-global-bundle.pem", "utf8").match(/-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFICATE-----/g); const subjects = pems.map(pem => new X509Certificate(pem).subject); for (const cn of ["CN=Amazon Root CA 1", "CN=Amazon RDS us-west-2 Root CA RSA2048 G1"]) if (!subjects.some(subject => subject.includes(cn))) throw new Error(`database CA bundle lacks ${cn}`); console.log(`database CA bundle: ${pems.length} certificates`)'
 RUN mkdir -p /data && chown node:node /data
 USER node
 ENV NODE_ENV=production \
