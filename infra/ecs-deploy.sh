@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the runtime to the ECS service (infra/terraform/ecs.tf): build and push
 # the image from this checkout, register a new task definition revision with it,
-# roll the service, and wait until the rollout completes.
+# roll the service, and wait until the new tasks are healthy.
 # Usage: infra/ecs-deploy.sh           build and push this checkout, then deploy it
 #        infra/ecs-deploy.sh <tag>     deploy an image already in ECR (no build)
 #
@@ -9,10 +9,15 @@
 # so settings Terraform changed (environment, secrets, cpu/memory) ship with the
 # next deploy. To ship a settings change alone, redeploy the running tag.
 #
-# Rolling: ECS starts new tasks first (maximumPercent 200), waits for them to
-# pass /healthz, then deregisters old ones. Their connections get 110 s on the
-# ALB, then SIGTERM and up to 120 s to drain. A rollout that fails health
-# checks is rolled back automatically (circuit breaker); this script then fails.
+# Rolling: ECS starts new tasks first (maximumPercent 200) and waits for them to
+# pass /healthz. This script returns then: every new task is healthy in the
+# target group. Old tasks retire in the background. A task running turns
+# protects itself from being stopped, and ECS waits for that protection to end,
+# up to AGENT_RETIRE_MAX_MS (default 6 h). Each old task is then deregistered
+# (110 s on the ALB), gets SIGTERM, and has 120 s to drain. The service's
+# rolloutState stays IN_PROGRESS until the last one is gone. A rollout whose
+# new tasks fail is rolled back automatically (circuit breaker); this script
+# then fails.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
@@ -75,24 +80,37 @@ echo "$arn"
 echo "==> Rolling $service"
 aws ecs update-service --cluster "$cluster" --service "$service" --task-definition "$arn" >/dev/null
 
-# services-stable gives up after 10 minutes; a rollout with drains can take longer.
+# Wait for the new deployment's tasks, not for the old ones to stop.
+tg=$(aws elbv2 describe-target-groups --names "$NAME" --query 'TargetGroups[0].TargetGroupArn' --output text)
 deadline=$((SECONDS + 1800))
 while :; do
-  read -r rollout primary <<<"$(aws ecs describe-services --cluster "$cluster" --services "$service" \
-    --query 'services[0].deployments[?status==`PRIMARY`] | [0].[rolloutState,taskDefinition]' --output text)"
+  read -r deployment primary rollout desired <<<"$(aws ecs describe-services --cluster "$cluster" --services "$service" \
+    --query 'services[0].deployments[?status==`PRIMARY`] | [0].[id,taskDefinition,rolloutState,desiredCount]' --output text)"
   if [[ "$primary" != "$arn" ]]; then
     echo "rolled back: the primary deployment is $primary (circuit breaker)" >&2
     exit 1
   fi
-  case "$rollout" in
-    COMPLETED) break ;;
-    FAILED) echo "rollout failed" >&2; exit 1 ;;
-  esac
-  ((SECONDS < deadline)) || { echo "rollout still $rollout after 30 minutes" >&2; exit 1; }
+  [[ "$rollout" != FAILED ]] || { echo "rollout failed" >&2; exit 1; }
+
+  # IPs of this deployment's running tasks, and of healthy targets.
+  tasks=$(aws ecs list-tasks --cluster "$cluster" --started-by "$deployment" --desired-status RUNNING --query taskArns --output text)
+  ips=()
+  if [[ -n "$tasks" && "$tasks" != None ]]; then
+    read -r -a ips <<<"$(aws ecs describe-tasks --cluster "$cluster" --tasks $tasks \
+      --query 'tasks[?lastStatus==`RUNNING`].attachments[0].details[?name==`privateIPv4Address`].value[]' --output text)"
+  fi
+  healthy=" $(aws elbv2 describe-target-health --target-group-arn "$tg" \
+    --query 'TargetHealthDescriptions[?TargetHealth.State==`healthy`].Target.Id' --output text | tr '\t' ' ') "
+  ready=0
+  for ip in "${ips[@]}"; do [[ "$healthy" == *" $ip "* ]] && ready=$((ready + 1)); done
+  echo "new tasks healthy: $ready/$desired (rollout $rollout)"
+  ((ready >= desired && desired > 0)) && break
+  ((SECONDS < deadline)) || { echo "new tasks not healthy after 30 minutes" >&2; exit 1; }
   sleep 15
 done
-aws ecs wait services-stable --cluster "$cluster" --services "$service"
 echo "deployed: $image"
+echo "old tasks retire in the background; follow with:"
+echo "  aws ecs describe-services --region $REGION --cluster $cluster --services $service --query 'services[0].deployments[].[status,rolloutState,runningCount,taskDefinition]'"
 
 # Through the ALB whatever DNS points at (before the cutover it is the EC2 host).
 alb=$(aws elbv2 describe-load-balancers --names "$NAME" --query 'LoadBalancers[0].DNSName' --output text)

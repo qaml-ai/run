@@ -35,6 +35,11 @@ resource "aws_cloudwatch_log_group" "executor" {
 
 # --- Private subnets ---
 
+data "aws_subnet" "task" {
+  for_each = local.executor_enabled ? toset(data.aws_subnets.default.ids) : toset([])
+  id       = each.value
+}
+
 resource "aws_subnet" "executor" {
   for_each                = local.executor_enabled ? var.executor_private_subnets : {}
   vpc_id                  = data.aws_vpc.default.id
@@ -149,6 +154,18 @@ resource "aws_vpc_security_group_ingress_rule" "executor_from_lb" {
   description                  = "Executor NLB"
 }
 
+# With client IPs preserved, requests arrive from the tasks themselves; health
+# checks arrive from the NLB.
+resource "aws_vpc_security_group_ingress_rule" "executor_from_task" {
+  count                        = local.executor_enabled ? 1 : 0
+  security_group_id            = aws_security_group.executor[0].id
+  referenced_security_group_id = aws_security_group.task.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.executor_port
+  to_port                      = var.executor_port
+  description                  = "Runtime tasks through the NLB"
+}
+
 resource "aws_vpc_security_group_egress_rule" "executor_to_task_callback" {
   count                        = local.executor_enabled ? 1 : 0
   security_group_id            = aws_security_group.executor[0].id
@@ -210,8 +227,9 @@ resource "aws_lb_target_group" "executor" {
   protocol    = "TCP"
   port        = var.executor_port
   vpc_id      = data.aws_vpc.default.id
-  # Executors see the NLB as the client, so their group admits only the NLB's.
-  preserve_client_ip = false
+  # Executors see the runtime task's IP. Their host firewall (user-data.sh)
+  # admits 8790 only from runtime_callback_cidr.
+  preserve_client_ip = true
   # An execution's deadline is the tool timeout (60 s) plus a grace period.
   deregistration_delay = 90
 
@@ -358,6 +376,16 @@ resource "aws_launch_template" "executor" {
     precondition {
       condition     = var.executor_ami_id != null
       error_message = "executor_enabled needs executor_ami_id (the Packer executor AMI)."
+    }
+    # The host firewall admits 8790 only from runtime_callback_cidr, and the
+    # executor may call back only into it: it must hold the task subnets
+    # (requests, callbacks) and the executor subnets (NLB health checks).
+    precondition {
+      condition = alltrue([
+        for cidr in concat(values(data.aws_subnet.task)[*].cidr_block, values(var.executor_private_subnets)) :
+        cidrcontains(var.executor_runtime_callback_cidr, cidr)
+      ])
+      error_message = "executor_runtime_callback_cidr must contain every task subnet and every executor subnet."
     }
   }
 }

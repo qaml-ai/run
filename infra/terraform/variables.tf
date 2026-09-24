@@ -157,9 +157,9 @@ variable "executor_endpoint_az_count" {
 }
 
 variable "executor_runtime_callback_cidr" {
-  description = "CIDR executors may send callbacks to: the default subnets the Fargate tasks run in."
+  description = "runtime_callback_cidr for infra/executor/user-data.sh. Its host firewall admits 8790 only from here and lets the executor call back only into here, so it must hold the task subnets (172.31.0.0/18: requests and callbacks) and the executor subnets (172.31.80.0/22: NLB health checks). Security groups do the precise restriction."
   type        = string
-  default     = "172.31.0.0/18"
+  default     = "172.31.0.0/17"
 }
 
 variable "shared_ssm_endpoint_security_group_ids" {

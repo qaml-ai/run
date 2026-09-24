@@ -6,6 +6,10 @@
 locals {
   runtime_port   = 8790
   container_name = "agent-runtime"
+  # Names, not resource references: the task definition must not depend on the
+  # service that runs it.
+  cluster_name = var.name
+  service_name = var.name
 
   runtime_image = "${aws_ecr_repository.runtime.repository_url}:${var.runtime_image_tag}"
 
@@ -19,6 +23,9 @@ locals {
     AGENT_DATABASE_SECRET_ARN = aws_db_instance.control.master_user_secret[0].secret_arn
     AGENT_DATABASE_CA         = "/etc/ssl/rds-global-bundle.pem"
     AGENT_TENANTS_SECRET_ARN  = aws_secretsmanager_secret.runtime["tenants"].arn
+    # Scale-in protection while turns run, and retirement once superseded.
+    AGENT_ECS_CLUSTER = local.cluster_name
+    AGENT_ECS_SERVICE = local.service_name
     }, local.executor_enabled ? {
     AGENT_EXECUTOR_URL           = local.executor_url
     AGENT_EXECUTOR_CALLBACK_PORT = tostring(var.executor_callback_port)
@@ -42,7 +49,7 @@ resource "aws_cloudwatch_log_group" "runtime" {
 }
 
 resource "aws_ecs_cluster" "runtime" {
-  name = var.name
+  name = local.cluster_name
 
   setting {
     name  = "containerInsights"
@@ -100,7 +107,8 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
 }
 
 # Used by the runtime process: agent state in S3, the database and tenants
-# secrets it reads itself, and ECS Exec.
+# secrets it reads itself, its own task's scale-in protection, the service's
+# deployments (to notice it has been superseded), and ECS Exec.
 resource "aws_iam_role" "task" {
   name               = "${var.name}-task"
   description        = "Agent runtime ECS task"
@@ -121,6 +129,18 @@ resource "aws_iam_role_policy" "task" {
           aws_db_instance.control.master_user_secret[0].secret_arn,
           aws_secretsmanager_secret.runtime["tenants"].arn,
         ]
+      },
+      {
+        Sid      = "OwnTaskProtection"
+        Effect   = "Allow"
+        Action   = ["ecs:UpdateTaskProtection", "ecs:GetTaskProtection"]
+        Resource = "arn:aws:ecs:${var.region}:${var.account_id}:task/${local.cluster_name}/*"
+      },
+      {
+        Sid      = "ServiceDeployments"
+        Effect   = "Allow"
+        Action   = "ecs:DescribeServices"
+        Resource = "arn:aws:ecs:${var.region}:${var.account_id}:service/${local.cluster_name}/${local.service_name}"
       },
       {
         Sid    = "EcsExec"
@@ -223,7 +243,7 @@ resource "aws_ecs_task_definition" "runtime" {
 }
 
 resource "aws_ecs_service" "runtime" {
-  name                   = var.name
+  name                   = local.service_name
   cluster                = aws_ecs_cluster.runtime.id
   task_definition        = aws_ecs_task_definition.runtime.arn
   desired_count          = var.service_min_count
@@ -237,6 +257,11 @@ resource "aws_ecs_service" "runtime" {
   health_check_grace_period_seconds  = 60
   availability_zone_rebalancing      = "ENABLED"
 
+  # The runtime protects its task from scale-in while turns run, and ECS waits
+  # for protected old tasks during a deploy: a deploy can last as long as the
+  # longest turn (the runtime caps it at AGENT_RETIRE_MAX_MS, default 6 h). The
+  # circuit breaker counts failed task launches, not elapsed time, so waiting
+  # on protected tasks never trips it.
   deployment_circuit_breaker {
     enable   = true
     rollback = true

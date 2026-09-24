@@ -112,20 +112,33 @@ To point the runtime at it, set `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET` and
 - **Roles**. The execution role has `AmazonECSTaskExecutionRolePolicy` and read
   access to the `secrets` above. The task role has the same S3 statements as the
   host role (`local.state_bucket_statements`), read access to the RDS and
-  tenants secrets, and ECS Exec. To get a shell:
+  tenants secrets, `ecs:UpdateTaskProtection`/`ecs:GetTaskProtection` on this
+  cluster's tasks, `ecs:DescribeServices` on this service, and ECS Exec. To get a shell:
   `aws ecs execute-command --cluster camelai-agent-runtime --task <id> --container agent-runtime --interactive --command sh`.
 - **Scaling**. Target tracking holds average CPU at 60% and average memory at 70%,
   within `service_min_count`..`service_max_count` (2..10). Scale-in has a
   5-minute cooldown. `ecs.tf` has a commented example of scaling on an
   `AgentRuntime` EMF metric instead.
+- **Task protection**. The runtime turns on ECS scale-in protection for its own
+  task while turns are running (`AGENT_ECS_CLUSTER`, `AGENT_ECS_SERVICE` are
+  set for it). Scale-in skips protected tasks, so it removes idle tasks first;
+  when every task is busy, the desired count drops but the extra tasks keep
+  running until their turns finish.
 - **Stopping a task** (deploy, scale-in, rebalancing):
+  0. If the task is protected, ECS waits until the runtime clears protection
+     (its turns have finished, or `AGENT_RETIRE_MAX_MS`, default 6 h, passed).
   1. ECS deregisters the task, and the ALB keeps its open connections for 110 s.
   2. ECS sends SIGTERM. `/healthz` returns 503 while the runtime drains agents
      (about 100 s).
   3. SIGKILL follows 120 s after SIGTERM (`stopTimeout`).
 - **Deployments** are rolling: `minimumHealthyPercent` 100 and `maximumPercent`
   200. The circuit breaker rolls back automatically if new tasks never pass
-  `/healthz`.
+  `/healthz`. It counts failed task launches, not time, so old tasks that stay
+  protected for hours never trip it. A deployment's `rolloutState` stays
+  `IN_PROGRESS` until its last old task is gone: up to `AGENT_RETIRE_MAX_MS`
+  (6 h) + 110 s + 120 s. The runtime notices a newer deployment and retires
+  itself once idle. Don't make CI wait on `services-stable` or on
+  `rolloutState = COMPLETED`; wait as `ecs-deploy.sh` does.
 - **Alarms** (`alarms.tf`, us-west-2):
   - `-unhealthy-hosts`: `UnHealthyHostCount > 0` for 3 minutes;
   - `-alb-5xx`: more than 10 ALB-generated 5xx in 5 minutes;
@@ -155,12 +168,16 @@ The script does this:
 2. Swaps the container image.
 3. Registers the result as a new revision.
 4. Runs `update-service`.
-5. Waits until the rollout is `COMPLETED`. It fails if the circuit breaker
-   rolled back.
+5. Waits until the new deployment's tasks are all healthy in the target group
+   (at most 30 minutes). It fails if the circuit breaker rolled back or the
+   rollout failed.
 6. Checks `/healthz` through the ALB.
 
-A deploy interrupts no turns. New tasks come up first, then old ones are
-drained.
+It does **not** wait for the old tasks to stop. They retire in the background,
+each once its running turns end (at most `AGENT_RETIRE_MAX_MS`, default 6 h),
+then drain as above. The script prints the command to follow them. A deploy
+interrupts no turns. Two deploys in a row are fine: a task superseded twice
+retires the same way.
 
 When Terraform changes environment, secrets or cpu/memory, it registers a new
 revision with the image from `runtime_image_tag`, but the service keeps running
@@ -265,8 +282,11 @@ internet). That creates:
     and CloudWatch Logs to them, including other stacks' ECS services and this
     runtime. That's why the endpoint SG admits 443 from the VPC CIDR. Tightening
     it would break those workloads.
-- **Internal NLB** `camelai-agent-executor` on :8790. It health-checks
-  `/healthz`, and the runtime's `AGENT_EXECUTOR_URL` points at it. Routing is
+- **Internal NLB** `camelai-agent-executor` on :8790, with client IPs
+  preserved. It health-checks `/healthz`, and the runtime's `AGENT_EXECUTOR_URL`
+  points at it (with `AGENT_EXECUTOR_TOKEN` from `secrets`).
+  `AGENT_EXECUTOR_CALLBACK_URL` stays unset, because each runtime task derives
+  its own IP on ECS. Routing is
   now health-aware, which closes the old "random executor" gap.
 - **Auto Scaling group**: `executor_min_size`..`executor_max_size` (2..6),
   target-tracking CPU at 60%.
@@ -280,7 +300,14 @@ internet). That creates:
     token_secret_arn, log_group, runtime_callback_cidr, max_concurrency})`. It
     holds no secret: hosts read the token at boot.
 - **Security groups**:
-  - tasks → NLB :8790 → executors :8790;
+  - tasks → NLB :8790 → executors :8790 (the executor SG admits the task SG and
+    the NLB SG);
+  - the host firewall in `user-data.sh` admits 8790 only from
+    `runtime_callback_cidr` and lets the executor call back only into it.
+    That variable is `172.31.0.0/17`, which holds the task subnets
+    (172.31.0.0/18) and the executor subnets (172.31.80.0/22, where NLB health
+    checks come from). A precondition checks that. The security groups do the
+    precise restriction;
   - executors → task SG :8791 (callbacks), → endpoints :443, and → S3 prefix
     list :443. Nothing else.
 
