@@ -21,14 +21,19 @@ export class CodePool {
   min: number;
   readonly max: number;
   readonly idleMs: number;
+  /** How many terminated workers may still be exiting before the pool stops starting new ones. */
+  readonly maxDying: number;
   readonly slots = new Set<Slot>();
+  /** Terminated workers whose threads have not exited yet: out of the pool, but still holding memory. */
+  readonly dying = new Set<Worker>();
   private readonly waiters: { resolve: (slot: Slot) => void; reject: (error: Error) => void }[] = [];
 
-  constructor(options: { min?: number; max?: number; idleMs?: number } = {}) {
+  constructor(options: { min?: number; max?: number; idleMs?: number; maxDying?: number } = {}) {
     this.max = options.max ?? 32;
     this.min = Math.min(options.min ?? Math.min(4, availableParallelism()), this.max);
     this.idleMs = options.idleMs ?? 30_000;
-    if (!Number.isInteger(this.min) || this.min < 0 || !Number.isInteger(this.max) || this.max < 1) throw new Error("Invalid codemode worker pool size");
+    this.maxDying = options.maxDying ?? 8;
+    if (!Number.isInteger(this.min) || this.min < 0 || !Number.isInteger(this.max) || this.max < 1 || !Number.isInteger(this.maxDying) || this.maxDying < 1) throw new Error("Invalid codemode worker pool size");
     for (let i = 0; i < this.min; i++) this.spawn();
   }
 
@@ -49,19 +54,46 @@ export class CodePool {
       if (slot.state === "starting") this.waiters.shift()?.reject(error);
     });
     worker.once("exit", () => {
-      this.slots.delete(slot);
-      clearTimeout(slot.reaper);
-      slot.idle?.(false);
-      // A worker that never started is not replaced for warmth: that would retry a broken boot forever.
-      if (slot.state !== "starting") while (this.slots.size < this.min) this.spawn();
-      this.grow();
+      if (!this.dying.delete(worker)) this.remove(slot);
+      this.refill(slot);
     });
+  }
+
+  private remove(slot: Slot) {
+    if (!this.slots.delete(slot)) return false;
+    clearTimeout(slot.reaper);
+    slot.idle?.(false);
+    return true;
+  }
+
+  /**
+   * Take a worker out of the pool and terminate it. Its slot is refilled now rather
+   * than on 'exit', so a thread slow to stop never holds a slot, only its memory.
+   */
+  private retire(slot: Slot) {
+    if (!this.remove(slot)) return;
+    this.dying.add(slot.worker);
+    if (this.dying.size >= this.maxDying) console.error(JSON.stringify({ type: "codemode_workers_dying", dying: this.dying.size, max: this.maxDying }));
+    void slot.worker.terminate();
+    this.refill(slot);
+  }
+
+  /** Replace a worker that left the pool, unless too many terminated ones are still exiting. */
+  private refill(slot: Slot) {
+    // A worker that never started is not replaced for warmth: that would retry a broken boot forever.
+    if (slot.state !== "starting") while (this.slots.size < this.min && this.dying.size < this.maxDying) this.spawn();
+    this.grow();
   }
 
   /** Start workers for waiters not already covered by ones starting. */
   private grow() {
     const starting = [...this.slots].filter(slot => slot.state === "starting").length;
-    for (let i = starting; i < this.waiters.length && this.slots.size < this.max; i++) this.spawn();
+    for (let i = starting; i < this.waiters.length && this.slots.size < this.max && this.dying.size < this.maxDying; i++) this.spawn();
+  }
+
+  /** Why an execution may be left waiting for a worker. */
+  saturation() {
+    return this.dying.size >= this.maxDying ? `${this.dying.size} terminated workers still exiting` : `all ${this.max} busy`;
   }
 
   /** Return a worker whose guest is disposed. */
@@ -72,7 +104,7 @@ export class CodePool {
     slot.state = "idle";
     slot.worker.unref();
     if (this.slots.size > this.min) {
-      slot.reaper = setTimeout(() => { if (slot.state === "idle" && this.slots.size > this.min) void slot.worker.terminate(); }, this.idleMs);
+      slot.reaper = setTimeout(() => { if (slot.state === "idle" && this.slots.size > this.min) this.retire(slot); }, this.idleMs);
       slot.reaper.unref();
     }
   }
@@ -117,13 +149,13 @@ export class CodePool {
     const clean = await Promise.race([idle, new Promise<false>(resolve => { timer = setTimeout(resolve, CANCEL_GRACE_MS, false); })]);
     clearTimeout(timer);
     if (clean && this.slots.has(slot)) this.release(slot);
-    else await slot.worker.terminate();
+    else this.retire(slot);
   }
 
   async close() {
     this.min = 0;
     for (const waiter of this.waiters.splice(0)) waiter.reject(new Error("Codemode worker pool closed"));
-    await Promise.all([...this.slots].map(slot => slot.worker.terminate()));
+    await Promise.all([...[...this.slots].map(slot => slot.worker), ...this.dying].map(worker => worker.terminate()));
   }
 }
 
@@ -312,8 +344,8 @@ export async function executeCode(options: {
     guest?.end(false);
   };
   const abort = () => stop("Codemode aborted; any external tool side effects may already have completed");
-  const waiting = `Codemode timed out after ${timeoutMs}ms waiting for a sandbox worker${pool instanceof CodePool ? ` (all ${pool.max} busy)` : ""}`;
-  const timer = setTimeout(() => stop(guest?.dispatched ? timedOut : waiting), timeoutMs);
+  const waiting = () => `Codemode timed out after ${timeoutMs}ms waiting for a sandbox worker${pool instanceof CodePool ? ` (${pool.saturation()})` : ""}`;
+  const timer = setTimeout(() => stop(guest?.dispatched ? timedOut : waiting()), timeoutMs);
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
     guest = pool instanceof CodePool ? await localGuest(pool, controller.signal) : pool.open();

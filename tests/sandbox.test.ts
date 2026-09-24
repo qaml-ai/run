@@ -4,12 +4,13 @@ import { mkdtemp, rm, symlink, readFile, writeFile, link } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { Worker } from "node:worker_threads";
 import { CodePool, executeCode } from "../src/codemode.ts";
 import { localTools } from "../src/local-tools.ts";
 import { SANDBOX_LIMITS, codeRequest } from "../src/limits.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 
-type RunOptions = { timeoutMs?: number; maxOutputCharacters?: number; signal?: AbortSignal };
+type RunOptions = { timeoutMs?: number; maxOutputCharacters?: number; signal?: AbortSignal; onEvent?: (event: unknown) => void };
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?: ToolBridge, pool?: CodePool) {
   const directory = await mkdtemp(join(tmpdir(), "camelai-sandbox-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -25,6 +26,28 @@ const threads = (pool: CodePool) => [...pool.slots].map(slot => slot.worker.thre
 async function until(condition: () => boolean, timeoutMs = 5_000) {
   for (let i = 0; i < timeoutMs / 25 && !condition(); i++) await sleep(25);
   assert.ok(condition(), "Condition not reached");
+}
+/**
+ * Aborts a guest once it is inside one long native call (parsing a 300,000-digit BigInt,
+ * then printing it: seconds, with no interrupt checks), so only terminating its worker stops it.
+ * Aborting on the guest's own signal, not on a timer, keeps a slow host from cancelling it
+ * cooperatively before it gets there.
+ */
+function stuck(run: (code: string, options?: RunOptions) => Promise<unknown>) {
+  const controller = new AbortController();
+  let aborted = 0;
+  const result = run('const digits = "9".repeat(300000); text("parsing"); return BigInt(digits).toString().length;', {
+    signal: controller.signal, timeoutMs: 60_000,
+    onEvent: () => { aborted = performance.now(); controller.abort(); },
+  });
+  return assert.rejects(result, /aborted/).then(() => performance.now() - aborted);
+}
+/** Holds a worker's termination until released, like a thread slow to reach a point where it can be stopped. */
+function holdTermination(worker: Worker) {
+  const terminate = worker.terminate.bind(worker);
+  const held = Promise.withResolvers<void>();
+  worker.terminate = () => held.promise.then(terminate);
+  return () => held.resolve();
 }
 function blocking() {
   let calls = 0;
@@ -252,18 +275,42 @@ test("timeouts and aborts cancel the guest, and the worker is reused once it unw
   assert.deepEqual(threads(pool), [worker], "Every cancellation was cooperative");
 });
 
-test("a guest stuck where the interrupt handler cannot reach is terminated with its worker, which is replaced", async t => {
+test("a guest stuck where the interrupt handler cannot reach is terminated with its worker, whose slot is refilled without waiting for it to exit", async t => {
   const pool = new CodePool({ min: 1, max: 2 });
   const { run } = await fixture(t, undefined, pool);
   await run("return 0");
-  const [worker] = threads(pool);
-  // Parsing a 300,000-digit BigInt is one native call (~0.7 s) with no interrupt checks inside.
-  const started = performance.now();
-  await assert.rejects(run('return BigInt("9".repeat(300000)) > 0n;', { timeoutMs: 100 }), /timed out after 100ms/);
-  assert.ok(performance.now() - started < 1_000, "The caller does not wait for the worker to be terminated");
-  // Termination lands at the worker's next interrupt point, which a slow CI host reaches late.
-  await until(() => pool.slots.size === 1 && !threads(pool).includes(worker), 20_000);
-  assert.deepEqual((await run("return 42;")).output, ["42"]);
+  const [slot] = pool.slots;
+  const release = holdTermination(slot.worker);
+  try {
+    assert.ok(await stuck(run) < 1_000, "The caller does not wait for the worker to be terminated");
+    await until(() => pool.dying.has(slot.worker) && pool.slots.size === 1 && !pool.slots.has(slot));
+    assert.deepEqual((await run("return 42;")).output, ["42"], "The replacement serves while the old thread is still exiting");
+  } finally { release(); }
+  await until(() => pool.dying.size === 0);
+  assert.equal(pool.slots.size, 1);
+});
+
+test("while too many terminated workers are still exiting, no new ones start and executions wait with a clear error", async t => {
+  const pool = new CodePool({ min: 1, max: 4, maxDying: 2 });
+  const { run } = await fixture(t, undefined, pool);
+  const logged = t.mock.method(console, "error", () => {});
+  const releases: (() => void)[] = [];
+  try {
+    for (let i = 0; i < 2; i++) {
+      await run("return 0");
+      const [slot] = pool.slots;
+      releases.push(holdTermination(slot.worker));
+      await stuck(run);
+      await until(() => pool.dying.has(slot.worker));
+    }
+    assert.equal(pool.slots.size, 0, "No worker starts while two terminated ones are still exiting");
+    assert.ok(logged.mock.calls.some(call => String(call.arguments[0]).includes("codemode_workers_dying")));
+    await assert.rejects(run("return 1;", { timeoutMs: 300 }), /timed out after 300ms waiting for a sandbox worker \(2 terminated workers still exiting\)/);
+    const queued = run("return 2;", { timeoutMs: 10_000 });
+    releases[0]();
+    assert.deepEqual((await queued).output, ["2"], "One exiting frees room for a new worker");
+  } finally { releases.forEach(release => release()); }
+  await until(() => pool.dying.size === 0);
 });
 
 test("a worker that dies mid-execution fails the execution and is replaced", async t => {
