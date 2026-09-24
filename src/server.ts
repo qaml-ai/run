@@ -26,6 +26,7 @@ import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
+import { nodeLoadLine, nodeUrl } from "./ecs.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -46,8 +47,7 @@ await migrate(db);
 const storageDescriptor = storageFromEnvironment(root);
 const storage = await openStorage(storageDescriptor);
 const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
-// How peers reach this node; it is also the name its heartbeat and ownership rows carry.
-const node = (process.env.AGENT_NODE_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
+const node = await nodeUrl(process.env, port);
 const ownership = new Ownership(db, { node, ttlMs: Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000) });
 await ownership.start();
 const hosting = (process.env.AGENT_HOSTING ?? "process") as Hosting;
@@ -312,7 +312,7 @@ app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorTex
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
-  console.log(JSON.stringify({ type: "listening", address: server.address(), tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys }));
+  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: !!github, keyStorage: accounts.canStoreKeys }));
 });
 const callbacks = executor && createAdaptorServer({ fetch: executor.executions.app.fetch }) as Server;
 if (callbacks) {
@@ -329,6 +329,12 @@ process.on("SIGHUP", () => void reloadTenants(true));
 // Tasks on ECS get no SIGHUP: re-read the secret every minute so tenant changes land without a deploy.
 const tenantsTimer = tenants.source === "secret" ? setInterval(() => void reloadTenants(false), 60_000) : undefined;
 tenantsTimer?.unref();
+
+// Load for autoscaling, as a CloudWatch metric extracted from the log line.
+const loadTimer = setInterval(() => console.log(nodeLoadLine({
+  agents: supervisor.agents.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: process.memoryUsage.rss(),
+}, process.env.AGENT_SERVICE_NAME, { node })), 60_000);
+loadTimer.unref();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
   server.close();

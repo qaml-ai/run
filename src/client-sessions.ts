@@ -865,6 +865,16 @@ export class ClientSessions {
     await this.commit(session, true);
   }
 
+  /** Requests being worked on: runs that began and other open requests, but not queued runs. */
+  inFlight() {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.starting) count++;
+      for (const request of session.requests.values()) if (request.state === "running" && (request.began || !RUN_METHODS.includes(request.method))) count++;
+    }
+    return count;
+  }
+
   /** Expire sessions, keep SSE alive, and release idle agents' processes and memory. */
   private tick() {
     const now = Date.now();

@@ -614,6 +614,9 @@ export class VolumeService {
     }
   }
 
+  /** Volumes this node serves now. */
+  get size() { return this.loaded.size; }
+
   async close() {
     this.closed = true;
     clearInterval(this.timer);

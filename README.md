@@ -86,6 +86,12 @@ that cannot renew fences itself before its published expiry: it stops every
 agent and volume it owns and rejoins under a new session. Requests for an actor
 are forwarded to the node that `actor_owners` joined to live heartbeats names.
 
+**Load.** Every minute each node logs a `node_load` line in CloudWatch Embedded
+Metric Format: namespace `AgentRuntime`, metrics `agents` (awake agents),
+`volumes` (volumes it serves), `runningTurns` and `rssBytes`, with no dimension
+or `ServiceName` from `AGENT_SERVICE_NAME`. CloudWatch Logs extracts them
+without API calls, so they can drive target-tracking scaling.
+
 Schedules and channel work items are claimed with `FOR UPDATE SKIP LOCKED` and a
 claim deadline, so one node delivers each; a crashed node's claims lapse.
 
@@ -98,11 +104,12 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_DATABASE_CA` | PEM bundle the server's certificate must chain to (e.g. `/etc/ssl/rds-global-bundle.pem`); TLS settings in a URL are then ignored |
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_STORAGE` | `file` (default), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
-| `AGENT_NODE_URL` | this node's address for forwarding between nodes |
+| `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 30000) |
 | `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?}}}`), re-read on SIGHUP |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, e.g. from an ECS task definition's `secrets` (a JSON key of a secret is `<arn>:clientId::`) |
+| `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
 | `AGENT_EXECUTOR_URL` | run `js_exec` on executor hosts (see `infra/executor/README.md`) |
 
