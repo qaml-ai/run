@@ -1,0 +1,54 @@
+{
+  "asOf": "2026-09-25",
+  "note": "Known answers were checked on 2026-09-25 against primary sources (federalreserve.gov, boj.or.jp, releases.rs, python.org, postgresql.org, nodejs.org) or several major outlets. `changed` marks answers that changed in 2026.",
+  "queries": [
+    { "id": "k01", "category": "known", "style": "nl", "changed": true, "query": "What is the federal funds target range after the Fed's September 2026 meeting?", "expected": "3.75% to 4.00%", "accept": "3-3/4 to 4 percent; raised 25 bp on 2026-09-16. Answers citing an older range are wrong." },
+    { "id": "k02", "category": "known", "style": "keyword", "changed": true, "query": "current UK prime minister", "expected": "Andy Burnham", "accept": "In office since 20 July 2026, succeeding Keir Starmer. 'Keir Starmer' is wrong." },
+    { "id": "k03", "category": "known", "style": "nl", "changed": true, "query": "Who is the chair of the Federal Reserve right now?", "expected": "Kevin Warsh", "accept": "Sworn in 2026-05-22, succeeding Jerome Powell. 'Jerome Powell' is wrong." },
+    { "id": "k04", "category": "known", "style": "keyword", "changed": true, "query": "latest stable rust version", "expected": "Rust 1.98.1", "accept": "1.98.x counts as correct (1.98.1 is the point release); 1.99 is not out until 2026-10-01; anything older than 1.98 is wrong." },
+    { "id": "k05", "category": "known", "style": "nl", "changed": true, "query": "What is the latest stable release of Python?", "expected": "Python 3.14.7", "accept": "3.14.7 (released 2026-08-05). '3.14' without a patch number is partially correct; count it correct only if no contradicting version is given. 3.13.x or 3.15 betas are wrong." },
+    { "id": "k06", "category": "known", "style": "nl", "changed": true, "query": "Has PostgreSQL 19 been released yet?", "expected": "No: PostgreSQL 19 is still in beta (Beta 4 on 2026-09-24, GA expected October 2026); the latest stable major version is 18", "accept": "Correct if it says 19 is not yet generally available / still in beta. Saying 19 is released is wrong." },
+    { "id": "k07", "category": "known", "style": "keyword", "changed": true, "query": "node.js current release version", "expected": "Node.js v26.10.0 (Current); v24.x is the active LTS", "accept": "Node 26.x as the Current line counts as correct; answering only with the LTS (24.x) as 'current' is wrong." },
+    { "id": "k08", "category": "known", "style": "nl", "changed": true, "query": "Who won the 2026 FIFA World Cup?", "expected": "Spain", "accept": "Spain beat Argentina 1-0 (a.e.t.) on 2026-07-19." },
+    { "id": "k09", "category": "known", "style": "keyword", "changed": true, "query": "wimbledon 2026 mens singles winner", "expected": "Jannik Sinner", "accept": "Beat Alexander Zverev in the final." },
+    { "id": "k10", "category": "known", "style": "nl", "changed": true, "query": "How long was Harvey Weinstein sentenced to in September 2026?", "expected": "15 years in prison", "accept": "Sentenced 2026-09-23 in New York." },
+    { "id": "k11", "category": "known", "style": "keyword", "changed": true, "query": "Bank of Japan policy rate after September 2026 meeting", "expected": "1.25%", "accept": "Raised 25 bp to around 1.25% on 2026-09-18 (7-2 vote)." },
+    { "id": "k12", "category": "known", "style": "nl", "changed": true, "query": "When does the extended US-China trade truce now expire?", "expected": "January 10, 2027", "accept": "Extended by two months (from November 10) to around January 10 / mid-January 2027." },
+    { "id": "k13", "category": "known", "style": "keyword", "changed": false, "query": "mount everest official height meters", "expected": "8,848.86 m", "accept": "The 2020 China-Nepal survey figure. 8,848 m alone is partially correct; count it correct only if 8,848.86 is not contradicted." },
+    { "id": "k14", "category": "known", "style": "nl", "changed": false, "lang": "es", "query": "¿Quién es la presidenta de México actualmente?", "expected": "Claudia Sheinbaum", "accept": "In office since 2024-10-01." },
+    { "id": "k15", "category": "known", "style": "nl", "changed": false, "lang": "de", "query": "Wie hoch ist die Zugspitze?", "expected": "2,962 m", "accept": "2962 Meter über NHN (some sources 2,962.06 m)." },
+    { "id": "k16", "category": "known", "style": "nl", "changed": false, "query": "Which physicists won the 2025 Nobel Prize in Physics?", "expected": "John Clarke, Michel H. Devoret and John M. Martinis", "accept": "All three names are needed." },
+
+    { "id": "n01", "category": "news", "style": "nl", "query": "What came out of Xi Jinping's state visit to Washington this week?" },
+    { "id": "n02", "category": "news", "style": "keyword", "query": "Ban Artificial Superintelligence Act Sanders Casar" },
+    { "id": "n03", "category": "news", "style": "nl", "query": "What did Trump say in his UN General Assembly speech this week?" },
+    { "id": "n04", "category": "news", "style": "keyword", "query": "diesel price spike september 2026" },
+    { "id": "n05", "category": "news", "style": "keyword", "query": "judge blocks White House ban CNN MS NOW Politico" },
+    { "id": "n06", "category": "news", "style": "nl", "query": "Which Fed officials are signaling another rate hike this year?" },
+    { "id": "n07", "category": "news", "style": "keyword", "lang": "ja", "query": "日本銀行 利上げ 9月 決定会合" },
+    { "id": "n08", "category": "news", "style": "nl", "query": "Australia report on a rogue AI agent that hacked a website" },
+
+    { "id": "t01", "category": "technical", "style": "nl", "query": "How do I set a request timeout on fetch in Node.js with AbortSignal?" },
+    { "id": "t02", "category": "technical", "style": "keyword", "query": "postgres uuidv7() function which version" },
+    { "id": "t03", "category": "technical", "style": "keyword", "query": "Cloudflare Durable Objects setAlarm alarm handler docs" },
+    { "id": "t04", "category": "technical", "style": "nl", "query": "React useActionState hook signature and example" },
+    { "id": "t05", "category": "technical", "style": "nl", "query": "Anthropic Messages API adaptive thinking and the effort parameter" },
+    { "id": "t06", "category": "technical", "style": "keyword", "query": "ECS Fargate ephemeral storage maximum size GiB" },
+
+    { "id": "r01", "category": "research", "style": "nl", "query": "recent papers on test-time compute scaling for LLM reasoning" },
+    { "id": "r02", "category": "research", "style": "keyword", "query": "state space models vs transformers long context benchmark arxiv" },
+    { "id": "r03", "category": "research", "style": "nl", "query": "semaglutide Alzheimer's disease phase 3 trial results (EVOKE)" },
+    { "id": "r04", "category": "research", "style": "keyword", "query": "base editing clinical trial sickle cell disease results" },
+    { "id": "r05", "category": "research", "style": "nl", "query": "studies measuring position bias in LLM-as-a-judge evaluations" },
+
+    { "id": "p01", "category": "pricing", "style": "keyword", "query": "Firecrawl pricing plans credits per month" },
+    { "id": "p02", "category": "pricing", "style": "nl", "query": "How much does the Cloudflare Workers paid plan cost per million requests?" },
+    { "id": "p03", "category": "pricing", "style": "nl", "query": "How much does Vercel Pro cost per month?" },
+    { "id": "p04", "category": "pricing", "style": "keyword", "query": "iPhone Duo foldable starting price" },
+
+    { "id": "l01", "category": "longtail", "style": "keyword", "query": "zsh join array elements with comma parameter expansion flag" },
+    { "id": "l02", "category": "longtail", "style": "keyword", "query": "ENOSPC: System limit for number of file watchers reached fix" },
+    { "id": "l03", "category": "longtail", "style": "keyword", "query": "gost v3 socks5 relay chain yaml config example" },
+    { "id": "l04", "category": "longtail", "style": "nl", "query": "How do I limit memory and interrupt long-running code in quickjs-emscripten?" }
+  ]
+}
