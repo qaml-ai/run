@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,27 @@ test("migrations apply once: running them again does nothing", async () => {
   assert.deepEqual(await migrate(db), MIGRATIONS);
   assert.deepEqual(await migrate(db), []);
   assert.deepEqual((await db.query("select name from schema_migrations order by name")).rows.map(row => row.name), MIGRATIONS);
+});
+
+/** Apply the migrations before `name` only: the schema as an older release left it. */
+async function migrateBefore(db: pg.Pool, name: string) {
+  const all = fileURLToPath(new URL("../migrations", import.meta.url));
+  const before = mkdtempSync(join(tmpdir(), "migrations-"));
+  for (const file of MIGRATIONS.filter(file => file < name)) cpSync(join(all, file), join(before, file));
+  await migrate(db, before);
+}
+
+test("the migration names each agent header's tenant, from its row", async () => {
+  const { db } = await testDatabase({ migrate: false });
+  await migrateBefore(db, "013");
+  const insert = (id: string, tenant: string, header: object) => db.query(
+    "insert into agents (id, tenant, header, revision, name, type, model) values ($1, $2, $3, 1, $1, 'general', 'anthropic/claude')", [id, tenant, JSON.stringify(header)]);
+  await insert("client_old", "default", { version: 3, id: "client_old", digest: "d", expiresAt: null, revoked: false });
+  await insert("client_new", "alice", { version: 3, id: "client_new", tenant: "alice", digest: "d", expiresAt: null, revoked: false });
+  await migrate(db);
+  const headers = Object.fromEntries((await db.query("select id, header from agents")).rows.map(row => [row.id, row.header]));
+  assert.deepEqual(headers.client_old, { version: 3, id: "client_old", tenant: "default", digest: "d", expiresAt: null, revoked: false });
+  assert.equal(headers.client_new.tenant, "alice");
 });
 
 test("new sessions carry the role's idle-in-transaction timeout, so no transaction needs a pinning SET", async () => {

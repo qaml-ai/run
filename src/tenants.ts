@@ -23,8 +23,6 @@ export interface Tenant {
   billing?: "prepaid" | "none";
 }
 
-/** The single-token mode used before tenants existed; its agents keep their original IDs. */
-export const DEFAULT_TENANT = "default";
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const validTenantId = (value: unknown): value is string => typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(value);
 

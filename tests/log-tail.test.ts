@@ -316,7 +316,7 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
     const body = await req.json() as any;
     const tools = applicationTools(body);
-    return Response.json(await sessions.create(tools, { model }, req.headers.get("idempotency-key") ?? undefined, undefined), { status: 201 });
+    return Response.json(await sessions.create(tools, { model }, req.headers.get("idempotency-key") ?? undefined, {}, "default"), { status: 201 });
   }));
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(async () => {
@@ -381,7 +381,7 @@ test("an agent woken thirty times, one execute each, keeps a bounded number of S
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const model = { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: "http://127.0.0.1:9/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
-  const { id } = await sessions.create([], { model }, "woken-agent");
+  const { id } = await sessions.create([], { model }, "woken-agent", {}, "default");
   const logs = [`client-sessions/${id}.journal`, AgentSupervisor.transcriptKey(id)];
   for (let n = 0; n < 30; n++) {
     await sessions.submit(id, "default", { id: `wake-${n}`, method: "execute", params: { code: `return ${n}` } });

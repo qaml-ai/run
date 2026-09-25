@@ -48,7 +48,7 @@ test("deleting an agent purges everything it stored and leaves a tombstone that 
   // Unfenced: the test writes a transcript itself, with no claim.
   const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   const { sessions } = await node(t, db, storage, "a");
-  const { id } = await sessions.create([], { model }, "doomed");
+  const { id } = await sessions.create([], { model }, "doomed", {}, "default");
   for (let n = 0; n < 3; n++) await execute(sessions, id, `run-${n}`);
   await sessions.releaseIdle();
   // A transcript in Storage (with a blob-sized record), and tail rows still waiting for compaction.
@@ -78,7 +78,7 @@ test("deleting an agent purges everything it stored and leaves a tombstone that 
   assert.equal("config" in row.header || "definitions" in row.header, false, "the tombstone keeps only identity");
 
   // The id and idempotency key stay taken, and the agent is gone.
-  await assert.rejects(sessions.create([], { model }, "doomed"), (error: any) => error.status === 410);
+  await assert.rejects(sessions.create([], { model }, "doomed", {}, "default"), (error: any) => error.status === 410);
   await assert.rejects(sessions.inspect(id, "default"), (error: any) => error.status === 404);
   assert.equal(await sessions.destroyAgent(id, "default"), false);
   assert.equal(await sessions.purge(), 0, "purging again finds nothing");
@@ -92,7 +92,7 @@ test("the sweep purges agents revoked before it existed and agents whose TTL exp
   const b = await node(t, db, storage, "b");
   const revoked: string[] = [], expiring: string[] = [];
   for (let n = 0; n < 4; n++) {
-    const { id } = await a.sessions.create([], { model }, `revoked-${n}`);
+    const { id } = await a.sessions.create([], { model }, `revoked-${n}`, {}, "default");
     await execute(a.sessions, id, "work");
     revoked.push(id);
   }
@@ -101,7 +101,7 @@ test("the sweep purges agents revoked before it existed and agents whose TTL exp
     await execute(a.sessions, id, "work");
     expiring.push(id);
   }
-  const { id: live } = await a.sessions.create([], { model }, "live");
+  const { id: live } = await a.sessions.create([], { model }, "live", {}, "default");
   await execute(a.sessions, live, "work");
   // Revoked as DELETE used to leave them: the header only, all data kept.
   for (const id of revoked) await a.sessions.remove(id);

@@ -1,4 +1,3 @@
-import { DEFAULT_TENANT } from "../src/tenants.ts";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -36,7 +35,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
     try {
       const body = await readJson(req.body, FRAME_BYTES);
       const tools = applicationTools(body);
-      const result = await sessions.create(tools, { model, ...(body.systemPrompt !== undefined ? { systemPrompt: body.systemPrompt } : {}) }, req.headers.get("idempotency-key") ?? undefined, { name: body.name, type: body.type });
+      const result = await sessions.create(tools, { model, ...(body.systemPrompt !== undefined ? { systemPrompt: body.systemPrompt } : {}) }, req.headers.get("idempotency-key") ?? undefined, { name: body.name, type: body.type }, "default");
       return Response.json(result, { status: 201 });
     } catch (error) { return Response.json({ error: String(error) }, { status: 400 }); }
   }));
@@ -355,14 +354,14 @@ test("expired agents are removed, but an agent without a lifetime stays until de
   // Longer than an agent process takes to start, so expiry never races provisioning.
   const f = await fixture(t, { ttlMs: 1_000, idleMs: 100 });
   const config = { model: configuredModel() };
-  const brief = await f.sessions.create([], config, "brief");
-  const lasting = await f.sessions.create([], config, "lasting", {}, undefined, null);
+  const brief = await f.sessions.create([], config, "brief", {}, "default");
+  const lasting = await f.sessions.create([], config, "lasting", {}, "default", null);
   assert.equal(lasting.expiresAt, null);
   await sleep(1_500);
   const state = (session: { id: string; token: string }) => fetch(`${f.url}/clients/${session.id}/state`, { headers: { Authorization: `Bearer ${session.token}` } });
   assert.equal((await state(brief)).status, 410);
   assert.equal((await state(lasting)).status, 200);
-  assert.deepEqual((await f.sessions.list(DEFAULT_TENANT)).map(agent => agent.id), [lasting.id]);
+  assert.deepEqual((await f.sessions.list("default")).map(agent => agent.id), [lasting.id]);
 });
 
 test("scoped credentials cannot inject assistant or tool history", async t => {
@@ -446,13 +445,13 @@ test("concurrent starts never take a tenant past its quota, and refused creates 
   const sessions = f.sessions as unknown as { writeHeader: (...args: unknown[]) => Promise<void> };
   const writeHeader = sessions.writeHeader.bind(sessions);
   sessions.writeHeader = async (...args) => { await sleep(50); return writeHeader(...args); };
-  const results = await Promise.allSettled(Array.from({ length: 6 }, (_, index) => f.sessions.create([], { model: configuredModel() }, `concurrent-${index}`)));
+  const results = await Promise.allSettled(Array.from({ length: 6 }, (_, index) => f.sessions.create([], { model: configuredModel() }, `concurrent-${index}`, {}, "default")));
   assert.ok(peak <= 2, `at most 2 agents were hosted at once, saw ${peak}`);
   for (const result of results) if (result.status === "rejected") assert.equal(result.reason.status, 429, String(result.reason));
   const created = results.filter(result => result.status === "fulfilled").map(result => (result as PromiseFulfilledResult<{ id: string }>).value.id);
   assert.ok(created.length >= 2);
   // Nothing was persisted for a refused create.
-  const stored = await Promise.all(Array.from({ length: 6 }, (_, index) => f.header(`client_${createHash("sha256").update(`concurrent-${index}`).digest("hex").slice(0, 40)}`)));
+  const stored = await Promise.all(Array.from({ length: 6 }, (_, index) => f.header(`client_${createHash("sha256").update(`default:concurrent-${index}`).digest("hex").slice(0, 40)}`)));
   assert.deepEqual(stored.map(header => header?.id).filter(Boolean).sort(), created.sort());
   assert.equal(supervisor.reserved.size, 0, "no slot stays reserved");
 });

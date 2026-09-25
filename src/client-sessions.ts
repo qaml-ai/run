@@ -15,7 +15,6 @@ import type { AppendLog } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
-import { DEFAULT_TENANT } from "./tenants.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
@@ -42,8 +41,8 @@ type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">;
 interface SessionHeader {
   /** `expiresAt` null: the agent lives until it is deleted. */
   version: 3; id: string; digest: string; expiresAt: number | null; revoked: boolean;
-  /** Owning tenant; absent on sessions created before tenants existed (the default tenant). */
-  tenant?: string;
+  /** Owning tenant. */
+  tenant: string;
   metadata?: AgentMetadata; definitions: ToolDefinition[]; provisionHash: string; config: SessionConfig;
   /** Volumes the agent's file tools can reach; absent on sessions created before volumes existed. */
   mounts?: Mount[];
@@ -254,7 +253,7 @@ export class ClientSessions {
   private async writeHeader(session: Session) {
     if (session.fault) throw session.fault;
     const header = session.header;
-    const columns = [header.id, header.tenant ?? DEFAULT_TENANT, JSON.stringify(header), header.metadata?.name ?? header.id, header.metadata?.type ?? "general",
+    const columns = [header.id, header.tenant, JSON.stringify(header), header.metadata?.name ?? header.id, header.metadata?.type ?? "general",
       `${header.config.model.provider}/${header.config.model.id}`, header.expiresAt, header.revoked];
     try {
       const { rows } = session.revision === undefined
@@ -436,7 +435,7 @@ export class ClientSessions {
    * held until the supervisor starts the agent or `unreserve` gives it back.
    */
   private async makeRoom(id: string, tenant: string) {
-    const tenantOf = (session: Session) => session.header.tenant ?? DEFAULT_TENANT;
+    const tenantOf = (session: Session) => session.header.tenant;
     const hosted = (session: Session) => this.supervisor.agents.has(session.header.id);
     const live = (filter: (session: Session) => boolean) => [...this.sessions.values()]
       .filter(session => session.header.id !== id && hosted(session) && filter(session));
@@ -447,7 +446,7 @@ export class ClientSessions {
         const other = session.header.id;
         if (tenantOf(session) === tenant && (this.supervisor.agents.has(other) || this.supervisor.starting.has(other))) ids.add(other);
       }
-      for (const [other, owner] of this.supervisor.reserved) if ((owner ?? DEFAULT_TENANT) === tenant) ids.add(other);
+      for (const [other, owner] of this.supervisor.reserved) if (owner === tenant) ids.add(other);
       ids.delete(id);
       return ids.size;
     };
@@ -476,7 +475,7 @@ export class ClientSessions {
   }
 
   private async apiKey(session: Session, provider: string): Promise<{ key?: string; platform: boolean }> {
-    const resolved = this.options.apiKeyFor ? await this.options.apiKeyFor(session.header.tenant ?? DEFAULT_TENANT, provider) : this.options.apiKey;
+    const resolved = this.options.apiKeyFor ? await this.options.apiKeyFor(session.header.tenant, provider) : this.options.apiKey;
     return typeof resolved === "object" ? resolved : { key: resolved, platform: false };
   }
 
@@ -487,13 +486,13 @@ export class ClientSessions {
     if (this.supervisor.agents.has(session.header.id) && !session.starting) return Promise.resolve();
     const id = session.header.id;
     return session.starting ??= (async () => {
-      await this.makeRoom(id, session.header.tenant ?? DEFAULT_TENANT);
+      await this.makeRoom(id, session.header.tenant);
       const { key: apiKey, platform } = await this.apiKey(session, session.header.config.model.provider);
       session.platformKey = platform;
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: await this.toolset(session),
         spendLimit: async () => {
-          const limited = await this.options.spendLimit?.(session.header.tenant ?? DEFAULT_TENANT);
+          const limited = await this.options.spendLimit?.(session.header.tenant);
           return typeof limited === "string" ? limited : limited?.message;
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...(context ? { toolCallId: context.toolCallId } : {}) }),
@@ -520,7 +519,7 @@ export class ClientSessions {
    */
   private async servers(session: Session, tools = session.header.definitions, sources = session.header.sources): Promise<ToolServer[]> {
     const header = session.header;
-    const tenant = header.tenant ?? DEFAULT_TENANT;
+    const tenant = header.tenant;
     const agent: AgentRef = { id: header.id, tenant, claim: session.claim };
     const feature = await this.options.hooks?.server?.(agent);
     const volumes = this.options.volumes;
@@ -565,14 +564,14 @@ export class ClientSessions {
     const server = session.route?.get(call.name);
     if (!server) throw new Error(`Unknown tool ${call.name}`);
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
-    const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT, claim: session.claim }, request?.id);
+    const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
     await this.beforeEffect(session);
     return contentResult(await server.call({ ...call, ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}) }));
   }
 
   /** The id of the agent `create` makes for a tenant's idempotency key. */
   agentId(tenant: string, key: string) {
-    return `client_${hash(tenant === DEFAULT_TENANT ? key : `${tenant}:${key}`).slice(0, 40)}`;
+    return `client_${hash(`${tenant}:${key}`).slice(0, 40)}`;
   }
 
   /**
@@ -580,12 +579,12 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }, identity?: AgentIdentity): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }, identity?: AgentIdentity): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
-    // Idempotency keys are per tenant; the default tenant keeps its pre-tenant IDs and tokens.
-    const scoped = tenant === DEFAULT_TENANT ? key : `${tenant}:${key}`;
+    // Idempotency keys are per tenant.
+    const scoped = `${tenant}:${key}`;
     const id = this.agentId(tenant, key);
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
@@ -593,7 +592,7 @@ export class ClientSessions {
     // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
     const existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
     if (existing) {
-      if ((existing.value.tenant ?? DEFAULT_TENANT) !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
+      if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       if (existing.value.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
       if (existing.value.revoked || expired(existing.value.expiresAt)) throw new HttpError(410, "Session expired or revoked");
       if (await this.ownerElsewhere(id)) return { id, token, expiresAt: existing.value.expiresAt, running: true };
@@ -604,7 +603,7 @@ export class ClientSessions {
     while (!session && this.loading.has(id)) session = await this.load(id);
     let created = false;
     if (session) {
-      if ((session.header.tenant ?? DEFAULT_TENANT) !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
+      if (session.header.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       if (session.header.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
       if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
     } else {
@@ -627,7 +626,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(identity ? { identity } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(identity ? { identity } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -678,7 +677,7 @@ export class ClientSessions {
         if (rowCount) await this.purgeData(id, sql);
         return !!rowCount;
       });
-      if (deleted && session.header.mounts?.length) await this.options.volumes?.watch(id, session.header.tenant ?? DEFAULT_TENANT, session.header.mounts, [], session.claim);
+      if (deleted && session.header.mounts?.length) await this.options.volumes?.watch(id, session.header.tenant, session.header.mounts, [], session.claim);
     } catch (error) {
       console.error(JSON.stringify({ type: "agent_discard_failed", agent: id, error: errorText(error) }));
     } finally {
@@ -744,7 +743,7 @@ export class ClientSessions {
    */
   async providerKeyChanged(tenant: string, provider: string) {
     for (const session of this.sessions.values()) {
-      if ((session.header.tenant ?? DEFAULT_TENANT) !== tenant || session.header.config.model.provider !== provider) continue;
+      if (session.header.tenant !== tenant || session.header.config.model.provider !== provider) continue;
       if (this.supervisor.agents.has(session.header.id) && !this.busy(session)) await this.supervisor.stop(session.header.id);
     }
   }
@@ -801,7 +800,7 @@ export class ClientSessions {
       // Authenticate against the small header before loading the journal.
       const header = this.sessions.get(c.req.param("id")!)?.header ?? (await this.readHeader(c.req.param("id")!))?.value;
       const authorization = c.req.header("authorization") ?? "";
-      if (!header || c.req.header("origin") || (operator !== undefined && (header.tenant ?? DEFAULT_TENANT) !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
+      if (!header || c.req.header("origin") || (operator !== undefined && header.tenant !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
       if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
       const session = await this.load(header.id);
       if (!session) throw new HttpError(401, "Unauthorized");
@@ -851,7 +850,7 @@ export class ClientSessions {
     app.get(`${agent}/schedules`, async c => json(c, 200, await this.scheduler().list(c.var.session.header.id)));
     app.post(`${agent}/schedules`, async c => {
       const scheduler = this.scheduler();
-      const tenant = c.var.session.header.tenant ?? DEFAULT_TENANT;
+      const tenant = c.var.session.header.tenant;
       let input;
       try { input = scheduleInput(await readJson(body(c), 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
       try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input }, c.var.session.claim)); } catch (error) { if (error instanceof LostClaim) throw error; throw new HttpError(400, errorText(error)); }
@@ -990,9 +989,9 @@ export class ClientSessions {
       ? event => {
           // Failed calls report zero usage; count only responses the provider completed.
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
-            this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, { ...event.message, platform: !!session.platformKey });
+            this.options.onUsage?.(session.header.tenant, id, { ...event.message, platform: !!session.platformKey });
           }
-          if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, id, { ...event, kind: "compaction", platform: !!session.platformKey });
+          if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant, id, { ...event, kind: "compaction", platform: !!session.platformKey });
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
   }
@@ -1001,7 +1000,7 @@ export class ClientSessions {
   private async definitionUpdate(session: Session) {
     const current = session.header.definition;
     if (!current) throw new Error("This agent was not made from a definition");
-    const resolved = await this.options.definitionFor!(session.header.tenant ?? DEFAULT_TENANT, current.id);
+    const resolved = await this.options.definitionFor!(session.header.tenant, current.id);
     // The attached server's tools stay; the tools list is rebuilt with the definition's sources.
     return { update: { ...resolved.config, tools: session.header.definitions }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };
   }
@@ -1066,7 +1065,7 @@ export class ClientSessions {
 
   /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
   private async runLimit(session: Session, method: string) {
-    const tenant = session.header.tenant ?? DEFAULT_TENANT;
+    const tenant = session.header.tenant;
     if (MODEL_RUNS.includes(method)) return this.options.spendLimit?.(tenant);
     if (RUN_METHODS.includes(method)) return this.options.creditLimit?.(tenant);
     return undefined;
@@ -1077,7 +1076,7 @@ export class ClientSessions {
     if (session.activeSince === undefined) return;
     const ms = now - session.activeSince;
     session.activeSince = running ? now : undefined;
-    try { this.options.onActive?.(session.header.tenant ?? DEFAULT_TENANT, session.header.id, ms); }
+    try { this.options.onActive?.(session.header.tenant, session.header.id, ms); }
     catch (error) { console.error(JSON.stringify({ type: "active_report_failed", error: errorText(error) })); }
   }
 
@@ -1088,7 +1087,7 @@ export class ClientSessions {
   }
 
   private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
-    try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT, claim: session.claim }, record); }
+    try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, record); }
     catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: errorText(error) })); }
   }
 
@@ -1112,7 +1111,7 @@ export class ClientSessions {
   }
 
   private toolSearchUsage(session: Session, usd: number, searches: number) {
-    this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, session.header.id, {
+    this.options.onUsage?.(session.header.tenant, session.header.id, {
       provider: "runtime", model: "tool_search", usage: { cost: { total: usd } }, platform: true, toolSearch: true, toolSearches: searches,
     });
   }
@@ -1164,7 +1163,7 @@ export class ClientSessions {
     const volumes = this.options.volumes;
     const mounts = header.mounts ?? [];
     if (!volumes || !mounts.length) return;
-    const id = header.id, tenant = header.tenant ?? DEFAULT_TENANT;
+    const id = header.id, tenant = header.tenant;
     try {
       await volumes.watch(id, tenant, mounts, [], claim);
       const workspace = VolumeService.workspaceOf(id);
@@ -1256,7 +1255,7 @@ export class ClientSessions {
         await sql.query("delete from channel_agents where agent = $1", [id]);
         await sql.query("delete from channel_conversations where agent = $1", [id]);
         await sql.query("delete from volume_watchers where agent = $1", [id]);
-        const tombstone = { version: 3, id, ...(header.tenant ? { tenant: header.tenant } : {}), digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
+        const tombstone = { version: 3, id, tenant: header.tenant, digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
         await sql.query("update agents set header = $2, name = $1, type = 'general', revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
           [id, JSON.stringify(tombstone), Date.now()]);
       });

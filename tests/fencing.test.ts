@@ -69,7 +69,7 @@ test("a stale owner's header write loses to a takeover in flight, and the header
     await sessions.close(); await supervisor.close(); await ownership.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
-  const { id } = await sessions.create([], { model }, "raced");
+  const { id } = await sessions.create([], { model }, "raced", {}, "default");
   // The revocation is a header write, the first write deleting makes.
   const result = await racing(t, url, id, () => sessions.destroyAgent(id, "default"));
   assert.equal(result.waited, true);
@@ -155,7 +155,7 @@ test("two creates of one agent at once on one node leave one claim, still curren
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   // Both find no agent, and before the fix both took the claim: the second's new epoch fenced the first's writes.
-  const [first, second] = await Promise.all([sessions.create([], { model }, "twin"), sessions.create([], { model }, "twin")]);
+  const [first, second] = await Promise.all([sessions.create([], { model }, "twin", {}, "default"), sessions.create([], { model }, "twin", {}, "default")]);
   assert.equal(first.id, second.id);
   const session = sessions.sessions.get(first.id)!;
   assert.ok(session.claim && ownership.holds(session.claim));
