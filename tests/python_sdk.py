@@ -1,5 +1,6 @@
 """Run with: python3 tests/python_sdk.py (requires httpx)."""
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,11 +33,14 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.schema = f"python_{secrets.token_hex(6)}"
         database(f"create schema {self.schema}")
         url = urlsplit(DATABASE_URL)
+        # The tests run scripted code, never the model: the tenant's key is a placeholder.
+        tenants = Path(self.directory.name) / "tenants.json"
+        tenants.write_text(json.dumps({"tenants": {"python": {"tokenSha256": hashlib.sha256(self.token.encode()).hexdigest(), "apiKeys": {"anthropic": "unset"}}}}))
         self.host = await asyncio.create_subprocess_exec(
             "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", str(ROOT / "src" / "server.ts"), stdout=asyncio.subprocess.PIPE,
             env={"PATH": os.environ["PATH"], "HOME": self.directory.name,
                  "AGENT_DATABASE_URL": urlunsplit(url._replace(query=urlencode({"options": f"-c search_path={self.schema}"}))),
-                 "AGENT_DATA_DIR": self.directory.name, "AGENT_RUNTIME_TOKEN": self.token, "PORT": "0",
+                 "AGENT_DATA_DIR": self.directory.name, "AGENT_TENANTS_FILE": str(tenants), "AGENT_SESSION_SECRET": self.token, "PORT": "0",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
         ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))

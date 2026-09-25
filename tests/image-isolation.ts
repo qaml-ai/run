@@ -7,7 +7,10 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
 
@@ -20,11 +23,16 @@ const token = "isolation-test-token-with-enough-characters";
 const canary = `canary-${randomBytes(8).toString("hex")}`;
 const name = `agent-isolation-${randomBytes(4).toString("hex")}`;
 
+// The runtime reads its one tenant from a file mounted into the container; js_exec needs no model key.
+const tenants = mkdtempSync(join(tmpdir(), "agent-isolation-"));
+chmodSync(tenants, 0o755);
+writeFileSync(join(tenants, "tenants.json"), JSON.stringify({ tenants: { isolation: { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: { anthropic: "unset" } } } }), { mode: 0o644 });
+
 const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "utf8" });
 const logs = () => { const out = spawnSync("docker", ["logs", name], { encoding: "utf8" }); return out.stdout + out.stderr; };
 
 docker("run", "-d", "--init", "--name", name, ...(hostNetwork ? ["--network", "host"] : ["-p", `127.0.0.1:${port}:8790`]),
-  "-e", `AGENT_RUNTIME_TOKEN=${token}`, "-e", `AGENT_DATABASE_URL=${database}`, "-e", "AGENT_HOSTING=inline",
+  "-v", `${tenants}:/etc/agent-runtime:ro`, "-e", "AGENT_TENANTS_FILE=/etc/agent-runtime/tenants.json", "-e", `AGENT_SESSION_SECRET=${token}`, "-e", `AGENT_DATABASE_URL=${database}`, "-e", "AGENT_HOSTING=inline",
   "-e", "AGENT_SANDBOX_TEST_HOOKS=1", "-e", `AGENT_ISOLATION_CANARY=${canary}`, image);
 let failed = true;
 try {

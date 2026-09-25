@@ -140,7 +140,6 @@ export class Billing {
   async mode(tenant: string): Promise<BillingMode> {
     const admin = this.tenants.billing(tenant);
     if (admin) return admin;
-    if (this.tenants.legacy) return "none";
     const cached = this.modes.get(tenant);
     if (cached && cached.until > Date.now()) return cached.mode;
     const row = (await this.db.query("select billing from tenants where id = $1", [tenant])).rows[0];

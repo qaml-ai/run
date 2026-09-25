@@ -89,7 +89,7 @@ async function node(t: T, api: { url: string }, db: Awaited<ReturnType<typeof te
   await ownership.start();
   const prompts: { agent: string; text: string; from?: unknown }[] = [];
   const channels: Channels = new Channels({
-    db, definitions: new Definitions({ db }), accounts: new Accounts({ tenants: new Tenants({ legacyToken: "discord-operator-token-at-least-24-chars" }), db, secretsKey }),
+    db, definitions: new Definitions({ db }), accounts: new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey }),
     node: name, publicUrl: "https://agents.example.test", ownership,
     providers: { discord: discord({ apiUrl: api.url }) },
     createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), agentId: (_tenant, key) => `client_${sha(key).slice(0, 40)}`, live: async () => true,

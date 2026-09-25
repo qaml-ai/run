@@ -1,6 +1,6 @@
 import { createServer, type ServerResponse } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync, mkdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve, join, extname } from 'node:path';
@@ -40,7 +40,9 @@ async function shutdown() {
 }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
 process.on('exit', () => { for (const child of children) child.kill('SIGTERM'); });
-const env = { ...process.env, AGENT_RUNTIME_TOKEN: secret.operator, AGENT_API_KEY: apiKey, AGENT_PROVIDER: provider, AGENT_MODEL: model, AGENT_SYSTEM_PROMPT: process.env.AGENT_SYSTEM_PROMPT, AGENT_DATA_DIR: join(root, 'runtime'), AGENT_CLIENT_STATE_DIR: join(root, 'clients'), STUDIO_DATA_DIR: root, HOST: '127.0.0.1', PORT: '0' };
+// One tenant, with the operator token; without a model key, agents still run code but their prompts fail.
+writeDurableJson(join(root, 'tenants.json'), { tenants: { studio: { tokenSha256: createHash('sha256').update(secret.operator).digest('hex'), apiKeys: { [provider]: apiKey || 'unset' } } } });
+const env = { ...process.env, AGENT_RUNTIME_TOKEN: secret.operator, AGENT_TENANTS_FILE: join(root, 'tenants.json'), AGENT_SESSION_SECRET: secret.operator, AGENT_PROVIDER: provider, AGENT_MODEL: model, AGENT_SYSTEM_PROMPT: process.env.AGENT_SYSTEM_PROMPT, AGENT_DATA_DIR: join(root, 'runtime'), AGENT_CLIENT_STATE_DIR: join(root, 'clients'), STUDIO_DATA_DIR: root, HOST: '127.0.0.1', PORT: '0' };
 const args = process.versions.bun ? [] : ['--experimental-strip-types'];
 const host = spawn(process.execPath, [...args, join(here, '../src/server.ts')], { env, stdio: ['ignore', 'pipe', 'inherit'] });
 children.add(host);

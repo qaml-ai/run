@@ -4,7 +4,6 @@ import { resolve, join, extname, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentSupervisor, type Hosting } from "./supervisor.ts";
 import { configuredModel } from "./model.ts";
-import { localTools } from "./local-tools.ts";
 import { errorText } from "./protocol.ts";
 import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
@@ -13,7 +12,7 @@ import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, migrate } from "./db.ts";
 import { Ownership } from "./ownership.ts";
-import { DEFAULT_TENANT, tenantsFromEnvironment } from "./tenants.ts";
+import { tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
 import { ConsoleAuth } from "./console-auth.ts";
 import { api } from "./api.ts";
@@ -44,13 +43,12 @@ import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
 
-// Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
-// Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
+// Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
 const secrets = await runtimeSecrets();
 // Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify.
-const sessionSecret = secrets.sessionSecret ?? (tenants.legacy ? process.env.AGENT_RUNTIME_TOKEN : undefined);
-if (!sessionSecret || sessionSecret.length < (secrets.sessionSecret ? 32 : 24)) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
+const sessionSecret = secrets.sessionSecret;
+if (!sessionSecret || sessionSecret.length < 32) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
 const root = resolve(process.env.AGENT_DATA_DIR ?? ".agent-runtime");
 /** A positive integer setting under its name, or the older name it replaced (which keeps working). */
 function positiveSetting(name: string, legacy: string, fallback: number) {
@@ -166,8 +164,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
   const config = sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
-  // A single-tenant development host may run code-only agents without a model key.
-  if (!tenants.legacy && !await accounts.hasKey(tenant, config.model.provider)) {
+  if (!await accounts.hasKey(tenant, config.model.provider)) {
     throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}; set one with PUT /v1/providers/${config.model.provider}/key`);
   }
   const ttl = params.ttlSeconds;
@@ -416,35 +413,6 @@ app.post("/client-sessions", async c => {
   const params = await readJson(c.req.raw.body, 18 * 1024 * 1024, {});
   const result = await createAgent(c.var.tenant, params, c.req.header("idempotency-key"));
   return c.json(result, 201, { "Cache-Control": "no-store" });
-});
-// Local diagnostic agents with a host workspace: single-tenant development hosts only.
-app.all("/agents/:id{[a-zA-Z0-9_-]{1,80}}/:action{prompt|execute|abort}?", async (c, next) => {
-  if (!tenants.legacy) return next();
-  const { id, action } = c.req.param();
-  const params = await readJson(c.req.raw.body, 256_000, {});
-  const method = c.req.method;
-  let result: unknown;
-  if (method === "POST" && !action) {
-    result = await supervisor.start(id, { model, apiKey: tenants.apiKey(DEFAULT_TENANT, model.provider), ...(process.env.AGENT_SYSTEM_PROMPT ? { systemPrompt: process.env.AGENT_SYSTEM_PROMPT } : {}) }, await localTools(join(root, "workspaces", id)));
-  } else if (method === "GET" && !action) result = await supervisor.request(id, "status");
-  else if (method === "DELETE" && !action) { await clients.remove(id); await supervisor.stop(id); result = { stopped: true }; }
-  else if (method === "POST" && action === "abort") result = await supervisor.request(id, "abort");
-  else if (method === "POST" && (action === "prompt" || action === "execute")) {
-    const res = c.env.outgoing;
-    res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
-    const emit = (event: unknown) => {
-      if (!res.destroyed && !res.write(`${JSON.stringify(event)}\n`)) {
-        // This prototype has no replay queue. Disconnect slow consumers
-        // instead of buffering an unbounded transcript in the supervisor.
-        res.destroy();
-      }
-    };
-    try { emit({ type: "result", result: await supervisor.request(id, action, params, event => emit({ type: "event", event })) }); }
-    catch (error) { emit({ type: "error", error: errorText(error) }); }
-    res.end();
-    return RESPONSE_ALREADY_SENT;
-  } else return c.body(null, 405);
-  return c.json(result);
 });
 app.notFound(c => c.body(null, 404));
 // Errors keep their own status (429 quota, 409 conflict, 410 revoked, 503 retry...); an unreachable database is 503, and

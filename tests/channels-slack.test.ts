@@ -61,7 +61,7 @@ async function fakeSlack(t: T) {
 async function setup(t: T) {
   const api = await fakeSlack(t);
   const { db } = await testDatabase();
-  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: "slack-operator-token-at-least-24-chars" }), db, secretsKey: randomBytes(32).toString("hex") });
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
   const prompts: { agent: string; text: string; from?: unknown; images: number }[] = [];
   const channels: Channels = new Channels({
     db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test",

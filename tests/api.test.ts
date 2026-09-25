@@ -262,7 +262,7 @@ test("key checks treat only 401/403 as invalid and send each API's auth header",
 
 test("usage is recorded per response and summed per day and model across nodes", async () => {
   const { db } = await testDatabase();
-  const tenants = new Tenants({ legacyToken: "legacy-token-with-24-characters" });
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: {} }) });
   const nodeA = new Accounts({ tenants, db });
   const nodeB = new Accounts({ tenants, db });
   const message = (at: number, input: number) => ({ provider: "anthropic", model: "claude-sonnet-5", timestamp: at, usage: { input, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } });

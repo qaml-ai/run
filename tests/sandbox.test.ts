@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Worker } from "node:worker_threads";
 import { CodePool, executeCode } from "../src/codemode.ts";
-import { localTools } from "../src/local-tools.ts";
+import { localTools } from "./local-tools.ts";
 import { SANDBOX_LIMITS, codeRequest } from "../src/limits.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 

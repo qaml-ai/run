@@ -162,7 +162,7 @@ test("compaction summaries bill their tokens and cost to the tenant, apart from 
   const fake = await provider(t, { usage: true });
   const supervisor = await fixture(t);
   const { db } = await testDatabase();
-  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: "legacy-token-with-24-characters" }), db });
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db });
   const root = await mkdtemp(join(tmpdir(), "compaction-usage-"));
   const sessions = new ClientSessions(supervisor, { db, root, secret: "compaction-usage-secret-32-characters", apiKey: "fixture", onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message) });
   t.after(async () => { await sessions.close(); await rm(root, { recursive: true, force: true }); });

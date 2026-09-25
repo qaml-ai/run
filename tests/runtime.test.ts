@@ -1,15 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { codePool } from "../src/codemode.ts";
-import { localTools } from "../src/local-tools.ts";
+import { localTools } from "./local-tools.ts";
 import { configuredModel } from "../src/model.ts";
 import { readTranscript } from "../src/transcript.ts";
 import { testDatabase } from "./database.ts";
@@ -187,12 +188,16 @@ test("stopping an agent also stops its CPU-bound codemode execution", async t =>
   assert.ok([...pool.slots].every(slot => slot.state !== "busy"), "Codemode execution survived agent shutdown");
 });
 
-test("HTTP control plane authenticates, streams codemode output, and stops agents", async t => {
+test("HTTP control plane authenticates operators, provisions agents, and deletes them", async t => {
   const root = await mkdtemp(join(tmpdir(), "camelai-http-test-"));
   const token = "runtime-test-token-with-enough-characters";
   const { db, url: databaseUrl } = await testDatabase();
+  await writeFile(join(root, "tenants.json"), JSON.stringify({ tenants: { acme: { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: { [model.provider]: "fixture-only" } } } }));
   const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
-    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, AGENT_RUNTIME_TOKEN: token, PORT: "0", ...(process.env.AGENT_RUNTIME ? { AGENT_RUNTIME: process.env.AGENT_RUNTIME } : {}) },
+    env: {
+      PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, AGENT_TENANTS_FILE: join(root, "tenants.json"),
+      AGENT_SESSION_SECRET: "runtime-test-session-secret-with-32-chars", PORT: "0", ...(process.env.AGENT_RUNTIME ? { AGENT_RUNTIME: process.env.AGENT_RUNTIME } : {}),
+    },
     stdio: ["ignore", "pipe", "inherit"],
   });
   t.after(async () => {
@@ -209,10 +214,9 @@ test("HTTP control plane authenticates, streams codemode output, and stops agent
   });
   child.on("error", ready.reject);
   child.on("exit", code => ready.reject(new Error(`HTTP server exited: ${code}`)));
-  const base = `http://127.0.0.1:${await ready.promise}/agents/demo`;
-  assert.equal((await fetch(base)).status, 401);
+  const base = `http://127.0.0.1:${await ready.promise}`;
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-  const clientBase = base.replace("/agents/demo", "/client-sessions");
+  const clientBase = `${base}/client-sessions`;
   assert.equal((await fetch(clientBase, { method: "POST", body: JSON.stringify({}) })).status, 401);
   assert.equal((await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ tools: [{}] }) })).status, 400);
   for (const systemPrompt of [null, 123, "", "x".repeat(32001)]) {
@@ -222,7 +226,7 @@ test("HTTP control plane authenticates, streams codemode output, and stops agent
   assert.equal(clientSessionResponse.status, 201);
   const clientSession = await clientSessionResponse.json() as { id: string; token: string };
   assert.equal((await db.query("select header from agents where id = $1", [clientSession.id])).rows[0].header.config.systemPrompt, "You are a test assistant.");
-  const registryUrl = base.replace("/agents/demo", "/registry");
+  const registryUrl = `${base}/registry`;
   assert.equal((await fetch(registryUrl)).status, 401);
   assert.equal((await fetch(registryUrl, { headers: { Authorization: `Bearer ${clientSession.token}` } })).status, 401);
   const listing = await (await fetch(registryUrl, { headers })).json() as any[];
@@ -230,18 +234,9 @@ test("HTTP control plane authenticates, streams codemode output, and stops agent
   const detail = await (await fetch(`${registryUrl}/${clientSession.id}`, { headers })).json() as any;
   assert.equal(detail.token, undefined); assert.equal(detail.digest, undefined); assert.equal(detail.config, undefined);
   for (const name of [null, "", 42, "x".repeat(121)]) assert.equal((await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ name }) })).status, 400);
-  assert.equal((await fetch(base, { headers: { Authorization: `Bearer ${clientSession.token}` } })).status, 401);
-  assert.equal((await fetch(base.replace("/agents/demo", `/agents/${clientSession.id}`), { method: "DELETE", headers })).status, 200);
-  const created = await fetch(base, { method: "POST", headers });
-  assert.equal(created.status, 200);
-  assert.ok((await created.json() as any).pid > 0);
-  const response = await fetch(`${base}/execute`, { method: "POST", headers, body: JSON.stringify({ code: 'return "http works";' }) });
-  const records = (await response.text()).trim().split("\n").map(line => JSON.parse(line));
-  assert.equal(records[0].type, "event");
-  assert.deepEqual(records.at(-1).result.output, ["http works"]);
-  const bypass = await fetch(`${base}/execute`, { method: "POST", headers, body: JSON.stringify({ code: "return 1", runtime: "/bin/sh" }) });
-  assert.match(await bypass.text(), /Unknown codemode option: runtime/);
-  assert.equal((await fetch(base, { method: "DELETE", headers })).status, 200);
+  assert.equal((await fetch(`${base}/v1/agents/${clientSession.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${clientSession.token}` } })).status, 401);
+  assert.equal((await fetch(`${base}/v1/agents/${clientSession.id}`, { method: "DELETE", headers })).status, 200);
+  assert.deepEqual(await (await fetch(registryUrl, { headers })).json(), []);
 });
 
 test("native tools preserve content and imported history is owned by the service after restart", async t => {

@@ -46,7 +46,6 @@ npm run typecheck
 npm test                         # agents in their own processes
 AGENT_HOSTING=inline npm test    # agents inline in the server process
 npm run test:python              # needs clients/python/requirements.txt
-npm run demo                     # sandbox demo, no model credentials
 npm run openapi                  # regenerate openapi.json after changing /v1 routes
 ```
 
@@ -250,67 +249,46 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_OUTBOUND_ALLOW_CIDRS` | exceptions to the built-in ranges, e.g. `127.0.0.1/32` for a local test server; never set in production |
 | `AGENT_SANDBOX_SOCKETS` | set by `agent-launcher`: the sandbox processes' sockets. Without it, js_exec runs on worker threads in the runtime process, as in development on macOS; the `listening` log line's `sandbox` field says which |
 
-Start the HTTP supervisor on a VM using a trusted terminal:
+Start a runtime on a VM using a trusted terminal. It always reads its tenants
+from `AGENT_TENANTS_FILE` or `AGENT_TENANTS_SECRET_ARN`, and does not start
+without one:
 
 ```sh
-export AGENT_RUNTIME_TOKEN="$(openssl rand -hex 32)"
-export AGENT_API_KEY="your-provider-key"
+export TOKEN="$(openssl rand -hex 32)"
+printf '{"tenants":{"me":{"tokenSha256":"%s","apiKeys":{"anthropic":"your-provider-key"}}}}' \
+  "$(printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1)" > tenants.json
+export AGENT_TENANTS_FILE="$PWD/tenants.json"
+export AGENT_SESSION_SECRET="$(openssl rand -hex 32)"
+export AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:55432/postgres
 export AGENT_PROVIDER=anthropic
 export AGENT_MODEL=claude-sonnet-4-5
 export AGENT_DATA_DIR=/absolute/path/to/agent-data
-export AGENT_RUNTIME=node
 npm start
 ```
 
 This starts on `127.0.0.1:8790`. `HOST`/`PORT` are configurable. Use a private
 network and TLS termination before exposing the control plane remotely; the
-token grants control of every agent and its approved tools on this supervisor.
-It is an operator credential, not a tenant-scoped API token. `AGENT_BASE_URL`
-optionally overrides the selected Pi model's provider endpoint. Model keys are
-sent to the agent over IPC, not passed on argv or persisted in session files.
+token is the tenant's operator credential, with control of its agents and their
+approved tools. `AGENT_BASE_URL` optionally overrides the selected Pi model's
+provider endpoint. Model keys are sent to the agent over IPC, not passed on argv
+or persisted in session files.
 
 ```sh
-curl -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" -X POST \
-  http://127.0.0.1:8790/agents/demo
-
-curl -N -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"Write hello.txt, read it back, and report the contents."}' \
-  http://127.0.0.1:8790/agents/demo/prompt
-
-curl -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" -X POST \
-  http://127.0.0.1:8790/agents/demo/abort
-
-curl -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" -X DELETE \
-  http://127.0.0.1:8790/agents/demo
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"demo"}' http://127.0.0.1:8790/v1/agents
 ```
 
 ## Interface and behavior
 
-| Request | Behavior |
-| --- | --- |
-| `POST /agents/:id` | Start an agent, loading its saved session if present |
-| `GET /agents/:id` | PID, busy state, message count |
-| `POST /agents/:id/prompt` | `{text}`; stream Pi events and a final result as NDJSON |
-| `POST /agents/:id/execute` | `{code, timeoutMs?, maxOutputCharacters?}`; diagnostic codemode execution, outside the Pi transcript |
-| `POST /agents/:id/abort` | Abort the current prompt/script and signal pending tools |
-| `DELETE /agents/:id` | Stop the agent (killing its process under `process` hosting); keep its saved session/files |
-
-Each agent admits one prompt or diagnostic execution at a time. The supervisor
-admits eight agents by default (`maxAgents` in the SDK). There is no request
-queue or automatic restart. HTTP errors before streaming use 400, auth failures
-401; streamed failures use `{type:"error", error}` records. Disconnecting the
-HTTP stream does not cancel the turn; send `abort` explicitly. Slow consumers
-are disconnected rather than buffering unbounded events. Event replay is not
-implemented for this legacy HTTP control surface. The client SDK SSE surface
-supports bounded replay and durable request/tool outcomes (see its guide).
+Tenants call the REST API under `/v1` (see `openapi.json`) with an operator or
+API token; applications attach to their agents with the SDKs (`/clients/*`,
+authenticated by each agent's own token). Each agent admits one prompt or code
+execution at a time; later ones queue.
 
 Codemode supports `tools.search(query)`, `tools.namespaces()`, `tools.describe(name)`,
 `tools.<name>(args)`, `text(value)`, `console.log(value)`, top-level `await`, and
-`return`. It can compose parallel calls with `Promise.all`. `tools.read`,
-`tools.write`, and `tools.ls` are the supplied local adapter; results follow
-`{ok:true,data}`. Failed calls reject. No browser, connections, AI media, or
-other Worker binding facades are supplied yet.
+`return`. It can compose parallel calls with `Promise.all`. Failed calls reject.
+No browser, connections, AI media, or other Worker binding facades are supplied yet.
 
 Scripts default to a 30-second external deadline, capped at 120 seconds. The
 QuickJS interrupt handler separately allows 2 seconds spent executing guest code

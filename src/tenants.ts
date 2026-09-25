@@ -32,25 +32,19 @@ export class Tenants {
   private byId = new Map<string, Tenant>();
   /** The platform's own provider keys (the file's `platformKeys`): prepaid tenants without a key of their own use them. */
   private platform: Record<string, string> = {};
-  /** Legacy mode: one operator token from AGENT_RUNTIME_TOKEN, no tenants file or secret. */
-  readonly legacy: boolean;
   private readonly file?: string;
   private readonly read?: () => Promise<string>;
 
   /** `read` returns the tenants file's JSON from elsewhere (a secret); the tenants are empty until `reload`. */
-  constructor(options: { file?: string; read?: () => Promise<string>; legacyToken?: string; legacyApiKey?: string }) {
+  constructor(options: { file?: string; read?: () => Promise<string> }) {
     if (options.file && options.read) throw new Error("Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN, not both");
+    if (!options.file && !options.read) throw new Error("Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN to the tenants file");
     this.file = options.file;
     this.read = options.read;
-    this.legacy = !options.file && !options.read;
     if (options.file) this.parse(readFileSync(options.file, "utf8"));
-    else if (this.legacy) {
-      if (!options.legacyToken || options.legacyToken.length < 24) throw new Error("Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN, or AGENT_RUNTIME_TOKEN to at least 24 random characters");
-      this.set([{ id: DEFAULT_TENANT, tokenSha256: sha256(options.legacyToken), apiKeys: options.legacyApiKey ? { "*": options.legacyApiKey } : {} }]);
-    }
   }
 
-  get source() { return this.file ? "file" : this.read ? "secret" : "single"; }
+  get source() { return this.file ? "file" : "secret"; }
 
   /** Re-read the tenants file or secret (on SIGHUP after adding a tenant). Invalid contents are rejected whole, keeping the tenants loaded before. */
   async reload() {
@@ -132,11 +126,10 @@ export class Tenants {
   }
 }
 
-/** Tenants from AGENT_TENANTS_SECRET_ARN (the tenants file's JSON in Secrets Manager), AGENT_TENANTS_FILE, or the single-token mode. */
+/** Tenants from AGENT_TENANTS_SECRET_ARN (the tenants file's JSON in Secrets Manager) or AGENT_TENANTS_FILE. */
 export async function tenantsFromEnvironment(env = process.env) {
   const tenants = new Tenants({
     file: env.AGENT_TENANTS_FILE, read: env.AGENT_TENANTS_SECRET_ARN ? await secretReader(env.AGENT_TENANTS_SECRET_ARN, env) : undefined,
-    legacyToken: env.AGENT_RUNTIME_TOKEN, legacyApiKey: env.AGENT_API_KEY,
   });
   await tenants.reload();
   return tenants;

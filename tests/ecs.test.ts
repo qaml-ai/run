@@ -147,7 +147,6 @@ test("tenants load from a Secrets Manager secret, and a bad refresh keeps the la
 
   const tenants = await tenantsFromEnvironment({ AGENT_TENANTS_SECRET_ARN: arn, AWS_REGION: "us-west-2" });
   assert.equal(tenants.source, "secret");
-  assert.equal(tenants.legacy, false);
   assert.deepEqual(requests, [{ target: "secretsmanager.GetSecretValue", body: { SecretId: arn } }]);
   assert.equal(tenants.authenticate("Bearer alice-token")?.id, "alice");
   assert.equal(tenants.apiKey("alice", "anthropic"), "sk-alice");

@@ -81,8 +81,10 @@ jobs:
           cache-from: type=gha,scope=image-arm64
           cache-to: type=gha,mode=max,scope=image-arm64
       - run: |
-          docker run -d --name runtime --network host -e AGENT_RUNTIME_TOKEN=ci-boot-token-at-least-24-chars \
-            -e AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres agent-runtime:ci
+          mkdir -p /tmp/ci-tenants && chmod 755 /tmp/ci-tenants
+          echo '{"tenants":{"ci":{"tokenSha256":"'"$(printf %s ci-boot-token-at-least-32-characters | sha256sum | cut -d' ' -f1)"'"}}}' > /tmp/ci-tenants/tenants.json
+          docker run -d --name runtime --network host -v /tmp/ci-tenants:/etc/agent-runtime:ro -e AGENT_TENANTS_FILE=/etc/agent-runtime/tenants.json \
+            -e AGENT_SESSION_SECRET=ci-boot-session-secret-at-least-32-chars -e AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres agent-runtime:ci
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8790/healthz; then
               docker logs runtime 2>&1 | grep '"type":"listening"' | grep -q '"sandbox":{"mode":"isolated"' && exit 0

@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "start": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/server.ts",
-    "demo": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/demo.ts",
     "demo:clients": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/run.ts",
     "demo:typescript": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/release-board.ts",
     "demo:python": "python3 examples/inventory.py",

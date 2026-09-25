@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,9 @@ import assert from "node:assert/strict";
 const root = await mkdtemp(join(tmpdir(), "camelai-client-demos-"));
 const token = randomBytes(32).toString("hex");
 const runtimeArgs = process.versions.bun ? [] : ["--experimental-strip-types"];
-const env = { PATH: process.env.PATH, HOME: root, AGENT_RUNTIME_TOKEN: token, AGENT_DATABASE_URL: process.env.AGENT_DATABASE_URL, AGENT_DATA_DIR: root, AGENT_CLIENT_STATE_DIR: join(root, "sdk"), PORT: "0", AGENT_RUNTIME: process.env.AGENT_RUNTIME };
+// Scripted agents never call the model, so the tenant's key is a placeholder.
+await writeFile(join(root, "tenants.json"), JSON.stringify({ tenants: { demo: { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: { [process.env.AGENT_PROVIDER ?? "anthropic"]: "unset" } } } }));
+const env = { PATH: process.env.PATH, HOME: root, AGENT_RUNTIME_TOKEN: token, AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: token, AGENT_PROVIDER: process.env.AGENT_PROVIDER, AGENT_DATABASE_URL: process.env.AGENT_DATABASE_URL, AGENT_DATA_DIR: root, AGENT_CLIENT_STATE_DIR: join(root, "sdk"), PORT: "0", AGENT_RUNTIME: process.env.AGENT_RUNTIME };
 const server = spawn(process.execPath, [...runtimeArgs, fileURLToPath(new URL("../src/server.ts", import.meta.url))], { env, stdio: ["ignore", "pipe", "inherit"] });
 const clients = new Set<ChildProcess>();
 async function run(command: string, args: string[], base: string) {

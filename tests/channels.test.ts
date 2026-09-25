@@ -354,7 +354,7 @@ test("a channel's agents are made from its definition; an inline template become
 test("an outbound message that fails is retried, and delivered exactly once across two scanners", async t => {
   const tg = await fakeTelegram(t);
   const { db } = await testDatabase();
-  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), db, secretsKey: randomBytes(32).toString("hex") });
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
   const node = (name: string) => new Channels({
     db, definitions: new Definitions({ db }), accounts, node: name, publicUrl: "https://agents.example.test", retryBaseMs: 50,
     providers: { telegram: telegram({ apiUrl: tg.url }) },
@@ -382,7 +382,7 @@ test("an outbound message that fails is retried, and delivered exactly once acro
 test("a node whose claim on a message lapsed, and whose send then fails for good, leaves the message to the node that retook it", async t => {
   const tg = await fakeTelegram(t);
   const { db } = await testDatabase();
-  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), db, secretsKey: randomBytes(32).toString("hex") });
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
   const node = (name: string) => new Channels({
     db, definitions: new Definitions({ db }), accounts, node: name, publicUrl: "https://agents.example.test", retryBaseMs: 50,
     providers: { telegram: telegram({ apiUrl: tg.url }) },
@@ -418,7 +418,7 @@ test("a node that lost an agent sends nothing more for it", async t => {
   t.after(() => ownership.close().catch(() => {}));
   const taken = await ownership.acquire("client_x");
   assert.ok("claim" in taken);
-  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), db, secretsKey: randomBytes(32).toString("hex") });
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
   const channels = new Channels({
     db, definitions: new Definitions({ db }), accounts, node: "http://a", publicUrl: "https://agents.example.test", ownership,
     providers: { telegram: telegram({ apiUrl: tg.url }) },
@@ -449,7 +449,7 @@ test("a backlog of outbound messages is sent exactly once when two nodes on sepa
     const pool = new pg.Pool({ connectionString: url, max: 3 });
     t.after(() => pool.end());
     return new Channels({ definitions: new Definitions({ db: pool }),
-      db: pool, accounts: new Accounts({ tenants: new Tenants({ legacyToken: operator }), db: pool, secretsKey }), node: name, publicUrl: "https://agents.example.test",
+      db: pool, accounts: new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db: pool, secretsKey }), node: name, publicUrl: "https://agents.example.test",
       providers: { telegram: telegram({ apiUrl: tg.url }) },
       createAgent: async () => { throw new Error("unused"); }, agentId: () => "unused", live: async () => true, submit: async () => { throw new Error("unused"); },
     });
@@ -469,7 +469,7 @@ test("a backlog of outbound messages is sent exactly once when two nodes on sepa
 test("a turn whose end no node saw (a crash) is re-checked and answered once", async t => {
   const tg = await fakeTelegram(t);
   const { db } = await testDatabase();
-  const accounts = new Accounts({ tenants: new Tenants({ legacyToken: operator }), db, secretsKey: randomBytes(32).toString("hex") });
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
   const submitted: string[] = [];
   let finished = false;
   const channels = new Channels({

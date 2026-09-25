@@ -1,10 +1,10 @@
 import { constants } from "node:fs";
 import { mkdir, realpath, lstat, open, opendir } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import type { ToolBridge } from "./protocol.ts";
-import { SANDBOX_LIMITS } from "./limits.ts";
+import type { ToolBridge } from "../src/protocol.ts";
+import { SANDBOX_LIMITS } from "../src/limits.ts";
 
-// Demo adapter. Its root must be service-owned: untrusted OS processes must
+// A test bridge over a host directory. Its root must be service-owned: untrusted OS processes must
 // not be able to replace intermediate directories while a call is in flight.
 export async function localTools(directory: string): Promise<ToolBridge> {
   await mkdir(directory, { recursive: true, mode: 0o700 });

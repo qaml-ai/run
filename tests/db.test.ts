@@ -114,8 +114,12 @@ test("a pool on rotating credentials re-reads the secret when a connection fails
 test("the runtime refuses to start without AGENT_DATABASE_URL", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-no-db-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: {} }));
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
-    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_RUNTIME_TOKEN: "no-database-operator-token-24", PORT: "0" }, stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_TENANTS_FILE: join(root, "tenants.json"),
+      AGENT_SESSION_SECRET: "no-database-session-secret-with-32-chars", PORT: "0",
+    }, stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
   child.stderr!.on("data", chunk => { stderr += chunk; });

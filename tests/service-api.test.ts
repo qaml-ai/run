@@ -16,8 +16,12 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: 
   const root = await mkdtemp(join(tmpdir(), 'agent-service-api-'));
   const operator = 'operator-fixture-secret-at-least-24-chars';
   const { db, url } = await testDatabase();
+  writeFileSync(join(root, 'operator.json'), JSON.stringify({ tenants: { operator: { tokenSha256: createHash('sha256').update(operator).digest('hex'), apiKeys: { [configuredModel().provider]: 'host-fixture-key' } } } }));
   const child = spawn(process.execPath, ['--experimental-strip-types', fileURLToPath(new URL('../src/server.ts', import.meta.url))], {
-    env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: url, AGENT_RUNTIME_TOKEN: operator, AGENT_API_KEY: 'host-fixture-key', PORT: '0', HOST: '127.0.0.1', ...env(root) } as NodeJS.ProcessEnv,
+    env: {
+      PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: url, AGENT_TENANTS_FILE: join(root, 'operator.json'),
+      AGENT_SESSION_SECRET: 'fixture-session-secret-with-32-characters!', PORT: '0', HOST: '127.0.0.1', ...env(root),
+    } as NodeJS.ProcessEnv,
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   t.after(async () => {
@@ -115,10 +119,10 @@ test('tenants provision and see only their own agents, billed to their own provi
   const f = await fixture(t, root => {
     path = tenantsFile(root);
     writeFileSync(path, tenants());
-    return { AGENT_TENANTS_FILE: path, AGENT_RUNTIME_TOKEN: '', AGENT_SESSION_SECRET: 'fixture-session-secret-with-32-characters!' };
+    return { AGENT_TENANTS_FILE: path };
   });
   assert.equal((await fetch(new URL('/healthz', (await f.get('/registry', alice)).url))).status, 200);
-  assert.equal((await f.post('/client-sessions', {}, 'operator-fixture-secret-at-least-24-chars')).status, 401, 'legacy token is not a tenant');
+  assert.equal((await f.post('/client-sessions', {}, 'operator-fixture-secret-at-least-24-chars')).status, 401, 'a token no tenant has is refused');
   const created = await f.post('/client-sessions', { name: 'Alice agent' }, alice);
   assert.equal(created.status, 201);
   const agent = await created.json() as any;
