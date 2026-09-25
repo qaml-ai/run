@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { braveSearch } from "../src/web-search.ts";
+import { braveSearch, exaSearch, firecrawlSearch, parallelSearch } from "../src/web-search.ts";
 import { listen, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -59,6 +59,39 @@ test("Brave's answer becomes plain results", () => {
   assert.deepEqual(brave.results({ web: { results: [{ title: "<b>A</b> &amp; B", url: "https://a.example", description: "x\n <em>y</em>", page_age: "2025-01-02T03:04:05" }] } }),
     [{ title: "A & B", url: "https://a.example", snippet: "x y", date: "2025-01-02" }]);
   assert.deepEqual(brave.results({}), []);
+});
+
+test("Exa, Parallel and Firecrawl are POSTed JSON, and their answers become plain results with the page text they carry", () => {
+  const parse = (body: string | undefined) => JSON.parse(body!);
+  const exa = exaSearch({ endpoint: "https://exa.example/search", type: "fast" });
+  const exaRequest = exa.request({ query: "a b", count: 3, freshness: "week" }, "k");
+  assert.deepEqual([exaRequest.url, exaRequest.secrets], ["https://exa.example/search", { "x-api-key": "k" }]);
+  const exaBody = parse(exaRequest.body);
+  assert.deepEqual([exaBody.query, exaBody.type, exaBody.numResults, exaBody.contents], ["a b", "fast", 3, { highlights: { maxCharacters: 3000 } }]);
+  assert.ok(Math.abs(Date.now() - 7 * 86_400_000 - Date.parse(exaBody.startPublishedDate)) < 60_000);
+  assert.deepEqual(exa.results({ results: [{ title: "A &amp; B", url: "https://a.example", publishedDate: "2026-09-16T20:17:37.000Z", highlights: ["first\n\n\n\npart", "second"] }, { title: "No date", url: "https://b.example" }] }), [
+    { title: "A & B", url: "https://a.example", snippet: "first part … second", date: "2026-09-16", content: "first\n\npart\n…\nsecond" },
+    { title: "No date", url: "https://b.example", snippet: "" },
+  ]);
+
+  const parallel = parallelSearch({ mode: "fast" });
+  const parallelRequest = parallel.request({ query: "q", count: 2, freshness: "day" }, "k");
+  assert.deepEqual([parallelRequest.url, parallelRequest.secrets], ["https://api.parallel.ai/v1/search", { "x-api-key": "k" }]);
+  const parallelBody = parse(parallelRequest.body);
+  assert.deepEqual([parallelBody.objective, parallelBody.search_queries, parallelBody.mode, parallelBody.max_chars_total, parallelBody.advanced_settings.max_results], ["q", ["q"], "fast", 6000, 2]);
+  assert.match(parallelBody.advanced_settings.source_policy.after_date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.deepEqual(parallel.results({ results: [{ url: "https://p.example", title: "P", publish_date: "2026-09-20", excerpts: ["one", "two"] }] }),
+    [{ title: "P", url: "https://p.example", snippet: "one … two", date: "2026-09-20", content: "one\n…\ntwo" }]);
+
+  const firecrawl = firecrawlSearch({ scrape: true });
+  const firecrawlRequest = firecrawl.request({ query: "q", count: 5, freshness: "month" }, "k");
+  assert.deepEqual(firecrawlRequest.secrets, { Authorization: "Bearer k" });
+  const firecrawlBody = parse(firecrawlRequest.body);
+  assert.deepEqual([firecrawlBody.limit, firecrawlBody.tbs, firecrawlBody.scrapeOptions.formats], [5, "qdr:m", ["markdown"]]);
+  assert.equal(parse(firecrawlSearch().request({ query: "q", count: 5 }, "k").body).scrapeOptions, undefined);
+  assert.deepEqual(firecrawl.results({ data: { web: [{ url: "https://f.example", title: "F", description: "d", markdown: "# F\n\nbody", metadata: { publishedTime: "2026-09-01T00:00:00Z" } }] } }),
+    [{ title: "F", url: "https://f.example", snippet: "d", date: "2026-09-01", content: "# F\n\nbody" }]);
+  assert.deepEqual([exa.results({}), parallel.results(null), firecrawl.results({ data: {} })], [[], [], []]);
 });
 
 test("web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch", async t => {
