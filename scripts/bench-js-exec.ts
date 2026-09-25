@@ -2,13 +2,16 @@
 //  - phases: runSandbox called on this thread, each phase timed (median of warm runs,
 //    and the first run of the thread, before V8 has optimized anything);
 //  - end to end: executeCode through a one-worker in-process CodePool, latency and the
-//    CPU the whole process (main thread and worker) spends per execution.
+//    CPU the whole process (main thread and worker) spends per execution. With
+//    AGENT_SANDBOX_SOCKETS set (run inside the image, as root, next to agent-launcher's
+//    sandbox processes) it goes through those instead, and their CPU is counted too.
 // Each for `return 1` and for a TypeScript snippet, which the main thread strips first.
 // Usage: npm run bench:js-exec [-- --runs 300]
+import { readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
-import { CodePool, executeCode } from "../src/codemode.ts";
+import { CodePool, executeCode, sandboxProcesses } from "../src/codemode.ts";
 import { runSandbox } from "../src/quickjs-sandbox.ts";
 import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
 import type { ToolBridge } from "../src/protocol.ts";
@@ -67,11 +70,23 @@ for (const [name, code] of Object.entries(snippets)) {
   };
 }
 
+/** Linux: CPU the sandbox processes have used, in ms. */
+function sandboxCpuMs() {
+  return readdirSync("/proc").filter(name => /^\d+$/.test(name)).reduce((sum, pid) => {
+    try {
+      if (!readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("sandbox-server.ts")) return sum;
+      const fields = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ");
+      return sum + (Number(fields[11]) + Number(fields[12])) * 10;
+    } catch { return sum; }
+  }, 0);
+}
+
 // End to end, through a worker.
+const isolated = sandboxProcesses();
 const endToEnd: Record<string, unknown> = {};
 for (const [name, code] of Object.entries(snippets)) {
   started = performance.now();
-  const pool = new CodePool({ min: 1, max: 1 });
+  const pool = isolated ?? new CodePool({ min: 1, max: 1 });
   await executeCode({ code, bridge, pool });
   const coldMs = performance.now() - started;
   // The second: the worker is up, but V8 has optimized little of it yet.
@@ -81,19 +96,22 @@ for (const [name, code] of Object.entries(snippets)) {
   for (let i = 0; i < 50; i++) await executeCode({ code, bridge, pool });
   const latencies: number[] = [];
   const cpu = process.cpuUsage();
+  const sandboxCpu = isolated ? sandboxCpuMs() : 0;
   for (let i = 0; i < runs; i++) {
     started = performance.now();
     await executeCode({ code, bridge, pool });
     latencies.push(performance.now() - started);
   }
   const used = process.cpuUsage(cpu);
-  await pool.close();
+  const sandboxUsed = isolated ? sandboxCpuMs() - sandboxCpu : 0;
+  if (pool instanceof CodePool) await pool.close();
   endToEnd[name] = {
     coldMs: round(coldMs), secondMs: round(secondMs),
     p50Ms: round(median(latencies)), p90Ms: round(percentile(latencies, 0.9)),
-    cpuMsPerExecution: round((used.user + used.system) / 1000 / runs),
+    cpuMsPerExecution: round((used.user + used.system) / 1000 / runs + sandboxUsed / runs),
+    ...(isolated ? { sandboxCpuMsPerExecution: round(sandboxUsed / runs) } : {}),
   };
 }
 
-console.log(JSON.stringify({ node: process.version, arch: process.arch, runs, moduleCompileMs: round(moduleCompileMs), phases: phaseReport, endToEnd }, null, 2));
+console.log(JSON.stringify({ node: process.version, arch: process.arch, mode: isolated ? "isolated" : "in-process", runs, moduleCompileMs: round(moduleCompileMs), phases: phaseReport, endToEnd }, null, 2));
 process.exit(0);

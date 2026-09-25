@@ -2,14 +2,15 @@ import { parentPort, type MessagePort } from "node:worker_threads";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Rpc } from "./rpc.ts";
-import { runSandbox } from "./quickjs-sandbox.ts";
+import { prepareSandbox, runSandbox } from "./quickjs-sandbox.ts";
 import type { WireMessage } from "./protocol.ts";
 
-// One pooled sandbox worker. It compiles QuickJS once; each execution arrives
-// with its own MessagePort and runs in a fresh WASM instance, runtime and context.
+// One pooled sandbox worker. It compiles QuickJS and builds its snapshot once; each
+// execution arrives with its own MessagePort and starts from that snapshot.
 const quickjs = createRequire(import.meta.url).resolve("quickjs-emscripten");
 const wasm = createRequire(quickjs).resolve("@jitl/quickjs-wasmfile-release-sync/wasm");
 const wasmModule = await WebAssembly.compile(await readFile(wasm));
+await prepareSandbox(wasmModule);
 
 parentPort!.on("message", ({ port, cancel, id }: { port: MessagePort; cancel: SharedArrayBuffer; id: number }) => {
   const rpc = new Rpc(message => port.postMessage(message));

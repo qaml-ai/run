@@ -402,7 +402,9 @@ export async function executeCode(options: {
         return json;
       } finally { inflight--; }
     };
-    const remainingMs = Math.max(1, Math.floor(timeoutMs - (performance.now() - started)));
+    // Rounded up, so the guest's own deadline never falls before this side's timer: its
+    // answer at that moment is a wall-clock failure, which should read as the timeout.
+    const remainingMs = Math.max(1, Math.ceil(timeoutMs - (performance.now() - started)));
     // The worker answers only after disposing the guest, so an answer means it is free again.
     const result = await channel.request("execute", { code, tools: catalog, maxOutputCharacters, timeoutMs: remainingMs, ...(javascriptOnly ? { javascriptOnly } : {}) })
       .finally(() => { responded = !controller.signal.aborted; });
