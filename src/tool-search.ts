@@ -242,15 +242,30 @@ async function post(url: string, apiKey: string, body: unknown, signal: AbortSig
  */
 export function embeddingReranker(options: { url: string; apiKey: string; model: string; cacheSize?: number }): Reranker {
   const cache = new Lru<number[]>(options.cacheSize ?? 20_000);
+  // Texts being embedded now, so a search that arrives while a catalog warms waits for it instead of embedding it again.
+  const inflight = new Map<string, Promise<void>>();
   const key = (text: string) => createHash("sha256").update(`${options.model}\0${text}`).digest("base64url");
   async function embed(texts: string[], signal: AbortSignal): Promise<number[][]> {
-    const missing = [...new Set(texts.filter(text => !cache.get(key(text))))];
+    const waiting = new Set<Promise<void>>();
+    const missing: string[] = [];
+    for (const text of new Set(texts)) {
+      if (cache.get(key(text))) continue;
+      const pending = inflight.get(key(text));
+      if (pending) waiting.add(pending); else missing.push(text);
+    }
     const batches: string[][] = [];
     for (let start = 0; start < missing.length; start += 256) batches.push(missing.slice(start, start + 256));
     // A few at a time: a catalog of thousands embeds in a second or two, without flooding the provider.
-    await Promise.all(Array.from({ length: Math.min(4, batches.length) }, async () => {
+    const own = Promise.all(Array.from({ length: Math.min(4, batches.length) }, async () => {
       for (let batch = batches.shift(); batch; batch = batches.shift()) await embedBatch(batch, signal);
-    }));
+    })).then(() => {});
+    for (const text of missing) inflight.set(key(text), own);
+    try { await own; }
+    finally { for (const text of missing) if (inflight.get(key(text)) === own) inflight.delete(key(text)); }
+    await Promise.allSettled(waiting);
+    // What another call was embedding and failed to: embed it here.
+    const left = [...new Set(texts.filter(text => !cache.get(key(text))))];
+    for (let start = 0; start < left.length; start += 256) await embedBatch(left.slice(start, start + 256), signal);
     return texts.map(text => cache.get(key(text))!);
   }
   async function embedBatch(batch: string[], signal: AbortSignal) {

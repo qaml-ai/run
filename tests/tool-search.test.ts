@@ -187,3 +187,27 @@ test("rerank stages come from AGENT_TOOL_SEARCH", () => {
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "vectors", AGENT_TOOL_SEARCH_API_KEY: "k" }), /not vectors/);
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev,jev", AGENT_TOOL_SEARCH_API_KEY: "k" }), /twice/);
 });
+
+test("a search while the catalog is still warming waits for those embeddings instead of repeating them", async t => {
+  const inputs: number[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const url = await listen(t, async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw);
+    inputs.push(body.input.length);
+    // Hold the warm-up's answer until the search has asked for its own embeddings.
+    if (inputs.length === 1) await held;
+    res.writeHead(200, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ data: body.input.map((text: string, index: number) => ({ index, embedding: text.includes("message") || text === "email someone" ? [1, 0] : [0, 1] })) }));
+  });
+  const embeddings = embeddingReranker({ url: `${url}/v1`, apiKey: "key", model: "m" });
+  embeddings.warm!(catalog);
+  for (let tries = 0; !inputs.length && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 10));
+  const searched = searchTools(catalog, { query: "email someone" }, { rerankers: [embeddings] });
+  for (let tries = 0; inputs.length < 2 && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 10));
+  release();
+  assert.equal(names(await searched)[0], "send_message");
+  assert.deepEqual(inputs, [catalog.length, 1], "the search embedded only its query");
+});
