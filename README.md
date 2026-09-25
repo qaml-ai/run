@@ -215,7 +215,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_DATABASE_CA` | PEM bundle the server's certificate must chain to (e.g. `/etc/ssl/rds-global-bundle.pem`); TLS settings in a URL are then ignored |
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_DATABASE_QUERY_TIMEOUT_MS` | how long a query may take before it fails and its connection is replaced (default 30000; 0 for none), so a connection that went dark in a failover cannot hang a request |
-| `AGENT_TOOL_SEARCH` | rerank stages for `tools.search` after keyword ranking: `keyword` (default, none), or from `embeddings`, `rerank`, `jev` in order, e.g. `embeddings,jev`; with `AGENT_TOOL_SEARCH_API_KEY`, `AGENT_TOOL_SEARCH_URL` (default OpenRouter) and `AGENT_TOOL_SEARCH_<STAGE>_MODEL` (see [Tool search](#tool-search)) |
+| `AGENT_TOOL_SEARCH` | ranking by meaning for `tools.search` after keywords: `keyword` (default, none), `embeddings`, or `embeddings,jev` (Jev also drops irrelevant tools); with `AGENT_TOOL_SEARCH_API_KEY`, `AGENT_TOOL_SEARCH_URL` (default OpenRouter) and `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` / `_JEV_MODEL` (see [Tool search](#tool-search)) |
 | `AGENT_STORAGE` | `file` (default; one node only), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
@@ -630,21 +630,25 @@ costs a script nothing until it asks.
   words split at camelCase and `_`, stemmed, stopwords dropped, a bonus for
   matching every word. It runs locally in about a millisecond, and misses
   synonyms: "money back" does not find `refund_payment`.
-- `AGENT_TOOL_SEARCH` adds rerank stages that rank by meaning, in order,
-  comma-separated: `embeddings` (scores the whole catalog; tool embeddings are
-  cached and computed when an agent starts), `rerank` (a Cohere-style reranking
-  model) and `jev` (TypeSafe's decision model, one choice over the candidates).
-  A stage that takes fewer candidates than the catalog (rerank and Jev take 100)
-  gets the best of the order so far, so put one that sees everything first:
-  `embeddings,jev`. The orders are fused with the keyword order (reciprocal rank
-  fusion). A stage that fails, or is not done within 2.5 s in all, is left out
-  and logged (`tool_search_rerank_failed`); keyword ranking always answers.
-- All stages use OpenRouter by default (`AGENT_TOOL_SEARCH_URL`,
-  `https://openrouter.ai/api/v1`) with `AGENT_TOOL_SEARCH_API_KEY`; any
-  compatible API works (OpenAI embeddings, Cohere rerank, `https://api.typesafe.ai/v1`
-  for Jev). `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL`, `_RERANK_MODEL` and `_JEV_MODEL`
-  override the defaults (`openai/text-embedding-3-small`, `cohere/rerank-4-fast`,
-  `typesafe/jev-1.13`).
+- `AGENT_TOOL_SEARCH` adds stages that rank by meaning: `embeddings` scores the
+  whole catalog (tool embeddings are cached, and computed when an agent starts);
+  `embeddings,jev` then has Jev (TypeSafe's decision model) judge the best 100
+  with one yes/no question per tool, "could this tool do what is searched for?".
+  Its answers are independent probabilities, so it both reorders the candidates and
+  drops the ones below 0.5, and a search nothing fits ("order a pizza") returns
+  no tools. (A single "which tool fits best" question cannot say that: its
+  probabilities add up to 1.) `jev` alone sees only keyword matches first on
+  catalogs over 100 tools, so it can miss synonyms. The orders are fused with
+  the keyword order (reciprocal rank fusion). A stage that fails, or is not done
+  within 2.5 s in all, is left out and logged (`tool_search_rerank_failed`);
+  keyword ranking always answers.
+- Cost per search: embeddings a fraction of a millionth of a dollar (the query),
+  Jev about $0.0004 at 100 candidates. Both use OpenRouter by default
+  (`AGENT_TOOL_SEARCH_URL`, `https://openrouter.ai/api/v1`) with
+  `AGENT_TOOL_SEARCH_API_KEY`; any compatible API works (OpenAI embeddings,
+  `https://api.typesafe.ai/v1` for Jev). `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` and
+  `AGENT_TOOL_SEARCH_JEV_MODEL` override the defaults
+  (`openai/text-embedding-3-small`, `typesafe/jev-1.13`).
 
 ### Identity tokens (`auth: { type: "runtime" }`)
 

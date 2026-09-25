@@ -7,7 +7,10 @@ import type { ToolDefinition } from "../shared/client-protocol.ts";
  * stages: each sees the whole catalog if it can take that many candidates (embeddings can),
  * else the best of the order so far. Keywords miss synonyms ("money back" for refund_payment),
  * so a stage that cannot see everything should follow one that can: `embeddings,jev`.
- * The stages' orders and the keyword order are fused (reciprocal rank fusion).
+ * The stages' orders and the keyword order are fused (reciprocal rank fusion). A stage whose
+ * scores are probabilities of relevance (Jev) also drops the tools it judges irrelevant, all of
+ * them when nothing fits; a single "which tool fits best" question could not say that (its
+ * probabilities add up to 1, so a search for "order a pizza" still gets confident picks).
  */
 
 export type SearchQuery = { query?: string; namespace?: string; limit?: number };
@@ -19,6 +22,11 @@ export interface Reranker {
   readonly kind: string;
   /** The most candidates one call takes; more are cut to the best of the order so far. */
   readonly maxCandidates: number;
+  /**
+   * Scores are probabilities that a tool is relevant: below this, the stage judges it irrelevant, and
+   * results keep only tools it scored at or above it. None means nothing fits: an empty result.
+   */
+  readonly relevantAt?: number;
   rerank(query: string, candidates: Candidate[], signal: AbortSignal): Promise<number[]>;
   /** Index a catalog ahead of its first search (embeddings embed its tools); failures are ignored. */
   warm?(candidates: Candidate[]): void;
@@ -152,6 +160,8 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
   if (!words(query).length) return pool.slice(0, search.limit ?? MAX_LIMIT).map(hit);
   const limit = search.limit ?? DEFAULT_LIMIT;
   const signals = [ranks(keywordScores(pool, query), 0)];
+  /** Tools a relevance stage judged relevant; undefined while none has answered. */
+  let relevant: Set<number> | undefined;
   const stages = pool.length > 1 ? options.rerankers ?? [] : [];
   if (stages.length) {
     const controller = new AbortController();
@@ -174,6 +184,10 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
           if (scores.length !== chosen.length || scores.some(score => typeof score !== "number" || Number.isNaN(score))) throw new Error(`${stage.kind} returned ${scores.length} scores for ${chosen.length} tools`);
           const order = ranks(scores);
           signals.push(new Map([...order].map(([position, rank]) => [chosen[position], rank])));
+          if (stage.relevantAt !== undefined) {
+            const judged = chosen.filter((_, position) => scores[position] >= stage.relevantAt!);
+            relevant = new Set([...(relevant ?? []), ...judged]);
+          }
         } catch (error) {
           options.signal?.throwIfAborted();
           options.onError?.(error, stage);
@@ -184,7 +198,9 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
       options.signal?.removeEventListener("abort", abort);
     }
   }
-  return [...ranks(fuse(signals, pool.length), 0).entries()].sort((a, b) => a[1] - b[1]).slice(0, limit).map(([index]) => hit(pool[index]));
+  const ordered = [...ranks(fuse(signals, pool.length), 0).entries()].sort((a, b) => a[1] - b[1]).map(([index]) => index);
+  const kept = relevant === undefined ? ordered : ordered.filter(index => relevant!.has(index));
+  return kept.slice(0, limit).map(index => hit(pool[index]));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -260,63 +276,52 @@ export function embeddingReranker(options: { url: string; apiKey: string; model:
 const toolText = (tool: Candidate) => `${tool.name.replaceAll("__", " ").replaceAll("_", " ")}: ${tool.description}`;
 const endpoint = (base: string, path: string) => `${base.replace(/\/$/, "")}/${path}`;
 
-/** A reranking model behind a Cohere-style `/rerank` endpoint (OpenRouter serves Cohere's): relevance per tool. */
-export function rerankModel(options: { url: string; apiKey: string; model: string }): Reranker {
-  return {
-    kind: "rerank", maxCandidates: STAGE_CANDIDATES,
-    async rerank(query, candidates, signal) {
-      const json = await post(endpoint(options.url, "rerank"), options.apiKey, { model: options.model, query, documents: candidates.map(toolText) }, signal);
-      if (!Array.isArray(json?.results)) throw new Error("The rerank endpoint returned no results");
-      const scores = candidates.map(() => 0);
-      for (const result of json.results) if (Number.isInteger(result?.index) && result.index < scores.length) scores[result.index] = Number(result.relevance_score);
-      return scores;
-    },
-  };
-}
-
 /**
- * Jev (TypeSafe's decision model), directly or through OpenRouter's `/systemone`: one Choice over the
- * whole catalog, each tool an option with its description as the rubric; the option probabilities
- * are the order. Choices take at most 255 options.
+ * Jev (TypeSafe's decision model), directly or through OpenRouter's `/systemone`: one yes/no
+ * question per candidate ("could this tool do what is searched for?") in a single request. Each
+ * answer is an independent probability, so it both orders the candidates and says which are
+ * irrelevant (below 0.5).
  */
 export function jevReranker(options: { url: string; apiKey: string; model: string }): Reranker {
   return {
-    kind: "jev", maxCandidates: STAGE_CANDIDATES,
+    kind: "jev", maxCandidates: STAGE_CANDIDATES, relevantAt: 0.5,
     async rerank(query, candidates, signal) {
-      if (candidates.length > 255) throw new Error("Jev choices take at most 255 options");
-      const criteria = Object.fromEntries(candidates.map(tool => [tool.name, tool.description.slice(0, 1_000) || null]));
-      const json = await post(endpoint(options.url, "systemone"), options.apiKey, {
-        model: options.model, state: query,
-        questions: { tool: { type: "choice", instructions: "The state is what an agent is searching its tools for. Which tool is the best fit?", criteria } },
-      }, signal);
-      const probabilities = json?.answers?.tool?.probabilities;
-      if (!probabilities || typeof probabilities !== "object") throw new Error("Jev returned no probabilities");
-      return candidates.map(tool => Number(probabilities[tool.name] ?? 0));
+      const questions = Object.fromEntries(candidates.map((tool, index) => [`t${index}`, {
+        type: "noul",
+        instructions: { question: "Could this tool do what is being searched for, or a step of it?", tool: { name: tool.name, description: tool.description.slice(0, DESCRIPTION_CHARS) } },
+        criteria: { true: "The tool fits the search", false: "The tool is unrelated to the search" },
+      }]));
+      const json = await post(endpoint(options.url, "systemone"), options.apiKey, { model: options.model, state: query, questions }, signal);
+      return candidates.map((_, index) => {
+        const answer = json?.answers?.[`t${index}`]?.noul;
+        if (typeof answer !== "number") throw new Error("Jev returned no answer for a candidate");
+        return answer;
+      });
     },
   };
 }
 
-const DEFAULT_MODELS: Record<string, string> = { embeddings: "openai/text-embedding-3-small", rerank: "cohere/rerank-4-fast", jev: "typesafe/jev-1.13" };
+const DEFAULT_MODELS: Record<string, string> = { embeddings: "openai/text-embedding-3-small", jev: "typesafe/jev-1.13" };
 
 /**
  * The operator's rerank stages, from the environment. AGENT_TOOL_SEARCH is `keyword` (the default:
- * none), or stages in order, comma-separated, from `embeddings`, `rerank` (a Cohere-style reranking
- * model) and `jev`: `embeddings,jev` finds candidates by meaning across any catalog, then lets Jev
- * order the best hundred. All speak to OpenRouter by default (AGENT_TOOL_SEARCH_URL,
+ * none), `embeddings`, or `embeddings,jev`: embeddings rank the whole catalog by meaning, then Jev
+ * judges the best hundred and drops the irrelevant. (`jev` alone sees only keyword matches first on
+ * catalogs over a hundred tools.) Both speak to OpenRouter by default (AGENT_TOOL_SEARCH_URL,
  * https://openrouter.ai/api/v1) with AGENT_TOOL_SEARCH_API_KEY; the URL may be any compatible API.
- * AGENT_TOOL_SEARCH_<STAGE>_MODEL overrides a stage's model (defaults: openai/text-embedding-3-small,
- * cohere/rerank-4-fast, typesafe/jev-1.13).
+ * AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL and AGENT_TOOL_SEARCH_JEV_MODEL override the defaults
+ * (openai/text-embedding-3-small, typesafe/jev-1.13).
  */
 export function rerankersFromEnv(env: Record<string, string | undefined> = process.env): Reranker[] {
   const kinds = (env.AGENT_TOOL_SEARCH?.trim() || "keyword").split(",").map(kind => kind.trim()).filter(Boolean);
   if (kinds.length === 1 && kinds[0] === "keyword") return [];
-  for (const kind of kinds) if (!(kind in DEFAULT_MODELS)) throw new Error(`AGENT_TOOL_SEARCH must be keyword, or stages from embeddings, rerank and jev; not ${kind}`);
+  for (const kind of kinds) if (!(kind in DEFAULT_MODELS)) throw new Error(`AGENT_TOOL_SEARCH must be keyword, embeddings, jev or embeddings,jev; not ${kind}`);
   if (new Set(kinds).size !== kinds.length) throw new Error("AGENT_TOOL_SEARCH names a stage twice");
   const apiKey = env.AGENT_TOOL_SEARCH_API_KEY;
   if (!apiKey) throw new Error(`AGENT_TOOL_SEARCH=${kinds.join(",")} needs AGENT_TOOL_SEARCH_API_KEY`);
   const url = env.AGENT_TOOL_SEARCH_URL || "https://openrouter.ai/api/v1";
   return kinds.map(kind => {
     const settings = { url, apiKey, model: env[`AGENT_TOOL_SEARCH_${kind.toUpperCase()}_MODEL`] || DEFAULT_MODELS[kind] };
-    return kind === "embeddings" ? embeddingReranker(settings) : kind === "rerank" ? rerankModel(settings) : jevReranker(settings);
+    return kind === "embeddings" ? embeddingReranker(settings) : jevReranker(settings);
   });
 }

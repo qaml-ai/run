@@ -4,7 +4,7 @@ import { executeCode } from "../src/codemode.ts";
 import { CATALOG_LIMITS } from "../src/limits.ts";
 import { validateDefinitions } from "../src/tool-policy.ts";
 import { compose, defaultExposure, valueServer } from "../src/tool-servers.ts";
-import { embeddingReranker, jevReranker, keywordScores, namespaces, rerankersFromEnv, rerankModel, searchQuery, searchTools, type Candidate, type Reranker } from "../src/tool-search.ts";
+import { embeddingReranker, jevReranker, keywordScores, namespaces, rerankersFromEnv, searchQuery, searchTools, type Candidate, type Reranker } from "../src/tool-search.ts";
 import { listen } from "./runtime-server.ts";
 
 const tool = (name: string, description: string) => ({ name, description, parameters: { type: "object", properties: {} } });
@@ -132,7 +132,16 @@ test("tools.search in js_exec goes to the bridge's search when it has one", asyn
   await assert.rejects(executeCode({ bridge, code: `return await tools.search({ limit: -1 })` }), /positive integer/);
 });
 
-test("the embeddings, rerank and Jev backends speak their APIs; embeddings are cached and warmed", async t => {
+test("a relevance stage drops what it judges irrelevant, and everything when nothing fits", async () => {
+  const judge = (relevant: string[]): Reranker => ({ kind: "fake", maxCandidates: Infinity, relevantAt: 0.5, rerank: async (_query, candidates) => candidates.map(entry => relevant.includes(entry.name) ? 0.9 : 0.1) });
+  assert.deepEqual(names(await searchTools(catalog, { query: "open issues" }, { rerankers: [judge(["github__list_open_issues", "github__create_issue"])] })), ["github__list_open_issues", "github__create_issue"]);
+  assert.deepEqual(await searchTools(catalog, { query: "order a pizza" }, { rerankers: [judge([])] }), []);
+  // A relevance stage that fails filters nothing.
+  const broken: Reranker = { kind: "fake", maxCandidates: Infinity, relevantAt: 0.5, rerank: async () => { throw new Error("down"); } };
+  assert.equal((await searchTools(catalog, { query: "issue" }, { rerankers: [broken], onError: () => {} })).length, 2);
+});
+
+test("the embeddings and Jev backends speak their APIs; embeddings are cached and warmed", async t => {
   const seen: { path: string; body: any }[] = [];
   const url = await listen(t, async (req, res) => {
     let raw = "";
@@ -142,8 +151,7 @@ test("the embeddings, rerank and Jev backends speak their APIs; embeddings are c
     assert.equal(req.headers.authorization, "Bearer key");
     const json = (value: unknown) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(value));
     if (req.url === "/v1/embeddings") return json({ data: body.input.map((text: string, index: number) => ({ index, embedding: text.includes("message") || text === "email someone" ? [1, 0] : [0, 1] })) });
-    if (req.url === "/v1/rerank") return json({ results: body.documents.map((_: string, index: number) => ({ index, relevance_score: index === 4 ? 0.9 : 0.1 })) });
-    if (req.url === "/v1/systemone") return json({ answers: { tool: { type: "choice", probabilities: Object.fromEntries(Object.keys(body.questions.tool.criteria).map(name => [name, name === "send_message" ? 0.8 : 0.2 / 6])) } } });
+    if (req.url === "/v1/systemone") return json({ answers: Object.fromEntries(Object.entries(body.questions).map(([id, question]: [string, any]) => [id, { type: "noul", noul: question.instructions.tool.name === "send_message" ? 0.9 : 0.05 }])) });
     res.writeHead(404).end();
   });
   const base = `${url}/v1`;
@@ -155,22 +163,21 @@ test("the embeddings, rerank and Jev backends speak their APIs; embeddings are c
   assert.equal(names(await searchTools(catalog, { query: "email someone" }, { rerankers: [embeddings] }))[0], "send_message");
   assert.deepEqual(embedded(), [catalog.length, 1], "a search then embeds only its query");
 
-  assert.equal(names(await searchTools(catalog, { query: "email someone" }, { rerankers: [rerankModel({ url: base, apiKey: "key", model: "cohere/rerank-4-fast" })] }))[0], "send_message");
-  const rerank = seen.find(entry => entry.path === "/v1/rerank")!.body;
-  assert.equal(rerank.model, "cohere/rerank-4-fast");
-  assert.equal(rerank.documents[0], "github list open issues: List a repository's open issues");
-
-  assert.equal(names(await searchTools(catalog, { query: "email someone" }, { rerankers: [jevReranker({ url: base, apiKey: "key", model: "typesafe/jev-1.13" })] }))[0], "send_message");
+  // Jev asks one yes/no question per tool, and keeps only the tools it judges relevant.
+  assert.deepEqual(names(await searchTools(catalog, { query: "email someone" }, { rerankers: [jevReranker({ url: base, apiKey: "key", model: "typesafe/jev-1.13" })] })), ["send_message"]);
   const jev = seen.find(entry => entry.path === "/v1/systemone")!.body;
   assert.equal(jev.state, "email someone");
-  assert.equal(jev.questions.tool.type, "choice");
-  assert.equal(jev.questions.tool.criteria.remove_file, "Delete a file from the workspace");
+  assert.equal(jev.model, "typesafe/jev-1.13");
+  assert.equal(Object.keys(jev.questions).length, catalog.length);
+  assert.equal(jev.questions.t3.type, "noul");
+  assert.deepEqual(jev.questions.t3.instructions.tool, { name: "remove_file", description: "Delete a file from the workspace" });
 });
 
 test("rerank stages come from AGENT_TOOL_SEARCH", () => {
   assert.deepEqual(rerankersFromEnv({}), []);
   assert.deepEqual(rerankersFromEnv({ AGENT_TOOL_SEARCH: "keyword" }), []);
-  for (const kind of ["embeddings", "rerank", "jev"]) assert.equal(rerankersFromEnv({ AGENT_TOOL_SEARCH: kind, AGENT_TOOL_SEARCH_API_KEY: "k" })[0].kind, kind);
+  for (const kind of ["embeddings", "jev"]) assert.equal(rerankersFromEnv({ AGENT_TOOL_SEARCH: kind, AGENT_TOOL_SEARCH_API_KEY: "k" })[0].kind, kind);
+  assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "rerank", AGENT_TOOL_SEARCH_API_KEY: "k" }), /not rerank/);
   const staged = rerankersFromEnv({ AGENT_TOOL_SEARCH: "embeddings, jev", AGENT_TOOL_SEARCH_API_KEY: "k" });
   assert.deepEqual(staged.map(stage => [stage.kind, stage.maxCandidates]), [["embeddings", Infinity], ["jev", 100]]);
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev" }), /needs AGENT_TOOL_SEARCH_API_KEY/);
