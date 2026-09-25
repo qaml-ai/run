@@ -1,16 +1,22 @@
 # Web search provider benchmark (2026-09-25)
 
-Which API should back the `web_search` built-in by default, and which should it fall back to? I ran 43 agent-style queries through six provider configurations, twice each. A judge model graded each result list blind, and 16 known-answer questions were answered using only each provider's results. The tables here come from `results/summary.md`, which `scripts/bench-search.ts` generates from `results/raw.json`. Brave was not measured because no `BRAVE_API_KEY` was available.
+Which API should back the `web_search` built-in by default, and which should it fall back to? I ran 43 agent-style queries through seven provider configurations, twice each. A judge model graded every result list blind, all in one batch, and 16 known-answer questions were answered using only each provider's results. The tables here come from `results/summary.md`, which `scripts/bench-search.ts` generates from `results/raw.json`.
 
 ## Recommendation
 
-- **Default: Exa, `type: "instant"`.** It had the best relevance of any configuration (0.87 relevance@5, 4.91/5 list usefulness), the fastest first-run latency (p50 565 ms, p95 1.0 s), no errors, and 5 results every time. News freshness was the best measured: 80% of news results were dated within 7 days, and 100% were with `freshness: "week"`. It answered all 16 known-answer questions. Its relevance matched Exa's default `auto` mode (0.85, inside the noise) at half the latency, and both cost the same, so `instant` is the better default. At $7 per 1k searches it is not the cheapest option.
-- **Fallback 1: Parallel, `mode: "fast"`.** It costs $1 per 1k (the cheapest measured), runs at p50 829 ms, and had no errors. Its results are dated (83%), its date filter works, and it returns query-focused excerpts. Relevance was 0.72. It runs on infrastructure independent of Exa's, which matters for a fallback. Parallel `advanced` was a little more relevant (0.76) but 4x slower (p50 3.3 s, p95 5.4 s) and 5x the price, so it doesn't earn a place in the fallback chain.
-- **Fallback 2: Firecrawl search, without scraping.** Relevance 0.73, p50 964 ms, $1.66 per 1k at Standard-plan credit prices (about $6.40 per 1k at Hobby rates, since credits are prepaid by plan). Web results carry **no dates**, so freshness can't be checked and a date filter (`tbs`) can't be verified from the answer. It returned one 502 in 86 calls. **Don't use `scrape`.** It adds 5 credits per query (about 4x the cost) and raises p50 to 3.6 s and p95 to 10 s (two calls took over 15 s, the product timeout). Relevance did not improve: the judge scored it lower, because page-top markdown is a worse excerpt than Firecrawl's own highlight.
+- **Default: Exa, `type: "instant"`.** It had the best relevance (0.87 relevance@5, 4.88/5 list usefulness) and no errors. Its first-run latency was p50 565 ms and p95 1.0 s. News freshness was 80% of results dated within 7 days, and 100% with `freshness: "week"`. It answered 16/16 known-answer questions. Its results also carry query-focused highlights, up to 3k characters per result, so an agent can often answer without calling web_fetch. Its relevance matched Exa's default `auto` mode (0.86) at half the latency, and both cost the same.
+- **Fallback 1: Brave.** This is the existing provider, and it was the clear runner-up. It had 0.78 relevance, the tightest latency (p50 507 ms, p95 749 ms), no errors, and dates on every news result (78% within 7 days, 100% with the filter). It answered 16/16 and costs $5 per 1k. Its index is independent of Exa's: only 13% of their URLs overlapped.
+- **Fallback 2: Parallel, `mode: "fast"`.** It costs $1 per 1k and returns dated excerpts, with a working date filter and no errors. Relevance was lower at 0.72, and weakest on technical and long-tail queries.
+- **Not recommended:**
+  - **Parallel `advanced`:** 0.76 relevance, but p50 3.3 s.
+  - **Firecrawl:** 0.73 relevance, but its web results never carry a date, and it returned one 502.
+  - **Firecrawl with `scrape`:** 0.68 relevance, about 4x the cost, p95 10 s, and 2 calls over the 15 s product timeout.
 
-Two things need to happen before switching:
-1. **The platform search price is below Exa's cost.** `pricing.webSearch` defaults to $0.005, Brave's list price, but Exa charges $0.007. `AGENT_PRICE_WEB_SEARCH_USD` needs to be at least 0.007, or the default should be Parallel fast, whose relevance and freshness were clearly lower.
-2. **The providers can't be selected yet.** Exa, Parallel and Firecrawl implement `SearchProvider` (`src/web-search.ts`), but `SEARCH_PROVIDERS` and `AGENT_WEB_SEARCH_PROVIDER` still offer only Brave. Selection and fallback are the follow-up. That follow-up also needs to decide whether `content` (inline page text) goes to the model: it is up to 3k characters per result, against a 500-character snippet.
+**Exa vs Brave is the closest call.** As returned, Exa leads Brave by 0.09. But Brave's snippets average about 225 characters, while the judge saw 700 characters of Exa's highlights. When every result's text was cut to 300 characters, Exa still led, but only by 0.04 (0.84 vs 0.80), which is about the noise level at this sample size. What Exa is really buying is somewhat better ranking plus much richer inline text, for $2 more per 1k searches. If cost or the current price matters more, Brave is a sound default: it is already the product default, its list price matches `pricing.webSearch`, and it had the best tail latency. In that case Exa would move to the fallback. Brave's `extra_snippets` option, not tested here, might close some of the text gap.
+
+Two things need to happen before switching to Exa:
+1. **Raise the platform price.** `pricing.webSearch` defaults to $0.005 (Brave's price), but Exa costs $0.007. `AGENT_PRICE_WEB_SEARCH_USD` needs to be at least 0.007.
+2. **Make the providers selectable.** Exa, Parallel and Firecrawl implement `SearchProvider` (`src/web-search.ts`), but `SEARCH_PROVIDERS` and `AGENT_WEB_SEARCH_PROVIDER` still offer only Brave. Selection and fallback are the follow-up. That follow-up should also decide whether `content` (inline page text) goes to the model.
 
 ## Summary
 
@@ -18,73 +24,87 @@ Latency is wall time from this machine (US, residential). The "first" run is eac
 
 | entry | p50 first / second (ms) | p95 first / second (ms) | errors | $/query | relevance@5 | mean grade 0-3 | list 1-5 | answer acc. (native / equalized) | news ≤7 d (dated) | news ≤7 d with `freshness: week` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **exa-instant** | 565 / 90 | 1038 / 210 | 0/86 | $0.0070 | **0.87** | 2.61 | 4.91 | 100% / 100% | 80% (85%) | 100% |
-| exa-auto | 1304 / 89 | 2325 / 236 | 0/86 | $0.0070 | 0.85 | 2.56 | 4.86 | 100% / 100% | 75% (83%) | 100% |
-| parallel-advanced | 3329 / 1915 | 5417 / 3467 | 0/86 | $0.0050 | 0.76 | 2.29 | 4.35 | 94% / 94% | 65% (80%) | 74% |
-| firecrawl | 964 / 548 | 1637 / 1041 | 1/86 | $0.0017* | 0.73 | 2.19 | 4.14 | 94% / 94% | 0% (0% dated) | 0% (undated) |
-| parallel-fast | 829 / 744 | 1376 / 1106 | 0/86 | $0.0010 | 0.72 | 2.17 | 3.98 | 94% / 100% | 53% (83%) | 73% |
-| firecrawl-scrape | 3600 / 1065 | 10162 / 2055 | 0/86 (2 over 15 s) | $0.0064* | 0.66 | 2.00 | 4.02 | 100% / 88% | 23% (35%) | 38% |
+| **exa-instant** | 565 / 90 | 1038 / 210 | 0/86 | $0.0070 | **0.87** | 2.61 | 4.88 | 100% / 100% | 80% (85%) | 100% |
+| exa-auto | 1304 / 89 | 2325 / 236 | 0/86 | $0.0070 | 0.86 | 2.58 | 4.88 | 100% / 100% | 75% (83%) | 100% |
+| **brave** | 507 / 120 | 749 / 369 | 0/86 | $0.0050 | 0.78 | 2.35 | 4.30 | 100% / 100% | 78% (100%) | 100% |
+| parallel-advanced | 3329 / 1915 | 5417 / 3467 | 0/86 | $0.0050 | 0.76 | 2.27 | 4.33 | 94% / 94% | 65% (80%) | 74% |
+| firecrawl | 964 / 548 | 1637 / 1041 | 1/86 | $0.0017* | 0.73 | 2.19 | 4.12 | 94% / 94% | 0% (0% dated) | 0% (undated) |
+| parallel-fast | 829 / 744 | 1376 / 1106 | 0/86 | $0.0010 | 0.72 | 2.17 | 4.00 | 94% / 100% | 53% (83%) | 73% |
+| firecrawl-scrape | 3600 / 1065 | 10162 / 2055 | 0/86 (2 over 15 s) | $0.0064* | 0.68 | 2.04 | 4.02 | 100% / 88% | 23% (35%) | 38% |
 
 \* Firecrawl bills plan credits: 2 per search of up to 10 results, plus 1 per scraped page. Costs here use the Standard plan ($83/month billed annually for 100k credits = $0.00083 per credit). At Hobby rates ($16 for 5k) the costs are about 4x higher.
 
 Every configuration returned 5 results per query. The one exception was Parallel advanced, which averaged 4.9 with the date filter on.
 
+### Equal-length check
+
+This is the same blind judge, but with every result's text cut to 300 characters, about the length of a Brave snippet. It separates ranking from how much text each provider returns.
+
+| entry | relevance@5, 300 chars | relevance@5, as returned (700 chars) |
+| --- | --- | --- |
+| exa-instant | 0.84 | 0.87 |
+| brave | 0.80 | 0.78 |
+| parallel-fast | 0.69 | 0.72 |
+
 ### Relevance@5 by category
 
 | entry | known (16) | news (8) | technical (6) | research (5) | pricing (4) | long-tail (4) |
 | --- | --- | --- | --- | --- | --- | --- |
-| exa-instant | 0.88 | 0.95 | 0.81 | 0.81 | 0.85 | 0.88 |
-| exa-auto | 0.84 | 0.96 | 0.81 | 0.79 | 0.83 | 0.87 |
-| parallel-advanced | 0.73 | 0.85 | 0.79 | 0.79 | 0.65 | 0.75 |
-| firecrawl | 0.72 | 0.80 | 0.73 | 0.73 | 0.72 | 0.67 |
-| parallel-fast | 0.72 | 0.83 | 0.59 | 0.76 | 0.80 | 0.60 |
-| firecrawl-scrape | 0.67 | 0.68 | 0.64 | 0.69 | 0.65 | 0.60 |
+| exa-instant | 0.88 | 0.96 | 0.83 | 0.80 | 0.78 | 0.88 |
+| exa-auto | 0.86 | 0.93 | 0.81 | 0.83 | 0.83 | 0.87 |
+| brave | 0.74 | 0.92 | 0.78 | 0.76 | 0.77 | 0.73 |
+| parallel-advanced | 0.73 | 0.83 | 0.80 | 0.75 | 0.68 | 0.73 |
+| firecrawl | 0.73 | 0.75 | 0.73 | 0.72 | 0.73 | 0.67 |
+| parallel-fast | 0.73 | 0.78 | 0.64 | 0.75 | 0.80 | 0.60 |
+| firecrawl-scrape | 0.70 | 0.70 | 0.69 | 0.65 | 0.65 | 0.58 |
 
-Exa led in every category. Parallel fast was weakest on technical and long-tail queries: it returned generic zsh man pages for the `(j:,:)` join flag, and version-listing pages for `uuidv7()`. Parallel advanced closed most of that gap, except on pricing pages.
+One of the two Exa modes led every category. Brave was close to Exa on news (0.92) and technical docs (0.78), and furthest behind on known-answer queries (0.74), where its short snippets often don't contain the fact. Parallel fast was weakest on technical and long-tail queries: it returned generic zsh man pages for the `(j:,:)` join flag, and version-listing pages for `uuidv7()`.
 
-The three providers mostly find different pages. For the same query, Exa auto and Firecrawl shared 24% of their URLs, and Exa auto and Parallel advanced shared 21%. Exa's two modes shared 49%, and Parallel's two modes only 20%. Firecrawl with and without scraping shared 97%: the same search, with different text shown.
+The providers mostly find different pages. For the same query, Brave shared 13% of its URLs with Exa instant, 36% with Firecrawl and 30% with Parallel advanced. Exa auto shared 24% with Firecrawl and 21% with Parallel advanced. Exa's two modes shared 49%, and Parallel's two modes 20%. Firecrawl with and without scraping shared 97%: the same search, with different text shown.
 
 ## What was measured
 
 - **Queries** (`queries.json`, 43 in total). There are 16 known-answer questions: 12 whose answer changed in 2026 (Fed and BoJ rate decisions, the UK PM, the Fed chair, the latest Rust, Python and Node releases, whether PostgreSQL 19 has shipped, and so on), plus Spanish and German questions. The rest are 8 news queries from the past week (one in Japanese), 6 technical/API-docs queries, 5 research queries, 4 product/pricing queries and 4 long-tail queries. They mix natural-language and keyword styles. Expected answers were checked against primary sources on 2026-09-25.
-- **Searches.** Each configuration ran each query twice (5 results each time), then ran the 8 news queries once more with `freshness: "week"`. Configurations ran side by side, each working through its queries one at a time. Requests came from the provider classes in `src/web-search.ts`, so the benchmark exercised the product's own request building and normalization. They were sent with plain `fetch` and a 30 s timeout; calls over 15 s count as would-be timeouts in the product.
-- **Relevance.** `claude-sonnet-5` (thinking off, structured output) graded each first-run list on a fixed rubric: 0-3 per result, plus 1-5 for the whole list's usefulness. The judge never saw the provider's name. Every list was rendered the same way (title, URL, date, and the first 700 characters of the page text the provider returned, or its snippet if it returned no page text). Each list was graded in its own call, and the calls ran in random order.
+- **Searches.** Each configuration ran each query twice (5 results each time), then ran the 8 news queries once more with `freshness: "week"`. Configurations ran side by side, each working through its queries one at a time. Brave ran about an hour after the others, on the same queries. Requests came from the provider classes in `src/web-search.ts`, so the benchmark exercised the product's own request building and normalization. They were sent with plain `fetch` and a 30 s timeout; calls over 15 s count as would-be timeouts in the product.
+- **Relevance.** `claude-sonnet-5` (thinking off, structured output) graded each first-run list on a fixed rubric: 0-3 per result, plus 1-5 for the whole list's usefulness. The judge never saw the provider's name. Every list was rendered the same way (title, URL, date, and the first 700 characters of the page text the provider returned, or its snippet if it returned no page text). All 300 lists from all seven configurations were graded in a single shuffled batch, each in its own call, using judge prompt v2. v2 adds one sentence: results may report events from after the judge's training data, and the stated date should be taken as given. Grades from the first prompt (v1, six configurations) stay in `raw.json`. Relevance@5 moved by 0.02 at most between v1 and v2, and the order of configurations did not change.
 - **Answerability.** For the 16 known-answer questions, `claude-sonnet-5` answered from each provider's results alone ("answer using ONLY the search results … else NOT FOUND"). There were two context budgets: *native*, up to 1,600 characters per result and 8,000 in total, and *equalized*, 300 characters per result for every provider. A second call graded each answer against the expected answer and notes on what counts.
 - **Freshness.** Of the news-query results, the share dated on or after 2026-09-18. Undated results count as not fresh. The share that carried a date at all is in parentheses.
-- **Spend.** $4.97 in total: Exa $1.32, Parallel $0.56, Firecrawl $0.74 in credits at Standard-plan prices, and the judge $2.34 ($1.31 relevance, $1.03 answering and grading). Probing the APIs by hand added about $0.05. The estimate printed before the runs was $4.61; the judge went over it.
+- **Spend.** $7.59 in total. Searches cost $2.62 before Brave (Exa $1.32, Parallel $0.56, and Firecrawl $0.74 in credits at Standard-plan prices), plus Brave $0.47. The judge cost $4.49: v1 relevance $1.31, v2 relevance for all configurations $1.50, the equal-length check $0.52, and answering and grading $1.16. The first round cost $4.97; adding Brave, the re-judge and the equal-length check cost $2.62 more.
 
 ### Pricing sources (read 2026-09-25)
 
 - Exa (exa.ai/pricing): search is $7 per 1k requests of up to 10 results, in any of the `instant`, `fast` and `auto` modes. Each response's `costDollars` confirmed $0.007 per query, and highlights were not billed separately.
+- Brave (brave.com/search/api): $5 per 1k requests, the price `pricing.webSearch` already uses.
 - Parallel (parallel.ai/pricing): the Search API costs $1 per 1k requests in `turbo`/`fast` mode and $5 per 1k in `basic`/`advanced` mode, for 10 results.
 - Firecrawl (firecrawl.dev/pricing, docs.firecrawl.dev/features/search): 2 credits per search of up to 10 results, plus 1 credit per scraped page. Plans run from Hobby ($16/month for 5k credits) to Standard ($83/month for 100k).
 
 ## Notable failures
 
-- **Stale versions.** Asked for the latest Python, Firecrawl and Parallel advanced both surfaced a python.org page for 3.14.6 (June). The answer model then answered 3.14.6 in both context budgets. Both Exa modes and Parallel fast found 3.14.7.
+- **Stale versions.** Asked for the latest Python, Firecrawl and Parallel advanced both surfaced a python.org page for 3.14.6 (June). The answer model then answered 3.14.6 in both context budgets. Exa, Brave and Parallel fast all found 3.14.7.
 - **Wrong year.** Parallel fast's results for "When does the extended US-China trade truce expire?" said "January 10", and the answer model filled in 2026. The results were fine; the answer model made the mistake. This shows how much answer quality depends on dated excerpts.
-- **Firecrawl has no dates.** Plain Firecrawl web results never carry a publication date. With scraping, 35% of news results had one, taken from page metadata. An agent can't tell stale results from fresh ones without fetching the page.
-- **Scraped text makes a worse excerpt.** Firecrawl with and without scraping returned 97% of the same URLs. The scraped markdown starts at the top of the page (navigation, bylines), whereas Firecrawl's description is a query-relevant highlight, and the judge scored the scraped version 0.07 lower. In the equalized (300-character) answer test, scraping missed the Node Current version (NOT FOUND) and misread the BoJ rate as 1.00%.
-- **Slow tails.** Firecrawl with scraping had a first-run p95 of 10.2 s, and 2 of its 86 calls took over 15 s (15.2 s and 17.0 s, both first runs). Parallel advanced had a first-run p95 of 5.4 s. Neither Exa mode exceeded 2.4 s at p95.
-- **Errors.** There was a single Firecrawl 502 Bad Gateway (query n02, first run). Exa and Parallel returned no errors in 188 calls each (94 per mode, across both modes). Parallel's account was out of credit at the start (HTTP 402) and was topped up before its runs.
+- **Firecrawl has no dates.** Plain Firecrawl web results never carry a publication date. With scraping, 35% of news results had one, taken from page metadata. An agent can't tell stale results from fresh ones without fetching the page. Brave, by contrast, dated every news result.
+- **Scraped text makes a worse excerpt.** Firecrawl with and without scraping returned 97% of the same URLs. The scraped markdown starts at the top of the page (navigation, bylines), whereas Firecrawl's description is a query-relevant highlight, and the judge scored the scraped version 0.05 lower. In the equalized (300-character) answer test, scraping missed the Node Current version (NOT FOUND) and misread the BoJ rate as 1.00%.
+- **Slow tails.** Firecrawl with scraping had a first-run p95 of 10.2 s, and 2 of its 86 calls took over 15 s (15.2 s and 17.0 s, both first runs). Parallel advanced had a first-run p95 of 5.4 s. Neither Exa mode exceeded 2.4 s at p95, and Brave's p95 was 0.75 s.
+- **Errors.** There was a single Firecrawl 502 Bad Gateway (query n02, first run). No errors in 94 calls each from Exa (both modes), Parallel (both modes) or Brave. Parallel's account was out of credit at the start (HTTP 402) and was topped up before its runs.
 
 ## Caveats
 
-- **The sample is small.** 43 queries and 16 known-answer questions, each list graded once. Differences of about 0.03 in relevance@5 (for example, Exa instant vs auto, or Parallel fast vs Firecrawl) are within the noise. Exa's overall lead (0.09 or more over every other configuration) is larger than that. By category it led everywhere, but only narrowly (0.02) on technical and research queries, where Parallel advanced came close.
+- **The sample is small.** 43 queries and 16 known-answer questions, each list graded once. Differences of about 0.03-0.04 in relevance@5 are within the noise. That covers Exa instant vs auto, Parallel fast vs Firecrawl, and Exa vs Brave once text length is equalized.
 - **Answerability hit the ceiling.** 88-100% everywhere: these questions were easy to find, so the test mostly failed to separate providers. Its useful signal is in the failures listed above (stale or undated pages). A harder set with multi-hop and obscure facts would discriminate better.
-- **The judge's knowledge cutoff biased some grades.** The judge (training data up to mid-2026) sometimes marked correct post-cutoff facts as "fabricated". For example, it gave Firecrawl's Kevin Warsh results a 1 each ("Powell's term runs to May 2026"), and it flagged 2026 arXiv IDs as "future-dated". About ten of 258 notes show this, spread across providers. The biggest single effect, Firecrawl on k03, moves Firecrawl's mean by about 0.01. For future runs the judge prompt should say that results may describe events after its training data and that the stated date is authoritative.
-- **The judge sees what each provider returns.** Exa and Parallel return query-focused excerpts (the judge saw the first 700 characters), while Firecrawl's highlight is usually shorter. The scrape vs no-scrape comparison (same URLs, 0.07 apart) shows the displayed text moves grades a little. The gaps between providers are larger than that, and Parallel returns excerpts like Exa's yet scored well below it.
-- **Freshness depends on dates the provider reports.** Undated results count as not fresh. That understates Firecrawl in particular, whose date-filtered results are probably recent but can't be checked from the response.
-- **One location, one day, one account per provider.** No rate-limit or throughput testing. Exa's cache makes repeated queries almost free in latency, which flatters its second-run numbers. Latency was measured from a client far from the product's servers; absolute numbers will shift, but the ordering should hold.
-- **Normalization changed during the run.** Markdown links in snippets and page text are now reduced to their text (`unlink` in `src/web-search.ts`). Exa and Firecrawl results recorded before that change had the same transformation applied afterwards, so a few of their excerpts are slightly shorter than the cap. Parallel was recorded after the change.
+- **The judge's knowledge cutoff still biases some grades.** Even with the v2 prompt, the judge sometimes calls correct post-cutoff facts or 2026 arXiv IDs "suspicious" or "future-dated". About 20 of 300 v2 notes mention this, spread across all providers. The worst v1 case (Firecrawl's Kevin Warsh results, all 1s) rose to 10/15 under v2. The overall numbers moved by 0.02 at most.
+- **The judge sees what each provider returns.** Exa and Parallel return query-focused excerpts (the judge saw the first 700 characters), Brave returns short snippets, and Firecrawl returns highlights. The equal-length check above shows that about half of Exa's lead over Brave comes from longer text. Exa's lead over Parallel does not: Parallel also returns long excerpts and scored well below it.
+- **Freshness depends on dates the provider reports.** Undated results count as not fresh. That understates Firecrawl in particular, whose date-filtered results are probably recent but can't be checked from the response. Brave can return relative dates ("2 days ago"), which would count as undated; none of its results in this run had one.
+- **One location, one day, one account per provider.** No rate-limit or throughput testing. Exa's and Brave's caches make repeated queries fast, which flatters their second-run numbers. Latency was measured from a client far from the product's servers; absolute numbers will shift, but the ordering should hold.
+- **Normalization changed during the run.** Markdown links in snippets and page text are now reduced to their text (`unlink` in `src/web-search.ts`). Exa and Firecrawl results recorded before that change had the same transformation applied afterwards, so a few of their excerpts are slightly shorter than the cap. Parallel and Brave were recorded after the change.
 
 ## Reproducing
 
 ```sh
-# keys in the environment only: EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY, [BRAVE_API_KEY], ANTHROPIC_API_KEY
-npm run bench:search -- --dry-run                        # entries with a key, and the spend estimate
-npm run bench:search -- --entries exa-instant,brave      # search, judge, answer; resumes from results/raw.json
-npm run bench:search -- --phase report                   # just regenerate results/summary.md
+# keys in the environment only: EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY, BRAVE_API_KEY, ANTHROPIC_API_KEY
+npm run bench:search -- --dry-run                                # entries with a key, and the spend estimate
+npm run bench:search -- --entries exa-instant,brave              # search, judge, answer; resumes from results/raw.json
+npm run bench:search -- --phase judge-equal --entries exa-instant,brave   # the equal-length check
+npm run bench:search -- --phase report                           # just regenerate results/summary.md
 ```
 
-`results/raw.json` holds every call: latency, status, errors (with keys scrubbed), cost, and the normalized first-run results with page text capped at 1,600 characters. It also holds every grade and answer.
+`results/raw.json` holds every call: latency, status, errors (with keys scrubbed), cost, and the normalized first-run results with page text capped at 1,600 characters. It also holds every grade (v1, v2 and the equal-length check) and every answer.
