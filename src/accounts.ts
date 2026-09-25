@@ -23,8 +23,12 @@ export type Sealed = { iv: string; tag: string; ciphertext: string };
 /** A GitHub account at sign-in: its login, numeric id and creation time (ms). */
 export interface GithubUser { login: string; id?: number; createdAt?: number }
 type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
-/** What a tenant owes from a batch: model tokens, and web searches and renders, on the platform's keys (USD, with their counts), and active agent time. */
-type Charge = { platformCost: number; activeMs: number; toolCost: number; searches: number; renders: number };
+/**
+ * What a tenant owes from a batch: model tokens, and web searches and renders, on the platform's keys
+ * (USD, with their counts), tool searches ranked by meaning (a platform fee, with their count), and
+ * active agent time.
+ */
+type Charge = { platformCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number };
 /**
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
  * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
@@ -263,8 +267,11 @@ export class Accounts {
     this.pending.usage.set(key, totals);
     if (message.platform) {
       const charge = this.charge(tenant);
-      // Web searches and renders are counted apart from model tokens, so the hour's ledger entry shows each.
-      if (message.searches || message.renders) {
+      // Web searches, renders and tool searches are counted apart from model tokens, so the hour's ledger entry shows each.
+      if (message.toolSearches) {
+        charge.toolSearchCost += cost;
+        charge.toolSearches += message.toolSearches;
+      } else if (message.searches || message.renders) {
         charge.toolCost += cost;
         charge.searches += message.searches ?? 0;
         charge.renders += message.renders ?? 0;
@@ -284,7 +291,7 @@ export class Accounts {
 
   private charge(tenant: string) {
     let charge = this.pending.charges.get(tenant);
-    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0 });
+    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0 });
     return charge;
   }
 
@@ -295,7 +302,7 @@ export class Accounts {
 
   /** What `charges` come to in micro-USD. */
   private amount(charge: Charge) {
-    return Math.round(charge.platformCost * MICROS) + Math.round(charge.toolCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
+    return Math.round(charge.platformCost * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.toolSearchCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
   }
 
   /** What this node has recorded for `tenant` and not yet written, in micro-USD, as if the tenant were prepaid. */
@@ -350,6 +357,7 @@ export class Accounts {
         billed.push({ tenant, amount, metadata: {
           tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs),
           ...(charge.searches || charge.renders ? { web: Math.round(charge.toolCost * MICROS), searches: charge.searches, renders: charge.renders } : {}),
+          ...(charge.toolSearches ? { toolSearch: Math.round(charge.toolSearchCost * MICROS), toolSearches: charge.toolSearches } : {}),
         } });
       }
     }

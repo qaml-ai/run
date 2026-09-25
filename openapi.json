@@ -1118,6 +1118,10 @@
               "webRender": {
                 "type": "integer",
                 "description": "Per page web_fetch has Firecrawl render on the platform's key, in micro-USD (1 USD = 1000000)"
+              },
+              "toolSearch": {
+                "type": "integer",
+                "description": "Per tools.search ranked by meaning (searches ranked by keywords alone are free), in micro-USD (1 USD = 1000000)"
               }
             },
             "required": [
@@ -1127,7 +1131,8 @@
               "minPurchase",
               "maxPurchase",
               "webSearch",
-              "webRender"
+              "webRender",
+              "toolSearch"
             ],
             "description": "Model tokens are charged at the provider's list price when they run on the platform's keys"
           }

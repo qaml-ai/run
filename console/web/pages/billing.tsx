@@ -27,6 +27,7 @@ function detail(entry: LedgerEntry) {
     if (meta.activeMs) parts.push(`${formatNumber(Math.round(meta.activeMs / 1000))} s of agent time`);
     if (meta.searches) parts.push(`${formatNumber(meta.searches)} web search${meta.searches === 1 ? "" : "es"}`);
     if (meta.renders) parts.push(`${formatNumber(meta.renders)} page render${meta.renders === 1 ? "" : "s"}`);
+    if (meta.toolSearches) parts.push(`${formatNumber(meta.toolSearches)} tool search${meta.toolSearches === 1 ? "" : "es"}`);
     return parts.join(" · ");
   }
   if (entry.kind === "storage") return `${meta.day}: ${formatNumber(meta.bytes / 1e9)} GB stored`;
@@ -216,7 +217,8 @@ export function BillingPage() {
                 storage {formatMicros(data.rates.storageGbMonth)} per GB-month, charged daily ·
                 model tokens at list price on the platform's keys ·
                 web searches on the platform's keys at {Object.entries(data.rates.webSearch).map(([provider, price]) => `${formatMicros(price)} (${provider})`).join(", ")} each ·
-                rendered pages {formatMicros(data.rates.webRender)} each; all free with your own keys.
+                rendered pages {formatMicros(data.rates.webRender)} each, all free with your own keys ·
+                tool searches ranked by meaning {formatMicros(data.rates.toolSearch)} each.
                 {data.freeCredit && " Tenants on free credit have lower agent and hourly spend limits until their first purchase."}
               </CardDescription>
             </CardHeader>

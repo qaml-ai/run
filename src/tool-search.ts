@@ -153,7 +153,12 @@ const fuse = (signals: Map<number, number>[], size: number) =>
  * ranks it by keywords, then by each reranker stage in turn, fusing the orders; a stage that fails
  * or runs out of time is left out. Without rerankers only tools some query word matches come back.
  */
-export async function searchTools(tools: Candidate[], search: SearchQuery, options: { rerankers?: Reranker[]; signal?: AbortSignal; timeoutMs?: number; onError?: (error: unknown, reranker: Reranker) => void } = {}): Promise<SearchHit[]> {
+export async function searchTools(tools: Candidate[], search: SearchQuery, options: {
+  rerankers?: Reranker[]; signal?: AbortSignal; timeoutMs?: number;
+  onError?: (error: unknown, reranker: Reranker) => void;
+  /** Called once when at least one rerank stage answered: the search was ranked by meaning (and is billed). */
+  onRanked?: (stages: string[]) => void;
+} = {}): Promise<SearchHit[]> {
   const namespace = search.namespace?.trim();
   const pool = namespace ? tools.filter(tool => namespaceOf(tool.name) === namespace || tool.name === namespace) : tools;
   const query = search.query?.trim() ?? "";
@@ -162,6 +167,7 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
   const signals = [ranks(keywordScores(pool, query), 0)];
   /** Tools a relevance stage judged relevant; undefined while none has answered. */
   let relevant: Set<number> | undefined;
+  const answered: string[] = [];
   const stages = pool.length > 1 ? options.rerankers ?? [] : [];
   if (stages.length) {
     const controller = new AbortController();
@@ -184,6 +190,7 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
           if (scores.length !== chosen.length || scores.some(score => typeof score !== "number" || Number.isNaN(score))) throw new Error(`${stage.kind} returned ${scores.length} scores for ${chosen.length} tools`);
           const order = ranks(scores);
           signals.push(new Map([...order].map(([position, rank]) => [chosen[position], rank])));
+          answered.push(stage.kind);
           if (stage.relevantAt !== undefined) {
             const judged = chosen.filter((_, position) => scores[position] >= stage.relevantAt!);
             relevant = new Set([...(relevant ?? []), ...judged]);
@@ -198,6 +205,7 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
       options.signal?.removeEventListener("abort", abort);
     }
   }
+  if (answered.length) options.onRanked?.(answered);
   const ordered = [...ranks(fuse(signals, pool.length), 0).entries()].sort((a, b) => a[1] - b[1]).map(([index]) => index);
   const kept = relevant === undefined ? ordered : ordered.filter(index => relevant!.has(index));
   return kept.slice(0, limit).map(index => hit(pool[index]));

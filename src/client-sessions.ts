@@ -184,12 +184,17 @@ export interface ClientSessionOptions {
   sources?: ToolSources;
   /** Stages that order `tools.search` results by meaning, fused with keyword ranking (AGENT_TOOL_SEARCH). */
   rerankers?: Reranker[];
+  /** Micro-USD charged (as platform usage, through `onUsage`) per search a rerank stage answered. */
+  toolSearchPrice?: number;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
-/** A model response's usage, or a web tool's call (`searches`: web searches, `renders`: pages web_fetch had rendered), with its cost in `usage.cost.total`. */
-export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number };
+/**
+ * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
+ * rendered), or tool searches ranked by meaning (`toolSearches`), with its cost in `usage.cost.total`.
+ */
+export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number; toolSearches?: number };
 /** Why runs are refused: a message (402), or an error with its own status. */
 export type Refusal = string | HttpError;
 /** A provider key and whether it is the platform's rather than the tenant's own. */
@@ -1094,11 +1099,19 @@ export class ClientSessions {
    * connection or deadline cut short has an unknown outcome. After a crash, the turn's transcript
    * says the same: a tool call without a result is closed as unknown, never sent again.
    */
-  /** A `tools.search` query over the agent's code-mode tools; a rerank stage that fails is logged and left out. */
+  /**
+   * A `tools.search` query over the agent's code-mode tools; a rerank stage that fails is logged and
+   * left out. A search a stage answered is platform usage at the tool search price, whichever
+   * provider served it: the tenant pays the runtime, not the provider, and never with its own keys.
+   */
   private searchTools(session: Session, query: SearchQuery) {
+    const tenant = session.header.tenant ?? DEFAULT_TENANT;
     return searchTools(session.searchable ?? [], query, {
       rerankers: this.options.rerankers ?? [],
       onError: (error, stage) => console.error(JSON.stringify({ type: "tool_search_rerank_failed", reranker: stage.kind, agent: session.header.id, error: errorText(error) })),
+      onRanked: () => this.options.onUsage?.(tenant, session.header.id, {
+        provider: "runtime", model: "tool_search", usage: { cost: { total: (this.options.toolSearchPrice ?? 0) / 1_000_000 } }, platform: true, toolSearches: 1,
+      }),
     });
   }
 

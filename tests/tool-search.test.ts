@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { executeCode } from "../src/codemode.ts";
 import { CATALOG_LIMITS } from "../src/limits.ts";
 import { validateDefinitions } from "../src/tool-policy.ts";
 import { compose, defaultExposure, valueServer } from "../src/tool-servers.ts";
 import { embeddingReranker, jevReranker, keywordScores, namespaces, rerankersFromEnv, searchQuery, searchTools, type Candidate, type Reranker } from "../src/tool-search.ts";
-import { listen } from "./runtime-server.ts";
+import { listen, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
 
 const tool = (name: string, description: string) => ({ name, description, parameters: { type: "object", properties: {} } });
 const catalog = [
@@ -225,4 +226,57 @@ test("a search while the catalog is still warming waits for those embeddings ins
   release();
   assert.equal(names(await searched)[0], "send_message");
   assert.deepEqual(inputs, [catalog.length, 1], "the search embedded only its query");
+});
+
+test("a search counts as ranked (and billed) only when a rerank stage answered", async () => {
+  const ranked: string[][] = [];
+  const onRanked = (stages: string[]) => ranked.push(stages);
+  const broken: Reranker = { kind: "broken", maxCandidates: Infinity, rerank: async () => { throw new Error("down"); } };
+  await searchTools(catalog, { query: "issue" }, { rerankers: [broken, favors("github__create_issue")], onRanked, onError: () => {} });
+  await searchTools(catalog, { query: "issue" }, { rerankers: [broken], onRanked, onError: () => {} });
+  await searchTools(catalog, { query: "issue" }, { onRanked });
+  await searchTools(catalog, {}, { rerankers: [favors("x")], onRanked });
+  assert.deepEqual(ranked, [["fake"]], "only the search a stage answered, naming the stages that did");
+});
+
+test("every tenant's ranked searches are platform usage at the tool search price, never on its own keys", async t => {
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const PAYG = "payg-operator-token-at-least-24-chars", OPS = "ops-operator-token-at-least-24-chars";
+  const keys: (string | undefined)[] = [];
+  const jev = await listen(t, async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    keys.push(req.headers.authorization);
+    const { questions } = JSON.parse(raw);
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ answers: Object.fromEntries(Object.keys(questions).map(id => [id, { noul: String(questions[id].instructions).includes("schedule") ? 0.9 : 0.1 }])) }));
+  });
+  const r = await runtime(t, body => body.messages.at(-1).role === "tool" ? { role: "assistant", content: "done" }
+    : toolCall("js_exec", { code: `return [(await tools.search("remind me later")).map(tool => tool.name), (await tools.search("")).length];` }), {
+    AGENT_TOOL_SEARCH: "jev", AGENT_TOOL_SEARCH_URL: `${jev}/v1`, AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_TOOL_SEARCH_USD: "0.01",
+  }, {
+    tenants: {
+      payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
+      ops: { tokenSha256: sha(OPS), apiKeys: { "*": "fixture-model-key", openrouter: "ops-own-openrouter-key" } },
+    },
+    platformKeys: { "*": "fixture-platform-model-key", openrouter: "platform-openrouter-key" },
+  });
+  assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
+  for (const token of [PAYG, OPS]) {
+    const definition = (await r.call("/v1/definitions", { body: { name: "Scheduler", builtins: ["schedule"] }, token })).json;
+    const agent = (await r.call("/v1/agents", { body: { definition: definition.id }, token })).json.id;
+    await r.prompt(agent, "go", token);
+    const [found, listed] = JSON.parse(JSON.parse(toolResults(r.model.bodies.at(-1)).at(-1)).output[0]);
+    assert.ok(found.length && found.every((name: string) => name.includes("schedule")), "Jev kept the schedule tools");
+    assert.ok(listed > 0);
+  }
+  assert.deepEqual(keys, ["Bearer platform-openrouter-key", "Bearer platform-openrouter-key"], "the platform's key, even for a tenant with its own OpenRouter key");
+  // Only the ranked search is charged; listing the catalog is free.
+  for (const token of [PAYG, OPS]) {
+    const usage = await until(async () => (await r.call("/v1/usage", { token })).json.days.find((day: any) => day.model === "runtime/tool_search"), "the search's usage");
+    assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 1, 0.01]);
+  }
+  await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 990_000, "the prepaid tenant's credit, debited the fee");
+  const entry = (await r.call("/v1/billing/ledger", { token: PAYG })).json.entries.find((row: any) => row.kind === "usage");
+  assert.deepEqual([entry.amount, entry.metadata.toolSearches, entry.metadata.toolSearch], [-10_000, 1, 10_000], "counted apart in the hour's entry");
+  assert.equal((await r.call("/v1/billing", { token: PAYG })).json.rates.toolSearch, 10_000);
 });
