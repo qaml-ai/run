@@ -958,7 +958,7 @@ export class ClientSessions {
     if (record.method === "status" && !live) return { running: false };
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
-      const applied = params.definition !== undefined ? await this.definitionUpdate(session, params.definition.id) : undefined;
+      const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
       const update = applied?.update ?? configurationUpdate(params);
       // A new model may belong to another provider: the agent needs that provider's key.
       const resolved = update.model ? await this.apiKey(session, update.model.provider) : undefined;
@@ -993,18 +993,9 @@ export class ClientSessions {
   }
 
   /** The configuration an agent takes from its definition's current revision; tools added at creation stay. */
-  private async definitionUpdate(session: Session, requestedId: string) {
-    let current = session.header.definition;
-    if (!current) {
-      // Pre-definition channel agents are linked through their conversation. Adopt
-      // the reference only as part of the owned, durable configuration update.
-      const linked = await this.db.query(`select 1 from channel_conversations cc join channels c on c.id = cc.channel
-        where cc.agent = $1 and c.tenant = $2 and c.channel->>'definition' = $3`,
-      [session.header.id, session.header.tenant, requestedId]);
-      if (!linked.rowCount) throw new Error("This agent was not made from this definition");
-      current = { id: requestedId, revision: 0 };
-    }
-    if (current.id !== requestedId) throw new Error("This agent belongs to another definition");
+  private async definitionUpdate(session: Session) {
+    const current = session.header.definition;
+    if (!current) throw new Error("This agent was not made from a definition");
     const resolved = await this.options.definitionFor!(session.header.tenant, current.id);
     // The attached server's tools stay; the tools list is rebuilt with the definition's sources.
     return { update: { ...resolved.config, tools: session.header.definitions }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };

@@ -283,11 +283,11 @@ export const ApplyResult = z.object({
   accepted: z.array(z.string()), failed: z.array(z.object({ agent: z.string(), error: z.string() })),
   counts: z.object({ total: z.number(), updated: z.number(), queued: z.number(), failed: z.number() }),
   results: z.array(z.object({ agent: z.string(), requestId: z.string(), status: z.enum(["updated", "queued", "failed"]), error: z.string().optional() })),
-}).openapi("ApplyResult", { description: "Snapshot for eligible live agents, including legacy channel conversations. Queued is not completed: poll GET /v1/agents/{agent}/requests/{requestId} for the final outcome. Expired, revoked and purged agents are excluded." });
+}).openapi("ApplyResult", { description: "Snapshot for eligible live agents. Queued is not completed: poll GET /v1/agents/{agent}/requests/{requestId} for the final outcome. Expired, revoked and purged agents are excluded." });
 export const DefinitionUpdated = Definition.extend({
   applied: ApplyResult.optional(),
 }).openapi("DefinitionUpdated");
-export const DefinitionAgent = z.object({ id: z.string(), revision: z.number().openapi({ description: "0 means a legacy channel conversation that has not yet adopted a definition revision" }) }).openapi("DefinitionAgent");
+export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
 
 export const ConfigureInput = z.object({
   requestId: z.string().min(1).optional(),

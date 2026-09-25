@@ -135,12 +135,8 @@ export class Definitions {
   /** The tenant's live agents made from a definition, and the revision each has. */
   async agents(tenant: string, id: string): Promise<{ id: string; revision: number }[]> {
     const { rows } = await this.db.query(`
-      select id, coalesce((header->'definition'->>'revision')::bigint, 0) as revision from agents a
-      where tenant = $1 and (header->'definition'->>'id' = $2 or (
-        header->'definition'->>'id' is null and exists (
-          select 1 from channel_conversations cc join channels c on c.id = cc.channel
-          where cc.agent = a.id and c.tenant = a.tenant and c.channel->>'definition' = $2
-        ))) and not revoked and purged_at is null
+      select id, (header->'definition'->>'revision')::bigint as revision from agents
+      where tenant = $1 and header->'definition'->>'id' = $2 and not revoked and purged_at is null
         and (expires_at is null or expires_at > $3) order by id`, [tenant, id, Date.now()]);
     return rows.map(row => ({ id: row.id, revision: row.revision }));
   }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, readdirSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -159,40 +159,33 @@ test("stripping channel templates stops, changing nothing, while a channel has n
   await assert.rejects(migrate(db), /Channels without a definition: ch_0123456789abcdef0123/);
   assert.deepEqual((await db.query("select channel from channels")).rows[0].channel, channel, "the template is still there");
   await db.query("update channels set channel = (channel::jsonb || '{\"definition\": \"def_x\"}')::json");
-  assert.deepEqual(await migrate(db), ["014_channel_template.sql"]);
+  assert.equal((await migrate(db))[0], "014_channel_template.sql");
   assert.equal("template" in (await db.query("select channel from channels")).rows[0].channel, false);
 });
 
-test("apply includes legacy channel conversations, preserves history, and excludes other tenants", async t => {
-  const r = await runtime(t, () => ({ role: "assistant", content: "Remembered." }));
-  const definition = (await r.call("/v1/definitions", { body: { name: "Legacy bot", systemPrompt: "New bot prompt" } })).json;
-  const agent = (await r.call("/v1/agents", { body: { systemPrompt: "Old bot prompt" } })).json.id;
-  const foreign = (await r.call("/v1/agents", { token: OTHER_OPERATOR, body: {} })).json.id;
-  await r.prompt(agent, "Remember the compass.");
-  const history = (await r.call(`/v1/agents/${agent}/history`)).json;
-  const channel = "ch_0123456789abcdef0123";
-  await r.db.query("insert into channels (id,tenant,channel,created_at) values ($1,'alice',$2,1)", [channel, JSON.stringify({ definition: definition.id })]);
-  for (const [conversation, id] of [["legacy", agent], ["wrong-tenant", foreign]]) {
-    await r.db.query("insert into channel_conversations (channel,conversation,agent,generation) values ($1,$2,$3,1)", [channel, conversation, id]);
+test("migration 015 links each channel conversation's agent to its channel's definition, at revision 0", async () => {
+  const { db } = await testDatabase({ migrate: false });
+  const all = fileURLToPath(new URL("../migrations", import.meta.url));
+  const before = mkdtempSync(join(tmpdir(), "migrations-"));
+  for (const name of readdirSync(all).filter(name => name < "015")) cpSync(join(all, name), join(before, name));
+  await migrate(db, before);
+  const agent = async (id: string, tenant: string, header: object = {}) => db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, $2, $3, 1, $1, 'general', 'm')",
+    [id, tenant, JSON.stringify({ id, tenant, ...header })]);
+  await agent("linked", "alice");
+  await agent("made", "alice", { definition: { id: "def_other", revision: 3 } });
+  await agent("foreign", "bob");
+  await agent("unbound", "alice");
+  await db.query("insert into channels (id, tenant, channel, created_at) values ('ch_a', 'alice', $1, 1)", [JSON.stringify({ definition: "def_bot" })]);
+  for (const [conversation, id] of [["1", "linked"], ["2", "made"], ["3", "foreign"]]) {
+    await db.query("insert into channel_conversations (channel, conversation, agent, generation) values ('ch_a', $1, $2, 1)", [conversation, id]);
   }
-  assert.deepEqual((await r.call(`/v1/definitions/${definition.id}/agents`)).json, [{ id: agent, revision: 0 }]);
-  const result = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { apply: "all" } });
-  assert.equal(result.status, 200, result.text);
-  assert.equal(result.json.applied.counts.total, 1);
-  assert.deepEqual(result.json.applied.accepted, [agent]);
-  const request = result.json.applied.results[0];
-  const completed = await until(async () => {
-    const record = (await r.call(`/v1/agents/${agent}/requests/${request.requestId}`)).json;
-    return record.state === "completed" && record;
-  }, "legacy configuration completes");
-  assert.equal(completed.outcome.error, undefined);
-  const detail = (await r.call(`/v1/agents/${agent}`)).json;
-  assert.deepEqual(detail.definition, { id: definition.id, revision: 1 });
-  assert.equal(detail.systemPrompt, "New bot prompt");
-  assert.deepEqual((await r.call(`/v1/agents/${agent}/history`)).json, history);
-  assert.equal((await r.call(`/v1/agents/${foreign}`, { token: OTHER_OPERATOR })).json.definition, undefined);
-  const repeated = (await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { apply: "all" } })).json.applied;
-  assert.deepEqual(repeated.counts, { total: 1, updated: 1, queued: 0, failed: 0 });
+  const definitions = async () => Object.fromEntries((await db.query("select id, header->'definition' as definition from agents order by id")).rows.map(row => [row.id, row.definition]));
+  const expected = { linked: { id: "def_bot", revision: 0 }, made: { id: "def_other", revision: 3 }, foreign: null, unbound: null };
+  assert.deepEqual(await migrate(db), ["015_channel_agent_definition.sql"]);
+  assert.deepEqual(await definitions(), expected, "another tenant's agent and an agent made from a definition are left alone");
+  assert.deepEqual(await new Definitions({ db }).agents("alice", "def_bot"), [{ id: "linked", revision: 0 }], "apply reaches it");
+  await db.query(readFileSync(join(all, "015_channel_agent_definition.sql"), "utf8"));
+  assert.deepEqual(await definitions(), expected, "running it again changes nothing");
 });
 
 test("public configuration waits between turns, preserves history, and reports validation and outcome", async t => {
