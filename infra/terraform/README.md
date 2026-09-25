@@ -89,8 +89,8 @@ and the RDS instance also have deletion protection in AWS.
   - `AGENT_PUBLIC_URL`, `AGENT_TENANTS_SECRET_ARN`;
   - `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN`,
     `AGENT_STRIPE_SECRET_ARN` (credit purchases stay off until `infra/stripe.sh` stores its value);
-  - `AGENT_TOOL_SEARCH=embeddings,jev` and `AGENT_TOOL_SEARCH_SECRET_ARN` (tools.search ranks by
-    keywords only until `infra/tool-search.sh` stores an OpenRouter key).
+  - `AGENT_TOOL_SEARCH=embeddings,jev` and `AGENT_TOOL_SEARCH_SECRET_ARN` (tools.search uses the
+    platform's OpenRouter key from the tenants secret; `infra/tool-search.sh` stores a dedicated one instead).
 
   The task definition has no `secrets`: the runtime reads every secret itself,
   through the task role, so no secret value is in its environment, where a

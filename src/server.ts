@@ -71,7 +71,13 @@ if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RE
 // Where js_exec runs, reported in the "listening" line; fails startup if isolation is required but absent.
 const sandbox = await checkSandbox();
 // How tools.search ranks: keywords alone, or fused with the operator's rerank stages.
-const rerankers = rerankersFromEnv(process.env, secrets.toolSearchKey);
+// The key: a dedicated one if set (AGENT_TOOL_SEARCH_API_KEY, or the tool-search secret), else the
+// platform's OpenRouter key from the tenants file, read at each search so a reload takes effect.
+const platformOpenRouter = () => tenants.platformKey("openrouter", false);
+const rerankers = rerankersFromEnv(process.env, secrets.toolSearchKey || platformOpenRouter);
+if (rerankers.length && !secrets.toolSearchKey && !platformOpenRouter()) {
+  console.error(JSON.stringify({ type: "tool_search_not_configured", reason: "no platformKeys.openrouter in the tenants file and no AGENT_TOOL_SEARCH_API_KEY; tools.search ranks by keywords until one is set" }));
+}
 // Control plane: coordination and small mutable state in Postgres.
 const db = await databaseFromEnvironment();
 await migrate(db);

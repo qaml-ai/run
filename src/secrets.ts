@@ -38,7 +38,8 @@ export async function runtimeSecrets(env = process.env) {
       stripe = { secretKey, webhookSecret };
     } else console.error(JSON.stringify({ type: "stripe_not_configured", reason: "AGENT_STRIPE_SECRET_ARN has no value yet" }));
   } else if (env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) stripe = { secretKey: env.STRIPE_SECRET_KEY, webhookSecret: env.STRIPE_WEBHOOK_SECRET };
-  // The key for tool search's ranking by meaning (AGENT_TOOL_SEARCH). Null: the secret exists with no value yet, so keywords only.
+  // A dedicated key for tool search's ranking by meaning (AGENT_TOOL_SEARCH). Null: the secret has no
+  // value, and search uses the platform's OpenRouter key from the tenants file.
   const toolSearchArn = exclusive(["AGENT_TOOL_SEARCH_API_KEY"], "AGENT_TOOL_SEARCH_SECRET_ARN");
   let toolSearchKey: string | null | undefined = env.AGENT_TOOL_SEARCH_API_KEY;
   if (toolSearchArn) {

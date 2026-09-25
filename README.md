@@ -215,7 +215,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_DATABASE_CA` | PEM bundle the server's certificate must chain to (e.g. `/etc/ssl/rds-global-bundle.pem`); TLS settings in a URL are then ignored |
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_DATABASE_QUERY_TIMEOUT_MS` | how long a query may take before it fails and its connection is replaced (default 30000; 0 for none), so a connection that went dark in a failover cannot hang a request |
-| `AGENT_TOOL_SEARCH` | ranking by meaning for `tools.search` after keywords: `keyword` (default, none), `embeddings`, or `embeddings,jev` (Jev also drops irrelevant tools); with `AGENT_TOOL_SEARCH_API_KEY`, `AGENT_TOOL_SEARCH_URL` (default OpenRouter) and `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` / `_JEV_MODEL` (see [Tool search](#tool-search)) |
+| `AGENT_TOOL_SEARCH` | ranking by meaning for `tools.search` after keywords: `keyword` (default, none), `embeddings`, or `embeddings,jev` (Jev also drops irrelevant tools); with the platform's OpenRouter key or `AGENT_TOOL_SEARCH_API_KEY`, `AGENT_TOOL_SEARCH_URL` (default OpenRouter) and `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` / `_JEV_MODEL` (see [Tool search](#tool-search)) |
 | `AGENT_STORAGE` | `file` (default; one node only), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
@@ -686,10 +686,12 @@ costs a script nothing until it asks.
   `https://api.typesafe.ai/v1` for Jev). `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` and
   `AGENT_TOOL_SEARCH_JEV_MODEL` override the defaults
   (`openai/text-embedding-3-small`, `typesafe/jev-1.13`).
-- On ECS, Terraform sets `AGENT_TOOL_SEARCH=embeddings,jev` and the runtime reads
-  the key from the `tool-search` secret (`AGENT_TOOL_SEARCH_SECRET_ARN`), never
-  from its environment. Store it with `infra/tool-search.sh` (paste an OpenRouter
-  key); until then search ranks by keywords only.
+- The key is the platform's OpenRouter key (`platformKeys.openrouter` in the
+  tenants file), read at each search so a tenants reload takes effect, unless a
+  dedicated one is set: `AGENT_TOOL_SEARCH_API_KEY`, or on ECS the `tool-search`
+  secret (`infra/tool-search.sh`), to keep search spend on its own key. Without
+  any key, stages fail and search ranks by keywords (`tool_search_not_configured`
+  at startup). On ECS, Terraform sets `AGENT_TOOL_SEARCH=embeddings,jev`.
 
 ### Identity tokens (`auth: { type: "runtime" }`)
 

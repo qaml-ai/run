@@ -141,6 +141,23 @@ test("a relevance stage drops what it judges irrelevant, and everything when not
   assert.equal((await searchTools(catalog, { query: "issue" }, { rerankers: [broken], onError: () => {} })).length, 2);
 });
 
+test("a stage reads its key at each search: a missing key fails the stage, not the search", async t => {
+  let key: string | undefined;
+  const seen: (string | undefined)[] = [];
+  const url = await listen(t, async (req, res) => {
+    seen.push(req.headers.authorization);
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ answers: { t0: { noul: 0.9 }, t1: { noul: 0.1 } } }));
+  });
+  const [jev] = rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev", AGENT_TOOL_SEARCH_URL: `${url}/v1` }, () => key);
+  const two = catalog.slice(0, 2);
+  const errors: unknown[] = [];
+  assert.equal((await searchTools(two, { query: "issue" }, { rerankers: [jev], onError: error => errors.push(error) })).length, 2, "keywords answer without a key");
+  assert.match(String(errors[0]), /No API key for tool search/);
+  key = "sk-or-reloaded";
+  assert.deepEqual(names(await searchTools(two, { query: "issue" }, { rerankers: [jev] })), ["github__list_open_issues"]);
+  assert.deepEqual(seen, ["Bearer sk-or-reloaded"]);
+});
+
 test("the embeddings and Jev backends speak their APIs; embeddings are cached and warmed", async t => {
   const seen: { path: string; body: any }[] = [];
   const url = await listen(t, async (req, res) => {
@@ -181,8 +198,6 @@ test("rerank stages come from AGENT_TOOL_SEARCH", () => {
   const staged = rerankersFromEnv({ AGENT_TOOL_SEARCH: "embeddings, jev", AGENT_TOOL_SEARCH_API_KEY: "k" });
   assert.deepEqual(staged.map(stage => [stage.kind, stage.maxCandidates]), [["embeddings", Infinity], ["jev", 100]]);
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev" }), /needs AGENT_TOOL_SEARCH_API_KEY/);
-  // A key read from a secret that has no value yet: keywords only, rather than failing to start.
-  assert.deepEqual(rerankersFromEnv({ AGENT_TOOL_SEARCH: "embeddings,jev" }, null), []);
   assert.equal(rerankersFromEnv({ AGENT_TOOL_SEARCH: "embeddings,jev" }, "from-secret").length, 2);
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "vectors", AGENT_TOOL_SEARCH_API_KEY: "k" }), /not vectors/);
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev,jev", AGENT_TOOL_SEARCH_API_KEY: "k" }), /twice/);

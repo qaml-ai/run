@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Store the OpenRouter API key tools.search uses to rank by meaning (embeddings, then Jev), then
-# roll the ECS service. Until it is stored, search ranks by keywords only.
-#
-# Create a key at https://openrouter.ai/settings/keys (a separate key with a monthly limit is
-# enough: a search costs about $0.00015).
+# Store a dedicated OpenRouter API key for tools.search ranking by meaning (embeddings, then Jev),
+# then roll the ECS service. Optional: without it, search uses the platform's OpenRouter key
+# (platformKeys.openrouter in the tenants secret). A dedicated key keeps search spend on its own
+# (https://openrouter.ai/settings/keys, with a monthly limit; a search costs about $0.00015).
 #
 # Usage: infra/tool-search.sh   (reads the key from stdin)
 set -euo pipefail
@@ -11,7 +10,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
 
-[[ $# -eq 0 ]] || { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+[[ $# -eq 0 ]] || { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ ! -t 0 ]] || echo "Paste the OpenRouter API key and press Enter, then Ctrl-D:" >&2
 umask 077
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT

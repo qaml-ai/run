@@ -195,7 +195,7 @@ test("the session secret, secrets key, GitHub OAuth app, Stripe keys and tool se
     sessionSecret: "plain-session", secretsKey: "plain-key", github: { clientId: "id", clientSecret: "secret" }, stripe: { secretKey: "sk_test_x", webhookSecret: "whsec_x" }, toolSearchKey: "sk-or-plain",
   });
   assert.deepEqual(await runtimeSecrets({}), { sessionSecret: undefined, secretsKey: undefined, github: undefined, stripe: undefined, toolSearchKey: undefined });
-  // So does the tool search key: search ranks by keywords until it has one.
+  // So may the tool search key: search then uses the platform's OpenRouter key.
   assert.equal((await runtimeSecrets({ ...env, AGENT_TOOL_SEARCH_SECRET_ARN: arn("tool-search-unset") })).toolSearchKey, null);
   await assert.rejects(runtimeSecrets({ ...env, AGENT_TOOL_SEARCH_API_KEY: "x" }), /AGENT_TOOL_SEARCH_API_KEY or AGENT_TOOL_SEARCH_SECRET_ARN, not both/);
   // The Stripe secret exists before anyone stores its value: purchases stay off rather than the runtime failing to start.

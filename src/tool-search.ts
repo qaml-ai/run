@@ -229,7 +229,12 @@ class Lru<V> {
   }
 }
 
-async function post(url: string, apiKey: string, body: unknown, signal: AbortSignal) {
+/** A key, or where to read the current one (the platform's, which the tenants file can change). */
+export type KeySource = string | (() => string | undefined);
+
+async function post(url: string, key: KeySource, body: unknown, signal: AbortSignal) {
+  const apiKey = typeof key === "function" ? key() : key;
+  if (!apiKey) throw new Error("No API key for tool search: set platformKeys.openrouter in the tenants file, or AGENT_TOOL_SEARCH_API_KEY");
   const response = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
   const text = await response.text();
   if (!response.ok) throw new Error(`${new URL(url).host} answered ${response.status}: ${text.slice(0, 200)}`);
@@ -240,7 +245,7 @@ async function post(url: string, apiKey: string, body: unknown, signal: AbortSig
  * Embeddings from an OpenAI-compatible `/embeddings` endpoint (OpenRouter, OpenAI, a local server).
  * Tool texts are embedded once and cached by content, so a search usually embeds only its query.
  */
-export function embeddingReranker(options: { url: string; apiKey: string; model: string; cacheSize?: number }): Reranker {
+export function embeddingReranker(options: { url: string; apiKey: KeySource; model: string; cacheSize?: number }): Reranker {
   const cache = new Lru<number[]>(options.cacheSize ?? 20_000);
   // Texts being embedded now, so a search that arrives while a catalog warms waits for it instead of embedding it again.
   const inflight = new Map<string, Promise<void>>();
@@ -297,7 +302,7 @@ const endpoint = (base: string, path: string) => `${base.replace(/\/$/, "")}/${p
  * answer is an independent probability, so it both orders the candidates and says which are
  * irrelevant (below 0.5).
  */
-export function jevReranker(options: { url: string; apiKey: string; model: string }): Reranker {
+export function jevReranker(options: { url: string; apiKey: KeySource; model: string }): Reranker {
   return {
     kind: "jev", maxCandidates: STAGE_CANDIDATES, relevantAt: 0.5,
     async rerank(query, candidates, signal) {
@@ -323,20 +328,17 @@ const DEFAULT_MODELS: Record<string, string> = { embeddings: "openai/text-embedd
  * none), `embeddings`, or `embeddings,jev`: embeddings rank the whole catalog by meaning, then Jev
  * judges the best hundred and drops the irrelevant. (`jev` alone sees only keyword matches first on
  * catalogs over a hundred tools.) Both speak to OpenRouter by default (AGENT_TOOL_SEARCH_URL,
- * https://openrouter.ai/api/v1) with AGENT_TOOL_SEARCH_API_KEY, or on ECS the secret named by
- * AGENT_TOOL_SEARCH_SECRET_ARN (`apiKey`, null while it has no value); the URL may be any compatible API.
+ * https://openrouter.ai/api/v1) with `apiKey`: the server passes AGENT_TOOL_SEARCH_API_KEY (or the
+ * secret AGENT_TOOL_SEARCH_SECRET_ARN names) if set, else the platform's OpenRouter key from the
+ * tenants file. The URL may be any compatible API.
  * AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL and AGENT_TOOL_SEARCH_JEV_MODEL override the defaults
  * (openai/text-embedding-3-small, typesafe/jev-1.13).
  */
-export function rerankersFromEnv(env: Record<string, string | undefined> = process.env, apiKey: string | null | undefined = env.AGENT_TOOL_SEARCH_API_KEY): Reranker[] {
+export function rerankersFromEnv(env: Record<string, string | undefined> = process.env, apiKey: KeySource | undefined = env.AGENT_TOOL_SEARCH_API_KEY): Reranker[] {
   const kinds = (env.AGENT_TOOL_SEARCH?.trim() || "keyword").split(",").map(kind => kind.trim()).filter(Boolean);
   if (kinds.length === 1 && kinds[0] === "keyword") return [];
   for (const kind of kinds) if (!(kind in DEFAULT_MODELS)) throw new Error(`AGENT_TOOL_SEARCH must be keyword, embeddings, jev or embeddings,jev; not ${kind}`);
   if (new Set(kinds).size !== kinds.length) throw new Error("AGENT_TOOL_SEARCH names a stage twice");
-  if (apiKey === null) {
-    console.error(JSON.stringify({ type: "tool_search_not_configured", reason: "AGENT_TOOL_SEARCH_SECRET_ARN has no value yet; tools.search ranks by keywords only" }));
-    return [];
-  }
   if (!apiKey) throw new Error(`AGENT_TOOL_SEARCH=${kinds.join(",")} needs AGENT_TOOL_SEARCH_API_KEY`);
   const url = env.AGENT_TOOL_SEARCH_URL || "https://openrouter.ai/api/v1";
   return kinds.map(kind => {
