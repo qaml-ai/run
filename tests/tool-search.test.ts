@@ -181,6 +181,9 @@ test("rerank stages come from AGENT_TOOL_SEARCH", () => {
   const staged = rerankersFromEnv({ AGENT_TOOL_SEARCH: "embeddings, jev", AGENT_TOOL_SEARCH_API_KEY: "k" });
   assert.deepEqual(staged.map(stage => [stage.kind, stage.maxCandidates]), [["embeddings", Infinity], ["jev", 100]]);
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev" }), /needs AGENT_TOOL_SEARCH_API_KEY/);
+  // A key read from a secret that has no value yet: keywords only, rather than failing to start.
+  assert.deepEqual(rerankersFromEnv({ AGENT_TOOL_SEARCH: "embeddings,jev" }, null), []);
+  assert.equal(rerankersFromEnv({ AGENT_TOOL_SEARCH: "embeddings,jev" }, "from-secret").length, 2);
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "vectors", AGENT_TOOL_SEARCH_API_KEY: "k" }), /not vectors/);
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev,jev", AGENT_TOOL_SEARCH_API_KEY: "k" }), /twice/);
 });

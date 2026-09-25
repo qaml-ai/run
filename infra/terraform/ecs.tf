@@ -36,6 +36,10 @@ locals {
     AGENT_GITHUB_OAUTH_SECRET_ARN = aws_secretsmanager_secret.runtime["github-oauth"].arn
     # Credit purchases stay off until infra/stripe.sh stores a value in it.
     AGENT_STRIPE_SECRET_ARN = aws_secretsmanager_secret.runtime["stripe"].arn
+    # tools.search: embeddings rank the catalog by meaning, then Jev drops irrelevant tools. Keywords
+    # only until infra/tool-search.sh stores the key; a stage that fails is skipped per search.
+    AGENT_TOOL_SEARCH            = "embeddings,jev"
+    AGENT_TOOL_SEARCH_SECRET_ARN = aws_secretsmanager_secret.runtime["tool-search"].arn
     # Scale-in protection while turns run, and retirement once superseded.
     AGENT_ECS_CLUSTER = local.cluster_name
     AGENT_ECS_SERVICE = local.service_name
@@ -120,6 +124,7 @@ resource "aws_iam_role_policy" "task" {
           aws_secretsmanager_secret.runtime["secrets-key"].arn,
           aws_secretsmanager_secret.runtime["github-oauth"].arn,
           aws_secretsmanager_secret.runtime["stripe"].arn,
+          aws_secretsmanager_secret.runtime["tool-search"].arn,
         ]
       },
       {

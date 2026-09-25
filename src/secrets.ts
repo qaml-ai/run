@@ -38,7 +38,15 @@ export async function runtimeSecrets(env = process.env) {
       stripe = { secretKey, webhookSecret };
     } else console.error(JSON.stringify({ type: "stripe_not_configured", reason: "AGENT_STRIPE_SECRET_ARN has no value yet" }));
   } else if (env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) stripe = { secretKey: env.STRIPE_SECRET_KEY, webhookSecret: env.STRIPE_WEBHOOK_SECRET };
+  // The key for tool search's ranking by meaning (AGENT_TOOL_SEARCH). Null: the secret exists with no value yet, so keywords only.
+  const toolSearchArn = exclusive(["AGENT_TOOL_SEARCH_API_KEY"], "AGENT_TOOL_SEARCH_SECRET_ARN");
+  let toolSearchKey: string | null | undefined = env.AGENT_TOOL_SEARCH_API_KEY;
+  if (toolSearchArn) {
+    try { toolSearchKey = (await read(toolSearchArn)).trim() || null; }
+    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; toolSearchKey = null; }
+  }
   return {
+    toolSearchKey,
     sessionSecret: sessionArn ? await read(sessionArn) : env.AGENT_SESSION_SECRET,
     secretsKey: keyArn ? await read(keyArn) : env.AGENT_SECRETS_KEY,
     github,

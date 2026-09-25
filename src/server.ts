@@ -70,7 +70,7 @@ if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RE
 // Where js_exec runs, reported in the "listening" line; fails startup if isolation is required but absent.
 const sandbox = await checkSandbox();
 // How tools.search ranks: keywords alone, or fused with the operator's rerank stages.
-const rerankers = rerankersFromEnv();
+const rerankers = rerankersFromEnv(process.env, secrets.toolSearchKey);
 // Control plane: coordination and small mutable state in Postgres.
 const db = await databaseFromEnvironment();
 await migrate(db);

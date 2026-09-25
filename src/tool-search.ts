@@ -308,16 +308,20 @@ const DEFAULT_MODELS: Record<string, string> = { embeddings: "openai/text-embedd
  * none), `embeddings`, or `embeddings,jev`: embeddings rank the whole catalog by meaning, then Jev
  * judges the best hundred and drops the irrelevant. (`jev` alone sees only keyword matches first on
  * catalogs over a hundred tools.) Both speak to OpenRouter by default (AGENT_TOOL_SEARCH_URL,
- * https://openrouter.ai/api/v1) with AGENT_TOOL_SEARCH_API_KEY; the URL may be any compatible API.
+ * https://openrouter.ai/api/v1) with AGENT_TOOL_SEARCH_API_KEY, or on ECS the secret named by
+ * AGENT_TOOL_SEARCH_SECRET_ARN (`apiKey`, null while it has no value); the URL may be any compatible API.
  * AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL and AGENT_TOOL_SEARCH_JEV_MODEL override the defaults
  * (openai/text-embedding-3-small, typesafe/jev-1.13).
  */
-export function rerankersFromEnv(env: Record<string, string | undefined> = process.env): Reranker[] {
+export function rerankersFromEnv(env: Record<string, string | undefined> = process.env, apiKey: string | null | undefined = env.AGENT_TOOL_SEARCH_API_KEY): Reranker[] {
   const kinds = (env.AGENT_TOOL_SEARCH?.trim() || "keyword").split(",").map(kind => kind.trim()).filter(Boolean);
   if (kinds.length === 1 && kinds[0] === "keyword") return [];
   for (const kind of kinds) if (!(kind in DEFAULT_MODELS)) throw new Error(`AGENT_TOOL_SEARCH must be keyword, embeddings, jev or embeddings,jev; not ${kind}`);
   if (new Set(kinds).size !== kinds.length) throw new Error("AGENT_TOOL_SEARCH names a stage twice");
-  const apiKey = env.AGENT_TOOL_SEARCH_API_KEY;
+  if (apiKey === null) {
+    console.error(JSON.stringify({ type: "tool_search_not_configured", reason: "AGENT_TOOL_SEARCH_SECRET_ARN has no value yet; tools.search ranks by keywords only" }));
+    return [];
+  }
   if (!apiKey) throw new Error(`AGENT_TOOL_SEARCH=${kinds.join(",")} needs AGENT_TOOL_SEARCH_API_KEY`);
   const url = env.AGENT_TOOL_SEARCH_URL || "https://openrouter.ai/api/v1";
   return kinds.map(kind => {

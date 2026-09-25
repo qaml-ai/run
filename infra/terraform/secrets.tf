@@ -12,6 +12,7 @@ locals {
     tenants      = "Agent runtime tenants: operator token hashes and provider API keys. Edit with infra/agent-runtime/tenant.sh."
     github-oauth = "GitHub OAuth app for agent runtime console sign-in"
     stripe       = "Stripe secret key and webhook signing secret for agent runtime credit purchases. Set with infra/stripe.sh."
+    tool-search  = "OpenRouter API key for tools.search ranking by meaning (embeddings and Jev). Set with infra/tool-search.sh."
   }
 }
 

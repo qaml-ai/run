@@ -649,6 +649,10 @@ costs a script nothing until it asks.
   `https://api.typesafe.ai/v1` for Jev). `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` and
   `AGENT_TOOL_SEARCH_JEV_MODEL` override the defaults
   (`openai/text-embedding-3-small`, `typesafe/jev-1.13`).
+- On ECS, Terraform sets `AGENT_TOOL_SEARCH=embeddings,jev` and the runtime reads
+  the key from the `tool-search` secret (`AGENT_TOOL_SEARCH_SECRET_ARN`), never
+  from its environment. Store it with `infra/tool-search.sh` (paste an OpenRouter
+  key); until then search ranks by keywords only.
 
 ### Identity tokens (`auth: { type: "runtime" }`)
 
