@@ -59,6 +59,16 @@ const agent = await runtime.createAgent({
 await agent.prompt("Plan restocks for anything below target.");
 ```
 
+Already have an MCP server? Attach it instead of (or alongside) `tools`: the SDK
+talks to it in memory, and the same server can later run remotely as a definition's
+`mcpServers` entry without changing its tools. Install `@modelcontextprotocol/sdk` too.
+
+```ts
+import { fromMcpServer } from "@camelai/agent-runtime/mcp";
+
+const agent = await runtime.createAgent({ name: "Inventory planner", mcp: await fromMcpServer(server) });
+```
+
 Switch models between turns with `await agent.configure({ model: "openai/gpt-5.2" })`;
 the history carries over. Your tenant needs a key for that provider.
 
@@ -80,7 +90,7 @@ The routes are `/v1/me`, `/v1/providers` (+ `/:provider/key`), `/v1/models`,
 `/v1/tokens` and `/v1/usage`; see `src/api.ts`.
 
 Save `agent.session` (it contains a scoped credential) to reconnect later with
-`runtime.connectAgent(session, { tools })`. Pass the same `idempotencyKey` to
+`runtime.connectAgent(session, { tools })` (or `{ mcp }`). Pass the same `idempotencyKey` to
 `createAgent` to get the same agent back instead of a new one.
 
 `@camelai/agent-runtime` (without `/node`) is the portable build for Workers and
