@@ -9,6 +9,7 @@ import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import { BUILTINS } from "./builtins.ts";
+import { searchOrder } from "./web-search.ts";
 import { mcpServersInput, mcpServerView, openApiInput, openApiView, type McpServerSpec, type OpenApiSpec, type Sources } from "./tool-sources.ts";
 
 /**
@@ -29,6 +30,8 @@ export interface DefinitionSpec {
   openApi?: OpenApiSpec[];
   /** Built-in tools to enable: web_fetch, web_search, schedule. */
   builtins?: string[];
+  /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
+  webSearch?: { providers: string[] };
   /** Made from this channel's inline template, so that channel may rewrite it. */
   channel?: string;
 }
@@ -40,13 +43,13 @@ export interface DefinitionRef { id: string; revision: number }
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["model", "systemPrompt", "thinkingLevel", "limits", "mounts", "builtins", "mcpServers", "openApi"] as const;
+const FIELDS = ["model", "systemPrompt", "thinkingLevel", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi"] as const;
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 /** The server-side tool sources an agent takes from a definition, if it has any. */
 export function sources(spec: DefinitionSpec): Sources | undefined {
   const found: Sources = {
-    ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
+    ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.webSearch && spec.builtins?.includes("web_search") ? { webSearch: spec.webSearch } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
     ...(spec.openApi?.length ? { openApi: spec.openApi } : {}),
   };
   return Object.keys(found).length ? found : undefined;
@@ -214,6 +217,11 @@ export class Definitions {
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
     if (spec.builtins !== undefined && (!Array.isArray(spec.builtins) || new Set(spec.builtins).size !== spec.builtins.length || spec.builtins.some(name => !Object.hasOwn(BUILTINS, name)))) {
       throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);
+    }
+    if (spec.webSearch !== undefined) {
+      const webSearch = spec.webSearch as unknown;
+      if (!webSearch || typeof webSearch !== "object" || Array.isArray(webSearch) || Object.keys(webSearch).some(key => key !== "providers")) throw new HttpError(400, "webSearch is { providers }");
+      try { searchOrder((webSearch as { providers?: unknown }).providers, "webSearch.providers"); } catch (error) { throw new HttpError(400, errorText(error)); }
     }
     const prefixes = [...spec.mcpServers ?? [], ...spec.openApi ?? []].map(source => source.name);
     const twice = prefixes.find((name, index) => prefixes.indexOf(name) !== index);

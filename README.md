@@ -233,8 +233,11 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead (see [Billing](#billing)) |
 | `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | how old a GitHub account must be for a new tenant's starting credit (default 30) |
 | `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
-| `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_PRICE_WEB_SEARCH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 0.005, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
-| `AGENT_WEB_SEARCH_PROVIDER`, `AGENT_BRAVE_SEARCH_URL` | the `web_search` API (`brave`, the only one so far) and its endpoint (default Brave's; tests point it at a local server) |
+| `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
+| `AGENT_PRICE_WEB_SEARCH_EXA_USD`, `AGENT_PRICE_WEB_SEARCH_BRAVE_USD`, `AGENT_PRICE_WEB_SEARCH_PARALLEL_USD`, `AGENT_PRICE_WEB_RENDER_USD` | per platform-key `web_search` by the provider that answered, and per page `web_fetch` has Firecrawl render (defaults 0.007, 0.005, 0.001, 0.00083); `AGENT_PRICE_WEB_SEARCH_USD` sets all three search prices at once |
+| `AGENT_WEB_SEARCH_PROVIDERS` | the providers `web_search` tries, in order (default `exa,brave,parallel`) |
+| `AGENT_WEB_SEARCH_TIMEOUT_MS` | how long each search provider gets before the next is tried (default 5000) |
+| `AGENT_EXA_SEARCH_URL`, `AGENT_BRAVE_SEARCH_URL`, `AGENT_PARALLEL_SEARCH_URL`, `AGENT_FIRECRAWL_SCRAPE_URL` | the providers' endpoints (default their own; tests point them at local servers) |
 | `AGENT_BILLING_INTERVAL_MS` | how often a node checks whether today's storage charge has run (default 3600000) |
 | `AGENT_STORAGE_RECONCILE_DAYS` | how often the storage charge first corrects tracked storage by listing Storage (default 7; 0: only the first time; see [Billing](#billing)) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
@@ -477,7 +480,18 @@ reconfiguration, not at a refresh.
   followed, each checked; the deadline is 20 s and the response cap 5 MiB. It
   returns `{url, status, contentType, title?, text, truncated?}`: HTML reduced to
   readable text, other text as is, 20,000 characters by default (at most
-  100,000). Other content types are refused.
+  100,000). Other content types are refused. A page that is only a JavaScript
+  shell (over 5 KB of HTML with under 200 characters of text, or little text
+  beside an empty `#root`/`#app` mount point or a "needs JavaScript" notice) is
+  rendered by [Firecrawl](https://www.firecrawl.dev/)'s scrape endpoint when a
+  `firecrawl` key resolves (the same order as a search provider's, below), and
+  comes back as markdown with `rendered: true`. The page's final URL is checked
+  with the guard first, every address its host resolves to included, so
+  Firecrawl is never asked for a page the runtime could not fetch itself. If
+  Firecrawl fails, the page comes back as fetched. A render on a key that is not
+  the tenant's own is charged at `AGENT_PRICE_WEB_RENDER_USD` (default $0.00083,
+  one Firecrawl credit at its Standard plan's price) and appears in `/v1/usage`
+  as `firecrawl/web_fetch`.
 - `schedule` (`{text, inSeconds | at, everySeconds?}`), `list_schedules` and
   `cancel_schedule` (`{id}`) let an agent manage its own wake-ups in the shared
   scheduler; each one arrives as a new message. They write under the agent's
@@ -485,25 +499,42 @@ reconfiguration, not at a refresh.
   The limits are those of `/v1/agents/:id/schedules`: 100 per agent, at most a
   year ahead, and repeats at least a minute apart.
 - `web_search` (`{query, count?, freshness?}`) asks a web search API and returns
-  `{query, results: [{title, url, snippet, date?}]}`: 5 results by default, at
-  most 10, plain text (snippets at most 500 characters), `https://`/`http://`
-  links only; `freshness` (`day`, `week`, `month`, `year`) keeps recent pages. The
-  results are for finding pages: with `web_fetch` enabled too, its description
-  tells the model to read a result in full with `web_fetch`, whose `url` it takes
-  as is. The API is [Brave Search](https://brave.com/search/api/) (its own index of
-  the web, one GET per search, page dates, about $5 per 1,000 searches) behind a
-  small `SearchProvider` interface in `src/web-search.ts`, so another can be
-  added (`AGENT_WEB_SEARCH_PROVIDER` picks it). Its key is a provider key named
-  `brave`: the tenant's own (`PUT /v1/providers/brave/key`, or the console's
-  Models & keys page; not checked when set, as a check would cost a search), an
-  admin's `apiKeys.brave` in the tenants file, else for a prepaid tenant the
-  platform's `platformKeys.brave`. A `*` key never counts, as it is a model key.
-  Without one, a search fails with a tool error saying so. A search on a key that
-  is not the tenant's own is charged to credit at `AGENT_PRICE_WEB_SEARCH_USD`
-  (default $0.005) once the API answers; every search appears in `/v1/usage` as
-  the model `brave/web_search`. The request goes through the outbound guard, with
-  the key sent to the API's origin only (`AGENT_BRAVE_SEARCH_URL` overrides the
-  endpoint, for tests).
+  `{query, provider, results: [{title, url, snippet, date?}]}`: 5 results by
+  default, at most 10, plain text (snippets at most 500 characters),
+  `https://`/`http://` links only; `freshness` (`day`, `week`, `month`, `year`)
+  keeps recent pages; `provider` is the API that answered. The results are for
+  finding pages: with `web_fetch` enabled too, its description tells the model to
+  read a result in full with `web_fetch`, whose `url` it takes as is.
+
+  It tries providers in order, `exa,brave,parallel` by default
+  (`AGENT_WEB_SEARCH_PROVIDERS`), chosen by the benchmark in
+  `bench/search/REPORT.md`:
+
+  | provider | mode | platform price per search |
+  | --- | --- | --- |
+  | [Exa](https://exa.ai/) | `instant`: its own neural index, query-focused highlights | $0.007 |
+  | [Brave Search](https://brave.com/search/api/) | web search: its own index, page dates | $0.005 |
+  | [Parallel](https://parallel.ai/) | `fast`: dated excerpts | $0.001 |
+
+  A definition can pin its own order (or a single provider) with
+  `"webSearch": {"providers": ["brave"]}`. For each provider in turn, the key is
+  the tenant's own (`PUT /v1/providers/<provider>/key`, or the console's Models &
+  keys page; not checked when set, as a check would cost a search), else an
+  admin's `apiKeys.<provider>` in the tenants file, else for a prepaid tenant the
+  platform's `platformKeys.<provider>`; a `*` key never counts, as it is a model
+  key. A provider without a key is skipped. One that times out (5 s each,
+  `AGENT_WEB_SEARCH_TIMEOUT_MS`), can't be reached, answers 429 or 5xx, refuses
+  the key (401, 402, 403) or answers something other than JSON hands over to the
+  next; any other 4xx means the request itself is bad and ends the search with
+  that error. With no key for any provider, or none answering, the search fails
+  with a tool error saying so. A search on a key that is not the tenant's own is
+  charged to credit at the price of the provider that answered
+  (`AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD`) once it answers; every
+  search appears in `/v1/usage` as that provider's model (`exa/web_search`), and
+  the hour's usage entry in the ledger counts `searches`. The requests go through
+  the outbound guard, with each key sent to its API's origin only. Firecrawl also
+  has a search provider in `src/web-search.ts`, but `web_search` does not use it:
+  its results carry no dates.
 
 ### MCP servers
 
@@ -868,9 +899,12 @@ runs on the platform's keys, the tenants file's top-level `platformKeys`
   own key cost no credit. `/v1/usage` reports `platformResponses` and `platformCost`.
 - **Agent time**, $0.01 per hour an agent spends in a run (model calls and tool
   execution, not idle loaded time), metered continuously, with or without its own key.
-- **Web searches** on the platform's search key (`platformKeys.brave`), $0.005
-  each (`AGENT_PRICE_WEB_SEARCH_USD`), reported with the tokens: see `web_search`
-  under [Built-ins](#built-ins-a-definition-enables).
+- **Web searches and page renders** on the platform's keys (`platformKeys.exa`,
+  `.brave`, `.parallel`, `.firecrawl`), at the answering provider's price per
+  search ($0.007, $0.005, $0.001) and $0.00083 per page `web_fetch` has Firecrawl
+  render. The hour's usage entry counts them (`searches`, `renders`, and their
+  cost as `web`) apart from model tokens: see `web_search` and `web_fetch` under
+  [Built-ins](#built-ins-a-definition-enables).
 - **Storage**, $0.10 per GB-month of what its agents and volumes keep in Storage
   (transcripts, journals, volume trees and snapshots, file chunks, each chunk once
   however many files share it), charged once a UTC day, on one node, for that day.

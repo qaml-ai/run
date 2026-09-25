@@ -116,6 +116,8 @@ interface SourceOptions { name: string; headers?: Record<string, string>; auth?:
 export interface DefinitionInput {
   name: string; model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: ("web_fetch" | "web_search" | "schedule")[];
+  /** The search providers web_search tries, in order, instead of the runtime's. */
+  webSearch?: { providers: ("exa" | "brave" | "parallel")[] };
   mcpServers?: (SourceOptions & { url: string })[];
   openApi?: (SourceOptions & { spec?: string | Record<string, unknown>; baseUrl?: string })[];
 }

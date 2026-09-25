@@ -150,6 +150,14 @@ export class Outbound {
     return url;
   }
 
+  /** A URL the runtime could fetch now: `check`ed, and every address its host resolves to allowed. For handing a URL to a service that fetches it for us. */
+  async reachable(value: string | URL): Promise<URL> {
+    const url = this.check(value);
+    const host = url.hostname.replace(/^\[(.*)\]$/, "$1");
+    if (!isIP(host)) await this.addresses(host);
+    return url;
+  }
+
   /**
    * Fetch a checked URL. `credentials` are headers sent only to the origin of `url`;
    * redirects are followed up to `maxRedirects` (none by default), each hop checked.

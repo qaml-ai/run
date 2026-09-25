@@ -2,6 +2,8 @@
 
 Which API should back the `web_search` built-in by default, and which should it fall back to? I ran 43 agent-style queries through seven provider configurations, twice each. A judge model graded every result list blind, all in one batch, and 16 known-answer questions were answered using only each provider's results. The tables here come from `results/summary.md`, which `scripts/bench-search.ts` generates from `results/raw.json`.
 
+> **Adopted:** the order Exa (instant), Brave, Parallel (fast) is now `web_search`'s default, with per-provider prices and fallback (README, "Built-ins a definition enables"). Firecrawl renders JavaScript-only pages for `web_fetch` instead of searching. The "before switching" items below are done.
+
 ## Recommendation
 
 - **Default: Exa, `type: "instant"`.** It had the best relevance (0.87 relevance@5, 4.88/5 list usefulness) and no errors. Its first-run latency was p50 565 ms and p95 1.0 s. News freshness was 80% of results dated within 7 days, and 100% with `freshness: "week"`. It answered 16/16 known-answer questions. Its results also carry query-focused highlights, up to 3k characters per result, so an agent can often answer without calling web_fetch. Its relevance matched Exa's default `auto` mode (0.86) at half the latency, and both cost the same.

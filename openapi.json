@@ -76,9 +76,10 @@
             "type": "string",
             "enum": [
               "model",
-              "search"
+              "search",
+              "fetch"
             ],
-            "description": "model: an LLM provider; search: a web search API, whose key the web_search built-in uses"
+            "description": "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages"
           },
           "models": {
             "type": "integer"
@@ -1090,6 +1091,33 @@
               "maxPurchase": {
                 "type": "integer",
                 "description": "Largest purchase, in micro-USD (1 USD = 1000000)"
+              },
+              "webSearch": {
+                "type": "object",
+                "properties": {
+                  "exa": {
+                    "type": "integer",
+                    "description": "Per search Exa answers, in micro-USD (1 USD = 1000000)"
+                  },
+                  "brave": {
+                    "type": "integer",
+                    "description": "Per search Brave answers, in micro-USD (1 USD = 1000000)"
+                  },
+                  "parallel": {
+                    "type": "integer",
+                    "description": "Per search Parallel answers, in micro-USD (1 USD = 1000000)"
+                  }
+                },
+                "required": [
+                  "exa",
+                  "brave",
+                  "parallel"
+                ],
+                "description": "Per web_search on the platform's key for the provider that answered"
+              },
+              "webRender": {
+                "type": "integer",
+                "description": "Per page web_fetch has Firecrawl render on the platform's key, in micro-USD (1 USD = 1000000)"
               }
             },
             "required": [
@@ -1097,7 +1125,9 @@
               "storageGbMonth",
               "purchaseFeeBps",
               "minPurchase",
-              "maxPurchase"
+              "maxPurchase",
+              "webSearch",
+              "webRender"
             ],
             "description": "Model tokens are charged at the provider's list price when they run on the platform's keys"
           }
@@ -1562,7 +1592,34 @@
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups"
+          },
+          "webSearch": {
+            "type": "object",
+            "properties": {
+              "providers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "exa",
+                    "brave",
+                    "parallel"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 3,
+                "description": "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited",
+                "example": [
+                  "brave"
+                ]
+              }
+            },
+            "required": [
+              "providers"
+            ],
+            "additionalProperties": false,
+            "description": "Pin web_search to providers of your choosing instead of the runtime's order (exa, brave, parallel by default)"
           },
           "mcpServers": {
             "type": "array",
@@ -1803,7 +1860,34 @@
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups"
+          },
+          "webSearch": {
+            "type": "object",
+            "properties": {
+              "providers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "exa",
+                    "brave",
+                    "parallel"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 3,
+                "description": "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited",
+                "example": [
+                  "brave"
+                ]
+              }
+            },
+            "required": [
+              "providers"
+            ],
+            "additionalProperties": false,
+            "description": "Pin web_search to providers of your choosing instead of the runtime's order (exa, brave, parallel by default)"
           },
           "mcpServers": {
             "type": "array",
@@ -2122,7 +2206,37 @@
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups"
+          },
+          "webSearch": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "providers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "exa",
+                    "brave",
+                    "parallel"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 3,
+                "description": "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited",
+                "example": [
+                  "brave"
+                ]
+              }
+            },
+            "required": [
+              "providers"
+            ],
+            "additionalProperties": false,
+            "description": "Pin web_search to providers of your choosing instead of the runtime's order (exa, brave, parallel by default)"
           },
           "mcpServers": {
             "type": [

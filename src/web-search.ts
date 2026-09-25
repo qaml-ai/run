@@ -5,11 +5,14 @@ import { readableText } from "./html-text.ts";
 
 /**
  * The `web_search` built-in: a query to a web search API, answered with a few results
- * (title, url, snippet, date) for the model to read further with web_fetch. The API sits
- * behind `SearchProvider`, so another can be added; its key is a provider key like a
- * model's (the tenant's own, else for a prepaid tenant the platform's, billed per search).
- * `content` is the page's text when the API returns it with the results (Exa's highlights,
- * Parallel's excerpts, Firecrawl's scraped markdown), so the model may not need web_fetch.
+ * (title, url, snippet, date) for the model to read further with web_fetch. Each API sits
+ * behind `SearchProvider`; a search tries them in order (Exa, Brave, Parallel by default;
+ * see bench/search/REPORT.md for why), each with the tenant's key for it, falling through
+ * to the next when one is down, slow or out of quota. A key is a provider key like a
+ * model's (the tenant's own, else an admin's, else for a prepaid tenant the platform's,
+ * billed at that provider's price per search). `content` is the page's text when the API
+ * returns it with the results (Exa's highlights, Parallel's excerpts, Firecrawl's scraped
+ * markdown).
  */
 export type SearchResult = { title: string; url: string; snippet: string; date?: string; content?: string };
 export type SearchQuery = { query: string; count: number; freshness?: Freshness };
@@ -27,9 +30,11 @@ export interface SearchProvider {
 
 export type SearchRequest = { url: string; body?: string; headers: Record<string, string>; secrets: Record<string, string> };
 
-export const SEARCH = { count: 5, maxCount: 10, timeoutMs: 15_000, maxBytes: 2 * 1024 * 1024, snippet: 500, content: 3_000, title: 300, query: 400 };
-/** Search providers, by the provider key they use; the first is the one `web_search` uses unless the operator picks another. */
-export const SEARCH_PROVIDERS = ["brave"] as const;
+/** `timeoutMs` is each provider's: a slower one is given up on for the next. */
+export const SEARCH = { count: 5, maxCount: 10, timeoutMs: 5_000, maxBytes: 2 * 1024 * 1024, snippet: 500, content: 3_000, title: 300, query: 400 };
+/** Search providers, by the provider key they use, in the order `web_search` tries them unless the operator or a definition picks another. */
+export const SEARCH_PROVIDERS = ["exa", "brave", "parallel"] as const;
+export type SearchProviderId = typeof SEARCH_PROVIDERS[number];
 
 /** Markdown links and images reduced to their text: a snippet's link targets are noise to the model. */
 const unlink = (value: string) => value.replace(/!?\[([^\]]*)\]\([^)\s]*(?:\s+"[^"]*")?\)/g, "$1");
@@ -160,49 +165,114 @@ export function firecrawlSearch(options: { endpoint?: string; scrape?: boolean }
   };
 }
 
-/** The search provider named by AGENT_WEB_SEARCH_PROVIDER (default brave), at its endpoint (AGENT_BRAVE_SEARCH_URL). */
-export function searchProviderFromEnvironment(env = process.env): SearchProvider {
-  const id = env.AGENT_WEB_SEARCH_PROVIDER ?? "brave";
-  if (id === "brave") return braveSearch(env.AGENT_BRAVE_SEARCH_URL);
-  throw new Error(`AGENT_WEB_SEARCH_PROVIDER must be one of: ${SEARCH_PROVIDERS.join(", ")}`);
+/**
+ * The search providers, by id, at their endpoints (AGENT_EXA_SEARCH_URL, AGENT_BRAVE_SEARCH_URL,
+ * AGENT_PARALLEL_SEARCH_URL, for tests), and the order searches try them in: AGENT_WEB_SEARCH_PROVIDERS,
+ * comma-separated (default exa,brave,parallel). Exa answers in its fast `instant` mode and Parallel in `fast`.
+ */
+export function searchProvidersFromEnvironment(env = process.env): { providers: Record<SearchProviderId, SearchProvider>; order: SearchProviderId[] } {
+  const providers: Record<SearchProviderId, SearchProvider> = {
+    exa: exaSearch({ type: "instant", ...(env.AGENT_EXA_SEARCH_URL ? { endpoint: env.AGENT_EXA_SEARCH_URL } : {}) }),
+    brave: braveSearch(env.AGENT_BRAVE_SEARCH_URL),
+    parallel: parallelSearch({ mode: "fast", ...(env.AGENT_PARALLEL_SEARCH_URL ? { endpoint: env.AGENT_PARALLEL_SEARCH_URL } : {}) }),
+  };
+  const order = searchOrder((env.AGENT_WEB_SEARCH_PROVIDERS ?? SEARCH_PROVIDERS.join(",")).split(",").map(id => id.trim()).filter(Boolean), "AGENT_WEB_SEARCH_PROVIDERS");
+  return { providers, order };
+}
+
+/** A list of search provider ids, checked: known ones, each once, at least one. */
+export function searchOrder(ids: unknown, name: string): SearchProviderId[] {
+  const known = (id: unknown): id is SearchProviderId => SEARCH_PROVIDERS.includes(id as SearchProviderId);
+  if (!Array.isArray(ids) || !ids.length || ids.length > SEARCH_PROVIDERS.length || !ids.every(known) || new Set(ids).size !== ids.length) {
+    throw new Error(`${name} must list one or more of ${SEARCH_PROVIDERS.join(", ")}, each once`);
+  }
+  return ids;
 }
 
 export interface WebSearchOptions {
   outbound: Outbound;
-  provider: SearchProvider;
-  /** The key a tenant's searches use, and whether it is the platform's rather than the tenant's own. */
+  providers: Record<SearchProviderId, SearchProvider>;
+  /** The order a search tries providers in, unless the agent's definition gives its own. */
+  order: SearchProviderId[];
+  /** The key a tenant's searches with `provider` use, and whether it is the platform's rather than the tenant's own. */
   key(tenant: string, provider: string): Promise<{ key: string; platform: boolean } | undefined>;
-  /** Micro-USD per search, reported as the search's cost. */
-  price: number;
+  /** Micro-USD per search with `provider`, reported as the search's cost. */
+  price(provider: SearchProviderId): number;
   /** Called with each completed search's usage: its cost is charged to credit when it ran on the platform's key. */
   onSearch?(tenant: string, agent: string, usage: UsageRecord): void;
+  /** Each provider's deadline (default SEARCH.timeoutMs). */
+  timeoutMs?: number;
+}
+
+/** Why a provider did not answer, and whether the next one should be tried. */
+class Attempt extends Error {
+  readonly next: boolean;
+  constructor(message: string, next: boolean) { super(message); this.next = next; }
 }
 
 export class WebSearch {
   readonly options: WebSearchOptions;
   constructor(options: WebSearchOptions) { this.options = options; }
-  get provider() { return this.options.provider.id; }
 
-  async search(context: { tenant: string; agent: string }, args: Record<string, unknown>, signal: AbortSignal) {
-    const { outbound, provider } = this.options;
+  /**
+   * Search with the first provider in order that has a key and answers. A timeout, a network error,
+   * a 429 or 5xx, a key the provider refuses (401, 402, 403) or an answer that is not JSON moves on to
+   * the next; any other 4xx is the request's fault, which another provider would not fix, and ends the search.
+   */
+  async search(context: { tenant: string; agent: string; providers?: string[] }, args: Record<string, unknown>, signal: AbortSignal) {
     const query = typeof args.query === "string" ? args.query.trim() : "";
     if (!query) throw new Error("web_search needs a query");
     const count = Math.min(SEARCH.maxCount, Math.max(1, Math.trunc(Number(args.count ?? SEARCH.count)) || SEARCH.count));
     const freshness = FRESHNESS.find(value => value === args.freshness);
-    const key = await this.options.key(context.tenant, provider.id);
-    if (!key) throw new Error(`Web search is not set up for this tenant: it needs a ${provider.id} API key (PUT /v1/providers/${provider.id}/key)`);
-    const { url, body: request, headers, secrets } = provider.request({ query: query.slice(0, SEARCH.query), count, ...(freshness ? { freshness } : {}) }, key.key);
-    const response = await outbound.fetch(url, { signal, headers, secrets, ...(request !== undefined ? { method: "POST", body: request } : {}), timeoutMs: SEARCH.timeoutMs, maxBytes: SEARCH.maxBytes });
+    const order = context.providers ? searchOrder(context.providers, "webSearch.providers") : this.options.order;
+    const failures: string[] = [];
+    const unkeyed: string[] = [];
+    for (const id of order) {
+      const key = await this.options.key(context.tenant, id);
+      if (!key) { unkeyed.push(id); continue; }
+      try {
+        const results = await this.attempt(this.options.providers[id], { query: query.slice(0, SEARCH.query), count, ...(freshness ? { freshness } : {}) }, key.key, signal);
+        // Only a search the API answered is charged, at its provider's price; its links are the web's, fetched (if at all) through web_fetch's guard.
+        this.options.onSearch?.(context.tenant, context.agent, { provider: id, model: "web_search", usage: { cost: { total: this.options.price(id) / MICROS } }, platform: key.platform, searches: 1 });
+        if (failures.length) console.error(JSON.stringify({ type: "web_search_fallback", tenant: context.tenant, agent: context.agent, answered: id, failed: failures }));
+        return { query, provider: id, results: results.slice(0, count).map(({ content: _content, ...result }) => result) };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        if (!(error instanceof Attempt)) throw error;
+        failures.push(error.message);
+        if (!error.next) break;
+      }
+    }
+    if (failures.length) throw new Error(`Web search failed: ${failures.join("; ")}`);
+    const keyHelp = unkeyed.length === 1 ? `a ${unkeyed[0]} API key (PUT /v1/providers/${unkeyed[0]}/key)` : `an API key for one of ${unkeyed.join(", ")} (PUT /v1/providers/<provider>/key)`;
+    throw new Error(`Web search is not set up for this tenant: it needs ${keyHelp}`);
+  }
+
+  private async attempt(provider: SearchProvider, query: SearchQuery, key: string, signal: AbortSignal): Promise<SearchResult[]> {
+    const timeoutMs = this.options.timeoutMs ?? SEARCH.timeoutMs;
+    const { url, body: request, headers, secrets } = provider.request(query, key);
+    let response: Response;
+    try {
+      response = await this.options.outbound.fetch(url, { signal, headers, secrets, ...(request !== undefined ? { method: "POST", body: request } : {}), timeoutMs, maxBytes: SEARCH.maxBytes });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Attempt(/No response within/.test(message) ? `${provider.id} did not answer within ${timeoutMs} ms` : `${provider.id} could not be reached (${message.slice(0, 200)})`, true);
+    }
     if (!response.ok) {
       await response.body?.cancel();
-      if (response.status === 401 || response.status === 403) throw new Error(`${provider.id} rejected the search API key (HTTP ${response.status})`);
-      if (response.status === 429) throw new Error(`${provider.id} is rate limiting searches (HTTP 429); try again shortly`);
-      throw new Error(`${provider.id} search failed (HTTP ${response.status})`);
+      const status = response.status;
+      if (status === 401 || status === 403) throw new Attempt(`${provider.id} rejected the search API key (HTTP ${status})`, true);
+      if (status === 402) throw new Attempt(`${provider.id} refused the search for payment (HTTP 402)`, true);
+      if (status === 429) throw new Attempt(`${provider.id} is rate limiting searches (HTTP 429)`, true);
+      if (status === 408 || status >= 500) throw new Attempt(`${provider.id} search failed (HTTP ${status})`, true);
+      throw new Attempt(`${provider.id} refused the search request (HTTP ${status})`, false);
     }
-    const body = await response.json().catch(() => { throw new Error(`${provider.id} answered with something other than JSON`); });
-    // Only a search the API answered is charged; its links are the web's, fetched (if at all) through web_fetch's guard.
-    this.options.onSearch?.(context.tenant, context.agent, { provider: provider.id, model: "web_search", usage: { cost: { total: this.options.price / MICROS } }, platform: key.platform });
-    const results = provider.results(body).filter(result => /^https?:\/\//i.test(result.url)).slice(0, count);
-    return { query, results };
+    let body: unknown;
+    try { body = await response.json(); } catch (error) {
+      if (signal.aborted) throw error;
+      throw new Attempt(`${provider.id} answered with something other than JSON`, true);
+    }
+    return provider.results(body).filter(result => /^https?:\/\//i.test(result.url));
   }
 }

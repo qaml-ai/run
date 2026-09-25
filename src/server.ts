@@ -38,7 +38,8 @@ import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from
 import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
-import { searchProviderFromEnvironment, WebSearch } from "./web-search.ts";
+import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
+import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
@@ -129,16 +130,24 @@ const outbound = outboundFromEnvironment();
 const mcp = new McpConnections({ outbound });
 // Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
 const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
-// web_search: the tenant's key for the search provider, else (prepaid) the platform's, whose searches are charged to credit.
+// web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else (prepaid) the
+// platform's, whose calls are charged to credit at that provider's price.
+const webKey = async (tenant: string, provider: string) => {
+  const resolved = await accounts.providerKey(tenant, provider, false);
+  return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
+};
+const searchTimeoutMs = Number(process.env.AGENT_WEB_SEARCH_TIMEOUT_MS ?? 5_000);
+if (!Number.isInteger(searchTimeoutMs) || searchTimeoutMs < 100 || searchTimeoutMs > 60_000) throw new Error("AGENT_WEB_SEARCH_TIMEOUT_MS must be an integer between 100 and 60000");
 const search = new WebSearch({
-  outbound, provider: searchProviderFromEnvironment(), price: accounts.billing.pricing.webSearch,
-  key: async (tenant, provider) => {
-    const resolved = await accounts.providerKey(tenant, provider, false);
-    return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
-  },
+  outbound, ...searchProvidersFromEnvironment(), key: webKey, timeoutMs: searchTimeoutMs,
+  price: provider => accounts.billing.pricing.webSearch[provider],
   onSearch: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
 });
-const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, get scheduler() { return scheduler; } });
+const render = new WebRender({
+  outbound, key: webKey, price: accounts.billing.pricing.webRender, endpoint: process.env.AGENT_FIRECRAWL_SCRAPE_URL,
+  onRender: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
+});
+const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; } });
 const definitions = new Definitions({ db, accounts, outbound });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */

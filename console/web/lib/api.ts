@@ -46,7 +46,7 @@ export function useApi<T>(path: string | undefined, intervalMs?: number) {
 
 export interface Me { tenant: string; via: "operator" | "token" | "console"; login?: string; canStoreKeys: boolean }
 export interface KeyStatus { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number }
-export interface Provider { id: string; kind: "model" | "search"; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
+export interface Provider { id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
 export interface Model {
   id: string; provider: string; modelId: string; name: string; api: string; reasoning: boolean; input: string[];
   contextWindow: number; maxTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number }; available: boolean;
@@ -79,7 +79,7 @@ export interface Billing {
   billing: "prepaid" | "none"; balance: number; freeCredit: boolean; checkout: boolean;
   month: { since: number } & Record<LedgerKind, number>;
   recent: LedgerEntry[];
-  rates: { agentHour: number; storageGbMonth: number; purchaseFeeBps: number; minPurchase: number; maxPurchase: number };
+  rates: { agentHour: number; storageGbMonth: number; purchaseFeeBps: number; minPurchase: number; maxPurchase: number; webSearch: Record<string, number>; webRender: number };
 }
 /** Micro-USD as dollars: cents, or finer for amounts under a cent. */
 export const formatMicros = (value: number) => {

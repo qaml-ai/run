@@ -25,6 +25,8 @@ function detail(entry: LedgerEntry) {
     if (meta.hour) parts.push(Date.now() < entry.createdAt + 3_600_000 ? "This hour so far" : "Hour total");
     if (meta.tokens) parts.push(`${formatMicros(meta.tokens)} model tokens`);
     if (meta.activeMs) parts.push(`${formatNumber(Math.round(meta.activeMs / 1000))} s of agent time`);
+    if (meta.searches) parts.push(`${formatNumber(meta.searches)} web search${meta.searches === 1 ? "" : "es"}`);
+    if (meta.renders) parts.push(`${formatNumber(meta.renders)} page render${meta.renders === 1 ? "" : "s"}`);
     return parts.join(" · ");
   }
   if (entry.kind === "storage") return `${meta.day}: ${formatNumber(meta.bytes / 1e9)} GB stored`;
@@ -212,7 +214,9 @@ export function BillingPage() {
               <CardDescription>
                 Agent time {formatMicros(data.rates.agentHour)} per active hour, metered continuously ·
                 storage {formatMicros(data.rates.storageGbMonth)} per GB-month, charged daily ·
-                model tokens at list price on the platform's keys; free with your own keys.
+                model tokens at list price on the platform's keys ·
+                web searches on the platform's keys at {Object.entries(data.rates.webSearch).map(([provider, price]) => `${formatMicros(price)} (${provider})`).join(", ")} each ·
+                rendered pages {formatMicros(data.rates.webRender)} each; all free with your own keys.
                 {data.freeCredit && " Tenants on free credit have lower agent and hourly spend limits until their first purchase."}
               </CardDescription>
             </CardHeader>

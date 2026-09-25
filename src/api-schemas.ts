@@ -22,7 +22,7 @@ const KeyStatus = z.object({
 
 export const Provider = z.object({
   id: z.string(),
-  kind: z.enum(["model", "search"]).openapi({ description: "model: an LLM provider; search: a web search API, whose key the web_search built-in uses" }),
+  kind: z.enum(["model", "search", "fetch"]).openapi({ description: "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages" }),
   models: z.number().int(),
   apiKey: z.boolean().openapi({ description: "Whether one API key is enough to use this provider" }),
   requires: z.string().optional().openapi({ description: "What the provider needs instead of an API key" }),
@@ -253,7 +253,10 @@ const definitionFields = {
   thinkingLevel: ThinkingLevel,
   limits: DefinitionLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
-  builtins: z.array(z.enum(["web_fetch", "web_search", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups" }),
+  builtins: z.array(z.enum(["web_fetch", "web_search", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups" }),
+  webSearch: z.object({
+    providers: z.array(z.enum(["exa", "brave", "parallel"])).min(1).max(3).openapi({ description: "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited", example: ["brave"] }),
+  }).strict().openapi({ description: "Pin web_search to providers of your choosing instead of the runtime's order (exa, brave, parallel by default)" }),
   mcpServers: z.array(McpServerInput).max(64).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
   openApi: z.array(OpenApiInput).max(64).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
 };
@@ -370,6 +373,8 @@ export const Billing = z.object({
     storageGbMonth: micros("Per GB-month stored, charged daily"),
     purchaseFeeBps: z.number().int().openapi({ description: "Fee on credit purchases, in basis points" }),
     minPurchase: micros("Smallest purchase"), maxPurchase: micros("Largest purchase"),
+    webSearch: z.object({ exa: micros("Per search Exa answers"), brave: micros("Per search Brave answers"), parallel: micros("Per search Parallel answers") }).openapi({ description: "Per web_search on the platform's key for the provider that answered" }),
+    webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
   }).openapi({ description: "Model tokens are charged at the provider's list price when they run on the platform's keys" }),
 }).openapi("Billing");
 export const AdjustmentInput = z.object({

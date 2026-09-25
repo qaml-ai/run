@@ -2,6 +2,9 @@ import { getModels, getProviders } from "@earendil-works/pi-ai/compat";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { SEARCH_PROVIDERS } from "./web-search.ts";
 
+/** Page renderers web_fetch can use, by the provider key they take. */
+export const FETCH_PROVIDERS = ["firecrawl"] as const;
+
 /** Providers that authenticate with something other than a single API key. */
 const NOT_API_KEY: Record<string, string> = {
   "amazon-bedrock": "AWS credentials",
@@ -15,8 +18,8 @@ const NOT_API_KEY: Record<string, string> = {
 
 export interface ProviderInfo {
   id: string;
-  /** model: an LLM provider; search: a web search API, for the web_search built-in. */
-  kind: "model" | "search";
+  /** model: an LLM provider; search: a web search API, for the web_search built-in; fetch: a page renderer for web_fetch. */
+  kind: "model" | "search" | "fetch";
   models: number;
   /** Whether a tenant can use this provider by setting one API key. */
   apiKey: boolean;
@@ -43,7 +46,10 @@ const models = (provider: string) => getModels(provider as never) as Model<Api>[
 const usableEndpoint = (model: Model<Api>) => !!model.baseUrl && !model.baseUrl.includes("{");
 
 export function listProviders(): ProviderInfo[] {
-  const search = SEARCH_PROVIDERS.map((id): ProviderInfo => ({ id, kind: "search", models: 0, apiKey: true }));
+  const search = [
+    ...SEARCH_PROVIDERS.map((id): ProviderInfo => ({ id, kind: "search", models: 0, apiKey: true })),
+    ...FETCH_PROVIDERS.map((id): ProviderInfo => ({ id, kind: "fetch", models: 0, apiKey: true })),
+  ];
   return [...getProviders().map((id): ProviderInfo => {
     const all = models(id);
     const requires = NOT_API_KEY[id] ?? (all.every(usableEndpoint) ? undefined : "a provider-specific endpoint");

@@ -112,8 +112,8 @@ export function api(context: ApiContext) {
     if (!accounts.canStoreKeys) throw new HttpError(503, "This runtime is not configured to store provider keys");
     const { apiKey, verify } = parse(schema.KeyInput, await readJson(c.req.raw.body, 16 * 1024, {}));
     const check = verify === false || context.verifyKeys === false ? { status: "unverified" as const, detail: "Verification skipped" }
-      // Checking a search key would cost a search: it is checked by the first one.
-      : info.kind === "search" ? { status: "unverified" as const, detail: `${id} has no free way to check a key; the first web_search will` } : await checkProviderKey(id, apiKey);
+      // Checking a search or render key would cost a call: the first one checks it.
+      : info.kind !== "model" ? { status: "unverified" as const, detail: `${id} has no free way to check a key; the first ${info.kind === "search" ? "web_search" : "rendered web_fetch"} will` } : await checkProviderKey(id, apiKey);
     if (check.status === "invalid") throw new HttpError(422, check.detail);
     await accounts.setKey(tenant, id, apiKey);
     await clients.providerKeyChanged(tenant, id);

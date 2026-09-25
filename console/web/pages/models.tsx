@@ -11,8 +11,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ConfirmButton, CopyButton, ErrorAlert, PageHeader } from "@/components/common";
 import { api, formatNumber, formatTime, useApi, type Me, type Model, type Provider } from "@/lib/api";
 
-/** Providers most people want, listed first (brave: web search). */
-const FEATURED = ["anthropic", "openai", "google", "openrouter", "brave"];
+/** Providers most people want, listed first (exa, brave, parallel: web search, in the order web_search tries them; firecrawl: web_fetch's renderer). */
+const FEATURED = ["anthropic", "openai", "google", "openrouter", "exa", "brave", "parallel", "firecrawl"];
+const PURPOSE: Record<string, string> = { search: "web search", fetch: "page rendering" };
 
 function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose: () => void; onSaved: () => void }) {
   const [key, setKey] = useState("");
@@ -35,7 +36,9 @@ function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose
             <DialogTitle>{provider.key?.source === "tenant" ? "Replace" : "Add"} {provider.id} key</DialogTitle>
             <DialogDescription>
               {provider.kind === "search"
-                ? <>The key is stored encrypted and never shown again. Agents whose definition enables web_search search with it, and {provider.id} bills the searches to it.</>
+                ? <>The key is stored encrypted and never shown again. Agents whose definition enables web_search search with it (web_search tries exa, brave, then parallel, using the first with a key that answers), and {provider.id} bills the searches to it.</>
+                : provider.kind === "fetch"
+                ? <>The key is stored encrypted and never shown again. When web_fetch reads a page that is only a JavaScript shell, {provider.id} renders it with this key and bills the render to it.</>
                 : <>The key is checked with {provider.id}, then stored encrypted. It is never shown again; your agents use it for {provider.id} models and usage bills to it.</>}
             </DialogDescription>
           </DialogHeader>
@@ -86,7 +89,7 @@ export function ModelsPage({ me }: { me: Me }) {
                 {shown.map(provider => (
                   <TableRow key={provider.id}>
                     <TableCell className="font-medium">{provider.id}</TableCell>
-                    <TableCell className="text-muted-foreground">{provider.kind === "search" ? "web search" : provider.models}</TableCell>
+                    <TableCell className="text-muted-foreground">{PURPOSE[provider.kind] ?? provider.models}</TableCell>
                     <TableCell><KeyBadge provider={provider} /></TableCell>
                     <TableCell className="text-muted-foreground hidden text-xs md:table-cell">{formatTime(provider.key?.setAt)}</TableCell>
                     <TableCell className="text-right whitespace-nowrap">
@@ -95,7 +98,8 @@ export function ModelsPage({ me }: { me: Me }) {
                       </Button>
                       {provider.key?.source === "tenant" && (
                         <span className="ml-2 inline-block"><ConfirmButton size="xs" variant="ghost" label="Remove" title={`Remove your ${provider.id} key?`}
-                          description={provider.kind === "search" ? "web_search uses the platform's key if you have one, otherwise it fails until a key is added again." : `Agents using ${provider.id} models stop working until a key is added again.`} confirm="Remove key"
+                          description={provider.kind === "search" ? `web_search uses the platform's ${provider.id} key if you have one, otherwise the next provider with a key.`
+                            : provider.kind === "fetch" ? "web_fetch renders pages with the platform's key if you have one, otherwise returns them unrendered." : `Agents using ${provider.id} models stop working until a key is added again.`} confirm="Remove key"
                           onConfirm={async () => { try { await api(`/v1/providers/${provider.id}/key`, { method: "DELETE" }); await providers.reload(); } catch (caught) { setError((caught as Error).message); } }} /></span>
                       )}
                     </TableCell>

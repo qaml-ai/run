@@ -1,8 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { braveSearch, exaSearch, firecrawlSearch, parallelSearch } from "../src/web-search.ts";
-import { listen, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+import { braveSearch, exaSearch, firecrawlSearch, parallelSearch, searchProvidersFromEnvironment, WebSearch, type SearchProviderId } from "../src/web-search.ts";
+import type { UsageRecord } from "../src/client-sessions.ts";
+import { Outbound } from "../src/outbound.ts";
+import { micros } from "../src/pricing.ts";
+import { listen, runtime, sleep, toolCall, toolResults, until, type T } from "./runtime-server.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const PAYG = "payg-operator-token-at-least-24-chars";
@@ -97,7 +100,7 @@ test("Exa, Parallel and Firecrawl are POSTed JSON, and their answers become plai
 test("web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch", async t => {
   const brave = await fakeBrave(t);
   const r = await runtime(t, researcher, {
-    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_BRAVE_SEARCH_URL: brave.url,
+    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_BRAVE_SEARCH_URL: brave.url, AGENT_WEB_SEARCH_PROVIDERS: "brave",
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_USD: "0.25",
   }, tenantsFile);
   const make = async (token: string, builtins: string[]) => {
@@ -122,7 +125,7 @@ test("web_search uses the tenant's own search key, else the platform's billed to
   await r.prompt(own, "look it up again", OWN);
   assert.deepEqual(brave.searches, [{ token: "own-brave-key", q: "agent runtime", count: "2", freshness: "pw" }]);
   const searched = JSON.parse(toolResults(r.model.bodies.at(-2)).at(-1));
-  assert.deepEqual(searched, { query: "agent runtime", results: [
+  assert.deepEqual(searched, { query: "agent runtime", provider: "brave", results: [
     { title: "Agent runtime docs", url: brave.url.replace("/res/v1/web/search", "/page"), snippet: "How the agent runtime hosts agents & tools.", date: "2026-09-01" },
     { title: "Release notes", url: "https://example.com/releases", snippet: "What changed", date: "2 days ago" },
   ] }, "text only, web links only, at most count");
@@ -146,4 +149,130 @@ test("web_search uses the tenant's own search key, else the platform's billed to
   assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 1, 0.25]);
   await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 750_000, "the search's charge");
   assert.ok((await r.call("/v1/providers", { token: PAYG })).json.some((provider: any) => provider.id === "brave" && provider.key?.source === "platform"));
+});
+
+/**
+ * Exa, Brave and Parallel on one local server, each answering in its own shape, or as `behave` says:
+ * an HTTP status, or "slow" (an answer later than the search's per-provider deadline).
+ */
+async function fakeProviders(t: T) {
+  const behave: Partial<Record<SearchProviderId, number | "slow">> = {};
+  const calls: { provider: string; key: string }[] = [];
+  const base = await listen(t, async (req, res) => {
+    const provider = new URL(req.url!, "http://x").pathname.slice(1) as SearchProviderId;
+    for await (const _chunk of req) { /* the body */ }
+    calls.push({ provider, key: String(req.headers["x-api-key"] ?? req.headers["x-subscription-token"] ?? "") });
+    const how = behave[provider];
+    if (how === "slow") await sleep(1_000);
+    else if (typeof how === "number") return res.writeHead(how, { "Content-Type": "application/json" }).end("{}");
+    const body = provider === "brave" ? { web: { results: [{ title: "Brave result", url: "https://brave.example/1", description: "from brave" }] } }
+      : { results: [{ title: `${provider} result`, url: `https://${provider}.example/1`, ...(provider === "exa" ? { highlights: ["from exa"] } : { excerpts: ["from parallel"] }) }] };
+    if (!res.destroyed) res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body));
+  });
+  const env = { AGENT_EXA_SEARCH_URL: `${base}/exa`, AGENT_BRAVE_SEARCH_URL: `${base}/brave`, AGENT_PARALLEL_SEARCH_URL: `${base}/parallel` };
+  return { behave, calls, env };
+}
+
+function webSearch(env: Record<string, string>, keys: Partial<Record<SearchProviderId, string>>) {
+  const usage: UsageRecord[] = [];
+  const prices = { exa: micros(0.007), brave: micros(0.005), parallel: micros(0.001) };
+  const search = new WebSearch({
+    outbound: new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] }), ...searchProvidersFromEnvironment(env), timeoutMs: 300,
+    key: async (_tenant, provider) => keys[provider as SearchProviderId] ? { key: keys[provider as SearchProviderId]!, platform: true } : undefined,
+    price: provider => prices[provider], onSearch: (_tenant, _agent, record) => usage.push(record),
+  });
+  const run = (args: Record<string, unknown> = { query: "q" }, providers?: string[]) => search.search({ tenant: "acme", agent: "a1", ...(providers ? { providers } : {}) }, args, new AbortController().signal);
+  return { run, usage };
+}
+
+test("web_search tries Exa, Brave, then Parallel, moving on when one times out, fails or is rate limited, and charges the one that answered", async t => {
+  const fake = await fakeProviders(t);
+  const { run, usage } = webSearch(fake.env, { exa: "exa-key", brave: "brave-key", parallel: "parallel-key" });
+
+  const first = await run();
+  assert.deepEqual(first, { query: "q", provider: "exa", results: [{ title: "exa result", url: "https://exa.example/1", snippet: "from exa" }] });
+  assert.deepEqual(usage.at(-1), { provider: "exa", model: "web_search", usage: { cost: { total: 0.007 } }, platform: true, searches: 1 });
+
+  fake.behave.exa = "slow";
+  const slow = await run();
+  assert.equal(slow.provider, "brave", "a provider slower than its deadline is given up on");
+  assert.deepEqual(usage.at(-1), { provider: "brave", model: "web_search", usage: { cost: { total: 0.005 } }, platform: true, searches: 1 });
+  assert.equal(usage.length, 2, "the timed-out search is not charged");
+
+  fake.behave.exa = 503;
+  fake.behave.brave = 429;
+  const busy = await run();
+  assert.equal(busy.provider, "parallel");
+  assert.deepEqual(busy.results, [{ title: "parallel result", url: "https://parallel.example/1", snippet: "from parallel" }]);
+  assert.equal(usage.at(-1)!.usage.cost.total, 0.001, "charged at Parallel's price");
+
+  fake.behave.parallel = 500;
+  await assert.rejects(run(), /Web search failed: exa search failed \(HTTP 503\); brave is rate limiting searches \(HTTP 429\); parallel search failed \(HTTP 500\)/);
+  assert.equal(usage.length, 3, "nothing answered, nothing charged");
+
+  // A request the provider calls bad is the request's fault: another provider is not asked.
+  fake.behave.exa = 400;
+  fake.calls.length = 0;
+  await assert.rejects(run(), /exa refused the search request \(HTTP 400\)/);
+  assert.deepEqual(fake.calls.map(call => call.provider), ["exa"]);
+
+  // A key the provider refuses is that provider's problem: the next one answers.
+  fake.behave.exa = 401;
+  delete fake.behave.brave;
+  assert.equal((await run()).provider, "brave");
+});
+
+test("web_search skips providers without a key, keeps to a definition's own order, and says which keys would set it up", async t => {
+  const fake = await fakeProviders(t);
+  const onlyParallel = webSearch(fake.env, { parallel: "parallel-key" });
+  const answered = await onlyParallel.run();
+  assert.equal(answered.provider, "parallel");
+  assert.deepEqual(fake.calls, [{ provider: "parallel", key: "parallel-key" }], "providers without a key are never called");
+
+  fake.calls.length = 0;
+  const all = webSearch(fake.env, { exa: "exa-key", brave: "brave-key", parallel: "parallel-key" });
+  assert.equal((await all.run({ query: "q" }, ["brave"])).provider, "brave");
+  fake.behave.brave = 503;
+  await assert.rejects(all.run({ query: "q" }, ["brave"]), /Web search failed: brave search failed \(HTTP 503\)$/, "a pinned provider has no fallback beyond its list");
+  assert.equal((await all.run({ query: "q" }, ["brave", "parallel"])).provider, "parallel");
+  assert.deepEqual(fake.calls.map(call => call.provider), ["brave", "brave", "brave", "parallel"]);
+  await assert.rejects(all.run({ query: "q" }, ["bing"]), /webSearch.providers must list one or more of exa, brave, parallel/);
+
+  const none = webSearch(fake.env, {});
+  await assert.rejects(none.run(), /Web search is not set up for this tenant: it needs an API key for one of exa, brave, parallel \(PUT \/v1\/providers\/<provider>\/key\)/);
+  await assert.rejects(none.run({ query: "q" }, ["exa"]), /it needs a exa API key \(PUT \/v1\/providers\/exa\/key\)/);
+  assert.throws(() => searchProvidersFromEnvironment({ AGENT_WEB_SEARCH_PROVIDERS: "exa,exa" }), /AGENT_WEB_SEARCH_PROVIDERS must list/);
+  assert.deepEqual(searchProvidersFromEnvironment({}).order, ["exa", "brave", "parallel"]);
+});
+
+test("a definition pins web_search's providers; a platform search is charged at the answering provider's price and counted in the hour's ledger entry", async t => {
+  const fake = await fakeProviders(t);
+  const r = await runtime(t, (body: any) => {
+    const tool = body.messages.at(-1).role === "tool";
+    return tool ? { role: "assistant", content: "done" } : toolCall("web_search", { query: "agent runtime" }, `search_${body.messages.length}`);
+  }, {
+    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", ...fake.env,
+    AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_PARALLEL_USD: "0.02",
+  }, { ...tenantsFile, platformKeys: { "*": "fixture-platform-model-key", exa: "platform-exa-key", brave: "platform-brave-key", parallel: "platform-parallel-key" } });
+  assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_search"], webSearch: { providers: ["bing"] } }, token: PAYG })).status, 400);
+  assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_search"], webSearch: { providers: ["exa", "exa"] } }, token: PAYG })).status, 400);
+  assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_search"], webSearch: { order: ["exa"] } }, token: PAYG })).status, 400);
+  const created = await r.call("/v1/definitions", { body: { name: "Pinned", builtins: ["web_search"], webSearch: { providers: ["parallel", "brave"] } }, token: PAYG });
+  assert.equal(created.status, 201, created.text);
+  assert.deepEqual(created.json.webSearch, { providers: ["parallel", "brave"] });
+  assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
+  const agent = (await r.call("/v1/agents", { body: { definition: created.json.id }, token: PAYG })).json.id;
+  await r.prompt(agent, "look it up", PAYG);
+  assert.equal(JSON.parse(toolResults(r.model.bodies.at(-1)).at(-1)).provider, "parallel");
+  assert.deepEqual(fake.calls, [{ provider: "parallel", key: "platform-parallel-key" }], "the definition's order, not the runtime's");
+  const usage = (await r.call("/v1/usage", { token: PAYG })).json.days.find((day: any) => day.model === "parallel/web_search");
+  assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 1, 0.02]);
+  await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 980_000, "the search's charge at Parallel's price");
+  const entry = (await r.call("/v1/billing/ledger", { token: PAYG })).json.entries.find((row: any) => row.kind === "usage");
+  assert.equal(entry.amount, -20_000);
+  assert.deepEqual([entry.metadata.searches, entry.metadata.renders, entry.metadata.web, entry.metadata.tokens], [1, 0, 20_000, 0], "the hour's entry counts the search apart from tokens");
+  const rates = (await r.call("/v1/billing", { token: PAYG })).json.rates;
+  assert.deepEqual([rates.webSearch, rates.webRender], [{ exa: 7_000, brave: 5_000, parallel: 20_000 }, 830]);
+  const providers = (await r.call("/v1/providers", { token: PAYG })).json.filter((provider: any) => provider.kind !== "model").map((provider: any) => [provider.id, provider.kind]);
+  assert.deepEqual(providers, [["brave", "search"], ["exa", "search"], ["firecrawl", "fetch"], ["parallel", "search"]]);
 });

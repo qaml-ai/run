@@ -8,6 +8,7 @@ import type { Outbound } from "./outbound.ts";
 import type { Claim } from "./ownership.ts";
 import type { Scheduler } from "./scheduler.ts";
 import type { WebSearch } from "./web-search.ts";
+import type { WebRender } from "./web-render.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { defaultExposure, jsonResult, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
@@ -57,7 +58,8 @@ export interface OpenApiSpec {
   audience?: string;
 }
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
-export interface Sources { builtins?: string[]; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[] }
+/** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
+export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[] }
 /** The agent a tool call is for, its owner's claim on it, and the definition whose secrets it may unseal. */
 export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim; identity?: AgentIdentity };
 
@@ -225,11 +227,11 @@ export class ToolSources {
   private readonly accounts?: Accounts;
   private readonly mcp: McpConnections;
   private readonly outbound: Outbound;
-  private readonly options: { scheduler?: Scheduler; search?: WebSearch };
+  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender };
 
   private readonly signer?: RuntimeSigner;
 
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch }) {
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
@@ -318,7 +320,10 @@ export class ToolSources {
       },
       call: async ({ name, args, signal, origin, actor }) => {
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}) };
-        if (builtins.includes(name)) return jsonResult(await runBuiltin({ outbound: this.outbound, scheduler: this.options.scheduler, search: this.options.search }, context, name, args, signal));
+        if (builtins.includes(name)) {
+          const services = { outbound: this.outbound, scheduler: this.options.scheduler, search: this.options.search, render: this.options.render };
+          return jsonResult(await runBuiltin(services, { ...context, ...(sources?.webSearch ? { searchProviders: sources.webSearch.providers } : {}) }, name, args, signal));
+        }
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
         if (api && operation) {

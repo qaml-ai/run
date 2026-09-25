@@ -3,14 +3,16 @@ import type { Outbound } from "./outbound.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import type { Claim } from "./ownership.ts";
 import { FRESHNESS, SEARCH, type WebSearch } from "./web-search.ts";
+import { isShell, type WebRender } from "./web-render.ts";
 import { readableText } from "./html-text.ts";
 
 export { readableText };
 
 /**
  * Built-in tools a definition can enable (`builtins`), answered by the runtime:
- * `web_fetch` reads a public page through the outbound guard, `web_search` asks a
- * web search API (see web-search.ts), and `schedule` lets an agent set, list and
+ * `web_fetch` reads a public page through the outbound guard (rendering a page that is
+ * only a JavaScript shell through Firecrawl, see web-render.ts), `web_search` asks web
+ * search APIs in turn (see web-search.ts), and `schedule` lets an agent set, list and
  * cancel its own wake-ups in the shared scheduler.
  */
 export const BUILTINS = {
@@ -64,13 +66,15 @@ export const builtinDefinitions = (builtins: string[] = []) => builtinNames(buil
   ? { ...DEFINITIONS[name], description: DEFINITIONS[name].description.replace(" Snippets are brief: to answer from a page, read it with web_fetch.", " Snippets are brief summaries of each page.") }
   : DEFINITIONS[name]);
 
-export type BuiltinContext = { tenant: string; agent: string; claim?: Claim };
+/** `searchProviders`: the order the agent's definition gives web_search, instead of the runtime's. */
+export type BuiltinContext = { tenant: string; agent: string; claim?: Claim; searchProviders?: string[] };
+export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch; render?: WebRender };
 
-export async function runBuiltin(services: { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch }, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-  if (name === "web_fetch") return webFetch(services.outbound, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
+export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+  if (name === "web_fetch") return webFetch(services, context, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
   if (name === "web_search") {
     if (!services.search) throw new Error("Web search is not enabled on this runtime");
-    return services.search.search(context, args, signal);
+    return services.search.search({ tenant: context.tenant, agent: context.agent, ...(context.searchProviders ? { providers: context.searchProviders } : {}) }, args, signal);
   }
   const scheduler = services.scheduler;
   if (!scheduler) throw new Error("Schedules are not enabled on this runtime");
@@ -90,7 +94,7 @@ const view = (schedule: { id: string; text?: string; code?: string; dueAt: numbe
   ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),
 });
 
-async function webFetch(outbound: Outbound, url: string, maxCharacters: number, signal: AbortSignal) {
+async function webFetch({ outbound, render }: BuiltinServices, context: BuiltinContext, url: string, maxCharacters: number, signal: AbortSignal) {
   // An http:// link is tried over https unless the operator allows plain http.
   if (/^http:\/\//i.test(url) && !outbound.allowHttp) url = `https://${url.slice(7)}`;
   const response = await outbound.fetch(url, {
@@ -106,7 +110,18 @@ async function webFetch(outbound: Outbound, url: string, maxCharacters: number, 
   let decoder: TextDecoder;
   try { decoder = new TextDecoder(charset ?? "utf-8"); } catch { decoder = new TextDecoder("utf-8"); }
   const raw = decoder.decode(await response.arrayBuffer());
-  const page = /html/i.test(type) || (!type && /^\s*<(!doctype html|html)/i.test(raw)) ? readableText(raw.slice(0, FETCH.htmlBytes)) : { text: raw };
+  const html = /html/i.test(type) || (!type && /^\s*<(!doctype html|html)/i.test(raw));
+  const page = html ? readableText(raw.slice(0, FETCH.htmlBytes)) : { text: raw };
+  const finalUrl = response.url || url;
+  // A page whose content a script draws reads as next to nothing: have Firecrawl render it, if a key for it resolves.
+  if (html && response.ok && render && isShell(raw, page.text)) {
+    const rendered = await render.render(context, finalUrl, signal);
+    if (rendered) {
+      const text = rendered.markdown.length > maxCharacters ? rendered.markdown.slice(0, maxCharacters) : rendered.markdown;
+      const title = rendered.title ?? page.title;
+      return { url: finalUrl, status: response.status, contentType: "text/markdown", ...(title ? { title } : {}), text, rendered: true, ...(text.length < rendered.markdown.length ? { truncated: true, totalCharacters: rendered.markdown.length } : {}) };
+    }
+  }
   const text = page.text.length > maxCharacters ? page.text.slice(0, maxCharacters) : page.text;
-  return { url: response.url || url, status: response.status, contentType: type.split(";")[0] || undefined, ...(page.title ? { title: page.title } : {}), text, ...(text.length < page.text.length ? { truncated: true, totalCharacters: page.text.length } : {}) };
+  return { url: finalUrl, status: response.status, contentType: type.split(";")[0] || undefined, ...(page.title ? { title: page.title } : {}), text, ...(text.length < page.text.length ? { truncated: true, totalCharacters: page.text.length } : {}) };
 }

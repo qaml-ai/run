@@ -23,12 +23,14 @@ export type Sealed = { iv: string; tag: string; ciphertext: string };
 /** A GitHub account at sign-in: its login, numeric id and creation time (ms). */
 export interface GithubUser { login: string; id?: number; createdAt?: number }
 type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
+/** What a tenant owes from a batch: model tokens, and web searches and renders, on the platform's keys (USD, with their counts), and active agent time. */
+type Charge = { platformCost: number; activeMs: number; toolCost: number; searches: number; renders: number };
 /**
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
  * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
- * `charges` is what prepaid tenants pay for it: model cost on platform keys (USD) and active agent time.
+ * `charges` is what prepaid tenants pay for it (`Charge`).
  */
-type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, { platformCost: number; activeMs: number }> };
+type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, Charge> };
 const batch = (): Batch => ({ id: randomUUID(), usage: new Map(), charges: new Map() });
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -259,7 +261,15 @@ export class Accounts {
       platformResponses: message.platform ? 1 : 0, platformCost: message.platform ? cost : 0,
     });
     this.pending.usage.set(key, totals);
-    if (message.platform) this.charge(tenant).platformCost += cost;
+    if (message.platform) {
+      const charge = this.charge(tenant);
+      // Web searches and renders are counted apart from model tokens, so the hour's ledger entry shows each.
+      if (message.searches || message.renders) {
+        charge.toolCost += cost;
+        charge.searches += message.searches ?? 0;
+        charge.renders += message.renders ?? 0;
+      } else charge.platformCost += cost;
+    }
     const spent = this.spend.get(tenant);
     if (spent?.month === day.slice(0, 7)) spent.cost += cost;
     this.scheduleFlush();
@@ -274,7 +284,7 @@ export class Accounts {
 
   private charge(tenant: string) {
     let charge = this.pending.charges.get(tenant);
-    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, activeMs: 0 });
+    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0 });
     return charge;
   }
 
@@ -284,8 +294,8 @@ export class Accounts {
   }
 
   /** What `charges` come to in micro-USD. */
-  private amount(charge: { platformCost: number; activeMs: number }) {
-    return Math.round(charge.platformCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
+  private amount(charge: Charge) {
+    return Math.round(charge.platformCost * MICROS) + Math.round(charge.toolCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
   }
 
   /** What this node has recorded for `tenant` and not yet written, in micro-USD, as if the tenant were prepaid. */
@@ -337,7 +347,10 @@ export class Accounts {
     for (const [tenant, charge] of charges) {
       const amount = this.amount(charge);
       if (amount > 0 && await this.billing.mode(tenant) === "prepaid") {
-        billed.push({ tenant, amount, metadata: { tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs) } });
+        billed.push({ tenant, amount, metadata: {
+          tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs),
+          ...(charge.searches || charge.renders ? { web: Math.round(charge.toolCost * MICROS), searches: charge.searches, renders: charge.renders } : {}),
+        } });
       }
     }
     await transaction(this.db, async sql => {

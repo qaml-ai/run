@@ -188,7 +188,8 @@ export interface ClientSessionOptions {
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
-export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean };
+/** A model response's usage, or a web tool's call (`searches`: web searches, `renders`: pages web_fetch had rendered), with its cost in `usage.cost.total`. */
+export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number };
 /** Why runs are refused: a message (402), or an error with its own status. */
 export type Refusal = string | HttpError;
 /** A provider key and whether it is the platform's rather than the tenant's own. */
