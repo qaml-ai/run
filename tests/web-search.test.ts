@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { braveSearch, exaSearch, firecrawlSearch, parallelSearch, searchProvidersFromEnvironment, WebSearch, type SearchProviderId } from "../src/web-search.ts";
+import { braveSearch, exaSearch, firecrawlSearch, parallelSearch, searchProvidersFromEnvironment, WebSearch, withinBudget, type SearchProviderId } from "../src/web-search.ts";
+import { builtinDefinitions } from "../src/builtins.ts";
 import type { UsageRecord } from "../src/client-sessions.ts";
 import { Outbound } from "../src/outbound.ts";
 import { micros } from "../src/pricing.ts";
@@ -70,7 +71,7 @@ test("Exa, Parallel and Firecrawl are POSTed JSON, and their answers become plai
   const exaRequest = exa.request({ query: "a b", count: 3, freshness: "week" }, "k");
   assert.deepEqual([exaRequest.url, exaRequest.secrets], ["https://exa.example/search", { "x-api-key": "k" }]);
   const exaBody = parse(exaRequest.body);
-  assert.deepEqual([exaBody.query, exaBody.type, exaBody.numResults, exaBody.contents], ["a b", "fast", 3, { highlights: { maxCharacters: 3000 } }]);
+  assert.deepEqual([exaBody.query, exaBody.type, exaBody.numResults, exaBody.contents], ["a b", "fast", 3, { highlights: { maxCharacters: 1000 } }]);
   assert.ok(Math.abs(Date.now() - 7 * 86_400_000 - Date.parse(exaBody.startPublishedDate)) < 60_000);
   assert.deepEqual(exa.results({ results: [{ title: "A &amp; B", url: "https://a.example", publishedDate: "2026-09-16T20:17:37.000Z", highlights: ["first\n\n\n\npart", "second"] }, { title: "No date", url: "https://b.example" }] }), [
     { title: "A & B", url: "https://a.example", snippet: "first part … second", date: "2026-09-16", content: "first\n\npart\n…\nsecond" },
@@ -81,7 +82,7 @@ test("Exa, Parallel and Firecrawl are POSTed JSON, and their answers become plai
   const parallelRequest = parallel.request({ query: "q", count: 2, freshness: "day" }, "k");
   assert.deepEqual([parallelRequest.url, parallelRequest.secrets], ["https://api.parallel.ai/v1/search", { "x-api-key": "k" }]);
   const parallelBody = parse(parallelRequest.body);
-  assert.deepEqual([parallelBody.objective, parallelBody.search_queries, parallelBody.mode, parallelBody.max_chars_total, parallelBody.advanced_settings.max_results], ["q", ["q"], "fast", 6000, 2]);
+  assert.deepEqual([parallelBody.objective, parallelBody.search_queries, parallelBody.mode, parallelBody.max_chars_total, parallelBody.advanced_settings.max_results], ["q", ["q"], "fast", 2000, 2]);
   assert.match(parallelBody.advanced_settings.source_policy.after_date, /^\d{4}-\d{2}-\d{2}$/);
   assert.deepEqual(parallel.results({ results: [{ url: "https://p.example", title: "P", publish_date: "2026-09-20", excerpts: ["one", "two"] }] }),
     [{ title: "P", url: "https://p.example", snippet: "one … two", date: "2026-09-20", content: "one\n…\ntwo" }]);
@@ -185,12 +186,34 @@ function webSearch(env: Record<string, string>, keys: Partial<Record<SearchProvi
   return { run, usage };
 }
 
+test("the model gets each result's excerpt in place of its snippet, within a budget per result and per search", () => {
+  const result = (i: number, content?: string) => ({ title: `t${i}`, url: `https://e.example/${i}`, snippet: `s${i}`, ...(content ? { content } : {}) });
+  const long = "x".repeat(2_500);
+  assert.deepEqual(withinBudget([result(1, long), result(2), result(3, "short")]), [
+    { title: "t1", url: "https://e.example/1", content: "x".repeat(1_000) },
+    { title: "t2", url: "https://e.example/2", snippet: "s2" },
+    { title: "t3", url: "https://e.example/3", content: "short" },
+  ], "1,000 characters each; a result without an excerpt keeps its snippet");
+  const ten = withinBudget(Array.from({ length: 10 }, (_, i) => result(i, long)));
+  assert.deepEqual(ten.map(hit => "content" in hit ? hit.content.length : `snippet ${hit.snippet}`), [1000, 1000, 1000, 1000, 1000, 1000, "snippet s6", "snippet s7", "snippet s8", "snippet s9"], "6,000 in all; past that, snippets");
+  assert.deepEqual(withinBudget([result(1, long), result(2, long)], 1_000, 1_150).map(hit => "content" in hit ? hit.content.length : hit.snippet), [1000, "s2"], "no excerpt cut under 200 characters");
+  assert.deepEqual(withinBudget([result(1, long), result(2, long)], 1_000, 1_300).map(hit => "content" in hit ? hit.content.length : hit.snippet), [1000, 300]);
+});
+
+test("web_search's description tells the model the excerpts often answer, and points at web_fetch only when it has it", () => {
+  const [withFetch] = builtinDefinitions(["web_search", "web_fetch"]);
+  assert.match(withFetch.description, /excerpts of the page relevant to the query \(up to 1,000 characters\), or a short `snippet`\. The excerpts often hold the answer, so you may not need to open the page; when they don't, or a result has only a snippet, read the page with web_fetch\./);
+  const [alone] = builtinDefinitions(["web_search"]);
+  assert.doesNotMatch(alone.description, /web_fetch/);
+  assert.match(alone.description, /Answer from the excerpts and snippets: pages cannot be opened\.$/);
+});
+
 test("web_search tries Exa, Brave, then Parallel, moving on when one times out, fails or is rate limited, and charges the one that answered", async t => {
   const fake = await fakeProviders(t);
   const { run, usage } = webSearch(fake.env, { exa: "exa-key", brave: "brave-key", parallel: "parallel-key" });
 
   const first = await run();
-  assert.deepEqual(first, { query: "q", provider: "exa", results: [{ title: "exa result", url: "https://exa.example/1", snippet: "from exa" }] });
+  assert.deepEqual(first, { query: "q", provider: "exa", results: [{ title: "exa result", url: "https://exa.example/1", content: "from exa" }] }, "Exa's highlight in place of a snippet");
   assert.deepEqual(usage.at(-1), { provider: "exa", model: "web_search", usage: { cost: { total: 0.007 } }, platform: true, searches: 1 });
 
   fake.behave.exa = "slow";
@@ -203,7 +226,7 @@ test("web_search tries Exa, Brave, then Parallel, moving on when one times out, 
   fake.behave.brave = 429;
   const busy = await run();
   assert.equal(busy.provider, "parallel");
-  assert.deepEqual(busy.results, [{ title: "parallel result", url: "https://parallel.example/1", snippet: "from parallel" }]);
+  assert.deepEqual(busy.results, [{ title: "parallel result", url: "https://parallel.example/1", content: "from parallel" }]);
   assert.equal(usage.at(-1)!.usage.cost.total, 0.001, "charged at Parallel's price");
 
   fake.behave.parallel = 500;

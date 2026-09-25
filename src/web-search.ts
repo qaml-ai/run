@@ -12,7 +12,8 @@ import { readableText } from "./html-text.ts";
  * model's (the tenant's own, else an admin's, else for a prepaid tenant the platform's,
  * billed at that provider's price per search). `content` is the page's text when the API
  * returns it with the results (Exa's highlights, Parallel's excerpts, Firecrawl's scraped
- * markdown).
+ * markdown): the model gets it in place of the snippet, within SEARCH.content per result and
+ * SEARCH.contentTotal per search, as those query-focused excerpts are much of what Exa is chosen for.
  */
 export type SearchResult = { title: string; url: string; snippet: string; date?: string; content?: string };
 export type SearchQuery = { query: string; count: number; freshness?: Freshness };
@@ -30,8 +31,33 @@ export interface SearchProvider {
 
 export type SearchRequest = { url: string; body?: string; headers: Record<string, string>; secrets: Record<string, string> };
 
-/** `timeoutMs` is each provider's: a slower one is given up on for the next. */
-export const SEARCH = { count: 5, maxCount: 10, timeoutMs: 5_000, maxBytes: 2 * 1024 * 1024, snippet: 500, content: 3_000, title: 300, query: 400 };
+/**
+ * `timeoutMs` is each provider's: a slower one is given up on for the next. `content` is the excerpt
+ * asked for and returned per result, `contentTotal` all of a search's excerpts together: in the benchmark
+ * (bench/search/REPORT.md), Exa's results graded as well at 1,000 characters each as at 1,500, and better
+ * than at 300.
+ */
+export const SEARCH = { count: 5, maxCount: 10, timeoutMs: 5_000, maxBytes: 2 * 1024 * 1024, snippet: 500, content: 1_000, contentTotal: 6_000, title: 300, query: 400 };
+/** Below this much of the search's excerpt budget left, a result gets its snippet instead of a cut-short excerpt. */
+const MIN_EXCERPT = 200;
+
+/** A result as the model gets it: its excerpt or its snippet. */
+export type SearchHit = Omit<SearchResult, "snippet" | "content"> & ({ snippet: string } | { content: string });
+
+/**
+ * Results as the model gets them: each result's excerpt (`content`) in place of its snippet while the
+ * search's budget lasts, else its snippet; results without an excerpt keep their snippet.
+ */
+export function withinBudget(results: SearchResult[], perResult = SEARCH.content, total = SEARCH.contentTotal): SearchHit[] {
+  let left = total;
+  return results.map(({ content, snippet, ...result }) => {
+    const take = Math.min(perResult, left);
+    if (!content || take < MIN_EXCERPT) return { ...result, snippet };
+    const excerpt = content.slice(0, take);
+    left -= excerpt.length;
+    return { ...result, content: excerpt };
+  });
+}
 /** Search providers, by the provider key they use, in the order `web_search` tries them unless the operator or a definition picks another. */
 export const SEARCH_PROVIDERS = ["exa", "brave", "parallel"] as const;
 export type SearchProviderId = typeof SEARCH_PROVIDERS[number];
@@ -235,7 +261,7 @@ export class WebSearch {
         // Only a search the API answered is charged, at its provider's price; its links are the web's, fetched (if at all) through web_fetch's guard.
         this.options.onSearch?.(context.tenant, context.agent, { provider: id, model: "web_search", usage: { cost: { total: this.options.price(id) / MICROS } }, platform: key.platform, searches: 1 });
         if (failures.length) console.error(JSON.stringify({ type: "web_search_fallback", tenant: context.tenant, agent: context.agent, answered: id, failed: failures }));
-        return { query, provider: id, results: results.slice(0, count).map(({ content: _content, ...result }) => result) };
+        return { query, provider: id, results: withinBudget(results.slice(0, count)) };
       } catch (error) {
         if (signal.aborted) throw error;
         if (!(error instanceof Attempt)) throw error;

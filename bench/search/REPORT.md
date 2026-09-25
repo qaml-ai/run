@@ -48,6 +48,17 @@ This is the same blind judge, but with every result's text cut to 300 characters
 | brave | 0.80 | 0.78 |
 | parallel-fast | 0.69 | 0.72 |
 
+### How much excerpt text to return
+
+This check came after the routing was adopted. It uses the same blind judge (prompt v2) and the cached first-run results, with each result's text cut to a length and the list's to 6,000 characters. The cached page text was stored at up to 1,600 characters per result, so a 1,500-character view is a true one.
+
+| entry | 300 chars | 700 chars (main) | 1,000 chars, 6,000 total | 1,500 chars, 6,000 total |
+| --- | --- | --- | --- | --- |
+| exa-instant | 0.84 | 0.87 | 0.87 | 0.85 |
+| parallel-fast | 0.69 | 0.72 | – | 0.72 |
+
+More text stops helping at about 700-1,000 characters, and 1,500 gained nothing (0.85 is within the noise). Answer accuracy can't separate these settings either: Exa was 100% with both 300 and 1,600 characters. So `web_search` returns excerpts of up to 1,000 characters each, 6,000 across a search. This check cost $0.88.
+
 ### Relevance@5 by category
 
 | entry | known (16) | news (8) | technical (6) | research (5) | pricing (4) | long-tail (4) |

@@ -36,7 +36,7 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
   web_search: {
     name: "web_search", exposure: "both",
-    description: `Search the web. Returns up to ${SEARCH.count} results by default (count: at most ${SEARCH.maxCount}), each with title, url, a short snippet and, when known, the page's date. Snippets are brief: to answer from a page, read it with web_fetch.`,
+    description: `Search the web. Returns up to ${SEARCH.count} results by default (count: at most ${SEARCH.maxCount}), each with title, url, the page's date when known, and either \`content\`: excerpts of the page relevant to the query (up to ${SEARCH.content.toLocaleString("en-US")} characters), or a short \`snippet\`. The excerpts often hold the answer, so you may not need to open the page; when they don't, or a result has only a snippet, read the page with web_fetch.`,
     parameters: { type: "object", additionalProperties: false, required: ["query"], properties: {
       query: { type: "string", minLength: 1, maxLength: SEARCH.query, description: "What to search for, as you would type it into a search engine" },
       count: { type: "integer", minimum: 1, maximum: SEARCH.maxCount },
@@ -63,7 +63,7 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
 
 /** The built-ins' tools; with web_fetch not enabled, web_search does not point the model at it. */
 export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => name === "web_search" && !builtins.includes("web_fetch")
-  ? { ...DEFINITIONS[name], description: DEFINITIONS[name].description.replace(" Snippets are brief: to answer from a page, read it with web_fetch.", " Snippets are brief summaries of each page.") }
+  ? { ...DEFINITIONS[name], description: DEFINITIONS[name].description.replace(" The excerpts often hold the answer, so you may not need to open the page; when they don't, or a result has only a snippet, read the page with web_fetch.", " Answer from the excerpts and snippets: pages cannot be opened.") }
   : DEFINITIONS[name]);
 
 /** `searchProviders`: the order the agent's definition gives web_search, instead of the runtime's. */

@@ -28379,6 +28379,2199 @@
    "cost": 0.004292,
    "judge": 2,
    "chars": 300
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k06",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Authoritative official announcement plus corroborating secondary sources give a clear, current answer that PostgreSQL 19 is still in beta, not yet GA.",
+   "cost": 0.007416,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "p02",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple authoritative sources (official docs, official pricing page, and GitHub source) consistently confirm $0.30 per additional million requests beyond the 10M included in the $5/mo plan.",
+   "cost": 0.007014,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t06",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Official AWS docs directly confirm the 200 GiB maximum (and 20/21 GiB minimum) for Fargate ephemeral storage, giving a clear, authoritative answer.",
+   "cost": 0.006952,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t02",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    1
+   ],
+   "overall": 5,
+   "note": "The commit and mailing list entries pinpoint uuidv7() as landing for PostgreSQL 18 (Dec 2024 commit), directly answering the version question, supported by official docs.",
+   "cost": 0.007908,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k09",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple consistent, credible, dated sources confirm Sinner beat Zverev to win Wimbledon 2026, directly answering the query.",
+   "cost": 0.0066359999999999995,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r04",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    1
+   ],
+   "overall": 5,
+   "note": "Strong, current, credible coverage of base-editing SCD trials (Beam's BEAM-101/BEACON and NEJM/Cell Stem Cell reports), though result 5 is off-topic (CRISPR nuclease editing, not base editing) and lacks text.",
+   "cost": 0.008216,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k02",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    1
+   ],
+   "overall": 5,
+   "note": "Official GOV.UK sources consistently confirm Andy Burnham as current PM with recent, corroborating dated activity.",
+   "cost": 0.006684,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n03",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are current, credible, and directly cover the specifics of Trump's UN speech this week, offering complementary detail and even the full video.",
+   "cost": 0.006887999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k04",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple authoritative Rust sources consistently confirm 1.98.1 (2026-09-03) as the latest stable release.",
+   "cost": 0.005664,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n07",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "Comprehensive, consistent set of primary BOJ documents and major news outlets all confirming the September 18, 2026 rate hike to 1.25%.",
+   "cost": 0.008383999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n08",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    2
+   ],
+   "overall": 4,
+   "note": "Strong, current coverage of the core incident from multiple credible outlets, though the last result lacks text/date clarity and the AAP piece is undated.",
+   "cost": 0.006737999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t03",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "The official Cloudflare docs pages directly and thoroughly cover setAlarm and the alarm() handler, with supporting examples.",
+   "cost": 0.00697,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k10",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are highly credible, consistent, and dated exactly to the September 2026 sentencing, directly answering the query.",
+   "cost": 0.00752,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r01",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    1
+   ],
+   "overall": 4,
+   "note": "Mostly relevant, credible arXiv papers directly on test-time scaling, though dates are suspiciously future and one result lacks text/date confirmation.",
+   "cost": 0.00703,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k05",
+   "scores": [
+    3,
+    1,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Authoritative python.org sources consistently confirm Python 3.14.7 (Aug 5, 2026) as the latest stable release, with one slightly stale result showing 3.14.6.",
+   "cost": 0.005914,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "l01",
+   "scores": [
+    3,
+    2,
+    3,
+    1,
+    1
+   ],
+   "overall": 4,
+   "note": "Top results directly cover the (j:,:) join flag with clear examples, though a couple entries are generic docs or empty stubs.",
+   "cost": 0.007096,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "p04",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple consistent, credible sources directly confirm the $1,999 starting price from Apple's own site and reputable tech outlets.",
+   "cost": 0.007095999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "p01",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    1
+   ],
+   "overall": 5,
+   "note": "Official pricing page and docs give exact, current credits-per-plan figures, fully answering the query.",
+   "cost": 0.007164,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k13",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Consistent, authoritative sources (official Nepal government site, Reuters, Kathmandu Post, scientific journal) all confirm 8,848.86 m as the current official height.",
+   "cost": 0.0065179999999999995,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k08",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible, consistent sources (FIFA, AP, Reuters, ESPN) confirm Spain beat Argentina 1-0 in the 2026 final.",
+   "cost": 0.007384,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k07",
+   "scores": [
+    3,
+    2,
+    2,
+    1,
+    1
+   ],
+   "overall": 4,
+   "note": "Official nodejs.org download page directly answers the query with the current version (v26.10.0), though other results are slightly stale or generic.",
+   "cost": 0.008662,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k16",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Directly and consistently answers the query with authoritative primary (Nobel.org) and secondary (Reuters) sources naming Clarke, Devoret, and Martinis.",
+   "cost": 0.006451999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k15",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "All results consistently confirm the Zugspitze's height as 2,962 m from credible, accurate sources, directly answering the query.",
+   "cost": 0.008294,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n04",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Consistent, current, and highly credible coverage from multiple top outlets directly confirming the September 2026 diesel price spike with causes and data.",
+   "cost": 0.006932,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n05",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are highly credible, current, and directly cover the same breaking story with consistent, corroborating details.",
+   "cost": 0.007088,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "l03",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Directly sourced from official GOST v3 docs with concrete YAML chain/relay/socks5 examples covering the query comprehensively.'",
+   "cost": 0.008161999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n01",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    1
+   ],
+   "overall": 4,
+   "note": "Strong, current, consistent coverage of the Trump-Xi summit from credible outlets, with only the last result thin due to missing text.",
+   "cost": 0.0069299999999999995,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t01",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    1
+   ],
+   "overall": 5,
+   "note": "Multiple credible, current sources give exact AbortSignal.timeout() patterns for Node's native fetch, plus a legacy node-fetch alternative and a thin older post.",
+   "cost": 0.00716,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t04",
+   "scores": [
+    3,
+    2,
+    2,
+    2,
+    1
+   ],
+   "overall": 4,
+   "note": "The official React docs (result 1) directly and authoritatively cover the hook's signature and example, with solid supporting third-party examples, though one source is dated 2026-04-04 which is after the stated current date and thus suspect.",
+   "cost": 0.0068319999999999995,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k03",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Consistent, credible, and up-to-date sources (official Fed site, AP, Wikipedia) all confirm Kevin Warsh as current chair since May 2026.",
+   "cost": 0.0078,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t05",
+   "scores": [
+    3,
+    3,
+    2,
+    3,
+    1
+   ],
+   "overall": 5,
+   "note": "The list is dominated by official Anthropic/AWS docs directly detailing the effort parameter and adaptive thinking mechanics, giving comprehensive, current coverage aside from one empty result.",
+   "cost": 0.007078,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k01",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple credible primary and news sources consistently confirm the September 2026 FOMC raised the target range to 3.75%-4%.",
+   "cost": 0.006357999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k11",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Directly answers with the official BOJ statement plus consistent, well-sourced media confirmation of the 1.25% rate hike.",
+   "cost": 0.00733,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k14",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All results consistently and authoritatively confirm Claudia Sheinbaum as Mexico's current president with up-to-date, official and credible sources.",
+   "cost": 0.008134,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n06",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are current, credible, and directly identify specific Fed officials signaling further hikes, with the IBTimes piece adding useful synthesis and market odds.",
+   "cost": 0.007489999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k12",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "All five sources consistently and directly confirm the truce is now extended to January 10, from credible and current reporting.",
+   "cost": 0.006854,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r03",
+   "scores": [
+    3,
+    2,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "Strong, consistent set covering the primary Lancet publication, corroborating coverage, and detailed conference/press analysis of the negative EVOKE/EVOKE+ results.",
+   "cost": 0.007688,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "l04",
+   "scores": [
+    3,
+    3,
+    2,
+    1,
+    1
+   ],
+   "overall": 4,
+   "note": "The top results (README and source) directly and precisely answer the query with exact API usage for memory limits and interrupt handlers, though later results are only tangential edge-case issues.",
+   "cost": 0.00784,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "l02",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "All results directly and accurately address the ENOSPC inotify fix with concrete sysctl commands, giving redundant but highly credible and current coverage.",
+   "cost": 0.00737,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n02",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Primary press releases, one-pagers, section-by-section bill text, and a corroborating news article together fully cover the query's topic and timeline.",
+   "cost": 0.007272,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r05",
+   "scores": [
+    3,
+    2,
+    2,
+    2,
+    2
+   ],
+   "overall": 4,
+   "note": "Strong, directly on-topic set of papers/benchmarks on position bias in LLM-as-judge, though dates are unclear and one arXiv ID looks suspicious/possibly fabricated.",
+   "cost": 0.00703,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "p03",
+   "scores": [
+    3,
+    2,
+    3,
+    2,
+    1
+   ],
+   "overall": 5,
+   "note": "Official Vercel docs and pricing page directly confirm the $20/user/month Pro plan cost, giving a clear and authoritative answer.",
+   "cost": 0.0057799999999999995,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r02",
+   "scores": [
+    1,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 4,
+   "note": "Mostly solid, directly relevant arXiv papers on SSM vs Transformer long-context benchmarking, though result 1 has a suspicious/likely fake future arXiv ID and result 5 lacks content.",
+   "cost": 0.006736,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k12",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results consistently and directly confirm the truce is extended to January 10, from credible, current sources.",
+   "cost": 0.00614,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k09",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible, consistent, dated sources directly confirm Sinner defeated Zverev to win Wimbledon 2026, fully answering the query.",
+   "cost": 0.006308,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n05",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are highly credible, current, and directly cover the same breaking news event with consistent, complementary details.",
+   "cost": 0.006404,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n08",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Comprehensive, current, multi-source coverage including primary reporting, follow-up investigation details, and skeptical counter-reporting for balance.",
+   "cost": 0.0061459999999999996,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k06",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    1
+   ],
+   "overall": 5,
+   "note": "The official Beta 4 announcement plus corroborating community analyses clearly establish that PostgreSQL 19 is still in beta, not yet GA, directly answering the query.",
+   "cost": 0.006213999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n06",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are timely (Sept 21–24, 2026), from credible sources, and directly name specific Fed officials (Williams, Paulson, Musalem, Barr) signaling further hikes plus a synthesis piece with market-implied odds.",
+   "cost": 0.007128,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "p03",
+   "scores": [
+    3,
+    2,
+    3,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Official Vercel pricing pages consistently confirm the $20/month Pro platform fee plus usage credit, directly answering the query.",
+   "cost": 0.005292,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k02",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Official GOV.UK sources directly and consistently confirm Andy Burnham as current PM with a clear appointment date.",
+   "cost": 0.005788,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t03",
+   "scores": [
+    3,
+    3,
+    1,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Official Cloudflare docs directly cover setAlarm/alarm handler with API reference, source code, and examples, fully satisfying the query.",
+   "cost": 0.005822,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n07",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are official BOJ documents and top-tier news reports directly confirming and detailing the September 2026 rate hike decision, fully answering the query.",
+   "cost": 0.008334,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n01",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible, current sources (AFP, BBC, Al Jazeera, ABC) directly cover the visit's outcomes with consistent, detailed takeaways.",
+   "cost": 0.006402,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k05",
+   "scores": [
+    3,
+    1,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple authoritative python.org sources consistently confirm 3.14.7 as the latest stable release, with only the source-releases page slightly stale.",
+   "cost": 0.005186,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r05",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Strong, directly on-topic set spanning peer-reviewed studies, a preprint, and an empirical benchmark, though a couple of URLs/dates look suspicious or unverifiable (e.g. arxiv 2602.02219 implies a future date).",
+   "cost": 0.006546,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n02",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "Comprehensive coverage combining primary sources (official press releases, bill text/one-pager) with independent media confirmation, all current and directly on-topic.",
+   "cost": 0.006854,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t05",
+   "scores": [
+    3,
+    3,
+    2,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Direct, current official documentation pages from Anthropic/AWS covering effort parameter and adaptive thinking in exact detail needed.'",
+   "cost": 0.006274,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k01",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple primary Fed sources and corroborating news confirm the 3.75%-4% target range set at the September 15-16, 2026 meeting.",
+   "cost": 0.00579,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k16",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple authoritative NobelPrize.org sources plus Reuters confirm and detail the 2025 laureates (Clarke, Devoret, Martinis) consistently and directly.  However the note about the date being in the future (Oct 7, 2025) relative to today (Sep 25, 2026) is fine since today is after that date.",
+   "cost": 0.006284,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "l02",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results directly explain the ENOSPC inotify limit and provide clear, actionable fix commands from credible/relevant sources.",
+   "cost": 0.006548,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r02",
+   "scores": [
+    0,
+    2,
+    3,
+    3,
+    2
+   ],
+   "overall": 3,
+   "note": "Mostly relevant real arXiv papers on SSM vs Transformer long-context comparisons, but result 1 has a suspicious fake-looking arXiv ID (2601.xxxxx, future date) suggesting a fabricated/unverifiable source.",
+   "cost": 0.006144,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "l03",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "All results are from the official GOST v3 documentation with direct YAML chain/relay/socks5 config examples, comprehensively answering the query.",
+   "cost": 0.007292,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k10",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are consistent, credible, dated Sept 23 2026 reports confirming the 15-year sentence, directly answering the query.",
+   "cost": 0.006919999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t02",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    1
+   ],
+   "overall": 5,
+   "note": "The commit and documentation results together confirm uuidv7() was added in PostgreSQL 18 (committed Dec 2024), directly answering the query.",
+   "cost": 0.007022,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k04",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    1
+   ],
+   "overall": 5,
+   "note": "Multiple authoritative sources (official release notes and blog) directly confirm the latest stable version 1.98.1 with consistent dates.'",
+   "cost": 0.005302,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "p02",
+   "scores": [
+    3,
+    2,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "The official docs page directly and clearly confirms the $0.30 per additional million requests answer, corroborated by multiple consistent sources.",
+   "cost": 0.005815999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "p01",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "The official pricing page and docs directly and precisely answer the credits-per-plan query, with supporting pages reinforcing the same figures.",
+   "cost": 0.006579999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k15",
+   "scores": [
+    3,
+    3,
+    2,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "All results consistently confirm the Zugspitze's height of 2,962 m from credible sources, directly answering the simple factual query.",
+   "cost": 0.007299999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r01",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results are directly relevant, recent (mostly Aug-Sep 2026) arXiv papers squarely on test-time compute scaling for LLM reasoning, with one item lacking a clear date.",
+   "cost": 0.006416,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "l01",
+   "scores": [
+    3,
+    2,
+    2,
+    3,
+    2
+   ],
+   "overall": 4,
+   "note": "Top hit directly shows the (j:,:) join flag with credible SO answer, backed by official zsh docs, giving the agent everything needed.",
+   "cost": 0.006448,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t01",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple concrete, consistent code examples using AbortSignal.timeout() (and older AbortController fallback) directly answer the query from credible sources.",
+   "cost": 0.006333999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r04",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Strong, current set of primary trial sources (Beam BEACON data, NEJM/PubMed base-editing trials, Cell Stem Cell report) directly covering base editing SCD clinical results, with one slightly off-target CRISPR (non-base-editing) inclusion.",
+   "cost": 0.007392,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k03",
+   "scores": [
+    3,
+    2,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "Consistent, credible sources (official Fed site, AP, Wikipedia) all confirm Kevin Warsh became chair in May 2026, directly answering the query.",
+   "cost": 0.006926,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t04",
+   "scores": [
+    3,
+    2,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Official React docs plus supporting sources thoroughly cover the hook's signature, parameters, and usage examples, though one result dated 2026-04-04 postdates today's stated date, a minor inconsistency.",
+   "cost": 0.006086,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k11",
+   "scores": [
+    3,
+    2,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Official BOJ statement plus corroborating Bloomberg/Reuters coverage directly confirm the 1.25% rate decision from the September 2026 meeting with vote details and outlook.",
+   "cost": 0.0066359999999999995,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "t06",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Official AWS docs directly confirm the 200 GiB maximum (and minimum/default) with authoritative, consistent detail.",
+   "cost": 0.0063019999999999994,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "l04",
+   "scores": [
+    3,
+    3,
+    2,
+    1,
+    1
+   ],
+   "overall": 4,
+   "note": "The README and source excerpts directly answer the query with exact API usage, though the issue links add only edge-case caveats rather than core guidance.",
+   "cost": 0.0069819999999999995,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "p04",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results consistently confirm the $1,999 starting price from Apple's own site and credible tech outlets, directly answering the query.",
+   "cost": 0.006638,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k13",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Government source and multiple corroborating news reports directly confirm the official 8,848.86 m height.",
+   "cost": 0.005676,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "r03",
+   "scores": [
+    3,
+    2,
+    2,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "Strong, consistent coverage combining the primary Lancet publication with topline announcement and expert commentary confirming EVOKE/EVOKE+ failed primary endpoints despite biomarker signals.",
+   "cost": 0.006679999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k14",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "All five results consistently and authoritatively confirm Claudia Sheinbaum as Mexico's current president, with recent, official, and credible sources.",
+   "cost": 0.006866,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k07",
+   "scores": [
+    3,
+    2,
+    2,
+    1,
+    1
+   ],
+   "overall": 4,
+   "note": "The official Node.js download page directly and authoritatively answers the query with the current v26.10.0, while other results add corroborating but slightly older details.",
+   "cost": 0.007428,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "k08",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible, consistent sources (FIFA, AP, Reuters, ESPN) confirm Spain beat Argentina 1-0 in the 2026 final.",
+   "cost": 0.006605999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n04",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "A tightly relevant, current, multi-source set of credible reports directly covering the September 2026 diesel price spike with consistent figures and context.",
+   "cost": 0.0062699999999999995,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "exa-instant",
+   "query": "n03",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible, dated, consistent sources (UN News, BBC, NBC, PBS) directly covering Trump's UNGA speech this week, giving comprehensive coverage.",
+   "cost": 0.006083999999999999,
+   "judge": 2,
+   "chars": 1000,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k09",
+   "scores": [
+    3,
+    2,
+    3,
+    3,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible, consistent sources confirm Sinner defeated Zverev to win Wimbledon 2026, directly answering the query.",
+   "cost": 0.007788,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "n01",
+   "scores": [
+    1,
+    2,
+    1,
+    1,
+    2
+   ],
+   "overall": 2,
+   "note": "Most results only cover the arrival/build-up rather than actual outcomes; the Wikipedia entry hints at a post-visit CBS summary ('few achievements announced') but the agent would need to follow that citation rather than get it directly.",
+   "cost": 0.006224,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k01",
+   "scores": [
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "overall": 2,
+   "note": "Results are inconsistent and outdated FRED snapshots (some showing 3.75, one showing 4.00) that don't clearly resolve the post-September-2026-meeting target range, likely due to caching/scrape artifacts rather than a definitive current answer.",
+   "cost": 0.007756,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k06",
+   "scores": [
+    2,
+    2,
+    2,
+    3,
+    2
+   ],
+   "overall": 4,
+   "note": "Result [4] directly confirms PostgreSQL 19 is still in beta (Beta 4, RC expected October, GA possibly October), clearly answering the query, though most other results are duplicated stale homepage snapshots.",
+   "cost": 0.00645,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "r02",
+   "scores": [
+    2,
+    3,
+    2,
+    2,
+    1
+   ],
+   "overall": 3,
+   "note": "Mostly duplicate coverage of one solid paper (2507.12442) plus a suspiciously dated/niche paper (2601.01237 with a future-looking arXiv ID), lacking breadth across the topic.",
+   "cost": 0.007384,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k12",
+   "scores": [
+    1,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible, current sources (Politico, CNBC, Oklahoma Farm Report) confirm the truce is extended to January 10, 2026, directly answering the query.",
+   "cost": 0.0064919999999999995,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k16",
+   "scores": [
+    3,
+    2,
+    2,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "All results consistently confirm from the official Nobel source that Clarke, Devoret, and Martinis won the 2025 Physics Nobel, directly answering the query.",
+   "cost": 0.0076219999999999994,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "l02",
+   "scores": [
+    1,
+    1,
+    1,
+    3,
+    0
+   ],
+   "overall": 3,
+   "note": "One strong generic fix guide (result 4) covers the query well, but most others are narrow, project-specific issue threads and one result has no content at all.",
+   "cost": 0.008104,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "n02",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Comprehensive, current, and authoritative coverage including the official press release, bill summary PDF, and multiple credible news outlets confirming the September 2026 introduction.",
+   "cost": 0.00519,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "l01",
+   "scores": [
+    1,
+    2,
+    2,
+    2,
+    0
+   ],
+   "overall": 2,
+   "note": "The list surfaces general zshexpn/zshparam manpages but none directly show the (j) flag syntax (e.g. ${(j:,:)array}) needed to answer the query precisely.'",
+   "cost": 0.00677,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "n04",
+   "scores": [
+    3,
+    1,
+    3,
+    3,
+    3
+   ],
+   "overall": 4,
+   "note": "Mostly current, credible, on-topic sources directly covering the September 2026 diesel spike, though one result (NBC) has a garbled/inconsistent date mixing March 2025 and Sept 2026.",
+   "cost": 0.006406,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "n05",
+   "scores": [
+    3,
+    3,
+    2,
+    3,
+    2
+   ],
+   "overall": 4,
+   "note": "Multiple credible, current syndications of the same AP/Reuters report directly confirm and detail the ruling, though redundant with little added detail.",
+   "cost": 0.005528,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "p02",
+   "scores": [
+    3,
+    3,
+    2,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Official Cloudflare docs and pricing pages directly confirm $0.30 per additional million requests beyond the included 10 million, corroborated by secondary sources.",
+   "cost": 0.006364,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "t04",
+   "scores": [
+    2,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "The official react.dev reference pages (results 2-4) give the exact hook signature and code examples needed, with a supplementary tutorial and a foreign-language mirror rounding out the set.",
+   "cost": 0.005532,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k08",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    1
+   ],
+   "overall": 5,
+   "note": "Multiple credible, consistent, current sources (FIFA official and USA Today) confirm Spain beat Argentina 1-0 to win the 2026 World Cup, with only the last result being outdated/off-topic.",
+   "cost": 0.007914000000000001,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k02",
+   "scores": [
+    3,
+    1,
+    1,
+    3,
+    3
+   ],
+   "overall": 4,
+   "note": "Authoritative and consistent GOV.UK, Wikipedia, and AP sources confirm Andy Burnham as current PM (since July 2026), though outdated 2024 Starmer articles could mislead if not dated carefully.",
+   "cost": 0.00695,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k07",
+   "scores": [
+    0,
+    2,
+    1,
+    3,
+    2
+   ],
+   "overall": 3,
+   "note": "Result 4 clearly reveals the current release (v26.8.2 Current, v24.21.0 latest LTS) while others are outdated or archive pages requiring inference, and result 1 is badly stale.",
+   "cost": 0.008254,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k14",
+   "scores": [
+    3,
+    2,
+    2,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "The official presidencia site confirms Sheinbaum currently in office (with 2026 dated content), while the other results consistently corroborate her identity as president, albeit from 2024 election/inauguration coverage.",
+   "cost": 0.0055639999999999995,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k15",
+   "scores": [
+    3,
+    2,
+    2,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible sources consistently confirm Zugspitze's height at 2,962 m, directly answering the query.",
+   "cost": 0.00674,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "r05",
+   "scores": [
+    3,
+    2,
+    3,
+    2,
+    1
+   ],
+   "overall": 2,
+   "note": "All five results are the same single paper (different mirrors/versions), giving good depth on one study but no coverage of other position-bias research.",
+   "cost": 0.006846,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k10",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple consistent, dated, credible sources confirm Weinstein's 15-year sentence in September 2026.",
+   "cost": 0.006028,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "t01",
+   "scores": [
+    3,
+    2,
+    1,
+    2,
+    2
+   ],
+   "overall": 4,
+   "note": "Strong MDN coverage of AbortSignal.timeout() with a directly applicable fetch example, though slightly redundant across results and missing Node.js-specific caveats.",
+   "cost": 0.006279999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "t03",
+   "scores": [
+    1,
+    1,
+    1,
+    3,
+    2
+   ],
+   "overall": 3,
+   "note": "The canonical developers.cloudflare.com alarms doc (result 4) directly answers the query but is buried among preview/staging URL duplicates that are less trustworthy and possibly not publicly accessible.",
+   "cost": 0.005007999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "r03",
+   "scores": [
+    3,
+    3,
+    1,
+    1,
+    2
+   ],
+   "overall": 4,
+   "note": "Strong primary sources (PubMed publication and Novo Nordisk press release) directly cover the EVOKE results, though duplicated and padded with a stale trial-registry entry and an empty article.",
+   "cost": 0.00815,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "n03",
+   "scores": [
+    3,
+    2,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple credible, dated (Sept 22, 2026) sources converge on consistent details—Iran ultimatum, Cuba criticism, AI/SI rebrand, Greenland deal—giving a thorough, current picture of the speech.",
+   "cost": 0.006166,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "l04",
+   "scores": [
+    3,
+    3,
+    2,
+    3,
+    0
+   ],
+   "overall": 5,
+   "note": "The GitHub docs and README directly show setMemoryLimit, setMaxStackSize, and setInterruptHandler usage, fully answering the query; the Emscripten settings page is irrelevant.",
+   "cost": 0.00778,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k11",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    1
+   ],
+   "overall": 4,
+   "note": "Consistently confirms BOJ raised its rate to 1.25% on Sept 18, 2026 (with next meeting Oct 29-30), but only one pre-decision result lacks the actual outcome confirmation.",
+   "cost": 0.006148,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k04",
+   "scores": [
+    0,
+    3,
+    1,
+    1,
+    1
+   ],
+   "overall": 3,
+   "note": "The list contains the correct current answer (Rust 1.98.1, Sept 2026) but buries it among outdated releases from 2017 and 2025.",
+   "cost": 0.007326,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "r01",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    1
+   ],
+   "overall": 4,
+   "note": "Strong, current arXiv/ACL papers directly on topic, though results 4-5 duplicate an older 2024 paper and result 5 is a thin near-duplicate.",
+   "cost": 0.007448,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k13",
+   "scores": [
+    3,
+    3,
+    2,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "All results consistently confirm the current official height (8,848.86 m) with credible sources and a clear authoritative Wikipedia summary.",
+   "cost": 0.0049039999999999995,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "t06",
+   "scores": [
+    3,
+    3,
+    1,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple authoritative AWS docs directly confirm the 20 GiB default and 200 GiB max for ECS Fargate ephemeral storage, with only the EKS Fargate result being off-topic.",
+   "cost": 0.00577,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "p03",
+   "scores": [
+    3,
+    2,
+    3,
+    2,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple official Vercel docs pages consistently confirm the $20/month per seat Pro plan pricing, giving a clear and current answer.",
+   "cost": 0.006586,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "n07",
+   "scores": [
+    3,
+    3,
+    2,
+    3,
+    2
+   ],
+   "overall": 4,
+   "note": "Results consistently and specifically cover the September 2026 BOJ rate hike to 1.25% from credible financial/news sources, though one URL (NHK) looks suspicious and one date is unlisted.",
+   "cost": 0.0071719999999999996,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "l03",
+   "scores": [
+    1,
+    2,
+    2,
+    3,
+    2
+   ],
+   "overall": 4,
+   "note": "The official GOST v3 'Chain' concept page (result 4) directly shows YAML chain config with SOCKS5 nodes, and the other gost.run/GitHub docs pages provide supporting handler/connector syntax, though none gives a fully assembled multi-hop SOCKS5 relay chain YAML example.",
+   "cost": 0.009396,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "n06",
+   "scores": [
+    3,
+    3,
+    3,
+    3,
+    2
+   ],
+   "overall": 5,
+   "note": "Strong, recent, on-topic coverage naming specific Fed officials (Kashkari, Hammack, Warsh) and quantifying hawkish votes, with only the last result being counterpoint/dated-unclear.",
+   "cost": 0.00707,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "t05",
+   "scores": [
+    1,
+    0,
+    1,
+    3,
+    1
+   ],
+   "overall": 3,
+   "note": "Result [4] directly documents the adaptive thinking/effort parameter for Claude 4.6, but the rest are generic API docs or outdated (Claude 3.7) sources lacking specific coverage of adaptive thinking with effort levels.",
+   "cost": 0.007816,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "t02",
+   "scores": [
+    1,
+    3,
+    1,
+    3,
+    1
+   ],
+   "overall": 4,
+   "note": "The commit message and PG18/current docs confirm uuidv7() was added in PostgreSQL 18, while PG13/14/17 docs correctly show it's absent, giving the agent enough to pinpoint the version despite some redundant negative results.",
+   "cost": 0.006841999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "p01",
+   "scores": [
+    3,
+    3,
+    3,
+    1,
+    2
+   ],
+   "overall": 5,
+   "note": "Multiple authoritative, consistent, current results directly from Firecrawl's own pricing and docs pages fully answer the query, with one third-party result being thin and slightly outdated.",
+   "cost": 0.007273999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "n08",
+   "scores": [
+    2,
+    2,
+    1,
+    3,
+    3
+   ],
+   "overall": 4,
+   "note": "Strong, current coverage of the September 2026 government-website hack from Reuters, though one result is an older gym-hack story and the BBC link uses a suspicious test.bbc.com domain.",
+   "cost": 0.006404,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "p04",
+   "scores": [
+    3,
+    3,
+    3,
+    2,
+    3
+   ],
+   "overall": 5,
+   "note": "Multiple credible, current sources consistently confirm the $1,999 starting price for the iPhone Duo.",
+   "cost": 0.005812,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k05",
+   "scores": [
+    0,
+    1,
+    1,
+    3,
+    2
+   ],
+   "overall": 3,
+   "note": "Result [4] correctly identifies Python 3.14 as the current stable release with a credible date, but outdated/confusing entries (3.12, betas) dilute the list's clarity.",
+   "cost": 0.004932000000000001,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "k03",
+   "scores": [
+    3,
+    3,
+    0,
+    3,
+    2
+   ],
+   "overall": 4,
+   "note": "Multiple credible, current sources confirm Kevin Warsh is now Fed chair, though one outdated FOMC minutes result is irrelevant.",
+   "cost": 0.007318,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
+  },
+  {
+   "entry": "parallel-fast",
+   "query": "r04",
+   "scores": [
+    3,
+    2,
+    3,
+    1,
+    2
+   ],
+   "overall": 4,
+   "note": "Strong hit with the primary NEJM base-editing trial paper (result 1 duplicated in 3) plus a related CRISPR trial, though one entry is a low-quality press release aggregator.",
+   "cost": 0.007845999999999999,
+   "judge": 2,
+   "chars": 1500,
+   "total": 6000
   }
  ],
  "answers": [

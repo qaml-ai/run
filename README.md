@@ -499,12 +499,18 @@ reconfiguration, not at a refresh.
   The limits are those of `/v1/agents/:id/schedules`: 100 per agent, at most a
   year ahead, and repeats at least a minute apart.
 - `web_search` (`{query, count?, freshness?}`) asks a web search API and returns
-  `{query, provider, results: [{title, url, snippet, date?}]}`: 5 results by
-  default, at most 10, plain text (snippets at most 500 characters),
-  `https://`/`http://` links only; `freshness` (`day`, `week`, `month`, `year`)
-  keeps recent pages; `provider` is the API that answered. The results are for
-  finding pages: with `web_fetch` enabled too, its description tells the model to
-  read a result in full with `web_fetch`, whose `url` it takes as is.
+  `{query, provider, results: [{title, url, date?, content | snippet}]}`: 5
+  results by default, at most 10, `https://`/`http://` links only; `freshness`
+  (`day`, `week`, `month`, `year`) keeps recent pages; `provider` is the API that
+  answered. A result from Exa or Parallel carries `content`: the API's excerpts
+  of the page relevant to the query (Exa's highlights, Parallel's excerpts), up to
+  1,000 characters each and 6,000 across the search. Past that budget, and for
+  Brave, which returns no excerpts, a result has a `snippet` of at most 500
+  characters instead. The excerpts often answer the question, and the tool's
+  description says so; with `web_fetch` enabled too, it tells the model to read a
+  page with `web_fetch` (whose `url` it takes as is) when they don't. The budget
+  comes from the benchmark: Exa's results graded 0.84 with 300 characters of text
+  each, 0.87 at 700 and at 1,000, and 0.85 at 1,500.
 
   It tries providers in order, `exa,brave,parallel` by default
   (`AGENT_WEB_SEARCH_PROVIDERS`), chosen by the benchmark in

@@ -57,9 +57,10 @@ type Search = {
 };
 /**
  * `judge` is the judge prompt's version (absent: 1); the report uses the current one's grades, all graded in one batch.
- * `chars` marks a check graded with every result's text cut to that many characters (--phase judge-equal).
+ * `chars` (and `total`) mark a check graded with every result's text cut to that many characters (and the list's to `total`):
+ * --phase judge-equal (300), or --phase judge-view --chars N [--total M].
  */
-type Grade = { entry: string; query: string; scores: number[]; overall: number; note: string; cost: number; judge?: number; chars?: number };
+type Grade = { entry: string; query: string; scores: number[]; overall: number; note: string; cost: number; judge?: number; chars?: number; total?: number };
 type Answer = { entry: string; query: string; variant: keyof typeof ANSWER; answer: string; verdict: "correct" | "incorrect" | "not_found"; reason: string; cost: number };
 type Raw = { searches: Search[]; grades: Grade[]; answers: Answer[]; notes?: string[] };
 
@@ -165,6 +166,8 @@ const JUDGE_VERSION = 2;
 const graded = (g: Grade) => (g.judge ?? 1) === JUDGE_VERSION && g.chars === undefined;
 /** The text each result shows the judge in the equal-length check: about a Brave snippet's length. */
 const EQUAL_CHARS = 300;
+/** Longer views graded with judge-view: [characters per result, total characters]. */
+const VIEWS: [number, number | undefined][] = [[1_000, 6_000], [1_500, 6_000]];
 const JUDGE_SYSTEM = `You grade web search results for an AI agent that will use them to answer or research the query. Today is ${TODAY}.
 The results may report events, releases and papers from after your training data: take today's date as given and judge them on their sources and consistency, not on whether you already knew of them.
 Grade each result 0-3:
@@ -174,21 +177,22 @@ Grade each result 0-3:
 0 = irrelevant, spam, broken, or wrong.
 Judge from the title, URL, date and text shown. Then grade the whole list's usefulness to the agent 1-5 (5 = everything needed is here; 1 = useless). Be consistent and strict; do not reward length for its own sake.`;
 
-async function judgePhase(chars?: number) {
-  const done_ = (g: Grade) => chars === undefined ? graded(g) : g.chars === chars && g.judge === JUDGE_VERSION;
+async function judgePhase(chars?: number, total?: number) {
+  const done_ = (g: Grade) => chars === undefined ? graded(g) : g.chars === chars && g.total === total && g.judge === JUDGE_VERSION;
+  const view = { ...(chars ? { chars } : {}), ...(total ? { total } : {}) };
   const lists = raw.searches.filter(s => s.run === 1 && !s.error && entries.some(entry => entry.id === s.entry) && !raw.grades.some(g => done_(g) && g.entry === s.entry && g.query === s.query));
   const byId = new Map(queries.map(query => [query.id, query]));
   let done = 0;
   await pool(shuffle(lists), 6, async list => {
     const query = byId.get(list.query)!;
     const results = list.results ?? [];
-    if (!results.length) { raw.grades.push({ entry: list.entry, query: list.query, scores: [], overall: 1, note: "no results", cost: 0, judge: JUDGE_VERSION, ...(chars ? { chars } : {}) }); return; }
+    if (!results.length) { raw.grades.push({ entry: list.entry, query: list.query, scores: [], overall: 1, note: "no results", cost: 0, judge: JUDGE_VERSION, ...view }); return; }
     const schema = { type: "object", additionalProperties: false, required: ["scores", "overall", "note"], properties: {
       scores: { type: "array", items: { type: "integer", enum: [0, 1, 2, 3] }, description: `One grade per result, in order (${results.length})` },
       overall: { type: "integer", enum: [1, 2, 3, 4, 5] }, note: { type: "string", description: "One short sentence on the list's main strength or failure" },
     } };
-    const { value, cost } = await structured<{ scores: number[]; overall: number; note: string }>(JUDGE_SYSTEM, `Query: ${query.query}\n\nResults (${results.length}):\n\n${render(results, chars ?? JUDGE_CHARS)}`, schema);
-    raw.grades.push({ entry: list.entry, query: list.query, scores: value.scores.slice(0, results.length), overall: value.overall, note: value.note, cost, judge: JUDGE_VERSION, ...(chars ? { chars } : {}) });
+    const { value, cost } = await structured<{ scores: number[]; overall: number; note: string }>(JUDGE_SYSTEM, `Query: ${query.query}\n\nResults (${results.length}):\n\n${render(results, chars ?? JUDGE_CHARS, total)}`, schema);
+    raw.grades.push({ entry: list.entry, query: list.query, scores: value.scores.slice(0, results.length), overall: value.overall, note: value.note, cost, judge: JUDGE_VERSION, ...view });
     if (++done % 20 === 0) { save(); console.log(`judged ${done}/${lists.length}, spent so far $${spent.toFixed(3)}`); }
   });
   save();
@@ -252,7 +256,9 @@ function summarize() {
     const ok = mine.filter(s => !s.error);
     const first = ok.filter(s => s.run === 1).map(s => s.latencyMs), second = ok.filter(s => s.run === 2).map(s => s.latencyMs), all = ok.map(s => s.latencyMs);
     const grades = raw.grades.filter(g => graded(g) && g.entry === id);
-    const equal = raw.grades.filter(g => g.chars === EQUAL_CHARS && g.judge === JUDGE_VERSION && g.entry === id).map(g => g.scores.reduce((a, b) => a + b, 0) / (3 * COUNT));
+    const at = (chars: number, total?: number) => raw.grades.filter(g => g.chars === chars && g.total === total && g.judge === JUDGE_VERSION && g.entry === id).map(g => g.scores.reduce((a, b) => a + b, 0) / (3 * COUNT));
+    const equal = at(EQUAL_CHARS);
+    const views = Object.fromEntries(VIEWS.map(([chars, total]) => [`${chars}/${total ?? ""}`, at(chars, total)]));
     const earlier = raw.grades.filter(g => !graded(g) && g.chars === undefined && g.entry === id).map(g => g.scores.reduce((a, b) => a + b, 0) / (3 * COUNT));
     // Relevance@5: the five slots' grades over 15, a missing result counting 0; and the mean grade of results returned.
     const at5 = grades.map(g => g.scores.reduce((a, b) => a + b, 0) / (3 * COUNT));
@@ -267,7 +273,7 @@ function summarize() {
       id, calls: mine.length, errors: mine.length - ok.length, slow: ok.filter(s => s.latencyMs > PRODUCT_TIMEOUT_MS).length,
       p50: percentile(all, 50), p95: percentile(all, 95), p50first: percentile(first, 50), p50second: percentile(second, 50), p95first: percentile(first, 95), p95second: percentile(second, 95),
       cost: mean(ok.map(s => s.cost)), count: mean(ok.map(s => s.count)),
-      relevance: mean(at5), earlierRelevance: mean(earlier), equalRelevance: mean(equal), equalCount: equal.length, perResult: mean(perResult), overall: mean(grades.map(g => g.overall)),
+      views, relevance: mean(at5), earlierRelevance: mean(earlier), equalRelevance: mean(equal), equalCount: equal.length, perResult: mean(perResult), overall: mean(grades.map(g => g.overall)),
       native: accuracy("native"), equalized: accuracy("equalized"), answered: answers("native").length,
       fresh: news.length ? news.filter(isFresh).length / news.length : NaN, dated: news.length ? news.filter(r => r.date).length / news.length : NaN,
       freshParam: freshResults.length ? freshResults.filter(isFresh).length / freshResults.length : NaN, freshParamCount: mean(freshNews.map(s => s.count)),
@@ -294,6 +300,14 @@ function summarize() {
     lines.push("", `### Relevance@5 with every result's text cut to ${EQUAL_CHARS} characters`, "");
     row(["entry", "lists", `${EQUAL_CHARS} chars`, `${JUDGE_CHARS} chars (main)`]); row(Array(4).fill("---"));
     for (const s of stats.filter(s => s.equalCount)) row([s.id, s.equalCount, fmt(s.equalRelevance), fmt(s.relevance)]);
+  }
+  if (stats.some(s => Object.values(s.views).some(list => list.length))) {
+    lines.push("", "### Relevance@5 by how much of each result's text the judge sees", "");
+    row(["entry", "300", `${JUDGE_CHARS} (main)`, ...VIEWS.map(([chars, total]) => `${chars}${total ? `, ${total} total` : ""}`)]); row(Array(VIEWS.length + 3).fill("---"));
+    for (const s of stats.filter(s => Object.values(s.views).some(list => list.length))) row([s.id, fmt(s.equalRelevance), fmt(s.relevance), ...VIEWS.map(([chars, total]) => {
+      const list = s.views[`${chars}/${total ?? ""}`];
+      return list.length ? `${fmt(mean(list))} (n=${list.length})` : "–";
+    })]);
   }
   lines.push("", "### Known-answer questions (native context)", "");
   const known = queries.filter(query => query.expected);
@@ -328,6 +342,7 @@ if (!dryRun) {
   if (phase === "search" || phase === "all") await searchPhase();
   if (phase === "judge" || phase === "all") await judgePhase();
   if (phase === "judge-equal") await judgePhase(EQUAL_CHARS);
+  if (phase === "judge-view") await judgePhase(Number(flag("chars")), flag("total") ? Number(flag("total")) : undefined);
   if (phase === "answer" || phase === "all") await answerPhase();
   writeFileSync(SUMMARY, summarize());
   console.log(`Spent this run ≈ $${spent.toFixed(3)}; summary in ${SUMMARY}`);

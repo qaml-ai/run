@@ -1,4 +1,4 @@
-Generated 2026-09-25T19:23:00.785Z from 658 searches, 300 lists graded by judge prompt v2, 224 graded answers.
+Generated 2026-09-25T19:48:41.687Z from 658 searches, 300 lists graded by judge prompt v2, 224 graded answers.
 
 ### Summary
 
@@ -56,6 +56,13 @@ Generated 2026-09-25T19:23:00.785Z from 658 searches, 300 lists graded by judge 
 | parallel-fast | 43 | 0.69 | 0.72 |
 | brave | 43 | 0.80 | 0.78 |
 
+### Relevance@5 by how much of each result's text the judge sees
+
+| entry | 300 | 700 (main) | 1000, 6000 total | 1500, 6000 total |
+| --- | --- | --- | --- | --- |
+| exa-instant | 0.84 | 0.87 | 0.87 (n=43) | 0.85 (n=43) |
+| parallel-fast | 0.69 | 0.72 | – | 0.72 (n=43) |
+
 ### Known-answer questions (native context)
 
 | query | expected | exa-instant | firecrawl | firecrawl-scrape | exa-auto | parallel-fast | parallel-advanced | brave |
@@ -88,5 +95,5 @@ Generated 2026-09-25T19:23:00.785Z from 658 searches, 300 lists graded by judge 
 - parallel-fast: $0.094 over 94 searches
 - parallel-advanced: $0.470 over 94 searches
 - brave: $0.470 over 94 searches
-- judge (claude-sonnet-5): $3.336 relevance, $1.158 answering and grading
-- total: $7.59
+- judge (claude-sonnet-5): $4.213 relevance, $1.158 answering and grading
+- total: $8.46
