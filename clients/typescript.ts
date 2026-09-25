@@ -90,6 +90,10 @@ export interface CreateAgentOptions extends AgentOptions {
   definition?: string;
   /** Agent lifetime in seconds (60 to 366 days), or null to keep the agent until it is deleted. Default one day. */
   ttlSeconds?: number | null;
+  /** Who the agent acts for (a user id in your app): `sub` in the identity tokens its tool servers get. Set only at creation. */
+  subject?: string;
+  /** Claims your tool servers need (org, workspace, thread…): `ctx` in its identity tokens. Set only at creation. */
+  context?: Record<string, unknown>;
   systemPrompt?: string;
   name?: string;
   type?: string;
@@ -194,7 +198,7 @@ export class AgentRuntime {
     const key = this.options.apiKey;
     if (!key) throw new AgentError("Set apiKey to provision an agent");
     const server = options.mcp ?? toolServer(options.tools ?? {});
-    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...(options.definition !== undefined ? { definition: options.definition } : {}), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
+    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...(options.subject !== undefined ? { subject: options.subject } : {}), ...(options.context !== undefined ? { context: options.context } : {}), ...(options.definition !== undefined ? { definition: options.definition } : {}), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }
@@ -503,9 +507,10 @@ export class AgentClient {
     } finally { clearTimeout(timer); this.pending.delete(id); }
   }
 
-  prompt(text: string, options?: RequestOptions & { images?: ImageContent[] }) { return this.request("prompt", { text, ...(options?.images ? { images: options.images } : {}) }, options); }
+  /** `actor` says who is acting in this turn: `act` in its tools' identity tokens. */
+  prompt(text: string, options?: RequestOptions & { images?: ImageContent[]; actor?: string }) { return this.request("prompt", { text, ...(options?.images ? { images: options.images } : {}), ...(options?.actor ? { actor: options.actor } : {}) }, options); }
   history(): Promise<AgentHistory> { return this.http("/history"); }
-  continue(options?: RequestOptions) { return this.request("continue", {}, options); }
+  continue(options?: RequestOptions & { actor?: string }) { return this.request("continue", options?.actor ? { actor: options.actor } : {}, options); }
   steer(text: string) { return this.request("steer", { text }); }
   followUp(text: string) { return this.request("followUp", { text }); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
@@ -520,8 +525,8 @@ export class AgentClient {
     if (server) this.server = mcp ?? toolServer(this.tools);
     return result;
   }
-  execute(code: string, options?: RequestOptions & { timeoutMs?: number; executionTimeoutMs?: number }) {
-    return this.request("execute", { code, ...(options?.executionTimeoutMs ? { timeoutMs: options.executionTimeoutMs } : {}) }, options);
+  execute(code: string, options?: RequestOptions & { timeoutMs?: number; executionTimeoutMs?: number; actor?: string }) {
+    return this.request("execute", { code, ...(options?.executionTimeoutMs ? { timeoutMs: options.executionTimeoutMs } : {}), ...(options?.actor ? { actor: options.actor } : {}) }, options);
   }
   /**
    * Wake this agent later: with `text` it gets a prompt, with `code` it runs sandboxed

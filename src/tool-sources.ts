@@ -10,6 +10,7 @@ import type { Scheduler } from "./scheduler.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { jsonResult, type ToolServer } from "./tool-servers.ts";
+import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
 import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, RESULT_BYTES, type Operation } from "./openapi.ts";
 
 /**
@@ -19,11 +20,13 @@ import { checkDocument, definition as operationTool, operations, parseSpec, requ
  * same way whether or not an application is connected.
  */
 export type Exposure = "direct" | "codemode" | "both";
+/** How a source is authenticated beyond its headers: a stored bearer token, or a token the runtime signs for each request. */
+export type SourceAuth = { type: "bearer" } | { type: "runtime" };
 /** An MCP server as a definition stores it: its credentials sealed, their header names kept for display. */
 export interface McpServerSpec {
   name: string; url: string;
   headerNames?: string[];
-  auth?: { type: "bearer" };
+  auth?: SourceAuth;
   /** `{ headers, token }`, sealed under `definition:<id>:mcp:<name>`. */
   sealed?: Sealed;
   allowTools?: string[]; denyTools?: string[];
@@ -41,7 +44,7 @@ export interface OpenApiSpec {
   baseUrl: string;
   operations: Operation[];
   headerNames?: string[];
-  auth?: { type: "bearer" };
+  auth?: SourceAuth;
   /** `{ headers, token }`, sealed under `definition:<id>:openapi:<name>`. */
   sealed?: Sealed;
   allowTools?: string[]; denyTools?: string[];
@@ -51,7 +54,7 @@ export interface OpenApiSpec {
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 export interface Sources { builtins?: string[]; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[] }
 /** The agent a tool call is for, its owner's claim on it, and the definition whose secrets it may unseal. */
-export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim };
+export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim; identity?: AgentIdentity };
 
 const SERVER_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -88,9 +91,11 @@ function credentialHeaders(headers: unknown, auth: unknown) {
   }
   if (auth !== undefined) {
     const { type, token } = (auth ?? {}) as { type?: unknown; token?: unknown };
-    if (type === "oauth") throw bad("OAuth is not supported yet; use a bearer token or headers");
-    if (type !== "bearer" || typeof token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(token)) throw bad("auth is { type: \"bearer\", token }");
-    if (Object.keys(result).some(name => name.toLowerCase() === "authorization")) throw bad("Give an Authorization header or a bearer token, not both");
+    if (type === "oauth") throw bad("OAuth is not supported yet; use a bearer token, the runtime's identity tokens, or headers");
+    if (Object.keys(result).some(name => name.toLowerCase() === "authorization")) throw bad("Give an Authorization header or auth, not both");
+    // The runtime's own tokens are minted per request, so nothing is stored for them.
+    if (type === "runtime" && token === undefined) return result;
+    if (type !== "bearer" || typeof token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(token)) throw bad("auth is { type: \"bearer\", token } or { type: \"runtime\" }");
     result.Authorization = `Bearer ${token}`;
   }
   return result;
@@ -178,14 +183,17 @@ export const openApiView = ({ sealed: _sealed, operations: list, ...source }: Op
  * Sealed credentials for a server at `url`. Sent without `headers` and `auth`, it keeps
  * those of its namesake in `previous`, but only at the same origin: credentials belong to it.
  */
-function sealCredentials(headers: unknown, auth: unknown, previous: { url: string; headerNames?: string[]; auth?: { type: "bearer" }; sealed?: Sealed } | undefined, url: URL, aad: string, context: Context) {
+function sealCredentials(headers: unknown, auth: unknown, previous: { url: string; headerNames?: string[]; auth?: SourceAuth; sealed?: Sealed } | undefined, url: URL, aad: string, context: Context) {
   const kept = headers === undefined && auth === undefined && previous && new URL(previous.url).origin === url.origin ? previous : undefined;
-  if (kept?.sealed) return { ...(kept.headerNames ? { headerNames: kept.headerNames } : {}), ...(kept.auth ? { auth: kept.auth } : {}), sealed: kept.sealed };
+  if (kept?.sealed || kept?.auth) return { ...(kept.headerNames ? { headerNames: kept.headerNames } : {}), ...(kept.auth ? { auth: kept.auth } : {}), ...(kept.sealed ? { sealed: kept.sealed } : {}) };
   const credentials = credentialHeaders(headers, auth);
-  if (!Object.keys(credentials).length) return {};
+  const runtime = (auth as { type?: unknown } | undefined)?.type === "runtime";
+  if (runtime && !context.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot sign identity tokens");
+  const kind: SourceAuth | undefined = runtime ? { type: "runtime" } : auth ? { type: "bearer" } : undefined;
+  if (!Object.keys(credentials).length) return kind ? { auth: kind } : {};
   if (!context.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store credentials");
   return {
-    ...(headers && Object.keys(headers).length ? { headerNames: Object.keys(headers) } : {}), ...(auth ? { auth: { type: "bearer" as const } } : {}),
+    ...(headers && Object.keys(headers).length ? { headerNames: Object.keys(headers) } : {}), ...(kind ? { auth: kind } : {}),
     sealed: context.accounts.seal(aad, JSON.stringify(credentials)),
   };
 }
@@ -202,10 +210,13 @@ export class ToolSources {
   private readonly outbound: Outbound;
   private readonly options: { scheduler?: Scheduler };
 
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler }) {
+  private readonly signer?: RuntimeSigner;
+
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
+    this.signer = options.signer;
     // Kept whole: the scheduler may be a getter for one made later.
     this.options = options;
   }
@@ -213,8 +224,16 @@ export class ToolSources {
   private headers(aad: string, sealed: Sealed | undefined): Record<string, string> {
     return sealed ? JSON.parse(this.accounts!.unseal(aad, sealed)) : {};
   }
+  /** A fresh identity token for a request to `audience`, for the turn the request is made in. */
+  private identityToken(context: SourceContext, audience: string, call = callScope.getStore()) {
+    if (!this.signer) throw new Error("This runtime cannot sign identity tokens");
+    return this.signer.token(audience, { tenant: context.tenant, agent: context.agent, definition: context.definition, ...(context.identity ? { identity: context.identity } : {}), ...call });
+  }
   private endpoint(context: SourceContext, spec: McpServerSpec): McpServer {
-    return { url: spec.url, headers: this.headers(sealedAad(context.definition, spec.name), spec.sealed) };
+    const headers = this.headers(sealedAad(context.definition, spec.name), spec.sealed);
+    if (spec.auth?.type !== "runtime") return { url: spec.url, headers };
+    // Each request is signed for the turn it is made in (callScope), and each agent has its own session.
+    return { url: spec.url, headers, token: () => this.identityToken(context, spec.url), scope: context.agent };
   }
 
   private offered(spec: McpServerSpec, tool: Tool) {
@@ -245,13 +264,16 @@ export class ToolSources {
         const apis = (sources?.openApi ?? []).flatMap(api => api.operations.map(operation => operationTool(api.name, operation, api.exposure)));
         return [...builtinDefinitions(sources?.builtins), ...apis, ...lists.flat()];
       },
-      call: async ({ name, args, signal, origin }) => {
+      call: async ({ name, args, signal, origin, actor }) => {
+        const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}) };
         if (builtins.includes(name)) return jsonResult(await runBuiltin({ outbound: this.outbound, scheduler: this.options.scheduler }, context, name, args, signal));
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
         if (api && operation) {
           const { url, init } = operationRequest(api.baseUrl, operation, args);
-          const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: RESULT_BYTES, secrets: this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed) });
+          const secrets = this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed);
+          if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, api.baseUrl, turn)}`;
+          const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: RESULT_BYTES, secrets });
           return operationResult(operation, response);
         }
         const spec = mcpServer(name);
@@ -259,7 +281,7 @@ export class ToolSources {
         const server = this.endpoint(context, spec);
         const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
-        return await this.mcp.call(context.tenant, server, tool.name, args, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, origin && { "agent-runtime/origin": origin }) as McpResult;
+        return await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, args, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, origin && { "agent-runtime/origin": origin })) as McpResult;
       },
     };
   }

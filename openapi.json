@@ -366,6 +366,15 @@
               "$ref": "#/components/schemas/Mount"
             },
             "description": "Volumes for the agent's file tools; default: a new workspace volume at /workspace"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here"
           }
         }
       },
@@ -598,6 +607,10 @@
         "properties": {
           "text": {
             "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens"
           },
           "requestId": {
             "type": "string",
@@ -1498,23 +1511,27 @@
             "description": "Headers the server gets; their values are never returned"
           },
           "auth": {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "bearer"
-                ]
-              }
-            },
-            "required": [
-              "type"
-            ]
+            "$ref": "#/components/schemas/SourceAuth"
           }
         },
         "required": [
           "name",
           "url"
+        ]
+      },
+      "SourceAuth": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "bearer",
+              "runtime"
+            ]
+          }
+        },
+        "required": [
+          "type"
         ]
       },
       "OpenApi": {
@@ -1576,18 +1593,7 @@
             }
           },
           "auth": {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "bearer"
-                ]
-              }
-            },
-            "required": [
-              "type"
-            ]
+            "$ref": "#/components/schemas/SourceAuth"
           }
         },
         "required": [
@@ -1719,6 +1725,17 @@
             "description": "Sent with every request to the server; stored encrypted and never returned. Leave out with auth to keep the ones stored for a server of this name and origin"
           },
           "auth": {
+            "$ref": "#/components/schemas/SourceAuthInput"
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ]
+      },
+      "SourceAuthInput": {
+        "anyOf": [
+          {
             "type": "object",
             "properties": {
               "type": {
@@ -1736,11 +1753,22 @@
               "token"
             ],
             "description": "A bearer token; stored encrypted and never returned"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "runtime"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "description": "Each request carries a JWT the runtime signs (EdDSA, two minutes, audience the server's URL) naming the tenant, agent, subject, context and actor; verify it against /.well-known/jwks.json"
           }
-        },
-        "required": [
-          "name",
-          "url"
         ]
       },
       "OpenApiInput": {
@@ -1805,23 +1833,7 @@
             "description": "Sent with every request to the API; stored encrypted and never returned. Leave out with auth to keep the ones stored for a source of this name and origin"
           },
           "auth": {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "bearer"
-                ]
-              },
-              "token": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "token"
-            ],
-            "description": "A bearer token; stored encrypted and never returned"
+            "$ref": "#/components/schemas/SourceAuthInput"
           }
         },
         "required": [

@@ -3,10 +3,11 @@ import type { McpResult } from "./mcp-results.ts";
 import { compiles, validateDefinitions } from "./tool-policy.ts";
 
 /**
- * A tool call as a server gets it; `toolCallId` is the model's id for the call, and `origin`
- * where the turn came from (a channel and its sender), set by the runtime so tools can authorize.
+ * A tool call as a server gets it; `toolCallId` is the model's id for the call, `origin` where the
+ * turn came from (a channel and its sender), and `actor` who the application said is acting in it:
+ * set by the runtime, never by the model, so tools can authorize.
  */
-export type ToolCall = { name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; origin?: Record<string, unknown> };
+export type ToolCall = { name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; origin?: Record<string, unknown>; actor?: string };
 
 /**
  * The one interface every source of an agent's tools answers through, shaped like MCP's

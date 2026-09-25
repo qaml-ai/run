@@ -1,0 +1,112 @@
+import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { exportJWK, generateKeyPair, importJWK, SignJWT, type JWK } from "jose";
+import type { Accounts, Sealed } from "./accounts.ts";
+import type { Db } from "./db.ts";
+import { HttpError } from "./http.ts";
+
+/**
+ * Identity tokens for tool servers: for a source whose auth is `{ type: "runtime" }`, every
+ * request carries a short-lived JWT the runtime signs (EdDSA, Ed25519), naming the tenant,
+ * the agent, the subject the application gave the agent, its context, and who is acting in
+ * the turn. Servers verify it against /.well-known/jwks.json: no shared secret, and nothing
+ * per user is stored anywhere.
+ */
+export type AgentIdentity = { subject?: string; context?: Record<string, unknown> };
+/** Who a call is for: the agent's identity, and in its turn who is acting and where it came from. */
+export type TokenClaims = { tenant: string; agent: string; definition?: string; identity?: AgentIdentity; actor?: string; origin?: Record<string, unknown> };
+
+const ALGORITHM = "EdDSA";
+const TOKEN_SECONDS = 120;
+const KEYS_TTL_MS = 10 * 60_000;
+const aad = (kid: string) => `runtime-signing:${kid}`;
+type Keys = { signing?: { kid: string; key: CryptoKey }; published: JWK[] };
+
+/** The turn a tool call belongs to, for requests made on its behalf deep in a transport (MCP). */
+export const callScope = new AsyncLocalStorage<{ actor?: string; origin?: Record<string, unknown> }>();
+
+export class RuntimeSigner {
+  readonly issuer: string;
+  private readonly db: Db;
+  private readonly accounts: Accounts;
+  private cache?: { at: number; keys: Promise<Keys> };
+
+  constructor(options: { db: Db; accounts: Accounts; issuer: string }) {
+    this.db = options.db;
+    this.accounts = options.accounts;
+    this.issuer = options.issuer;
+  }
+
+  /** Whether this runtime can sign: it needs AGENT_SECRETS_KEY to keep its private key. */
+  get available() { return this.accounts.canStoreKeys; }
+
+  /** The keys, read at most every ten minutes (so a rotation reaches every node); a failed read is not kept. */
+  private load(): Promise<Keys> {
+    if (!this.cache || Date.now() - this.cache.at > KEYS_TTL_MS) {
+      const keys = this.read();
+      this.cache = { at: Date.now(), keys };
+      keys.catch(() => { if (this.cache?.keys === keys) this.cache = undefined; });
+    }
+    return this.cache.keys;
+  }
+
+  /**
+   * Read the keys, making the first one if there is none. Nodes starting together may each make
+   * one; all are published, and every node signs with the oldest active key, so they converge.
+   */
+  private async read(): Promise<Keys> {
+    const select = async () => (await this.db.query("select kid, public_jwk, private_sealed, retired_at from signing_keys order by created_at, kid")).rows;
+    let rows = await select();
+    if (!rows.some(row => row.retired_at === null)) {
+      if (!this.available) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot sign identity tokens");
+      const { publicKey, privateKey } = await generateKeyPair(ALGORITHM, { crv: "Ed25519", extractable: true });
+      const kid = randomUUID();
+      const publicJwk = { ...await exportJWK(publicKey), kid, alg: ALGORITHM, use: "sig" };
+      await this.db.query("insert into signing_keys (kid, public_jwk, private_sealed, created_at) values ($1, $2, $3, $4)",
+        [kid, JSON.stringify(publicJwk), JSON.stringify(this.accounts.seal(aad(kid), JSON.stringify(await exportJWK(privateKey)))), Date.now()]);
+      rows = await select();
+    }
+    const active = rows.find(row => row.retired_at === null)!;
+    const signing = this.available
+      ? { kid: active.kid as string, key: await importJWK(JSON.parse(this.accounts.unseal(aad(active.kid), active.private_sealed as Sealed)), ALGORITHM) as CryptoKey }
+      : undefined;
+    return { ...(signing ? { signing } : {}), published: rows.map(row => row.public_jwk as JWK) };
+  }
+
+  /** The published keys, for /.well-known/jwks.json. */
+  async jwks() { return { keys: (await this.load()).published }; }
+
+  /** A token for one request to `audience` (the server's URL), valid for two minutes. */
+  async token(audience: string, claims: TokenClaims): Promise<string> {
+    const { signing } = await this.load();
+    if (!signing) throw new Error("This runtime cannot sign identity tokens");
+    const { identity, actor, origin, tenant, agent, definition } = claims;
+    return new SignJWT({
+      tenant, agent, ...(definition ? { definition } : {}), ...(identity?.context ? { ctx: identity.context } : {}),
+      ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}),
+    })
+      .setProtectedHeader({ alg: ALGORITHM, kid: signing.kid, typ: "JWT" })
+      .setIssuer(this.issuer).setAudience(audience).setSubject(identity?.subject ?? agent)
+      .setIssuedAt().setExpirationTime(`${TOKEN_SECONDS}s`).setJti(randomUUID())
+      .sign(signing.key);
+  }
+}
+
+/** An agent's identity from a create request: `subject` (who the agent acts for) and `context` (claims the application wants carried). */
+export function identityInput(params: { subject?: unknown; context?: unknown }): AgentIdentity | undefined {
+  const { subject, context } = params;
+  if (subject === undefined && context === undefined) return undefined;
+  if (subject !== undefined && (typeof subject !== "string" || !subject.trim() || subject.length > 200)) throw new HttpError(400, "subject must be a string of 1–200 characters");
+  if (context !== undefined) {
+    if (!context || typeof context !== "object" || Array.isArray(context)) throw new HttpError(400, "context must be an object");
+    if (Buffer.byteLength(JSON.stringify(context)) > 4096) throw new HttpError(400, "context must be at most 4 KB of JSON");
+  }
+  return { ...(subject !== undefined ? { subject: subject as string } : {}), ...(context !== undefined ? { context: context as Record<string, unknown> } : {}) };
+}
+
+/** Who is acting in a run, from its request: a string of 1–200 characters. */
+export function actorInput(actor: unknown): string | undefined {
+  if (actor === undefined) return undefined;
+  if (typeof actor !== "string" || !actor.trim() || actor.length > 200) throw new HttpError(400, "actor must be a string of 1–200 characters");
+  return actor;
+}

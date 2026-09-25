@@ -160,7 +160,7 @@ class AgentRuntime:
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -169,7 +169,8 @@ class AgentRuntime:
         file tools see; by default it gets its own workspace volume at /workspace."""
         if not self.api_key:
             raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to provision an agent")
-        optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level, "mounts": mounts}
+        # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
+        optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level, "mounts": mounts, "subject": subject, "context": context}
         # The tools are served to the agent as an attached MCP server; this is its tools/list.
         body = {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
         if ttl_seconds is not _DEFAULT:
@@ -515,11 +516,12 @@ class AgentClient:
             elif not future.done():
                 future.cancel()
 
-    async def prompt(self, text, **options):
-        return await self.request("prompt", {"text": text}, **options)
+    async def prompt(self, text, *, actor=None, **options):
+        """`actor` says who is acting in this turn: `act` in its tools' identity tokens."""
+        return await self.request("prompt", {"text": text, **({"actor": actor} if actor else {})}, **options)
 
-    async def execute(self, code, *, execution_timeout_ms=None, **options):
-        params = {"code": code}
+    async def execute(self, code, *, execution_timeout_ms=None, actor=None, **options):
+        params = {"code": code, **({"actor": actor} if actor else {})}
         if execution_timeout_ms is not None:
             params["timeoutMs"] = execution_timeout_ms
         return await self.request("execute", params, **options)

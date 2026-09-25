@@ -27,6 +27,7 @@ import type { Sources, ToolSources } from "./tool-sources.ts";
 import { contentResult, type McpResult } from "./mcp-results.ts";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
+import { actorInput, type AgentIdentity } from "./identity.ts";
 import { compose, valueServer, type ToolCall, type ToolServer } from "./tool-servers.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
@@ -50,6 +51,8 @@ interface SessionHeader {
   definition?: DefinitionRef;
   /** That revision's server-side tool sources, their secrets sealed under the definition. */
   sources?: Sources;
+  /** Who the agent acts for, and context for its tool servers: set at creation by the tenant, never by the agent. */
+  identity?: AgentIdentity;
 }
 /** Upserts of request records, appended as their state changes. Journals from before tool calls were MCP also hold call records, which are skipped. */
 type JournalRecord = { t: "request"; record: RequestRecord };
@@ -511,7 +514,7 @@ export class ClientSessions {
       ...feature ? [feature] : [],
       { tools: () => tools, call: call => this.callAttached(session, call) },
       ...volumes && header.mounts?.length ? [valueServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool({ tenant, agent: header.id, mounts: header.mounts ?? [] }, name, args, signal))] : [],
-      ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim }, sources)] : [],
+      ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}) }, sources)] : [],
     ];
     const { tools: definitions, route } = await compose(servers);
     session.route = route;
@@ -525,7 +528,7 @@ export class ClientSessions {
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
     const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant ?? DEFAULT_TENANT, claim: session.claim }, request?.id);
     await this.beforeEffect(session);
-    return contentResult(await server.call({ ...call, ...(origin ? { origin } : {}) }));
+    return contentResult(await server.call({ ...call, ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}) }));
   }
 
   /** The id of the agent `create` makes for a tenant's idempotency key. */
@@ -538,7 +541,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant = DEFAULT_TENANT, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }, identity?: AgentIdentity): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -547,7 +550,7 @@ export class ClientSessions {
     const id = this.agentId(tenant, key);
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
-    const provisionHash = hash(canonical(origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }));
+    const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }, ...(identity ? { identity } : {}) }));
     // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
     const existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
     if (existing) {
@@ -585,7 +588,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}) },
+          header: { version: 3, id, ...(tenant === DEFAULT_TENANT ? {} : { tenant }), digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(identity ? { identity } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -600,7 +603,7 @@ export class ClientSessions {
         if (!created) {
           this.supervisor.unreserve(id);
           if (claim) await this.options.ownership!.release(claim).catch(() => {});
-          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin);
+          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, identity);
           throw error;
         }
         await this.discard(session!);
@@ -876,6 +879,11 @@ export class ClientSessions {
     if (retried) return { status: 200, record: visible(retried) };
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
     const isRun = RUN_METHODS.includes(body.method);
+    // Who is acting in a run is recorded apart from what the agent is asked to do.
+    let actor: string | undefined;
+    const { actor: rawActor, ...params } = body.params;
+    if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
+    try { actor = actorInput(rawActor); } catch (error) { throw new HttpError(400, errorText(error)); }
     const limited = await this.runLimit(session, body.method);
     if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
     // Reads, aborts and applied definitions never need a process; runs start it when their turn comes.
@@ -886,12 +894,12 @@ export class ClientSessions {
     const record = this.upsertRequest(session, {
       startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
       ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-      id: body.id, method: body.method, fingerprint, state: "running", ...(isRun ? { params: body.params } : {}),
+      id: body.id, method: body.method, fingerprint, state: "running", ...(isRun ? { params } : {}), ...(actor ? { actor } : {}),
     });
     await this.commit(session, true);
     // A definition is applied between runs, when the agent is not busy.
-    if (isRun || applying) this.enqueue(session, record, body.params);
-    else void this.run(session, record, body.params);
+    if (isRun || applying) this.enqueue(session, record, params);
+    else void this.run(session, record, params);
     return { status: 202, record: visible(record) };
   }
 
@@ -1046,11 +1054,11 @@ export class ClientSessions {
    * connection or deadline cut short has an unknown outcome. After a crash, the turn's transcript
    * says the same: a tool call without a result is closed as unknown, never sent again.
    */
-  private async callAttached(session: Session, { name, args, signal, toolCallId, origin }: ToolCall): Promise<McpResult> {
+  private async callAttached(session: Session, { name, args, signal, toolCallId, origin, actor }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
     const timeout = this.options.toolTimeoutMs ?? 15_000;
-    const _meta = { "agent-runtime/callId": randomUUID(), ...(toolCallId ? { "agent-runtime/toolCallId": toolCallId } : {}), ...(origin ? { "agent-runtime/origin": origin } : {}) };
+    const _meta = { "agent-runtime/callId": randomUUID(), ...(toolCallId ? { "agent-runtime/toolCallId": toolCallId } : {}), ...(origin ? { "agent-runtime/origin": origin } : {}), ...(actor ? { "agent-runtime/actor": actor } : {}) };
     session.inflight++;
     try {
       return await attached.client.callTool({ name, arguments: args, _meta }, undefined, { signal, timeout, maxTotalTimeout: timeout }) as McpResult;

@@ -38,6 +38,7 @@ import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { Stripe } from "./stripe.ts";
+import { identityInput, RuntimeSigner } from "./identity.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -119,13 +120,17 @@ const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new UR
 // Every call to a URL a tenant configured (MCP servers, web_fetch) goes through one guard: public addresses only.
 const outbound = outboundFromEnvironment();
 const mcp = new McpConnections({ outbound });
-const toolSources = new ToolSources({ accounts, mcp, outbound, get scheduler() { return scheduler; } });
+// Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
+const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
+const toolSources = new ToolSources({ accounts, mcp, outbound, signer, get scheduler() { return scheduler; } });
 const definitions = new Definitions({ db, accounts, outbound });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
-  const { mcp: _mcp, ...rest } = params ?? {};
+  const { mcp: _mcp, subject: _subject, context: _context, ...rest } = params ?? {};
+  // Who the agent acts for, and context for its tool servers' identity tokens.
+  const identity = identityInput(params ?? {});
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
@@ -137,7 +142,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
-    made && { definition: made.ref, provision: made.provision, sources: made.sources });
+    made && { definition: made.ref, provision: made.provision, sources: made.sources }, identity);
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
@@ -309,6 +314,8 @@ type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
 // The load balancer's health check: failing it while draining stops new requests arriving here. A retiring
 // node stays healthy (ECS replaces tasks that fail it, protected or not) and hands new work to its peers instead.
+// The runtime's public signing keys: tool servers verify its identity tokens with them.
+app.get("/.well-known/jwks.json", async c => c.json(await signer.jwks(), 200, { "Cache-Control": "public, max-age=300" }));
 app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
 // Every 503 is worth retrying (capacity, an actor moving, this node draining), and so is a 429 (a
 // tenant at its agent quota, or an agent with too many queued requests) once work finishes; say when.

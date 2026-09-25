@@ -14,6 +14,8 @@ export type RequestRecord = {
   params?: unknown;
   /** Times a new owner resumed this run's turn after the node running it was lost. */
   resumes?: number;
+  /** Who the application said is acting in this run: passed to its tool calls (`act` in identity tokens). */
+  actor?: string;
 };
 /** Events on an agent's stream. `mcp` carries the runtime's JSON-RPC messages to the application's attached MCP server: live only, with no id, never replayed. */
 export type ClientEvent =

@@ -80,6 +80,8 @@ export const AgentInput = z.object({
   initialMessages: z.array(z.unknown()).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400." }),
   mounts: z.array(Mount).optional().openapi({ description: "Volumes for the agent's file tools; default: a new workspace volume at /workspace" }),
+  subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
+  context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
 }).openapi("AgentInput");
 
 export const AgentCreated = z.looseObject({
@@ -128,6 +130,7 @@ export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi
 
 export const PromptInput = z.object({
   text: z.string({ error: SEND_TEXT }).refine(text => !!text.trim(), SEND_TEXT),
+  actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
   requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request" }),
 }, { error: SEND_TEXT }).openapi("PromptInput");
 
@@ -171,6 +174,11 @@ const DefinitionLimits = z.object({
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400." }),
 }).openapi("DefinitionLimits");
 const definitionName = z.string().trim().min(1).max(120);
+const SourceAuthInput = z.union([
+  z.object({ type: z.literal("bearer"), token: z.string() }).openapi({ description: "A bearer token; stored encrypted and never returned" }),
+  z.object({ type: z.literal("runtime") }).openapi({ description: "Each request carries a JWT the runtime signs (EdDSA, two minutes, audience the server's URL) naming the tenant, agent, subject, context and actor; verify it against /.well-known/jwks.json" }),
+]).openapi("SourceAuthInput");
+const SourceAuth = z.object({ type: z.enum(["bearer", "runtime"]) }).openapi("SourceAuth");
 const mcpServerFields = {
   name: z.string().openapi({ description: "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them" }),
   url: z.string().openapi({ description: "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address" }),
@@ -182,7 +190,7 @@ const mcpServerFields = {
 const McpServerInput = z.object({
   ...mcpServerFields,
   headers: z.record(z.string(), z.string()).optional().openapi({ description: "Sent with every request to the server; stored encrypted and never returned. Leave out with auth to keep the ones stored for a server of this name and origin" }),
-  auth: z.object({ type: z.literal("bearer"), token: z.string() }).optional().openapi({ description: "A bearer token; stored encrypted and never returned" }),
+  auth: SourceAuthInput.optional(),
 }).openapi("McpServerInput");
 const openApiFields = {
   name: z.string().openapi({ description: "Its operations reach the model as <name>__<operationId>: 1–32 letters and digits, single underscores between them" }),
@@ -196,7 +204,7 @@ const OpenApiInput = z.object({
   ...openApiFields,
   spec: z.union([z.string(), z.record(z.string(), z.unknown())]).optional().openapi({ description: "The OpenAPI 3 document (JSON or YAML) as a URL, fetched each time the definition is saved, or the document itself. Leave out to keep a source's current operations" }),
   headers: z.record(z.string(), z.string()).optional().openapi({ description: "Sent with every request to the API; stored encrypted and never returned. Leave out with auth to keep the ones stored for a source of this name and origin" }),
-  auth: z.object({ type: z.literal("bearer"), token: z.string() }).optional().openapi({ description: "A bearer token; stored encrypted and never returned" }),
+  auth: SourceAuthInput.optional(),
 }).openapi("OpenApiInput");
 const OpenApi = z.object({
   ...openApiFields,
@@ -204,12 +212,12 @@ const OpenApi = z.object({
   baseUrl: z.string(),
   tools: z.array(z.string()).openapi({ description: "The operations the agent gets, by name" }),
   headerNames: z.array(z.string()).optional(),
-  auth: z.object({ type: z.literal("bearer") }).optional(),
+  auth: SourceAuth.optional(),
 }).openapi("OpenApi");
 const McpServer = z.object({
   ...mcpServerFields,
   headerNames: z.array(z.string()).optional().openapi({ description: "Headers the server gets; their values are never returned" }),
-  auth: z.object({ type: z.literal("bearer") }).optional(),
+  auth: SourceAuth.optional(),
 }).openapi("McpServer");
 const definitionFields = {
   model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),

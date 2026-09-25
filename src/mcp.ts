@@ -15,7 +15,11 @@ import type { Outbound } from "./outbound.ts";
  * when the server says its list changed. Every request goes through the outbound
  * guard, with the server's credentials sent to its own origin only.
  */
-export interface McpServer { url: string; headers: Record<string, string> }
+/**
+ * `token` mints the Authorization for each request (the runtime's identity tokens); such a
+ * server gets its own connection per `scope` (an agent), since its tokens name the agent.
+ */
+export interface McpServer { url: string; headers: Record<string, string>; token?: () => Promise<string>; scope?: string }
 type Connection = {
   key: string; server: McpServer;
   client?: Client; connecting?: Promise<Client>;
@@ -41,7 +45,7 @@ export class McpConnections {
   }
 
   private connection(tenant: string, server: McpServer) {
-    const key = createHash("sha256").update(canonical({ tenant, url: server.url, headers: server.headers })).digest("hex");
+    const key = createHash("sha256").update(canonical({ tenant, url: server.url, headers: server.headers, ...(server.token ? { scope: server.scope ?? "" } : {}) })).digest("hex");
     let connection = this.connections.get(key);
     if (!connection) {
       connection = { key, server, lastUsed: Date.now() };
@@ -57,8 +61,9 @@ export class McpConnections {
 
   /** Requests to the server's own origin carry its credentials; anything else goes without them. */
   private fetcher(server: McpServer): FetchLike {
-    return (url, init) => this.outbound.fetch(url, {
-      ...init as RequestInit, secrets: server.headers, timeoutMs: CONNECT_TIMEOUT_MS, maxBytes: 8 * 1024 * 1024,
+    return async (url, init) => this.outbound.fetch(url, {
+      ...init as RequestInit, secrets: server.token ? { ...server.headers, Authorization: `Bearer ${await server.token()}` } : server.headers,
+      timeoutMs: CONNECT_TIMEOUT_MS, maxBytes: 8 * 1024 * 1024,
       // A response may be an event stream carrying the answer (or the server's notifications): only its start is timed.
       stream: true,
     });

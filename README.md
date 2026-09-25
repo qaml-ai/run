@@ -539,6 +539,44 @@ every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
 - `exposure` is `codemode` by default, as for MCP servers. The API shows each
   source's `tools` (operation names) and `baseUrl`, never its credentials.
 
+### Identity tokens (`auth: { type: "runtime" }`)
+
+A tool server can trust the runtime instead of a stored secret: with
+`"auth": {"type": "runtime"}` on an MCP server or OpenAPI source, every request
+to it carries `Authorization: Bearer <JWT>`, signed by the runtime for that
+request. Nothing per user is stored anywhere, and there is no shared secret.
+
+```json
+{ "iss": "https://agents.camelai.dev", "aud": "https://app.example.com/mcp",
+  "sub": "u_123", "tenant": "acme", "agent": "client_…", "definition": "def_…",
+  "ctx": { "org": "acme", "thread": "t_1" }, "act": "u_456",
+  "origin": { "channel": { "id": "ch_…", "type": "slack" }, "sender": { … } },
+  "iat": 1790000000, "exp": 1790000120, "jti": "…" }
+```
+
+- `sub` is the agent's `subject` and `ctx` its `context`, both given when the
+  agent is created (`POST /v1/agents` or the SDKs' `createAgent`) with the
+  tenant's key; the agent's own token cannot set or change them. Without a
+  subject, `sub` is the agent's id.
+- `act` is who is acting in the turn: the `actor` given with the prompt
+  (`POST /v1/agents/:id/prompt {text, actor}`, or `prompt(text, { actor })`),
+  and `origin` where a channel turn came from. Requests outside a turn (listing
+  an MCP server's tools when an agent starts) carry neither.
+- `aud` is the MCP server's URL, or the OpenAPI source's `baseUrl`, so a token
+  cannot be replayed against another server. Tokens live two minutes, and each
+  request gets its own (`jti`). Each agent has its own MCP session with a
+  server that uses them.
+- Tokens are EdDSA (Ed25519). The public keys are at
+  `/.well-known/jwks.json` (keys have `kid`; cache for minutes); the private key
+  is sealed with `AGENT_SECRETS_KEY` in `signing_keys` and made on first use.
+- To verify, in a Worker or Node (`jose`):
+
+```ts
+const jwks = createRemoteJWKSet(new URL("https://agents.camelai.dev/.well-known/jwks.json"));
+const { payload } = await jwtVerify(token, jwks, { issuer: "https://agents.camelai.dev", audience: "https://app.example.com/mcp", algorithms: ["EdDSA"] });
+// Authorize as payload.act ?? payload.sub, within payload.ctx, for tenant payload.tenant.
+```
+
 ### Outbound calls
 
 Every request to a URL a tenant or model chose (MCP servers, OpenAPI specs and APIs, `web_fetch`) goes through one guard (`src/outbound.ts`):
