@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { listen, runtime, sleep, toolCall, toolResults, type T } from "./runtime-server.ts";
+import { listen, runtime, sleep, toolCall, toolResults, until, type T } from "./runtime-server.ts";
 
 const PNG = "iVBORw0KGgo=";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
@@ -118,6 +118,55 @@ test("tool lists refresh when the server says they changed, and edits keep seale
   const moved = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { mcpServers: [{ name: "kb", url: `${other}/mcp`, exposure: "direct" }] } });
   assert.equal(moved.json.mcpServers[0].headerNames, undefined);
   assert.deepEqual([...mcp.seen.authorizations], ["Bearer s3cret"]);
+});
+
+test("an agent shows every tool source and what its model gets, connecting to MCP servers only when asked", async t => {
+  const mcp = await mcpServer(t);
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { ...LOCAL, AGENT_IDLE_MS: "1000" });
+  const definition = (await r.call("/v1/definitions", { body: { name: "KB", builtins: ["web_fetch"], mcpServers: [
+    { name: "kb", url: mcp.url, auth: { type: "bearer", token: "s3cret" }, denyTools: ["hidden.tool"] },
+    { name: "gone", url: "http://127.0.0.1:1/mcp" },
+  ] } })).json;
+  const tools = [{ name: "web_fetch", description: "The application's own fetch", inputSchema: { type: "object", properties: {} } }];
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id, mcp: { tools } } })).json.id;
+  const byName = (sources: any[]) => Object.fromEntries(sources.map(source => [source.name, source]));
+
+  // The agent started when it was made: its sources show what its tools were built from.
+  let requests = mcp.seen.requests;
+  const detail = (await r.call(`/v1/agents/${agent}`)).json;
+  let sources = byName(detail.toolSources);
+  assert.deepEqual(detail.toolSources.map((source: any) => `${source.kind}:${source.name}`), ["application:application", "files:files", "builtin:web_fetch", "mcp:kb", "mcp:gone"]);
+  assert.deepEqual(sources.application, { kind: "application", name: "application", status: "listed", connected: false, tools: [{ name: "web_fetch", description: "The application's own fetch", exposure: "both" }] });
+  assert.equal(sources.web_fetch.tools[0].excluded, "an earlier source has a tool of this name", "the application's tool of the same name wins");
+  assert.equal(sources.files.tools.every((tool: any) => !tool.excluded && !tool.parameters), true, "schemas only when asked");
+  assert.equal(sources.kb.status, "listed");
+  assert.equal(typeof sources.kb.listedAt, "number");
+  assert.deepEqual(sources.kb.tools.map((tool: any) => tool.name).sort(), ["kb__echo", "kb__fail", "kb__picture"], "denied tools are not offered");
+  assert.equal(sources.gone.status, "error");
+  assert.match(sources.gone.error, /Could not connect to MCP server 127\.0\.0\.1:1/);
+  assert.deepEqual(sources.gone.tools, []);
+  assert.equal(JSON.stringify(detail).includes("s3cret"), false);
+  assert.equal(mcp.seen.requests, requests, "reading an agent connects to nothing");
+
+  // Stopped, it shows what this node last listed for each server, or that it has not listed one.
+  await until(async () => !(await r.call(`/v1/agents/${agent}`)).json.running, "the agent to go idle");
+  sources = byName((await r.call(`/v1/agents/${agent}`)).json.toolSources);
+  assert.equal(sources.kb.status, "listed");
+  assert.equal(sources.kb.tools.length, 3);
+  assert.deepEqual([sources.gone.status, sources.gone.tools], ["unlisted", []]);
+  assert.equal(mcp.seen.requests, requests);
+
+  const refreshed = byName((await r.call(`/v1/agents/${agent}?refresh=true&schemas=true`)).json.toolSources);
+  assert.equal(refreshed.gone.status, "error");
+  assert.equal(refreshed.kb.tools.find((tool: any) => tool.name === "kb__echo").parameters.required[0], "text");
+  assert.deepEqual(refreshed.files.tools.every((tool: any) => tool.parameters), true);
+
+  // What the sources say the model gets is what it gets.
+  await r.prompt(agent, "hi");
+  sources = byName((await r.call(`/v1/agents/${agent}`)).json.toolSources);
+  const offered = r.model.bodies[0].tools.map((tool: any) => tool.function.name);
+  const direct = Object.values(sources).flatMap((source: any) => source.tools).filter((tool: any) => !tool.excluded && tool.exposure !== "codemode").map((tool: any) => tool.name);
+  assert.deepEqual(offered.filter((name: string) => name !== "js_exec").sort(), direct.sort());
 });
 
 test("MCP servers must be on public addresses, checked when saved and again when connecting", async t => {

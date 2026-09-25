@@ -125,6 +125,14 @@ export interface Definition extends Omit<DefinitionInput, "mcpServers" | "openAp
   mcpServers?: Record<string, unknown>[]; openApi?: Record<string, unknown>[];
   applied?: { accepted: string[]; failed: { agent: string; error: string }[] };
 }
+/** One source of an agent's tools; `excluded` says why the model does not get a tool, when it does not. */
+export interface ToolSource {
+  kind: "channel" | "application" | "files" | "builtin" | "mcp" | "openapi"; name: string;
+  /** unlisted: an MCP server the runtime has not listed yet; error: listing it failed. */
+  status: "listed" | "unlisted" | "error"; error?: string; listedAt?: number; connected?: boolean; url?: string;
+  exposure?: "direct" | "codemode" | "both";
+  tools: { name: string; description: string; exposure?: "direct" | "codemode" | "both"; executionMode?: "sequential" | "parallel"; parameters?: Record<string, unknown>; excluded?: string }[];
+}
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
 export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string }
@@ -249,6 +257,14 @@ export class AgentRuntime {
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
   /** Replace an agent's mounts; an idle agent restarts so its tools describe them. */
   setMounts(agentId: string, mounts: Mount[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
+  /**
+   * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
+   * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
+   */
+  async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {
+    const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
+    return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;
+  }
 }
 
 /** Files are versioned: pass `version` to write or remove only if nobody changed the file since (0: must not exist). */

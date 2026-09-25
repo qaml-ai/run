@@ -44,8 +44,12 @@ export class McpConnections {
     this.timer.unref();
   }
 
+  private key(tenant: string, server: McpServer) {
+    return createHash("sha256").update(canonical({ tenant, url: server.url, headers: server.headers, ...(server.token ? { scope: server.scope ?? "" } : {}) })).digest("hex");
+  }
+
   private connection(tenant: string, server: McpServer) {
-    const key = createHash("sha256").update(canonical({ tenant, url: server.url, headers: server.headers, ...(server.token ? { scope: server.scope ?? "" } : {}) })).digest("hex");
+    const key = this.key(tenant, server);
     let connection = this.connections.get(key);
     if (!connection) {
       connection = { key, server, lastUsed: Date.now() };
@@ -107,6 +111,11 @@ export class McpConnections {
       connection.tools = { list: list.slice(0, MAX_TOOLS), at: Date.now() };
       return connection.tools.list;
     }).finally(() => { connection.listing = undefined; });
+  }
+
+  /** The server's tools as this node last listed them, and when, without connecting; undefined if it has not. */
+  cached(tenant: string, server: McpServer): { list: Tool[]; at: number } | undefined {
+    return this.connections.get(this.key(tenant, server))?.tools;
   }
 
   async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, timeoutMs: number, meta?: Record<string, unknown>) {

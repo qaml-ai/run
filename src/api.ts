@@ -146,8 +146,17 @@ export function api(context: ApiContext) {
     const key = c.req.header("idempotency-key");
     return json(c, 201, await context.createAgent(c.var.principal.tenant, await readJson(c.req.raw.body, 18 * 1024 * 1024, {}), key));
   });
-  route(createRoute({ method: "get", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent", schema.AgentDetail) } }),
-    async c => json(c, 200, await clients.inspect(c.req.param("id")!, c.var.principal.tenant)));
+  route(createRoute({
+    method: "get", path: "/v1/agents/{id}", request: { params: agentId, query: z.object({
+      schemas: z.enum(["true"]).optional().openapi({ description: "Include each tool's input schema in toolSources" }),
+      refresh: z.enum(["true"]).optional().openapi({ description: "List every MCP server now, connecting to it, rather than showing what was last listed. A running agent takes changes at its next start or reconfiguration" }),
+    }) },
+    responses: { 200: reply("The agent", schema.AgentDetail) },
+  }), async c => {
+    const id = c.req.param("id")!, tenant = c.var.principal.tenant;
+    const detail = await clients.inspect(id, tenant);
+    return json(c, 200, { ...detail, toolSources: await clients.toolSources(id, tenant, { schemas: c.req.query("schemas") === "true", refresh: c.req.query("refresh") === "true" }) });
+  });
   route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is deleted: it stops at once, and its stored data is purged shortly after", schema.Deleted) } }), async c => {
     await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, { deleted: true });

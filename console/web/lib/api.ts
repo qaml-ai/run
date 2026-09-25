@@ -56,9 +56,15 @@ export interface RequestRecord {
   id: string; method: string; state: "running" | "completed"; startedAt?: number; endedAt?: number; prompt?: string;
   outcome?: { result?: unknown; error?: string; uncertain?: boolean };
 }
+export type Exposure = "direct" | "codemode" | "both";
+export interface ToolSource {
+  kind: "channel" | "application" | "files" | "builtin" | "mcp" | "openapi"; name: string;
+  status: "listed" | "unlisted" | "error"; error?: string; listedAt?: number; connected?: boolean; url?: string; exposure?: Exposure;
+  tools: { name: string; description: string; exposure?: Exposure; parameters?: Record<string, unknown>; excluded?: string }[];
+}
 export interface AgentDetail extends AgentSummary {
   definition?: { id: string; revision: number };
-  tools: { name: string; description: string }[]; systemPrompt: string; requests: RequestRecord[];
+  tools: { name: string; description: string }[]; toolSources: ToolSource[]; systemPrompt: string; requests: RequestRecord[];
 }
 export interface ApiToken { id: string; name: string; prefix: string; createdAt: number }
 export interface Usage {

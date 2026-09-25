@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { ArrowLeft, Loader2, Send, Square, Trash2, Wrench } from "lucide-react";
+import { ArrowLeft, Braces, Loader2, RefreshCw, Send, Square, Trash2, Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmButton, CopyButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type AgentDetail, type RequestRecord } from "@/lib/api";
+import { api, formatTime, useApi, type AgentDetail, type RequestRecord, type ToolSource } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
 import { AgentStatus } from "@/pages/agents";
 
@@ -107,6 +107,81 @@ function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
   );
 }
 
+const SOURCE_KINDS: Record<ToolSource["kind"], string> = {
+  channel: "Channel", application: "Your application", files: "File tools", builtin: "Built-in", mcp: "MCP server", openapi: "OpenAPI",
+};
+
+/**
+ * Every source of the agent's tools and what each offers the model. Refresh lists MCP servers now
+ * (a running agent takes changes at its next start); schemas fetch each tool's input schema.
+ */
+function ToolSources({ agentId, sources }: { agentId: string; sources: ToolSource[] }) {
+  const [fetched, setFetched] = useState<{ sources: ToolSource[]; refreshed: boolean; at: number }>();
+  const [busy, setBusy] = useState<"refresh" | "schemas">();
+  const [error, setError] = useState<string>();
+  // A fetched view (with schemas, or listed just now) stands for a minute, then the page's own polling takes over again.
+  const shown = fetched && Date.now() - fetched.at < 60_000 ? fetched : undefined;
+  async function load(kind: "refresh" | "schemas") {
+    setBusy(kind); setError(undefined);
+    try {
+      const query = kind === "refresh" ? "schemas=true&refresh=true" : "schemas=true";
+      const detail = await api<AgentDetail>(`/v1/agents/${agentId}?${query}`);
+      setFetched({ sources: detail.toolSources, refreshed: kind === "refresh" || !!shown?.refreshed, at: Date.now() });
+    } catch (caught) { setError((caught as Error).message); }
+    finally { setBusy(undefined); }
+  }
+  const list = shown?.sources ?? sources;
+  const total = list.reduce((count, source) => count + source.tools.filter(tool => !tool.excluded).length, 0);
+  return (
+    <Card className="lg:col-span-2">
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <CardTitle>Tools the model gets ({total})</CardTitle>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" disabled={!!busy} onClick={() => void load("schemas")}>{busy === "schemas" ? <Loader2 className="animate-spin" /> : <Braces />}Schemas</Button>
+          <Button size="sm" variant="outline" disabled={!!busy} onClick={() => void load("refresh")} title="List every MCP server now">{busy === "refresh" ? <Loader2 className="animate-spin" /> : <RefreshCw />}Refresh</Button>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <ErrorAlert error={error} />
+        {shown?.refreshed && <p className="text-muted-foreground text-xs">MCP servers were listed just now. A running agent takes their changes at its next start.</p>}
+        {list.length === 0 && <p className="text-muted-foreground text-sm">No tools.</p>}
+        {list.map(source => (
+          <div key={`${source.kind}:${source.name}`} className="rounded-md border p-3">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-medium">{SOURCE_KINDS[source.kind]}</span>
+              {source.name !== source.kind && <span className="font-mono">{source.name}</span>}
+              {source.status === "error" && <Badge variant="destructive">error</Badge>}
+              {source.status === "unlisted" && <Badge variant="outline" title="This node has not listed this server yet; Refresh lists it now">not listed yet</Badge>}
+              {source.connected !== undefined && <Badge variant={source.connected ? "secondary" : "outline"}>{source.connected ? "connected" : "not connected"}</Badge>}
+              {source.url && <span className="text-muted-foreground truncate font-mono text-xs">{source.url}</span>}
+              {source.listedAt && <span className="text-muted-foreground text-xs">listed {formatTime(source.listedAt)}</span>}
+            </div>
+            {source.error && <p className="text-destructive mt-1 text-xs break-all">{source.error}</p>}
+            {source.tools.length === 0 && source.status === "listed" && <p className="text-muted-foreground mt-1 text-xs">No tools.</p>}
+            <div className="mt-2 flex flex-col gap-2">
+              {source.tools.map(tool => (
+                <div key={tool.name} className={tool.excluded ? "opacity-60" : undefined}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm">{tool.name}</span>
+                    {tool.exposure && <Badge variant="outline" title="direct: declared to the model; codemode: from js_exec; both">{tool.exposure}</Badge>}
+                    {tool.excluded && <Badge variant="destructive" title={tool.excluded}>not offered</Badge>}
+                  </div>
+                  <div className="text-muted-foreground line-clamp-3 text-xs">{tool.excluded ? `${tool.excluded}. ` : ""}{tool.description}</div>
+                  {tool.parameters && (
+                    <details className="mt-1 text-xs"><summary className="text-muted-foreground cursor-pointer">Input schema</summary>
+                      <pre className="bg-muted/50 mt-1 max-h-60 overflow-auto rounded p-2 font-mono">{JSON.stringify(tool.parameters, null, 2)}</pre>
+                    </details>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function AgentPage({ id }: { id: string }) {
   const agent = useApi<AgentDetail>(`/v1/agents/${id}`, 5_000);
   const history = useApi<{ messages: Message[] }>(`/v1/agents/${id}/history`, agent.data?.running ? 3_000 : undefined);
@@ -144,13 +219,10 @@ export function AgentPage({ id }: { id: string }) {
             <CardContent><pre className="max-h-96 overflow-auto text-sm whitespace-pre-wrap">{data.systemPrompt || "(runtime default)"}</pre></CardContent>
           </Card>
           <Card>
-            <CardHeader><CardTitle>Tools ({data.tools.length})</CardTitle></CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              {data.tools.length === 0 && <p className="text-muted-foreground text-sm">No application tools.</p>}
-              {data.tools.map(tool => <div key={tool.name}><div className="font-mono text-sm">{tool.name}</div><div className="text-muted-foreground text-xs">{tool.description}</div></div>)}
-              <div className="text-muted-foreground flex items-center gap-1 pt-2 font-mono text-xs">{id}<CopyButton value={id} label="Copy agent ID" /></div>
-            </CardContent>
+            <CardHeader><CardTitle>Agent ID</CardTitle></CardHeader>
+            <CardContent><div className="text-muted-foreground flex items-center gap-1 font-mono text-xs">{id}<CopyButton value={id} label="Copy agent ID" /></div></CardContent>
           </Card>
+          <ToolSources agentId={id} sources={data.toolSources ?? []} />
         </TabsContent>
       </Tabs>
     </>

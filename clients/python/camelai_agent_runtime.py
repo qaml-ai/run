@@ -229,6 +229,13 @@ class AgentRuntime:
         """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
         return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator(), "PUT", {"mounts": mounts}, retry=False)
 
+    async def tool_sources(self, agent_id, *, schemas=False, refresh=False):
+        """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
+        specs) and what each offers the model. schemas includes input schemas; refresh lists MCP servers now."""
+        query = "&".join(name for name, on in (("schemas=true", schemas), ("refresh=true", refresh)) if on)
+        detail = await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}" + (f"?{query}" if query else ""), self._operator())
+        return detail["toolSources"]
+
     async def close(self):
         await asyncio.gather(*(agent.close() for agent in self.agents))
         await self.http.aclose()

@@ -29,7 +29,7 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity } from "./identity.ts";
 import { senderInput } from "./sender.ts";
-import { compose, defaultExposure, valueServer, type ToolCall, type ToolServer } from "./tool-servers.ts";
+import { compose, defaultExposure, describeSources, valueServer, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -77,6 +77,8 @@ type Session = {
   inflight: number;
   /** Which tool server answers each of the running agent's tools. */
   route?: Map<string, ToolServer>;
+  /** The servers the running agent's tools were built from, and what each listed then. */
+  servers?: ToolServer[];
   /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
   runs: Promise<void>;
   /** Runs that began on a lost node, queued here to resume their turn. */
@@ -501,25 +503,47 @@ export class ClientSessions {
   }
 
   /**
-   * The agent's tools, from its tool servers in order of precedence: the runtime feature's
-   * (a channel's send_message), the application's attached server, file tools over its
-   * mounts, then its definition's built-ins and remote MCP servers. Records the route.
+   * The agent's tool servers in order of precedence: the runtime feature's (a channel's
+   * send_message), the application's attached server, file tools over its mounts, then its
+   * definition's built-ins, OpenAPI specs and remote MCP servers.
    */
-  private async toolset(session: Session, tools = session.header.definitions, sources = session.header.sources) {
+  private async servers(session: Session, tools = session.header.definitions, sources = session.header.sources): Promise<ToolServer[]> {
     const header = session.header;
     const tenant = header.tenant ?? DEFAULT_TENANT;
     const agent: AgentRef = { id: header.id, tenant, claim: session.claim };
     const feature = await this.options.hooks?.server?.(agent);
     const volumes = this.options.volumes;
-    const servers: ToolServer[] = [
-      ...feature ? [feature] : [],
-      { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call) },
-      ...volumes && header.mounts?.length ? [valueServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool({ tenant, agent: header.id, mounts: header.mounts ?? [] }, name, args, signal))] : [],
+    const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
+      ({ tools: () => server.tools(), call: call => server.call(call), sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
+    return [
+      ...feature ? [view("channel", feature)] : [],
+      { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
+      ...volumes && header.mounts?.length ? [view("files", valueServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool({ tenant, agent: header.id, mounts: header.mounts ?? [] }, name, args, signal)))] : [],
       ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}) }, sources)] : [],
     ];
+  }
+
+  /** The agent's tools from its servers (see `servers`). Records the route, and the servers for `toolSources`. */
+  private async toolset(session: Session, tools = session.header.definitions, sources = session.header.sources) {
+    const servers = await this.servers(session, tools, sources);
     const { tools: definitions, route } = await compose(servers);
     session.route = route;
+    session.servers = servers;
     return definitions;
+  }
+
+  /**
+   * What each of a tenant's agent's tool sources offers, and which tools its model gets. A running
+   * agent shows the lists its tools were built from; otherwise MCP servers show what this node last
+   * listed, or `unlisted`. `refresh` lists every MCP server now, connecting to it: what the servers
+   * offer at this moment, which a running agent takes at its next start or reconfiguration.
+   */
+  async toolSources(id: string, tenant: string, options: { refresh?: boolean; schemas?: boolean } = {}) {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Agent not found");
+    const servers = this.supervisor.agents.has(id) && session.servers ? session.servers : await this.servers(session);
+    const sources = (await Promise.all(servers.map(server => server.sources?.({ refresh: options.refresh }) ?? [])));
+    return describeSources(sources.flat(), options.schemas);
   }
 
   /** Answer one of the agent's tool calls through the server that lists it, once the run's start is durable. */

@@ -9,7 +9,7 @@ import type { Claim } from "./ownership.ts";
 import type { Scheduler } from "./scheduler.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { defaultExposure, jsonResult, type ToolServer } from "./tool-servers.ts";
+import { defaultExposure, jsonResult, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
 import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, RESULT_BYTES, type Operation } from "./openapi.ts";
 
@@ -254,6 +254,14 @@ export class ToolSources {
     return (!spec.allowTools || spec.allowTools.includes(tool.name)) && !spec.denyTools?.includes(tool.name);
   }
 
+  /** An MCP server's tools as the model sees them: those the definition offers, named `<server>__<tool>`. */
+  private definitions(spec: McpServerSpec, tools: Tool[]) {
+    return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => ({
+      name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
+      parameters: tool.inputSchema as Record<string, unknown>,
+    })), spec.exposure);
+  }
+
   /**
    * The tool server for an agent's sources: its built-ins, and its remote MCP servers' tools as
    * `<server>__<tool>`. A server that cannot be reached contributes no tools this time.
@@ -261,22 +269,49 @@ export class ToolSources {
   server(context: SourceContext, sources: Sources | undefined): ToolServer {
     const builtins = builtinNames(sources?.builtins);
     const mcpServer = (name: string) => sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));
+    const apiTools = (api: OpenApiSpec) => defaultExposure(api.operations.map(operation => operationTool(api.name, operation)), api.exposure);
+    type Listing = { tools: ToolDefinition[]; at: number } | { error: string; at: number };
+    const list = async (spec: McpServerSpec): Promise<Listing> => {
+      try {
+        return { tools: this.definitions(spec, await withTimeout(this.mcp.tools(context.tenant, this.endpoint(context, spec)), LIST_TIMEOUT_MS)), at: Date.now() };
+      } catch (error) {
+        console.error(JSON.stringify({ type: "mcp_tools_unavailable", tenant: context.tenant, agent: context.agent, server: spec.name, error: errorText(error) }));
+        return { error: errorText(error), at: Date.now() };
+      }
+    };
+    // What each MCP server listed when the agent's tools were last built: what its model has.
+    const listed = new Map<string, Listing>();
     return {
       tools: async () => {
         const lists = await Promise.all((sources?.mcpServers ?? []).map(async spec => {
-          try {
-            const tools = await withTimeout(this.mcp.tools(context.tenant, this.endpoint(context, spec)), LIST_TIMEOUT_MS);
-            return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => ({
-              name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
-              parameters: tool.inputSchema as Record<string, unknown>,
-            })), spec.exposure);
-          } catch (error) {
-            console.error(JSON.stringify({ type: "mcp_tools_unavailable", tenant: context.tenant, agent: context.agent, server: spec.name, error: errorText(error) }));
-            return [];
-          }
+          const listing = await list(spec);
+          listed.set(spec.name, listing);
+          return "tools" in listing ? listing.tools : [];
         }));
-        const apis = (sources?.openApi ?? []).flatMap(api => defaultExposure(api.operations.map(operation => operationTool(api.name, operation)), api.exposure));
-        return [...builtinDefinitions(sources?.builtins), ...apis, ...lists.flat()];
+        return [...builtinDefinitions(sources?.builtins), ...(sources?.openApi ?? []).flatMap(apiTools), ...lists.flat()];
+      },
+      sources: async ({ refresh }) => {
+        const known = (spec: McpServerSpec): Listing | undefined => {
+          const found = listed.get(spec.name);
+          if (found) return found;
+          // Listed on this node for another agent, or before this one's tools were built.
+          try {
+            const cached = this.mcp.cached(context.tenant, this.endpoint(context, spec));
+            return cached && { tools: this.definitions(spec, cached.list), at: cached.at };
+          } catch (error) { return { error: errorText(error), at: Date.now() }; }
+        };
+        const mcp = await Promise.all((sources?.mcpServers ?? []).map(async (spec): Promise<ToolSourceView> => {
+          const listing = refresh ? await list(spec) : known(spec);
+          const source = { kind: "mcp" as const, name: spec.name, url: spec.url, ...(spec.exposure ? { exposure: spec.exposure } : {}) };
+          if (!listing) return { ...source, status: "unlisted", tools: [] };
+          if ("error" in listing) return { ...source, status: "error", error: listing.error, listedAt: listing.at, tools: [] };
+          return { ...source, status: "listed", listedAt: listing.at, tools: listing.tools };
+        }));
+        return [
+          ...(sources?.builtins ?? []).map((name): ToolSourceView => ({ kind: "builtin", name, status: "listed", tools: builtinDefinitions([name]) })),
+          ...(sources?.openApi ?? []).map((api): ToolSourceView => ({ kind: "openapi", name: api.name, url: api.baseUrl, ...(api.exposure ? { exposure: api.exposure } : {}), status: "listed", tools: apiTools(api) })),
+          ...mcp,
+        ];
       },
       call: async ({ name, args, signal, origin, actor }) => {
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}) };

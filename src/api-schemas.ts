@@ -116,9 +116,29 @@ export const RequestRecord = z.object({
 }).openapi("RequestRecord");
 
 
+export const ToolSource = z.object({
+  kind: z.enum(["channel", "application", "files", "builtin", "mcp", "openapi"]).openapi({ description: "channel: the channel's send_message; application: the tools your application answers; files: file tools over the agent's mounts; builtin, mcp, openapi: the definition's sources, which the runtime calls itself" }),
+  name: z.string().openapi({ description: "The built-in's, MCP server's or OpenAPI source's name; the kind for the others" }),
+  status: z.enum(["listed", "unlisted", "error"]).openapi({ description: "unlisted: an MCP server this node has not listed yet (see refresh); error: listing it failed, so the model has none of its tools" }),
+  error: z.string().optional(),
+  listedAt: z.number().optional().openapi({ description: "When an MCP server was last listed, or its listing failed" }),
+  connected: z.boolean().optional().openapi({ description: "application: whether your application is connected to answer its tools" }),
+  url: z.string().optional(),
+  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "The source's configured exposure; each tool shows the one it has" }),
+  tools: z.array(z.object({
+    name: z.string(),
+    description: z.string(),
+    exposure: z.enum(["direct", "codemode", "both"]).optional(),
+    executionMode: z.enum(["sequential", "parallel"]).optional(),
+    parameters: z.record(z.string(), z.unknown()).optional().openapi({ description: "JSON Schema of the arguments, with schemas=true" }),
+    excluded: z.string().optional().openapi({ description: "Why the model does not get this tool (a name taken by an earlier source, or the catalog's limits); absent when it does" }),
+  })),
+}).openapi("ToolSource");
+
 export const AgentDetail = AgentSummary.extend({
   definition: z.object({ id: z.string(), revision: z.number() }).optional().openapi({ description: "The definition the agent was made from, and the revision it has" }),
-  tools: z.array(ToolDefinition),
+  tools: z.array(ToolDefinition).openapi({ description: "The tools your application declared, which it answers" }),
+  toolSources: z.array(ToolSource).openapi({ description: "Every source of the agent's tools, in order of precedence, and what each offers the model" }),
   mounts: z.array(Mount),
   systemPrompt: z.string(),
   cursor: z.number(),

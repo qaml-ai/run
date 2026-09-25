@@ -130,6 +130,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         result = await agent.execute('return (await tools.read({ path: "/docs/readme.md" })).content')
         self.assertEqual(result["output"], ["changed"])
         self.assertEqual((await self.runtime.mounts(agent.session["id"]))[0]["mode"], "ro")
+        files = next(source for source in await self.runtime.tool_sources(agent.session["id"]) if source["kind"] == "files")
+        self.assertIn("read", [tool["name"] for tool in files["tools"]])
         await self.runtime.set_mounts(agent.session["id"], [{"volumeId": fork.id, "path": "/workspace", "mode": "rw"}])
         await agent.execute('await tools.write({ path: "/workspace/new.md", content: "from the agent" })')
         self.assertEqual(await fork.read_text("new.md"), "from the agent")

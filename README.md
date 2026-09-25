@@ -444,6 +444,27 @@ channel, its conversation and sender) so tools can authorize: MCP servers as
 connected; the rest suit channel agents and anything scheduled. An HTTP API gets
 its tools from its OpenAPI spec, or from a remote MCP server.
 
+### Seeing an agent's tools
+
+`GET /v1/agents/:id` returns `toolSources`: every source above, in order of
+precedence, with what it offers the model (the console shows it on the agent's
+Configuration tab; the SDKs have `runtime.toolSources(agentId)` and
+`tool_sources(agent_id)`). Each source has its `kind` (`channel`, `application`,
+`files`, `builtin`, `mcp`, `openapi`), `name`, `status` and `tools`; each tool its
+name, description and exposure, and `excluded` with the reason when the model
+does not get it (an earlier source has its name, or the catalog is full). Input
+schemas are left out unless `?schemas=true`. The application source says whether
+the application is `connected`.
+
+MCP tool lists are dynamic, so an MCP server shows what the agent's tools were
+last built from while it runs (`listedAt`; `status: "error"` with the `error`
+when listing failed, so the model has none of its tools). Otherwise it shows the
+list this node last fetched for the server, or `status: "unlisted"`: reading an
+agent never connects to its servers. `?refresh=true` does: it lists every MCP
+server now (and fills the node's cache), which is how to check a server before
+the agent runs. A running agent takes a changed list at its next start or
+reconfiguration, not at a refresh.
+
 ### Built-ins a definition enables
 
 `"builtins": ["web_fetch", "schedule"]`:

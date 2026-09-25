@@ -438,7 +438,15 @@
                 "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/ToolDefinition"
-                }
+                },
+                "description": "The tools your application declared, which it answers"
+              },
+              "toolSources": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ToolSource"
+                },
+                "description": "Every source of the agent's tools, in order of precedence, and what each offers the model"
               },
               "mounts": {
                 "type": "array",
@@ -476,6 +484,7 @@
             },
             "required": [
               "tools",
+              "toolSources",
               "mounts",
               "systemPrompt",
               "cursor",
@@ -519,6 +528,107 @@
           "name",
           "description",
           "parameters"
+        ]
+      },
+      "ToolSource": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "channel",
+              "application",
+              "files",
+              "builtin",
+              "mcp",
+              "openapi"
+            ],
+            "description": "channel: the channel's send_message; application: the tools your application answers; files: file tools over the agent's mounts; builtin, mcp, openapi: the definition's sources, which the runtime calls itself"
+          },
+          "name": {
+            "type": "string",
+            "description": "The built-in's, MCP server's or OpenAPI source's name; the kind for the others"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "listed",
+              "unlisted",
+              "error"
+            ],
+            "description": "unlisted: an MCP server this node has not listed yet (see refresh); error: listing it failed, so the model has none of its tools"
+          },
+          "error": {
+            "type": "string"
+          },
+          "listedAt": {
+            "type": "number",
+            "description": "When an MCP server was last listed, or its listing failed"
+          },
+          "connected": {
+            "type": "boolean",
+            "description": "application: whether your application is connected to answer its tools"
+          },
+          "url": {
+            "type": "string"
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "codemode",
+              "both"
+            ],
+            "description": "The source's configured exposure; each tool shows the one it has"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "exposure": {
+                  "type": "string",
+                  "enum": [
+                    "direct",
+                    "codemode",
+                    "both"
+                  ]
+                },
+                "executionMode": {
+                  "type": "string",
+                  "enum": [
+                    "sequential",
+                    "parallel"
+                  ]
+                },
+                "parameters": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "description": "JSON Schema of the arguments, with schemas=true"
+                },
+                "excluded": {
+                  "type": "string",
+                  "description": "Why the model does not get this tool (a name taken by an earlier source, or the catalog's limits); absent when it does"
+                }
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "status",
+          "tools"
         ]
       },
       "RequestRecord": {
@@ -2571,6 +2681,32 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ],
+              "description": "Include each tool's input schema in toolSources"
+            },
+            "required": false,
+            "description": "Include each tool's input schema in toolSources",
+            "name": "schemas",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ],
+              "description": "List every MCP server now, connecting to it, rather than showing what was last listed. A running agent takes changes at its next start or reconfiguration"
+            },
+            "required": false,
+            "description": "List every MCP server now, connecting to it, rather than showing what was last listed. A running agent takes changes at its next start or reconfiguration",
+            "name": "refresh",
+            "in": "query"
           }
         ],
         "responses": {
