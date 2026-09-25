@@ -612,6 +612,28 @@
             "type": "string",
             "description": "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens"
           },
+          "from": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The sender's id in your app; the model may rely on it"
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name, chosen by the sender"
+              },
+              "username": {
+                "type": "string",
+                "description": "Handle, chosen by the sender"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false,
+            "description": "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given"
+          },
           "requestId": {
             "type": "string",
             "description": "Idempotency: retrying with the same id returns the same request"

@@ -131,6 +131,11 @@ export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi
 export const PromptInput = z.object({
   text: z.string({ error: SEND_TEXT }).refine(text => !!text.trim(), SEND_TEXT),
   actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
+  from: z.strictObject({
+    id: z.string().openapi({ description: "The sender's id in your app; the model may rely on it" }),
+    name: z.string().optional().openapi({ description: "Display name, chosen by the sender" }),
+    username: z.string().optional().openapi({ description: "Handle, chosen by the sender" }),
+  }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
   requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request" }),
 }, { error: SEND_TEXT }).openapi("PromptInput");
 

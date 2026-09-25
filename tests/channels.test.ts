@@ -106,7 +106,7 @@ async function fakeModel(t: T, respond: (body: any, index: number) => object) {
 }
 const lastUser = (body: any) => {
   const content = body.messages.filter((message: any) => message.role === "user").at(-1)?.content;
-  return typeof content === "string" ? content : content.map((part: any) => part.text ?? "").join("");
+  return typeof content === "string" ? content : content.map((part: any) => part.text ?? "").join("\n");
 };
 
 async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}) {
@@ -214,8 +214,8 @@ test("each conversation gets its own agent; replies are chunked; a retried updat
   assert.ok(parts.every(part => part.length <= 4096));
   assert.ok(parts.join(" ") === long, "the parts make up the whole reply");
   assert.ok(r.tg.count("sendChatAction") >= 1, "typing is shown while the agent works");
-  // The prompt tells the agent who is talking.
-  assert.match(lastUser(r.model.bodies[0]), /^\[Telegram message from Ada @ada, user id 42\]\nlong please$/);
+  // The runtime tells the agent who is talking, in a block apart from what they wrote.
+  assert.equal(lastUser(r.model.bodies[0]), `<<<RUNTIME_CONTEXT>>>\n{"from":{"id":"telegram:42","name":"Ada","username":"ada"}}\n<<<END_RUNTIME_CONTEXT>>>\nlong please`);
 
   // Telegram retries an update it thinks was lost: it is recorded once and answered once.
   assert.equal(await r.deliver(channel, secret, from(ada, "long please"), 5001), 200);
@@ -281,7 +281,7 @@ test("a photo reaches the model as an image", async t => {
   assert.deepEqual(r.tg.calls.filter(entry => entry.method === "getFile").map(entry => entry.body.file_id), ["full"]);
   const content = r.model.bodies[0].messages.find((message: any) => message.role === "user").content;
   assert.ok(Array.isArray(content));
-  assert.match(content.find((part: any) => part.type === "text").text, /What is this\?$/);
+  assert.deepEqual(content.filter((part: any) => part.type === "text").map((part: any) => part.text).at(-1), "What is this?");
   assert.equal(content.find((part: any) => part.type === "image_url").image_url.url, `data:image/jpeg;base64,${large.toString("base64")}`);
 });
 

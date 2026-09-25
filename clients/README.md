@@ -190,7 +190,7 @@ bun examples/release-board.ts --prompt \
 | `runtime.createAgent({tools})` | `runtime.create_agent(tools=[...])` | Provision and connect |
 | `runtime.createAgent({definition, tools})` | `runtime.create_agent(definition=..., tools=[...])` | Provision from a definition (`GET /v1/definitions`): it supplies the model, prompt and tools; `tools` answer its tools, and others are added |
 | `runtime.connectAgent(session, {tools})` | `runtime.connect_agent(session, tools=[...])` | Reattach using scoped credentials |
-| `agent.prompt(text)` | `agent.prompt(text)` | Run a model turn |
+| `agent.prompt(text, { from, actor })` | `agent.prompt(text, from_=, actor=)` | Run a model turn; `from` ({id, name?, username?}) tells the model who sent it, `actor` tells only tools |
 | `agent.execute(code)` | `agent.execute(code)` | Diagnostic QuickJS execution, outside model history |
 | `agent.status()` / `agent.abort()` | Same | Inspect or cancel a turn |
 | `agent.outcomes()` | Same | Inspect recorded requests and tool outcomes |

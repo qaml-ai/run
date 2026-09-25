@@ -516,9 +516,11 @@ class AgentClient:
             elif not future.done():
                 future.cancel()
 
-    async def prompt(self, text, *, actor=None, **options):
-        """`actor` says who is acting in this turn: `act` in its tools' identity tokens."""
-        return await self.request("prompt", {"text": text, **({"actor": actor} if actor else {})}, **options)
+    async def prompt(self, text, *, actor=None, from_=None, **options):
+        """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
+        the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
+        identity tokens) without telling the model."""
+        return await self.request("prompt", {"text": text, **({"actor": actor} if actor else {}), **({"from": from_} if from_ else {})}, **options)
 
     async def execute(self, code, *, execution_timeout_ms=None, actor=None, **options):
         params = {"code": code, **({"actor": actor} if actor else {})}

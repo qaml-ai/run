@@ -117,6 +117,8 @@ export interface VolumeChanges { seq: number; changes: { seq: number; path: stri
 export interface AgentHistory { messages: AgentMessage[] }
 export interface Schedule { id: string; agent: string; text?: string; code?: string; dueAt: number; everySeconds?: number; createdAt: number }
 export interface RequestOptions { idempotencyKey?: string; timeoutMs?: number }
+/** Who sent a message: `id` is yours and the model may rely on it; the names are the sender's own. */
+export interface Sender { id: string; name?: string; username?: string }
 export class AgentError extends Error {
   status: number;
   requestId?: string;
@@ -507,12 +509,17 @@ export class AgentClient {
     } finally { clearTimeout(timer); this.pending.delete(id); }
   }
 
-  /** `actor` says who is acting in this turn: `act` in its tools' identity tokens. */
-  prompt(text: string, options?: RequestOptions & { images?: ImageContent[]; actor?: string }) { return this.request("prompt", { text, ...(options?.images ? { images: options.images } : {}), ...(options?.actor ? { actor: options.actor } : {}) }, options); }
+  /**
+   * `from` says who sent the message: the model sees it in a block only the runtime can write, and
+   * `from.id` is the turn's actor. `actor` names someone else acting (`act` in identity tokens) without telling the model.
+   */
+  prompt(text: string, options?: RequestOptions & { images?: ImageContent[]; actor?: string; from?: Sender }) {
+    return this.request("prompt", { text, ...(options?.images ? { images: options.images } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.from ? { from: options.from } : {}) }, options);
+  }
   history(): Promise<AgentHistory> { return this.http("/history"); }
   continue(options?: RequestOptions & { actor?: string }) { return this.request("continue", options?.actor ? { actor: options.actor } : {}, options); }
-  steer(text: string) { return this.request("steer", { text }); }
-  followUp(text: string) { return this.request("followUp", { text }); }
+  steer(text: string, options?: { from?: Sender }) { return this.request("steer", { text, ...(options?.from ? { from: options.from } : {}) }); }
+  followUp(text: string, options?: { from?: Sender }) { return this.request("followUp", { text, ...(options?.from ? { from: options.from } : {}) }); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string }) {
     const { tools, mcp, ...rest } = options;

@@ -62,15 +62,15 @@ async function setup(t: T) {
   const api = await fakeSlack(t);
   const { db } = await testDatabase();
   const accounts = new Accounts({ tenants: new Tenants({ legacyToken: "slack-operator-token-at-least-24-chars" }), db, secretsKey: randomBytes(32).toString("hex") });
-  const prompts: { agent: string; text: string; images: number }[] = [];
+  const prompts: { agent: string; text: string; from?: unknown; images: number }[] = [];
   const channels: Channels = new Channels({
     db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test",
     providers: { slack: slack({ apiUrl: api.url }) },
     createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), agentId: (_tenant, key) => `client_${sha(key).slice(0, 40)}`, live: async () => true,
     // Each prompt's turn ends at once, answering with what it was asked.
     submit: async (agent, tenant, request) => {
-      const params = request.params as { text: string; images?: unknown[] };
-      prompts.push({ agent, text: params.text, images: params.images?.length ?? 0 });
+      const params = request.params as { text: string; from?: unknown; images?: unknown[] };
+      prompts.push({ agent, text: params.text, from: params.from, images: params.images?.length ?? 0 });
       setImmediate(() => channels.hooks.runEnded!({ id: agent, tenant }, {
         id: request.id, method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: `re: ${params.text.split("\n").at(-1)} <ok> & done` } },
       }));
@@ -122,7 +122,8 @@ test("a mention starts a thread with its own agent; replies in it continue; DMs 
   await until(() => r.api.posts().length === 1, "the threaded reply");
   // The answer goes into a thread on the mention, escaped for Slack.
   assert.deepEqual(r.api.posts()[0], { channel: "C1", thread_ts: "100.0001", text: "re: what's up? &lt;ok&gt; &amp; done", unfurl_links: false, unfurl_media: false });
-  assert.match(r.prompts[0].text, /^\[Slack message from user id U_ADA\]\nwhat's up\?$/);
+  assert.equal(r.prompts[0].text, "what's up?");
+  assert.deepEqual(r.prompts[0].from, { id: "slack:U_ADA" });
 
   // Slack sends the same message as `message` too, and retries: it is answered once.
   await r.event({ type: "message", channel_type: "channel", channel: "C1", ts: "100.0001", text: "<@UBOT> what's up?" });

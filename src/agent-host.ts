@@ -9,6 +9,7 @@ import { executeCode } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
 import type { AgentConfig, ToolBridge } from "./protocol.ts";
 import { applicationInstructions, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
+import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, legacySnapshotPath, readTranscriptLog, summaryMessage, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
@@ -112,7 +113,8 @@ export function createAgentHost(io: HostIO) {
       // An overflow means the real limit is lower than assumed: keep about a fifth of the context.
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
       const outcome = await runCompaction({
-        context, offset, previous: transcript.compaction, model: config.model, apiKey: config.apiKey, signal, keepRecentTokens,
+        // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
+        context: renderMessages(context), offset, previous: transcript.compaction, model: config.model, apiKey: config.apiKey, signal, keepRecentTokens,
         onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp }),
       });
       if ("skipped" in outcome) {
@@ -180,10 +182,16 @@ export function createAgentHost(io: HostIO) {
       }));
   }
 
-  function userMessages(value: unknown): AgentMessage[] {
-    const messages = (Array.isArray(value) ? value : [value]) as AgentMessage[];
-    validateUserMessages(messages);
-    return messages;
+  /** The user messages a request adds: given whole, or as text and images; marked with its sender, if any. */
+  function userMessages(params: Record<string, any>): AgentMessage[] {
+    const from = senderInput(params.from);
+    if (params.message !== undefined) {
+      const messages = (Array.isArray(params.message) ? params.message : [params.message]) as AgentMessage[];
+      validateUserMessages(messages);
+      return withSender(messages, from);
+    }
+    if (typeof params.text !== "string" || !params.text.trim()) throw new Error("Prompt text is required");
+    return [{ role: "user", content: [{ type: "text", text: params.text }, ...(params.images ?? [])], timestamp: Date.now(), ...(from ? { from } : {}) } as AgentMessage & { from?: Sender }];
   }
 
   /**
@@ -295,8 +303,8 @@ export function createAgentHost(io: HostIO) {
         getApiKey: () => config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment.
         streamFn: explicitKeyStream(),
-        // Renders compaction summaries for the model (the default drops non-chat roles).
-        convertToLlm,
+        // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
+        convertToLlm: messages => convertToLlm(renderMessages(messages)),
         transformContext: (messages, signal) => contextFor(messages, signal),
         // A tenant past its spend cap stops before the next model request, after this response's tool results.
         finishTurn: async turn => {
@@ -348,17 +356,14 @@ export function createAgentHost(io: HostIO) {
     if (method === "history") return { messages: await readTranscriptLog(transcript.log) };
     if (method === "steer" || method === "followUp") {
       // Pi queues these whether or not a run is active; an idle queue drains into the next run.
-      const messages = params.message !== undefined ? userMessages(params.message) : undefined;
-      if (!messages && (typeof params.text !== "string" || !params.text.trim())) throw new Error("Prompt text is required");
-      for (const message of messages ?? [{ role: "user", content: params.text, timestamp: Date.now() } as AgentMessage]) agent[method](message);
+      for (const message of userMessages(params)) agent[method](message);
       return { queued: true, running: busy };
     }
     if (method === "abort") { active?.abort(); agent.abort(); return { aborted: true }; }
     if (method !== "prompt" && method !== "execute" && method !== "continue") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
     if (persistenceError) throw new Error(`Session persistence failed: ${String(persistenceError)}`);
-    if (method === "prompt" && params.message === undefined && (typeof params.text !== "string" || !params.text.trim())) throw new Error("Prompt text is required");
-    const promptMessages = method === "prompt" && params.message !== undefined ? userMessages(params.message) : undefined;
+    const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
     stopped = undefined;
     active = new AbortController();
@@ -366,8 +371,7 @@ export function createAgentHost(io: HostIO) {
       if (method === "execute") return await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
       await transcript.setActive(true);
       if (method === "continue") await agent.continue();
-      else if (promptMessages) await agent.prompt(promptMessages);
-      else await agent.prompt(params.text, params.images);
+      else await agent.prompt(promptMessages!);
       await recoverFailedResponses(active.signal);
       if (persistenceError) throw persistenceError;
       await transcript.setActive(false);

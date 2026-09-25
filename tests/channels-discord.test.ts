@@ -87,15 +87,15 @@ async function fakeDiscord(t: T) {
 async function node(t: T, api: { url: string }, db: Awaited<ReturnType<typeof testDatabase>>["db"], secretsKey: string, name: string) {
   const ownership = new Ownership(db, { node: name, ttlMs: 60_000 });
   await ownership.start();
-  const prompts: { agent: string; text: string }[] = [];
+  const prompts: { agent: string; text: string; from?: unknown }[] = [];
   const channels: Channels = new Channels({
     db, definitions: new Definitions({ db }), accounts: new Accounts({ tenants: new Tenants({ legacyToken: "discord-operator-token-at-least-24-chars" }), db, secretsKey }),
     node: name, publicUrl: "https://agents.example.test", ownership,
     providers: { discord: discord({ apiUrl: api.url }) },
     createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), agentId: (_tenant, key) => `client_${sha(key).slice(0, 40)}`, live: async () => true,
     submit: async (agent, tenant, request) => {
-      const text = (request.params as { text: string }).text;
-      prompts.push({ agent, text });
+      const { text, from } = request.params as { text: string; from?: unknown };
+      prompts.push({ agent, text, from });
       setImmediate(() => channels.hooks.runEnded!({ id: agent, tenant }, {
         id: request.id, method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: `re: ${text.split("\n").at(-1)} @everyone` } },
       }));
@@ -136,7 +136,8 @@ test("a Discord bot is checked, holds one gateway connection across nodes, and a
   await until(() => api.sent("2001").length === 1, "the DM reply");
   assert.deepEqual(api.sent("2001")[0], { content: "re: hello there @everyone", allowed_mentions: { parse: [] } });
   const prompts = () => [...a.prompts, ...b.prompts];
-  assert.match(prompts()[0].text, /^\[Discord message from Ada @ada, user id 111\]\nhello there$/);
+  assert.equal(prompts()[0].text, "hello there");
+  assert.deepEqual(prompts()[0].from, { id: "discord:111", name: "Ada", username: "ada" });
   assert.ok(api.calls.some(call => call.path === "/channels/2001/typing"), "typing is shown");
 
   // In a server, only messages that mention the bot are answered, without the mention.
@@ -145,7 +146,7 @@ test("a Discord bot is checked, holds one gateway connection across nodes, and a
   api.message({ id: "5004", channel_id: "3001", guild_id: "9", author: { id: "222", username: "eve" }, content: `<@${BOT_ID}> hi`, mentions: [{ id: BOT_ID }] });
   api.message({ id: "5005", channel_id: "3001", guild_id: "9", author: { id: "333", username: "otherbot", bot: true }, content: `<@${BOT_ID}> hi`, mentions: [{ id: BOT_ID }] });
   await until(() => api.sent("3001").length === 1, "the mention reply");
-  assert.match(prompts()[1].text, /\nsummarize$/);
+  assert.equal(prompts()[1].text, "summarize");
   // A repeated delivery (as after a resume) is answered once.
   api.message({ id: "5003", channel_id: "3001", guild_id: "9", author: ada, content: `<@${BOT_ID}> summarize`, mentions: [{ id: BOT_ID }] });
   await sleep(300);

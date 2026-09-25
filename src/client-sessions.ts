@@ -28,6 +28,7 @@ import { contentResult, type McpResult } from "./mcp-results.ts";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity } from "./identity.ts";
+import { senderInput } from "./sender.ts";
 import { compose, valueServer, type ToolCall, type ToolServer } from "./tool-servers.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
@@ -883,7 +884,12 @@ export class ClientSessions {
     let actor: string | undefined;
     const { actor: rawActor, ...params } = body.params;
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
-    try { actor = actorInput(rawActor); } catch (error) { throw new HttpError(400, errorText(error)); }
+    if (params.from !== undefined && !["prompt", "steer", "followUp"].includes(body.method)) throw new HttpError(400, "from is only for messages (prompt, steer, followUp)");
+    try {
+      if (params.from !== undefined) params.from = senderInput(params.from);
+      // The sender acts, unless the application names someone else.
+      actor = actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
+    } catch (error) { throw new HttpError(400, errorText(error)); }
     const limited = await this.runLimit(session, body.method);
     if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
     // Reads, aborts and applied definitions never need a process; runs start it when their turn comes.

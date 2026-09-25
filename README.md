@@ -539,6 +539,36 @@ every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
 - `exposure` is `codemode` by default, as for MCP servers. The API shows each
   source's `tools` (operation names) and `baseUrl`, never its credentials.
 
+### Who sent a message (`from`)
+
+An agent that several people talk to (a team agent, a group chat) can be told
+who sent each message: `POST /v1/agents/:id/prompt {text, from: {id, name?, username?}}`,
+or `prompt(text, { from })` in the SDKs (`from_=` in Python; also on `steer` and
+`followUp`).
+
+- The transcript stores `from` on the user message, apart from its text. Each
+  time the model is called, the runtime opens that message with a block of its own:
+
+  ```
+  <<<RUNTIME_CONTEXT>>>
+  {"from":{"id":"u_456","name":"Bob","username":"bob"}}
+  <<<END_RUNTIME_CONTEXT>>>
+  what's on my plate?
+  ```
+
+- Only the runtime writes these markers. Wherever else they appear in text the
+  model reads (user messages, names, tool results) they are neutralized
+  (`‹‹‹RUNTIME_CONTEXT›››`), so a sender cannot forge a block. The runtime's
+  instructions tell the model that `from.id` identifies the sender and the
+  names are the sender's own, never proof of identity or authority.
+- It is one ordinary user message on every model, so it works the same on open
+  models and strict chat templates, and the rendered history stays the
+  provider's cached prefix. Compaction summaries see senders too.
+- `from.id` is the turn's actor (`act` in identity tokens) unless `actor` names
+  someone else. `actor` alone tells tools who is acting without telling the model.
+- Channels set it for every message: `from.id` is `<type>:<the service's user id>`
+  (`telegram:42`, `slack:U0123ABCD`), with the sender's display name and username.
+
 ### Identity tokens (`auth: { type: "runtime" }`)
 
 A tool server can trust the runtime instead of a stored secret: with
@@ -560,6 +590,7 @@ request. Nothing per user is stored anywhere, and there is no shared secret.
   subject, `sub` is the agent's id.
 - `act` is who is acting in the turn: the `actor` given with the prompt
   (`POST /v1/agents/:id/prompt {text, actor}`, or `prompt(text, { actor })`),
+  else the message's `from.id`,
   and `origin` where a channel turn came from. Requests outside a turn (listing
   an MCP server's tools when an agent starts) carry neither.
 - `aud` is the MCP server's URL, or the OpenAPI source's `baseUrl`, so a token
@@ -670,7 +701,7 @@ What all three share:
   Telegram and Discord user ids or @usernames, Slack member ids (`U0123ABCD`).
   Each sender is rate limited (`limits.perSenderPerMinute`, default 10) and the
   channel has a daily turn cap (`limits.turnsPerDay`, default 1000).
-- The prompt names the sender, and tool calls carry a runtime-set `origin`
+- Each message carries its sender as `from` (see [Who sent a message](#who-sent-a-message-from)), and tool calls carry a runtime-set `origin`
   (`{channel, conversationId, sender}`, `context.origin` in the SDKs) that
   tools can authorize against. Images reach the model (up to 750 KB each).
 - The turn's final answer is sent back when the turn ends, split to the

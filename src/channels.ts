@@ -112,7 +112,7 @@ type Item = {
   /** Not before this time: the next retry or re-check. */
   due: number;
   inbound?: Inbound;
-  agent?: string; prompt?: { text: string; images?: ImageContent[] };
+  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; images?: ImageContent[] };
   text?: string; sent?: number; attempts?: number;
 };
 /** An item as last written; the next write is conditional on its revision. */
@@ -519,7 +519,7 @@ export class Channels {
     void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
     const agent = await this.agentFor(channel, item.conversationId, inbound.sender);
     const images = inbound.images.length ? await this.provider(channel.type).images(credentials, inbound.images) : [];
-    const prompt = { text: this.promptText(channel, inbound, images.length), ...(images.length ? { images } : {}) };
+    const prompt = this.prompt(channel, inbound, images);
     // Submitted before submitting: the turn may end (and its reply be settled) before submit returns.
     const next = await this.save(current, { state: "submitted", agent, prompt, due: Date.now() + RECHECK_MS }, false);
     try { await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: prompt }); }
@@ -529,11 +529,11 @@ export class Channels {
     }
   }
 
-  /** The sender's identity, as context the agent can rely on (the runtime sets it, not the sender). */
-  private promptText(channel: Channel, inbound: Inbound, images: number) {
-    const who = [inbound.sender.name, inbound.sender.username && `@${inbound.sender.username}`].filter(Boolean).join(" ");
-    const header = `[${this.provider(channel.type).label} message from ${who ? `${who}, ` : ""}user id ${inbound.sender.id}]`;
-    return `${header}\n${inbound.text || (images ? "(sent a photo)" : "")}`;
+  /** The message, and who sent it: the runtime shows the model the sender apart from what they wrote. */
+  private prompt(channel: Channel, inbound: Inbound, images: ImageContent[]) {
+    const { id, name, username } = inbound.sender;
+    const from = { id: `${channel.type}:${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}) };
+    return { text: inbound.text || (images.length ? "(sent a photo)" : ""), from, ...(images.length ? { images } : {}) };
   }
 
   /** A submitted message whose turn end this runtime did not see: ask again (idempotently) how it went. */
