@@ -13,7 +13,7 @@ import { Tenants } from "../src/tenants.ts";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { testDatabase } from "./database.ts";
-import { listen, runtime, toolCall, until } from "./runtime-server.ts";
+import { attachSilently, listen, runtime, toolCall, until } from "./runtime-server.ts";
 import { formEncode, signWebhook, Stripe } from "../src/stripe.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -467,14 +467,15 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
   assert.equal((await call("/v1/billing", { token })).json.freeCredit, true);
 
   // Two agents kept busy by calls that are never answered, so neither is idle and can be stopped to make room for a third.
-  const hold = { name: "hold", description: "Never answered", parameters: { type: "object", properties: {}, additionalProperties: false } };
+  const hold = { name: "hold", description: "Never answered", inputSchema: { type: "object", properties: {}, additionalProperties: false } };
   const busy: { id: string; token: string }[] = [];
   for (const key of ["a", "b"]) {
-    const created = await call("/client-sessions", { token, body: { tools: [hold] }, headers: { "Idempotency-Key": key } });
+    const created = await call("/client-sessions", { token, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": key } });
     assert.equal(created.status, 201, created.text);
     busy.push(created.json);
+    const app = await attachSilently(t, base, created.json.id, created.json.token);
     assert.equal((await call(`/clients/${created.json.id}/requests`, { token: created.json.token, body: { id: "hold", method: "execute", params: { code: "return await tools.hold({})" } } })).status, 202);
-    await until(async () => (await call(`/clients/${created.json.id}/state`, { token: created.json.token })).json.calls.length > 0, "the held call to be offered");
+    await until(() => app.calls.length > 0, "the held call to be sent");
   }
   assert.equal((await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": "c" } })).status, 429, "two agents at once on free credit");
   assert.equal((await call(`/v1/agents/${busy[1].id}`, { method: "DELETE", token })).status, 200);
