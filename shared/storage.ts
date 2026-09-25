@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileAppendLog, type AppendLog } from "./append-log.ts";
 import type { Claim } from "../src/ownership.ts";
@@ -22,9 +22,20 @@ export interface Storage {
   /** Immutable binary objects, e.g. content-addressed chunks: writing a key that exists is a no-op. */
   readBlob(key: string): Promise<Uint8Array | undefined>;
   writeBlob(key: string, data: Uint8Array): Promise<void>;
-  /** Every stored object under `prefix`, with its size: for metering storage, not for reading state. */
+  /** Every stored object under `prefix`, with its size: for reconciling metered storage, not for reading state. */
   objects?(prefix: string): AsyncIterable<{ key: string; bytes: number }>;
+  /** Whether every object this Storage creates or deletes is reported to its meter (single-host logs, appended files, are not). */
+  metered?: boolean;
 }
+
+/**
+ * Told the size of each object a Storage creates (positive) or deletes (negative), by
+ * its key as `objects` lists it (a log's objects are `<log key>.log/<name>`), so what is
+ * stored can be tracked as it changes rather than by listing it. Only objects that
+ * were created count: rewriting an existing blob (a content-addressed chunk stored
+ * already) or losing a race to create one reports nothing.
+ */
+export type StorageMeter = (key: string, bytes: number) => void;
 
 export class PreconditionFailed extends Error {
   constructor(key: string) { super(`Conditional write lost for ${key}: another writer changed it`); this.name = "PreconditionFailed"; }
@@ -40,11 +51,15 @@ export const validKey = (key: string) => {
  * layout). With a `tail`, several processes (or hosts on a shared filesystem) can
  * share logs: they are segment files plus the tail, as on S3.
  */
-export function fileStorage(root: string, options: { tail?: LogTail } = {}): Storage {
+export function fileStorage(root: string, options: { tail?: LogTail; meter?: StorageMeter } = {}): Storage {
   const path = (key: string, extension: string) => join(root, `${validKey(key)}${extension}`);
+  const { meter } = options;
+  const segments = (key: string) => meteredSegments(fileSegments(path(key, ".log")), key, meter);
   return {
-    log: (key, claim) => options.tail ? segmentLog(fileSegments(path(key, ".log")), key, options.tail, claim) : fileAppendLog(path(key, ".jsonl")),
+    metered: !!(meter && options.tail),
+    log: (key, claim) => options.tail ? segmentLog(segments(key), key, options.tail, claim) : fileAppendLog(path(key, ".jsonl")),
     async removeLog(key) {
+      if (meter) await removeSegments(segments(key));
       await rm(path(key, ".log"), { recursive: true, force: true });
       await rm(path(key, ".jsonl"), { force: true });
     },
@@ -58,9 +73,13 @@ export function fileStorage(root: string, options: { tail?: LogTail } = {}): Sto
       await mkdir(join(file, ".."), { recursive: true, mode: 0o700 });
       const temporary = `${file}.${randomUUID()}.tmp`;
       const handle = await open(temporary, "wx", 0o600);
-      try { await handle.writeFile(data); await handle.datasync(); } finally { await handle.close(); }
-      // Same key, same bytes: a concurrent writer's rename is harmless.
-      await rename(temporary, file);
+      try {
+        try { await handle.writeFile(data); await handle.datasync(); } finally { await handle.close(); }
+        // A link fails if the file exists, so of concurrent writers of a key (same key, same bytes) exactly one creates it.
+        try { await link(temporary, file); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return; throw error; }
+        meter?.(key, data.byteLength);
+      } finally { await rm(temporary, { force: true }); }
     },
     async *objects(prefix) {
       let entries;
@@ -83,7 +102,7 @@ function fileSegments(directory: string): SegmentStore {
       try { names = await readdir(directory); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       const bytes = new Map<string, number>();
-      await Promise.all(names.filter(name => /^(snapshot-)?\d+$/.test(name)).map(async name => {
+      await Promise.all(names.filter(name => /^((snapshot-)?\d+|blob-[a-f0-9]+)$/.test(name)).map(async name => {
         try { bytes.set(name, (await stat(join(directory, name))).size); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }));
@@ -105,15 +124,21 @@ function fileSegments(directory: string): SegmentStore {
 }
 
 /** In-process storage for tests. `puts` counts object writes, as S3 would bill them. */
-export function memoryStorage(tail: LogTail): Storage & { logs: Map<string, Map<string, string>>; blobs: Map<string, Uint8Array>; puts: number } {
+export function memoryStorage(tail: LogTail, meter?: StorageMeter): Storage & { logs: Map<string, Map<string, string>>; blobs: Map<string, Uint8Array>; puts: number } {
   const logs = new Map<string, Map<string, string>>();
   const blobs = new Map<string, Uint8Array>();
+  const segments = (key: string) => meteredSegments(memorySegments(logs, validKey(key), () => storage.puts++), key, meter);
   const storage = {
-    logs, blobs, puts: 0,
-    log<T>(key: string, claim?: Claim) { return segmentLog<T>(memorySegments(logs, validKey(key), () => storage.puts++), key, tail, claim); },
-    async removeLog(key: string) { logs.delete(validKey(key)); },
+    logs, blobs, puts: 0, metered: !!meter,
+    log<T>(key: string, claim?: Claim) { return segmentLog<T>(segments(key), key, tail, claim); },
+    async removeLog(key: string) { if (meter) await removeSegments(segments(key)); logs.delete(validKey(key)); },
     async readBlob(key: string) { const data = blobs.get(validKey(key)); return data && Uint8Array.from(data); },
-    async writeBlob(key: string, data: Uint8Array) { if (!blobs.has(validKey(key))) { storage.puts++; blobs.set(key, Uint8Array.from(data)); } },
+    async writeBlob(key: string, data: Uint8Array) {
+      if (blobs.has(validKey(key))) return;
+      storage.puts++;
+      blobs.set(key, Uint8Array.from(data));
+      meter?.(key, data.byteLength);
+    },
     async *objects(prefix: string) {
       for (const [key, objects] of logs) if (key.startsWith(prefix)) for (const [name, body] of objects) yield { key: `${key}.log/${name}`, bytes: Buffer.byteLength(body) };
       for (const [key, data] of blobs) if (key.startsWith(prefix)) yield { key, bytes: data.byteLength };
@@ -129,12 +154,13 @@ export function memoryStorage(tail: LogTail): Storage & { logs: Map<string, Map<
  */
 export interface Listing { segments: number[]; snapshots: number[]; bytes?: Map<string, number> }
 export interface SegmentStore {
-  /** `bytes`, when the store knows it cheaply, is each segment's and snapshot's size, by object name. */
+  /** `bytes`, when the store knows it cheaply, is each object's size (segments, snapshots and blobs), by name. */
   list(): Promise<Listing>;
   read(name: string): Promise<string>;
   /** Create a segment, snapshot or blob; throws PreconditionFailed if it already exists. */
   create(name: string, body: string): Promise<void>;
-  remove(names: string[]): Promise<void>;
+  /** `sizes`, the objects' sizes from a listing, is for metering (see `meteredSegments`). */
+  remove(names: string[], sizes?: Map<string, number>): Promise<void>;
 }
 
 function memorySegments(logs: Map<string, Map<string, string>>, key: string, put: () => void): SegmentStore {
@@ -148,7 +174,7 @@ function memorySegments(logs: Map<string, Map<string, string>>, key: string, put
       const names = [...objects().keys()];
       return {
         segments: names.filter(name => /^\d+$/.test(name)).map(Number).sort((a, b) => a - b),
-        bytes: new Map(names.filter(name => !name.startsWith("blob-")).map(name => [name, Buffer.byteLength(objects().get(name)!)])),
+        bytes: new Map(names.map(name => [name, Buffer.byteLength(objects().get(name)!)])),
         snapshots: names.filter(name => name.startsWith("snapshot-")).map(name => Number(name.slice(9))).sort((a, b) => a - b),
       };
     },
@@ -156,6 +182,35 @@ function memorySegments(logs: Map<string, Map<string, string>>, key: string, put
     async create(name, body) { if (objects().has(name)) throw new PreconditionFailed(`${key}/${name}`); put(); objects().set(name, body); },
     async remove(names) { for (const name of names) objects().delete(name); },
   };
+}
+
+/**
+ * `store` reporting to `meter` the objects it creates and removes, as `<key>.log/<name>`.
+ * A removal's sizes come from a listing: the caller's, taken since the objects were
+ * created, or a fresh one; a name not in it is gone already and counts nothing.
+ */
+export function meteredSegments(store: SegmentStore, key: string, meter?: StorageMeter): SegmentStore {
+  if (!meter) return store;
+  return {
+    list: () => store.list(),
+    read: name => store.read(name),
+    async create(name, body) {
+      await store.create(name, body);
+      meter(`${key}.log/${name}`, Buffer.byteLength(body));
+    },
+    async remove(names, sizes) {
+      const unique = [...new Set(names)];
+      const known = sizes ?? (await store.list()).bytes ?? new Map<string, number>();
+      await store.remove(unique, known);
+      for (const name of unique) if (known.get(name)) meter(`${key}.log/${name}`, -known.get(name)!);
+    },
+  };
+}
+
+/** Remove every object of a log's store (for `removeLog`), sizes and all, so a meter hears of each. */
+export async function removeSegments(store: SegmentStore) {
+  const { bytes } = await store.list();
+  if (bytes?.size) await store.remove([...bytes.keys()], bytes);
 }
 
 
@@ -273,8 +328,10 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     if (!tailRecords) return;
     const blobs: string[] = [];
     let superseded: string[] = [];
+    let sizes: Map<string, number> | undefined;
     const held = await tail.compact(key, claim, async rows => {
       const listing = await store.list();
+      sizes = listing.bytes;
       const through = covered(listing);
       const fresh = rows.filter(row => row.seq > through);
       for (const row of rows) if (row.blob) blobs.push(`blob-${row.blob}`);
@@ -302,7 +359,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     // Only after the rows are gone: until then a reader may still need what these replace. And only while the
     // claim holds: blobs are content-addressed, so a next owner's rows may name the same blob again. Should
     // the claim be gone, the objects stay behind as garbage.
-    if (superseded.length || blobs.length) await tail.whileHeld(key, claim, () => store.remove([...superseded, ...blobs]));
+    if (superseded.length || blobs.length) await tail.whileHeld(key, claim, () => store.remove([...new Set([...superseded, ...blobs])], sizes));
   }
 
   const write = async () => {

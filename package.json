@@ -16,6 +16,7 @@
     "build": "vite build --config studio/vite.config.ts",
     "build:console": "vite build --config console/vite.config.ts",
     "openapi": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/openapi.ts",
+    "reconcile:storage": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/reconcile-storage.ts",
     "bench:execute": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-execute.ts",
     "bench:js-exec": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-js-exec.ts",
     "bench:codemode": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-codemode.ts",

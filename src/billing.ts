@@ -5,6 +5,7 @@ import type { Storage } from "../shared/storage.ts";
 import { HttpError } from "./http.ts";
 import { DEFAULT_PRICING, MICROS, purchaseFee, storageCharge, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
+import type { StorageUsage } from "./storage-usage.ts";
 
 /**
  * Prepaid credit. Tenants with `billing: "prepaid"` (every tenant created by sign-in)
@@ -328,14 +329,19 @@ export class Billing {
 
   /**
    * Charge prepaid tenants for one UTC day of what they store: agent transcripts and
-   * journals, volume trees and snapshots, and file chunks, measured by listing
-   * Storage. Once a day, on whichever node claims the job first; each tenant's
+   * journals, volume trees and snapshots, and file chunks, as `usage` tracks them (see
+   * StorageUsage). Once a day, on whichever node claims the job first; each tenant's
    * charge is keyed by the day, so a job retried after a crash never charges twice.
+   * The job first reconciles the tracked totals with a full listing when they cannot be
+   * trusted alone: Storage that does not meter every write (single-host logs), no
+   * reconciliation yet (tracking starts from one), or `reconcileDays` since the last
+   * (0: only those two cases).
    */
-  async chargeStorage(storage: Storage, node: string, now = Date.now()) {
+  async chargeStorage(storage: Storage, usage: StorageUsage, node: string, options: { now?: number; reconcileDays?: number } = {}) {
+    const now = options.now ?? Date.now();
     // The free hourly limit reads the last hour of spend by minute; older minutes are done with.
     await this.db.query("delete from credit_spend_minutes where minute < $1", [Math.floor((now - 2 * HOUR) / MINUTE)]);
-    if (!storage.objects) return false;
+    if (!storage.metered && !storage.objects) return false;
     const day = new Date(now).toISOString().slice(0, 10);
     const claim = `${node} ${randomUUID()}`;
     await this.db.query("insert into billing_jobs (name) values ('storage') on conflict do nothing");
@@ -345,7 +351,12 @@ export class Billing {
       returning name`, [day, claim, JOB_CLAIM_MS])).rowCount;
     if (!claimed) return false;
     try {
-      const bytes = await this.storedBytes(storage);
+      const reconciled = (await this.db.query("select to_char(done_day, 'YYYY-MM-DD') as day from billing_jobs where name = 'storage-reconcile'")).rows[0]?.day as string | undefined;
+      const every = options.reconcileDays ?? 7;
+      const due = !storage.metered || !reconciled || (every > 0 && Date.parse(day) - Date.parse(reconciled) >= every * 86_400_000);
+      if (due && storage.objects) await usage.reconcile(storage, { now });
+      else await usage.flush();
+      const bytes = await usage.tenantBytes();
       const [year, month] = day.split("-").map(Number);
       const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
       const entries: LedgerEntry[] = [];
@@ -363,29 +374,5 @@ export class Billing {
       await this.db.query("update billing_jobs set claimed_by = null, claimed_until = null where name = 'storage' and claimed_by = $1", [claim]).catch(() => {});
       throw error;
     }
-  }
-
-  /** Bytes in Storage per tenant: agents' logs and volumes' by their owners' rows, chunks by their key. */
-  async storedBytes(storage: Storage) {
-    const byAgent = new Map<string, number>(), byVolume = new Map<string, number>(), byTenant = new Map<string, number>();
-    const add = (map: Map<string, number>, key: string, bytes: number) => map.set(key, (map.get(key) ?? 0) + bytes);
-    for (const prefix of ["sessions/", "client-sessions/", "volumes/", "chunks/"]) {
-      for await (const { key, bytes } of storage.objects!(prefix)) {
-        const agent = /^(?:sessions\/|client-sessions\/)(client_[a-f0-9]{40})/.exec(key)?.[1];
-        const volume = agent ? undefined : /^volumes\/(vol_[a-f0-9]{24})\//.exec(key)?.[1];
-        const tenant = agent || volume ? undefined : /^chunks\/([a-z0-9][a-z0-9-]{0,39})\//.exec(key)?.[1];
-        if (agent) add(byAgent, agent, bytes);
-        else if (volume) add(byVolume, volume, bytes);
-        else if (tenant) add(byTenant, tenant, bytes);
-      }
-    }
-    for (const [table, sizes] of [["agents", byAgent], ["volumes", byVolume]] as const) {
-      const ids = [...sizes.keys()];
-      for (let index = 0; index < ids.length; index += 1000) {
-        const { rows } = await this.db.query(`select id, tenant from ${table} where id = any($1)`, [ids.slice(index, index + 1000)]);
-        for (const row of rows) add(byTenant, row.tenant, sizes.get(row.id)!);
-      }
-    }
-    return byTenant;
   }
 }

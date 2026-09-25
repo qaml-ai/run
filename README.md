@@ -235,6 +235,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_PRICE_WEB_SEARCH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 0.005, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
 | `AGENT_WEB_SEARCH_PROVIDER`, `AGENT_BRAVE_SEARCH_URL` | the `web_search` API (`brave`, the only one so far) and its endpoint (default Brave's; tests point it at a local server) |
 | `AGENT_BILLING_INTERVAL_MS` | how often a node checks whether today's storage charge has run (default 3600000) |
+| `AGENT_STORAGE_RECONCILE_DAYS` | how often the storage charge first corrects tracked storage by listing Storage (default 7; 0: only the first time; see [Billing](#billing)) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
 | `AGENT_CODE_WORKERS_MIN`, `AGENT_CODE_WORKERS_MAX` | codemode worker threads kept warm (default min(4, cores); none in each agent process under `process` hosting, which starts one on demand) and the most there may be (default 32); workers beyond the minimum stop after 30 s idle, and executions beyond the maximum queue within their own timeout. With sandbox processes, the totals are shared among them |
@@ -831,8 +832,8 @@ runs on the platform's keys, the tenants file's top-level `platformKeys`
   each (`AGENT_PRICE_WEB_SEARCH_USD`), reported with the tokens: see `web_search`
   under [Built-ins](#built-ins-a-definition-enables).
 - **Storage**, $0.10 per GB-month of what its agents and volumes keep in Storage
-  (transcripts, journals, volume trees and snapshots, file chunks), measured once a
-  UTC day on one node and charged for that day.
+  (transcripts, journals, volume trees and snapshots, file chunks, each chunk once
+  however many files share it), charged once a UTC day, on one node, for that day.
 
 Every movement is an entry in `credit_ledger` (grant, purchase, usage, storage,
 adjustment, refund), in integer micro-USD, under an idempotency key naming its
@@ -852,6 +853,21 @@ a running turn ends after the response that spent the last credit, as at the
 [monthly spend cap](#persistence). The balance counts this node's unwritten charges
 at once and other nodes' within about five seconds, so the overdraft is about one
 response per node running the tenant's turns.
+
+**Metering storage.** Storage is not listed to charge it. Every object Storage
+creates or deletes (log segments, snapshots and blobs, volume snapshot file maps,
+chunks) is reported with its size, and each node adds these up per owner (an agent, a
+volume, or a tenant for its chunks) and writes them to `storage_usage` every few
+seconds; a chunk that exists already is not created again, so it counts once. The
+daily job charges from that table: agents' logs (not purged agents'), volumes'
+objects (deleted volumes' too, since their objects stay) and chunks. Deltas a node
+dies holding, deletes that fail halfway and writes by nodes from before metering are
+drift, which a full listing corrects: the daily job reconciles when nothing has been
+reconciled yet (so tracking starts from one), every `AGENT_STORAGE_RECONCILE_DAYS`
+(default 7; 0 for only that first time), and always on single-host `file` storage,
+whose logs are appended files and not metered. `npm run reconcile:storage`
+(`-- --dry-run` to only report) does it by hand with the runtime's database and
+storage settings, printing each tenant whose total changed.
 
 **Sign-up.** Console sign-in with GitHub admits members of `GITHUB_ORG`, or with
 `AGENT_OPEN_SIGNUP=true` anyone with a GitHub account (asking only for the public

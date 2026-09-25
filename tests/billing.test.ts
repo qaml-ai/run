@@ -11,6 +11,7 @@ import { migrate, type Db } from "../src/db.ts";
 import { DEFAULT_PRICING, micros, pricingFromEnvironment, purchaseFee } from "../src/pricing.ts";
 import { Tenants } from "../src/tenants.ts";
 import { memoryStorage, type Storage } from "../shared/storage.ts";
+import { StorageUsage } from "../src/storage-usage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { testDatabase } from "./database.ts";
 import { attachSilently, listen, runtime, toolCall, until } from "./runtime-server.ts";
@@ -43,6 +44,7 @@ async function assertLedgerMatchesBalances(db: Db) {
   assert.deepEqual(rows, [], "balances equal to their ledger entries");
 }
 const HOUR = 3_600_000;
+const DAY = 86_400_000;
 /** A response of `cost` USD that ran on the platform's key (or the tenant's own). */
 const response = (cost: number, platform = true) => ({ provider: "openrouter", model: "m", usage: { input: 10, output: 1, cost: { total: cost } }, platform });
 
@@ -130,7 +132,7 @@ test("usage accrues into one entry per tenant per UTC hour, updated in place unt
   // The free hourly limit reads spend by minute; the billing timer drops minutes older than it needs.
   const minutes = async () => (await db.query("select minute, amount from credit_spend_minutes where tenant = 'acme' order by minute")).rows.map(row => [Number(row.minute) * 60_000 - ten, Number(row.amount)]);
   assert.deepEqual(await minutes(), [[0, 100], [HOUR - 60_000, 30], [HOUR, 1]]);
-  await (await accountsOn(db)).billing.chargeStorage({} as Storage, "node-a", ten + 2 * HOUR + 60_000);
+  await (await accountsOn(db)).billing.chargeStorage({} as Storage, new StorageUsage(db), "node-a", { now: ten + 2 * HOUR + 60_000 });
   assert.deepEqual(await minutes(), [[HOUR - 60_000, 30], [HOUR, 1]]);
 });
 
@@ -230,7 +232,7 @@ test("a self-serve tenant gets its starting credit once; tenants from before bil
   assert.deepEqual((await accounts.keyStatus("carol")).map(status => [status.provider, status.source]), [["*", "platform"]]);
 });
 
-test("storage is charged once a UTC day, pro rata, to prepaid tenants by what their agents and volumes store", async () => {
+test("storage is charged once a UTC day, pro rata, to prepaid tenants by what their agents and volumes store, as tracked", async () => {
   const { db } = await testDatabase();
   // $30 per GB-month: in a 30-day month, a day of 1 MB is 1000 micro-USD.
   const pricing = { ...DEFAULT_PRICING, storageGbMonth: micros(30) };
@@ -241,24 +243,88 @@ test("storage is charged once a UTC day, pro rata, to prepaid tenants by what th
     await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, $2, '{}', 1, 'x', 'general', 'm')", [id, tenant]);
   }
   await db.query("insert into volumes (id, tenant, name, created_at) values ($1, 'carol', 'v', 1)", [volume]);
-  const storage = memoryStorage(postgresTail(db));
+  const usage = new StorageUsage(db);
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }), usage.meter);
   const mb = new Uint8Array(1_000_000);
-  await storage.writeBlob(`sessions/${agent}/transcript.log/blob-x`, mb);
+  // A transcript of one record, a JSON string and a newline: a 1 MB segment once compacted.
+  const transcript = storage.log<string>(`sessions/${agent}/transcript`);
+  await transcript.read();
+  transcript.append("x".repeat(999_997));
+  await transcript.close();
   await storage.writeBlob(`volumes/${volume}/snapshots/s1`, mb);
+  await storage.writeBlob(`chunks/carol/ab/abc`, mb);
   await storage.writeBlob(`chunks/carol/ab/abc`, mb);
   await storage.writeBlob(`chunks/payg/ab/abc`, mb.subarray(0, 500_000));
   await storage.writeBlob(`sessions/${opsAgent}/transcript.log/blob-x`, mb);
   const june = Date.parse("2026-06-15T12:00:00Z");
-  const runs = await Promise.all([accounts.billing.chargeStorage(storage, "node-a", june), (await accountsOn(db, pricing)).billing.chargeStorage(storage, "node-b", june)]);
+  const charge = (day: number, options: { usage?: StorageUsage; node?: string } = {}) =>
+    accounts.billing.chargeStorage(storage, options.usage ?? usage, options.node ?? "node-a", { now: june + day * DAY });
+  const runs = await Promise.all([charge(0), (await accountsOn(db, pricing)).billing.chargeStorage(storage, new StorageUsage(db), "node-b", { now: june })]);
   assert.deepEqual(runs.sort(), [false, true], "one node runs the day's job");
-  assert.equal(await accounts.billing.chargeStorage(storage, "node-a", june), false, "the day is done");
-  const entries = (await db.query("select tenant, amount, metadata, idempotency_key from credit_ledger where kind = 'storage' order by tenant")).rows;
-  assert.deepEqual(entries.map(row => [row.tenant, Number(row.amount), row.metadata.bytes, row.idempotency_key]), [
+  assert.equal(await charge(0), false, "the day is done");
+  const charges = async (day: string) => (await db.query("select tenant, amount, metadata, idempotency_key from credit_ledger where kind = 'storage' and metadata->>'day' = $1 order by tenant", [day])).rows
+    .map(row => [row.tenant, Number(row.amount), row.metadata.bytes, row.idempotency_key]);
+  assert.deepEqual(await charges("2026-06-15"), [
     ["carol", -3000, 3_000_000, "storage:carol:2026-06-15"],
     ["payg", -500, 500_000, "storage:payg:2026-06-15"],
+  ], "a chunk stored twice counts once");
+
+  // From then on the charge reads the tracked totals, without listing Storage.
+  const objects = storage.objects;
+  storage.objects = () => { throw new Error("listed Storage"); };
+  await storage.writeBlob(`chunks/carol/cd/cde`, mb);
+  storage.blobs.set(`chunks/payg/ef/efg`, mb); // written behind the meter's back: drift
+  await storage.removeLog(`sessions/${agent}/transcript`);
+  assert.equal(await charge(1), true, "the next day runs");
+  assert.deepEqual(await charges("2026-06-16"), [
+    ["carol", -3000, 3_000_000, "storage:carol:2026-06-16"],
+    ["payg", -500, 500_000, "storage:payg:2026-06-16"],
+  ], "a new chunk counts, and a removed agent log no longer does");
+  // Every AGENT_STORAGE_RECONCILE_DAYS (7) a full listing corrects drift.
+  storage.objects = objects;
+  assert.equal(await charge(8), true);
+  assert.deepEqual(await charges("2026-06-23"), [
+    ["carol", -3000, 3_000_000, "storage:carol:2026-06-23"],
+    ["payg", -1500, 1_500_000, "storage:payg:2026-06-23"],
   ]);
-  assert.equal(await accounts.billing.chargeStorage(storage, "node-a", june + 86_400_000), true, "the next day runs");
-  assert.equal(Number((await db.query("select count(*) from credit_ledger where kind = 'storage'")).rows[0].count), 4);
+  assert.equal(Number((await db.query("select count(*) from credit_ledger where kind = 'storage'")).rows[0].count), 6);
+});
+
+test("tracked storage: concurrent nodes add up, dedup holds across nodes, purged agents are not charged, and reconciliation replaces drift", async () => {
+  const { db } = await testDatabase();
+  const agent = `client_${"d".repeat(40)}`, other = `client_${"e".repeat(40)}`;
+  for (const id of [agent, other]) await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'carol', '{}', 1, 'x', 'general', 'm')", [id]);
+  const tail = postgresTail(db);
+  const nodes = [new StorageUsage(db), new StorageUsage(db)];
+  // Two nodes over one store (like two runtime nodes over one bucket), each metering what it writes.
+  const shared = memoryStorage(tail);
+  const on = (usage: StorageUsage) => ({ ...shared, writeBlob: async (key: string, data: Uint8Array) => { if (!shared.blobs.has(key)) { shared.blobs.set(key, data); usage.meter(key, data.byteLength); } } });
+  await Promise.all(nodes.flatMap((usage, index) => Array.from({ length: 20 }, (_, n) => on(usage).writeBlob(`chunks/carol/${String(n).padStart(2, "0")}/c${n}`, new Uint8Array(100 + index)))));
+  for (const usage of nodes) usage.meter(`sessions/${agent}/transcript.log/000000000001`, 5_000);
+  nodes[1].meter(`client-sessions/${other}.journal.log/000000000001`, 7_000);
+  nodes[1].meter(`somewhere/else`, 1_000_000);
+  await Promise.all([nodes[0].flush(), nodes[1].flush(), nodes[0].flush()]);
+  const chunkBytes = [...shared.blobs.values()].reduce((sum, data) => sum + data.byteLength, 0);
+  assert.ok(chunkBytes >= 2000 && chunkBytes <= 2020, "each chunk once, by whichever node wrote it first");
+  assert.deepEqual(await nodes[0].tenantBytes(), new Map([["carol", chunkBytes + 10_000 + 7_000]]));
+  // A purged agent's objects are gone; even if its row kept a count, it is not charged.
+  await db.query("update agents set purged_at = 1 where id = $1", [agent]);
+  assert.deepEqual(await nodes[0].tenantBytes(), new Map([["carol", chunkBytes + 7_000]]));
+  // A failed flush keeps its deltas for the next.
+  let away = true;
+  const flaky = new StorageUsage({ query: (...args: unknown[]) => away ? Promise.reject(new Error("database away")) : (db.query as any)(...args) } as unknown as Db);
+  flaky.meter(`chunks/carol/zz/z`, 1);
+  await assert.rejects(flaky.flush(), /database away/);
+  away = false;
+  flaky.meter(`chunks/carol/zz/y`, 2);
+  await flaky.flush();
+  assert.deepEqual(await nodes[0].tenantBytes(), new Map([["carol", chunkBytes + 7_000 + 3]]));
+  // Reconciliation replaces the rows with what a listing finds; a dry run only reports it.
+  const dry = await nodes[0].reconcile(shared, { dryRun: true });
+  assert.deepEqual([dry.before, dry.after], [new Map([["carol", chunkBytes + 7_003]]), new Map([["carol", chunkBytes]])]);
+  assert.equal(Number((await db.query("select count(*) from storage_usage")).rows[0].count), 3, "a dry run changes nothing");
+  await nodes[0].reconcile(shared);
+  assert.deepEqual((await db.query("select kind, owner, bytes from storage_usage order by kind, owner")).rows.map(row => [row.kind, row.owner, Number(row.bytes)]), [["tenant", "carol", chunkBytes]]);
 });
 
 test("a prepaid tenant pays list price for tokens on the platform's key; the turn that spends the last credit ends, and new runs get 402", async t => {
@@ -441,7 +507,6 @@ test("without Stripe, checkout answers 503 and the webhook 404", async t => {
   assert.equal((await call("/v1/billing/stripe/webhook", { body: {}, token: null })).status, 404);
 });
 
-const DAY = 86_400_000;
 /** GitHub's OAuth and user API for accounts that can be renamed: login → numeric id and creation time. */
 async function fakeGithub(t: { after(fn: () => void | Promise<void>): void }) {
   const accounts = new Map<number, { login: string; createdAt: number }>();

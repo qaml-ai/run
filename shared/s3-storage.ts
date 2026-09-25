@@ -1,14 +1,15 @@
 import {
   DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, S3ServiceException,
 } from "@aws-sdk/client-s3";
-import { PreconditionFailed, segmentLog, validKey, type LogTail, type SegmentStore, type Storage } from "./storage.ts";
+import { meteredSegments, PreconditionFailed, removeSegments, segmentLog, validKey, type LogTail, type SegmentStore, type Storage, type StorageMeter } from "./storage.ts";
 
 /**
  * Storage on S3. Logs are `<prefix>/<key>.log/` holding immutable segment objects,
  * with their recent records in `tail` (see `segmentLog`). Blobs are `<prefix>/<key>`,
- * created with If-None-Match. Credentials come from the default AWS chain.
+ * created with If-None-Match. Credentials come from the default AWS chain. With a
+ * `meter`, every object created or deleted is reported to it, with its size.
  */
-export function s3Storage(options: { bucket: string; prefix?: string; region?: string; client?: S3Client; tail: LogTail }): Storage {
+export function s3Storage(options: { bucket: string; prefix?: string; region?: string; client?: S3Client; tail: LogTail; meter?: StorageMeter }): Storage {
   const client = options.client ?? new S3Client({ region: options.region });
   const bucket = options.bucket;
   const base = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
@@ -46,7 +47,7 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
         const names = objects.map(object => object.name);
         return {
           segments: names.filter(name => /^\d+$/.test(name)).map(Number).sort((a, b) => a - b),
-          bytes: new Map(objects.filter(object => !object.name.startsWith("blob-")).map(object => [object.name, object.size])),
+          bytes: new Map(objects.map(object => [object.name, object.size])),
           snapshots: names.filter(name => /^snapshot-\d+$/.test(name)).map(name => Number(name.slice(9))).sort((a, b) => a - b),
         };
       },
@@ -65,13 +66,11 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
     };
   }
 
+  const metered = (key: string) => meteredSegments(segments(key), key, options.meter);
   return {
-    log: (key, claim) => segmentLog(segments(key), key, options.tail, claim),
-    async removeLog(key) {
-      const store = segments(key);
-      const directory = `${at(key)}.log/`;
-      await store.remove((await list(`${key}.log/`)).map(object => object.key.slice(directory.length)));
-    },
+    metered: !!options.meter,
+    log: (key, claim) => segmentLog(metered(key), key, options.tail, claim),
+    removeLog: key => removeSegments(metered(key)),
     async readBlob(key) {
       try {
         const object = await client.send(new GetObjectCommand({ Bucket: bucket, Key: at(key) }));
@@ -83,7 +82,8 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
       try { await client.send(new HeadObjectCommand({ Bucket: bucket, Key: at(key) })); return; }
       catch (error) { if (!missing(error)) throw error; }
       try { await client.send(new PutObjectCommand({ Bucket: bucket, Key: at(key), Body: data, ContentType: "application/octet-stream", IfNoneMatch: "*" })); }
-      catch (error) { if (!conditionFailed(error)) throw error; }
+      catch (error) { if (!conditionFailed(error)) throw error; return; }
+      options.meter?.(key, data.byteLength);
     },
     async *objects(prefix) {
       let token: string | undefined;

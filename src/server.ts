@@ -9,6 +9,7 @@ import { errorText } from "./protocol.ts";
 import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
+import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, migrate } from "./db.ts";
 import { Ownership } from "./ownership.ts";
@@ -75,7 +76,9 @@ await migrate(db);
 const storageDescriptor = storageFromEnvironment(root);
 const leaseTtlMs = Number(process.env.AGENT_LEASE_TTL_MS ?? 90_000);
 // A durable flush while the database is away waits up to a lease for it; by then the node has fenced anyway.
-const storage = await openStorage(storageDescriptor, postgresTail(db, { retryMs: leaseTtlMs }));
+// What each agent, volume and tenant stores is tracked as objects are written and deleted, for the storage charge.
+const storageUsage = new StorageUsage(db);
+const storage = await openStorage(storageDescriptor, postgresTail(db, { retryMs: leaseTtlMs }), storageUsage.meter);
 const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
 const address = await taskAddress();
 const node = nodeUrl(process.env, port, address);
@@ -461,7 +464,10 @@ purgeTimer.unref();
 // Storage is charged to prepaid tenants once a UTC day, by whichever node claims the day's job first.
 const billingMs = Number(process.env.AGENT_BILLING_INTERVAL_MS ?? 60 * 60_000);
 if (!Number.isInteger(billingMs) || billingMs < 1000) throw new Error("AGENT_BILLING_INTERVAL_MS must be an integer of at least 1000");
-const chargeStorage = () => void accounts.billing.chargeStorage(storage, node).catch(error => console.error(JSON.stringify({ type: "storage_charge_failed", error: errorText(error) })));
+// The charge reads tracked totals; a full listing of Storage corrects them every AGENT_STORAGE_RECONCILE_DAYS (0: never, but for the first).
+const reconcileDays = Number(process.env.AGENT_STORAGE_RECONCILE_DAYS ?? 7);
+if (!Number.isInteger(reconcileDays) || reconcileDays < 0) throw new Error("AGENT_STORAGE_RECONCILE_DAYS must be a non-negative integer");
+const chargeStorage = () => void accounts.billing.chargeStorage(storage, storageUsage, node, { reconcileDays }).catch(error => console.error(JSON.stringify({ type: "storage_charge_failed", error: errorText(error) })));
 const billingTimer = setInterval(chargeStorage, billingMs);
 billingTimer.unref();
 setTimeout(chargeStorage, Math.min(billingMs, 60_000)).unref();
@@ -535,6 +541,7 @@ async function drain(signal: string) {
   await step("volumes", () => volumes.close());
   await step("mcp", () => mcp.close());
   await step("usage", () => accounts.flushUsage());
+  await step("storage usage", () => storageUsage.flush());
   await step("heartbeat", () => ownership.close());
   server.close();
   server.closeAllConnections();
