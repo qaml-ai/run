@@ -39,20 +39,27 @@ export async function runSandbox(options: {
   /** Resolves with the result as JSON, already within the size and transfer limits. */
   call: (name: string, args: unknown) => Promise<string>;
   onOutput: (text: string) => void;
+  /** Benchmark hook (scripts/bench-js-exec.ts): called as each phase of the execution ends. */
+  mark?: (phase: string) => void;
 }) {
+  const mark = options.mark ?? (() => {});
   // Hard guest-memory boundary: setMemoryLimit alone undercounts bulk
   // allocations in the pinned 0.32.0 release (upstream issue #271).
   // It starts at the module's declared minimum (16 MB) and grows in place up to the bound.
   const memory = spare ?? new WebAssembly.Memory({ initial: 256, maximum: SANDBOX_LIMITS.wasmBytes / 65536 });
   spare = undefined;
   new Uint8Array(memory.buffer).fill(0);
+  mark("zero");
   const module = await newQuickJSWASMModuleFromVariant(newVariant(RELEASE_SYNC, { wasmMemory: memory, wasmModule: options.wasmModule }));
   if (module.getWasmMemory() !== memory) throw new Error("QuickJS did not use the bounded memory");
+  mark("instantiate");
   const runtime = module.newRuntime();
   runtime.setMemoryLimit(SANDBOX_LIMITS.heapBytes);
   runtime.setMaxStackSize(SANDBOX_LIMITS.stackBytes);
   runtime.setModuleLoader(() => { throw new Error("Module imports are disabled in codemode"); });
+  mark("runtime");
   const vm = runtime.newContext();
+  mark("context");
   const handles: QuickJSHandle[] = [];
   const pending = new Set<QuickJSDeferredPromise>();
   const output: string[] = [];
@@ -149,6 +156,7 @@ export async function runSandbox(options: {
     handles.push(catalog);
     formatError = vm.unwrapResult(vm.callFunction(bootstrap, vm.undefined, call, emit, catalog));
     handles.push(formatError);
+    mark("bindings");
     const initial = run(() => vm.evalCode(`(async function() { "use strict";\n${options.code}\n})().then(value => { if (value !== undefined) text(value); })`, "codemode.js"));
     // Only compiling can fail here: the code's own errors reject the promise.
     if (initial.error) {
@@ -159,6 +167,7 @@ export async function runSandbox(options: {
     }
     const result = initial.value;
     handles.push(result);
+    mark("compile");
     while (true) {
       const jobs = run(() => runtime.executePendingJobs(64));
       if (jobs.error) { try { throw guestError(jobs.error); } finally { jobs.dispose(); } }
@@ -176,6 +185,7 @@ export async function runSandbox(options: {
       if (runtime.hasPendingJob()) await new Promise<void>(resolve => setImmediate(resolve));
       else await new Promise<void>(resolve => { wake = resolve; });
     }
+    mark("run");
     return { output, truncated };
   } finally {
     closed = true;
@@ -186,5 +196,6 @@ export async function runSandbox(options: {
     vm.dispose();
     runtime.dispose();
     spare = memory;
+    mark("teardown");
   }
 }
