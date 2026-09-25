@@ -101,3 +101,5 @@ export interface Channel {
   access: { public: boolean; allow: string[] }; limits: { perSenderPerMinute: number; turnsPerDay: number };
   greeting?: string; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
 }
+
+export type { ApplyResult } from "../../../clients/typescript";

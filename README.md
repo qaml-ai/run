@@ -404,6 +404,35 @@ the tenant can apply a definition, never an agent's own token. `GET
 a definition leaves its agents as they are; a definition a channel uses cannot
 be deleted.
 
+In Channels, **Model & prompt** opens the definition with application to existing
+conversations selected. Shared definitions update all their linked agents. Legacy
+channel conversations are also included: their listed revision is `0` until the
+first successful apply adopts the reference, preserving their history and tools.
+
+The update response's `applied` field includes `counts` (`total`, `updated`,
+`queued`, `failed`) and per-agent `results` (`agent`, `requestId`, `status`, optional
+`error`). `accepted` remains the list of accepted submissions; it does not mean
+completion. Poll `GET /v1/agents/{agent}/requests/{requestId}` until `completed`,
+then check `outcome.error`. The console does this while the results dialog is open.
+Expired, revoked and purged agents are excluded; a zero total explicitly means no
+existing agents were updated.
+
+To configure just one agent without changing its definition or history:
+
+```http
+PATCH /v1/agents/client_…/configuration
+Content-Type: application/json
+Authorization: Bearer <API token>
+
+{"requestId":"model-change-1","model":"openrouter/openai/gpt-6-luna"}
+```
+
+The response is an accepted request (`202`), not proof of completion. Poll the
+request endpoint above. `systemPrompt` and `thinkingLevel` are also supported.
+Changes queue between turns and survive restart; reuse `requestId` to retry the
+same change. Models come from `GET /v1/models`, backed by the installed Pi catalog;
+upgrade Pi to refresh that catalog. An `openrouter/…` model uses OpenRouter.
+
 ## Tool sources
 
 Every tool an agent has comes from a tool server, and every server answers the
@@ -800,8 +829,19 @@ only masked values.
   drains, fences or dies, another node connects within one scan of its
   heartbeat expiring (at once after a drain). A token Discord rejects is retried
   every five minutes, not in a loop. The bot needs no privileged intents: it
-  answers only DMs and messages that mention it. Replies never ping anyone
+  answers only DMs and messages that mention the **bot user**, not its similarly
+  named role. In autocomplete select the bot with the App badge, or paste
+  `<@BOT_USER_ID> status`. Role-only mentions may have their content withheld by
+  Discord; they are diagnosed as `role_mention_without_bot_mention`, not a dead
+  connection. Gateway health logs include received, accepted and ignored counts,
+  without message text or tokens. The console validates and encrypts the token,
+  then offers an invite link and a copyable direct-mention test. Replies never ping anyone
   (`allowed_mentions` is empty).
+
+  Gateway resume state is currently process-local: a replacement node starts a
+  fresh Discord session, so messages during that gap are not guaranteed to replay.
+  Persisting session handoff and load-testing large bot fleets remain separate
+  reliability/scaling work; neither was the cause of the role-mention incident.
 
 What all three share:
 

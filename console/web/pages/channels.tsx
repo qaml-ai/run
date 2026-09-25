@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
 import { api, formatTime, useApi, type Channel, type Definition } from "@/lib/api";
+import { DefinitionDialog } from "./definitions";
 import { Link } from "@/lib/router";
 
 const senders = (value: string) => value.split(/[\s,]+/).map(entry => entry.trim()).filter(Boolean);
@@ -31,7 +32,7 @@ const TYPES: Record<ChannelType, { label: string; help: string; fields: { key: s
   },
   discord: {
     label: "Discord",
-    help: "Each DM, and each channel or thread where someone @mentions the bot, gets its own agent. Create an application in the Discord Developer Portal, add a bot, invite it to your server with Send Messages, and paste its token.",
+    help: "Each DM, channel or thread gets its own agent. In servers, select the bot user with the App badge when mentioning it. A role with the same name will not trigger a reply.",
     fields: [{ key: "botToken", label: "Bot token", placeholder: "From the Bot page" }],
     senders: "@username, 123456789012345678",
   },
@@ -72,7 +73,7 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
   }
   return (
     <Dialog open onOpenChange={value => { if (!value) onClose(); }}>
-      <DialogContent>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto">
         <form onSubmit={save} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>{channel ? `Edit ${channel.name}` : `New ${info.label} channel`}</DialogTitle>
@@ -94,6 +95,12 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
               <Input id="channel-webhook" readOnly value={channel.webhookUrl} onFocus={event => event.target.select()} className="font-mono text-xs" />
             </div>
           )}
+          {type === "discord" && !channel && <ol className="list-decimal pl-5 text-sm space-y-2">
+            <li><a className="underline" href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Open the Discord Developer Portal</a> and create an application.</li>
+            <li>On its Bot page, copy the bot token into the field below. It is stored encrypted; you do not need to paste it into a chat or terminal.</li>
+            <li>Save here to validate the token, then use the invite link to add the bot to your server.</li>
+          </ol>}
+          {channel?.type === "discord" && <DiscordHelp channel={channel} />}
           {info.fields.map(field => (
             <div key={field.key} className="flex flex-col gap-2">
               <Label htmlFor={`channel-${field.key}`}>{field.label}{channel && <span className="text-muted-foreground font-normal"> (leave empty to keep {channel.credentials[field.key]})</span>}</Label>
@@ -134,8 +141,20 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
   );
 }
 
+function DiscordHelp({ channel }: { channel: Channel }) {
+  return <div className="rounded border p-3 text-sm space-y-2">
+    <a className="underline" href={`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(channel.account.id)}&scope=bot&permissions=68608`} target="_blank" rel="noreferrer">Invite {channel.account.username ?? "bot"} to your server</a>
+    <p>For a test message, copy the text below into Discord and send it. It mentions the bot user directly.</p>
+    <Input aria-label="Discord test message" readOnly value={`<@${channel.account.id}> status`} onFocus={event => event.target.select()} />
+    <p className="text-muted-foreground text-xs">When using autocomplete, select the bot with the App badge, not the similarly named role. DMs need no mention.</p>
+  </div>;
+}
+
 export function ChannelsPage() {
   const channels = useApi<Channel[]>("/v1/channels");
+  const definitions = useApi<Definition[]>("/v1/definitions");
+  const [modelDefinition, setModelDefinition] = useState<Definition>();
+  const [connected, setConnected] = useState<Channel>();
   const [editing, setEditing] = useState<Channel | "new">();
   const [error, setError] = useState<string>();
   return (
@@ -157,6 +176,7 @@ export function ChannelsPage() {
                   <TableCell>{channel.access.public ? <Badge>Public</Badge> : <Badge variant="outline">{channel.access.allow.length} allowed</Badge>}</TableCell>
                   <TableCell className="text-muted-foreground hidden text-xs lg:table-cell">{formatTime(channel.createdAt)}</TableCell>
                   <TableCell className="text-right whitespace-nowrap">
+                    <Button size="xs" variant="outline" className="mr-2" disabled={!definitions.data?.some(d => d.id === channel.definition)} onClick={() => setModelDefinition(definitions.data?.find(d => d.id === channel.definition))}>Model &amp; prompt</Button>
                     <Button size="xs" variant="outline" className="mr-2" onClick={() => setEditing(channel)}>Edit</Button>
                     <ConfirmButton size="xs" label="Delete" title={`Delete “${channel.name}”?`} description="The bot stops answering (a Telegram bot's webhook is removed). Its conversations' agents are kept until they expire." confirm="Delete channel"
                       onConfirm={async () => { try { await api(`/v1/channels/${channel.id}`, { method: "DELETE" }); await channels.reload(); } catch (caught) { setError((caught as Error).message); } }} />
@@ -167,8 +187,16 @@ export function ChannelsPage() {
           </Table>
         </div>
       )}
+      {modelDefinition && <DefinitionDialog definition={modelDefinition} forChannel onClose={() => setModelDefinition(undefined)} onSaved={() => void definitions.reload()} />}
+      {connected && <Dialog open onOpenChange={value => { if (!value) setConnected(undefined); }}><DialogContent>
+        <DialogHeader><DialogTitle>{connected.name} connected</DialogTitle><DialogDescription>Token validated and stored. Invite the bot, then send a test message.</DialogDescription></DialogHeader>
+        <DiscordHelp channel={connected} />
+        <DialogFooter><Button onClick={() => setConnected(undefined)}>Done</Button></DialogFooter>
+      </DialogContent></Dialog>}
       {editing && <ChannelDialog channel={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={created => {
         void channels.reload();
+        void definitions.reload();
+        if (created?.type === "discord") setConnected(created);
         // A Slack app needs the webhook URL pasted into its settings: show it straight away.
         if (created?.type === "slack") setTimeout(() => setEditing(created));
       }} />}

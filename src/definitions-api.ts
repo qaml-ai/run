@@ -41,11 +41,11 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
     const definitions = service();
     const tenant = c.var.principal.tenant;
     const input = await parse(schema.DefinitionUpdate, c);
+    const submit = context().submit;
+    if (input.apply === "all" && !submit) throw new HttpError(404, "Applying definitions is not enabled on this runtime");
     const updated = await definitions.update(tenant, c.req.param("id")!, input);
     if (input.apply !== "all") return json(c, 200, definitions.view(updated));
-    const submit = context().submit;
-    if (!submit) throw new HttpError(404, "Applying definitions is not enabled on this runtime");
-    return json(c, 200, { ...definitions.view(updated), applied: await definitions.apply(updated, (agent, request) => submit(agent, tenant, request)) });
+    return json(c, 200, { ...definitions.view(updated), applied: await definitions.apply(updated, (agent, request) => submit!(agent, tenant, request)) });
   });
   route(createRoute({ method: "delete", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition is deleted; agents made from it keep their configuration", schema.Deleted) } }), async c => {
     await service().remove(c.var.principal.tenant, c.req.param("id")!);

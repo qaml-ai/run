@@ -254,3 +254,23 @@ test("Discord keeps delivering while a deployment retires its owner, then hands 
   api.message({ id: "7002", channel_id: "2001", author: ada, content: "after handoff" });
   await until(() => api.sent().length === 2, "reply after handoff");
 });
+
+test("Discord distinguishes role mentions from direct bot mentions without logging content", async t => {
+  const api = await fakeDiscord(t);
+  const events: { event: string; fields: Record<string, unknown> }[] = [];
+  const messages: unknown[] = [];
+  const gateway = discord({ apiUrl: api.url }).connect!({ botToken: BOT_TOKEN }, {
+    message: async inbound => { messages.push(inbound); }, failed: error => assert.fail(error.message),
+    diagnostic: (event, fields) => events.push({ event, fields }),
+  });
+  t.after(() => gateway.close());
+  await until(() => api.identified().length === 1, "identify");
+  api.message({ id: "8001", channel_id: "2001", guild_id: "9", author: ada, content: "", mentions: [], mention_roles: ["123"] });
+  await until(() => events.some(e => e.event === "message_ignored"), "role diagnostic");
+  assert.equal(messages.length, 0);
+  assert.equal(events.find(e => e.event === "message_ignored")?.fields.reason, "role_mention_without_bot_mention");
+  api.message({ id: "8002", channel_id: "2001", guild_id: "9", author: ada, content: `<@${BOT_ID}> private test`, mentions: [{ id: BOT_ID }] });
+  await until(() => messages.length === 1, "direct mention accepted");
+  assert.ok(!JSON.stringify(events).includes("private test"));
+  assert.ok(!JSON.stringify(events).includes(BOT_TOKEN));
+});

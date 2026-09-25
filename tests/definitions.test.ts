@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntime } from "../clients/typescript.ts";
+import { Definitions } from "../src/definitions.ts";
 import { migrate } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
 import { OTHER_OPERATOR, runtime, until } from "./runtime-server.ts";
@@ -86,7 +87,9 @@ test("agents are made from a definition, record its revision, and take a new one
   const applied = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { systemPrompt: "You are support v3.", apply: "all" } });
   assert.equal(applied.status, 200, applied.text);
   assert.equal(applied.json.revision, 3);
-  assert.deepEqual(applied.json.applied, { accepted: [first, second.id].sort(), failed: [] });
+  assert.deepEqual(applied.json.applied.accepted, [first, second.id].sort());
+  assert.deepEqual(applied.json.applied.failed, []);
+  assert.equal(applied.json.applied.counts.total, 2);
   await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((agent: any) => agent.revision === 3), "both agents to take revision 3");
   detail = (await r.call(`/v1/agents/${first}`)).json;
   assert.equal(detail.systemPrompt, "You are support v3.");
@@ -158,4 +161,87 @@ test("stripping channel templates stops, changing nothing, while a channel has n
   await db.query("update channels set channel = (channel::jsonb || '{\"definition\": \"def_x\"}')::json");
   assert.deepEqual(await migrate(db), ["014_channel_template.sql"]);
   assert.equal("template" in (await db.query("select channel from channels")).rows[0].channel, false);
+});
+
+test("apply includes legacy channel conversations, preserves history, and excludes other tenants", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "Remembered." }));
+  const definition = (await r.call("/v1/definitions", { body: { name: "Legacy bot", systemPrompt: "New bot prompt" } })).json;
+  const agent = (await r.call("/v1/agents", { body: { systemPrompt: "Old bot prompt" } })).json.id;
+  const foreign = (await r.call("/v1/agents", { token: OTHER_OPERATOR, body: {} })).json.id;
+  await r.prompt(agent, "Remember the compass.");
+  const history = (await r.call(`/v1/agents/${agent}/history`)).json;
+  const channel = "ch_0123456789abcdef0123";
+  await r.db.query("insert into channels (id,tenant,channel,created_at) values ($1,'alice',$2,1)", [channel, JSON.stringify({ definition: definition.id })]);
+  for (const [conversation, id] of [["legacy", agent], ["wrong-tenant", foreign]]) {
+    await r.db.query("insert into channel_conversations (channel,conversation,agent,generation) values ($1,$2,$3,1)", [channel, conversation, id]);
+  }
+  assert.deepEqual((await r.call(`/v1/definitions/${definition.id}/agents`)).json, [{ id: agent, revision: 0 }]);
+  const result = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { apply: "all" } });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(result.json.applied.counts.total, 1);
+  assert.deepEqual(result.json.applied.accepted, [agent]);
+  const request = result.json.applied.results[0];
+  const completed = await until(async () => {
+    const record = (await r.call(`/v1/agents/${agent}/requests/${request.requestId}`)).json;
+    return record.state === "completed" && record;
+  }, "legacy configuration completes");
+  assert.equal(completed.outcome.error, undefined);
+  const detail = (await r.call(`/v1/agents/${agent}`)).json;
+  assert.deepEqual(detail.definition, { id: definition.id, revision: 1 });
+  assert.equal(detail.systemPrompt, "New bot prompt");
+  assert.deepEqual((await r.call(`/v1/agents/${agent}/history`)).json, history);
+  assert.equal((await r.call(`/v1/agents/${foreign}`, { token: OTHER_OPERATOR })).json.definition, undefined);
+  const repeated = (await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { apply: "all" } })).json.applied;
+  assert.deepEqual(repeated.counts, { total: 1, updated: 1, queued: 0, failed: 0 });
+});
+
+test("public configuration waits between turns, preserves history, and reports validation and outcome", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok", delayMs: 500 }));
+  const agent = (await r.call("/v1/agents", { body: { systemPrompt: "Before" } })).json.id;
+  const path = `/v1/agents/${agent}/configuration`;
+  assert.equal((await r.call(path, { method: "PATCH", token: OTHER_OPERATOR, body: { systemPrompt: "intrude" } })).status, 404);
+  for (const body of [{}, { model: "missing/model" }, { apiKey: "never-accepted" }, { systemPrompt: "" }]) {
+    assert.equal((await r.call(path, { method: "PATCH", body })).status, 400);
+  }
+  const turn = r.prompt(agent, "Keep this in history");
+  await until(() => r.model.bodies.length === 1, "model starts");
+  const configured = await r.call(path, { method: "PATCH", body: { requestId: "config-1", systemPrompt: "After" } });
+  assert.equal(configured.status, 202, configured.text);
+  assert.equal(configured.json.state, "running");
+  assert.equal((await r.call(`/v1/agents/${agent}`)).json.systemPrompt, "Before");
+  await turn;
+  await until(async () => (await r.call(`/v1/agents/${agent}`)).json.systemPrompt === "After", "configuration applied");
+  const history = (await r.call(`/v1/agents/${agent}/history`)).json;
+  assert.ok(JSON.stringify(history).includes("Keep this in history"));
+  const retried = await r.call(path, { method: "PATCH", body: { requestId: "config-1", systemPrompt: "After" } });
+  assert.equal(retried.json.state, "completed");
+  assert.equal(retried.json.outcome.result.configured, true);
+  assert.equal((await r.call(path, { method: "PATCH", body: { requestId: "config-1", systemPrompt: "Different" } })).status, 409);
+  // A catalog model may be selected without making a live model request.
+  const changed = await r.call(path, { method: "PATCH", body: { model: "openrouter/openai/gpt-6-luna" } });
+  assert.equal(changed.status, 202, changed.text);
+  const settled = await until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${changed.json.id}`)).json; return record.state === "completed" && record; }, "model change");
+  assert.equal(settled.outcome.error, undefined);
+  assert.equal((await r.call(`/v1/agents/${agent}`)).json.model, "openrouter/openai/gpt-6-luna");
+  assert.deepEqual((await r.call(`/v1/agents/${agent}/history`)).json, history);
+});
+
+
+test("apply reports completed failures separately from accepted and queued requests", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const definitions = new Definitions({ db: r.db });
+  const definition = await definitions.create("alice", { name: "Reporting" });
+  const agents: string[] = [];
+  for (let i = 0; i < 4; i++) agents.push((await r.call("/v1/agents", { body: { definition: definition.id } })).json.id);
+  const result = await definitions.apply(definition, async (agent, request) => {
+    const index = agents.indexOf(agent);
+    if (index === 3) throw new Error("Unreachable");
+    return { id: request.id, method: "configure", fingerprint: "fixture", state: index === 1 ? "running" : "completed",
+      ...(index === 0 ? { outcome: { result: { configured: true } } } : index === 2 ? { outcome: { error: "Missing provider key" } } : {}) };
+  });
+  assert.deepEqual(result.counts, { total: 4, updated: 1, queued: 1, failed: 2 });
+  assert.deepEqual(result.accepted, agents.slice(0, 2).sort());
+  assert.equal(result.results.find(row => row.agent === agents[2])?.error, "Missing provider key");
+  assert.equal(result.results.find(row => row.agent === agents[3])?.error, "Unreachable");
+  assert.equal(result.results.every(row => row.requestId === `apply_${definition.id}_1`), true);
 });

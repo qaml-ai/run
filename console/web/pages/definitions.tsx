@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { FileCog, Loader2, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type Definition } from "@/lib/api";
+import { api, formatTime, useApi, type Definition, type ApplyResult, type Model } from "@/lib/api";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const BUILTINS = [
@@ -34,9 +34,10 @@ function parseList(label: string, text: string): { value?: unknown[]; error?: st
   } catch { return { error: `${label} is not valid JSON` }; }
 }
 
-function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Definition; onClose: () => void; onSaved: () => void }) {
+export function DefinitionDialog({ definition, onClose, onSaved, forChannel = false }: { definition?: Definition; onClose: () => void; onSaved: () => void; forChannel?: boolean }) {
   const [name, setName] = useState(definition?.name ?? "");
   const [model, setModel] = useState(definition?.model ?? "");
+  const models = useApi<Model[]>("/v1/models");
   const [thinking, setThinking] = useState(definition?.thinkingLevel ?? DEFAULT);
   const [systemPrompt, setSystemPrompt] = useState(definition?.systemPrompt ?? "");
   const [ttl, setTtl] = useState(definition?.limits?.ttlSeconds === null ? "never" : String(definition?.limits?.ttlSeconds ?? ""));
@@ -46,10 +47,31 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
   // A spec is fetched again on save; the listed operations are for reading, not sending back.
   const [apis, setApis] = useState(pretty(withoutCredentials(definition?.openApi)?.map(({ tools: _tools, ...api }) => api)));
   const secured = [...definition?.mcpServers ?? [], ...definition?.openApi ?? []].filter(entry => entry.headerNames || entry.auth).map(entry => entry.name);
-  const [apply, setApply] = useState(false);
+  const [apply, setApply] = useState(forChannel);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [applied, setApplied] = useState<{ accepted: string[]; failed: { agent: string; error: string }[] }>();
+  const [applied, setApplied] = useState<ApplyResult>();
+  useEffect(() => {
+    if (!applied?.counts.queued) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const results = await Promise.all(applied.results.map(async entry => {
+          if (entry.status !== "queued") return entry;
+          const record = await api<{ state: string; outcome?: { error?: string } }>(`/v1/agents/${entry.agent}/requests/${entry.requestId}`);
+          if (record.state !== "completed") return entry;
+          return { ...entry, status: record.outcome?.error !== undefined ? "failed" as const : "updated" as const, ...(record.outcome?.error !== undefined ? { error: record.outcome.error } : {}) };
+        }));
+        if (cancelled) return;
+        setError(undefined);
+        setApplied({ ...applied, results, failed: results.filter(r => r.status === "failed").map(r => ({ agent: r.agent, error: r.error ?? "Configuration failed" })),
+          counts: { total: results.length, updated: results.filter(r => r.status === "updated").length, queued: results.filter(r => r.status === "queued").length, failed: results.filter(r => r.status === "failed").length } });
+      } catch (caught) {
+        if (!cancelled) { setError(`Could not refresh results: ${(caught as Error).message}`); setApplied({ ...applied }); }
+      }
+    }, 2000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [applied]);
   async function save(event: FormEvent) {
     event.preventDefault();
     const parsedServers = parseList("MCP servers", servers), parsedApis = parseList("OpenAPI", apis);
@@ -82,10 +104,12 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
     <Dialog open onOpenChange={value => { if (!value) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Applied to {applied.accepted.length} agent{applied.accepted.length === 1 ? "" : "s"}</DialogTitle>
-          <DialogDescription>Each takes the new revision between its turns.</DialogDescription>
+          <DialogTitle>Definition saved</DialogTitle>
+          <DialogDescription>{applied.counts.total === 0 ? "No existing conversations or agents were eligible. New conversations will use this definition." : `${applied.counts.updated} updated · ${applied.counts.queued} queued · ${applied.counts.failed} failed. Queued changes take effect between turns; results refresh automatically.`}</DialogDescription>
         </DialogHeader>
+        <ErrorAlert error={error} />
         {applied.failed.length > 0 && <ErrorAlert title={`${applied.failed.length} could not be reached`} error={applied.failed.map(entry => `${entry.agent}: ${entry.error}`).join("\n")} />}
+        <div className="max-h-48 overflow-y-auto text-xs">{applied.results.map(result => <p key={result.agent}><span className="font-mono">{result.agent}</span>: {result.status}</p>)}</div>
         <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
       </DialogContent>
     </Dialog>
@@ -102,6 +126,7 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
             </DialogDescription>
           </DialogHeader>
           <ErrorAlert error={error} />
+          {forChannel && <p className="text-sm text-muted-foreground">Update this bot’s model and prompt here. This definition may also be shared by other channels; applying it updates all its existing conversations and agents.</p>}
           <div className="flex flex-col gap-2">
             <Label htmlFor="definition-name">Name</Label>
             <Input id="definition-name" autoFocus value={name} onChange={event => setName(event.target.value)} />
@@ -109,7 +134,8 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
           <div className="grid gap-4 sm:grid-cols-[1fr_auto_auto]">
             <div className="flex flex-col gap-2">
               <Label htmlFor="definition-model">Model</Label>
-              <Input id="definition-model" placeholder="Runtime default, or e.g. anthropic/claude-sonnet-5" value={model} onChange={event => setModel(event.target.value)} />
+              <Input id="definition-model" list="definition-model-options" placeholder="Runtime default, or e.g. anthropic/claude-sonnet-5" value={model} onChange={event => setModel(event.target.value)} />
+              <datalist id="definition-model-options">{models.data?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}{entry.available ? "" : " — provider key required"}</option>)}</datalist>
             </div>
             <div className="flex flex-col gap-2">
               <Label>Thinking</Label>
@@ -153,7 +179,7 @@ function DefinitionDialog({ definition, onClose, onSaved }: { definition?: Defin
           {definition && (
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={apply} onChange={event => setApply(event.target.checked)} />
-              Apply to existing agents made from this definition
+              Apply to all existing conversations and agents using this definition
             </label>
           )}
           <DialogFooter>

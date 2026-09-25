@@ -279,11 +279,22 @@ export const Definition = z.object({
   createdAt: z.number(),
   updatedAt: z.number(),
 }).openapi("Definition");
+export const ApplyResult = z.object({
+  accepted: z.array(z.string()), failed: z.array(z.object({ agent: z.string(), error: z.string() })),
+  counts: z.object({ total: z.number(), updated: z.number(), queued: z.number(), failed: z.number() }),
+  results: z.array(z.object({ agent: z.string(), requestId: z.string(), status: z.enum(["updated", "queued", "failed"]), error: z.string().optional() })),
+}).openapi("ApplyResult", { description: "Snapshot for eligible live agents, including legacy channel conversations. Queued is not completed: poll GET /v1/agents/{agent}/requests/{requestId} for the final outcome. Expired, revoked and purged agents are excluded." });
 export const DefinitionUpdated = Definition.extend({
-  applied: z.object({ accepted: z.array(z.string()), failed: z.array(z.object({ agent: z.string(), error: z.string() })) }).optional()
-    .openapi({ description: "Agents that accepted the new revision (applied between their turns), and any that could not be reached" }),
+  applied: ApplyResult.optional(),
 }).openapi("DefinitionUpdated");
-export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
+export const DefinitionAgent = z.object({ id: z.string(), revision: z.number().openapi({ description: "0 means a legacy channel conversation that has not yet adopted a definition revision" }) }).openapi("DefinitionAgent");
+
+export const ConfigureInput = z.object({
+  requestId: z.string().min(1).optional(),
+  model: z.string().optional().openapi({ description: "Model id from GET /v1/models" }),
+  systemPrompt: z.string().min(1).max(32_000).optional(),
+  thinkingLevel: ThinkingLevel.optional(),
+}).strict().refine(input => input.model !== undefined || input.systemPrompt !== undefined || input.thinkingLevel !== undefined, "Give at least one configuration field").openapi("ConfigureInput");
 
 const ChannelAccess = z.object({
   public: z.boolean().optional().openapi({ description: "Let anyone message the channel; off by default" }),

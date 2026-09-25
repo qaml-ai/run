@@ -173,6 +173,14 @@ export function api(context: ApiContext) {
     return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, { id: body.requestId ?? randomUUID(), method: "prompt", params: { text: body.text, ...(body.actor !== undefined ? { actor: body.actor } : {}), ...(body.from !== undefined ? { from: body.from } : {}) } }));
   });
   route(createRoute({
+    method: "patch", path: "/v1/agents/{id}/configuration", request: { params: agentId, body: content(schema.ConfigureInput) },
+    responses: { 202: reply("Configuration accepted; poll its request for completion. Conversation history is preserved", schema.RequestRecord) },
+  }), async c => {
+    const { requestId, ...params } = parse(schema.ConfigureInput, await readJson(c.req.raw.body, 1024 * 1024, {}));
+    const submit = context.submit ?? ((id, tenant, request) => clients.submit(id, tenant, request));
+    return json(c, 202, await submit(c.req.param("id")!, c.var.principal.tenant, { id: requestId ?? randomUUID(), method: "configure", params }));
+  });
+  route(createRoute({
     method: "get", path: "/v1/agents/{id}/requests/{requestId}", request: { params: agentId.extend({ requestId: z.string() }) },
     responses: { 200: reply("The request and, once settled, its outcome", schema.RequestRecord) },
   }), async c => {

@@ -763,6 +763,37 @@
           "text"
         ]
       },
+      "ConfigureInput": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "model": {
+            "type": "string",
+            "description": "Model id from GET /v1/models"
+          },
+          "systemPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "Schedule": {
         "type": "object",
         "properties": {
@@ -2059,42 +2090,100 @@
             "type": "object",
             "properties": {
               "applied": {
-                "type": "object",
-                "properties": {
-                  "accepted": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "failed": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "agent": {
-                          "type": "string"
-                        },
-                        "error": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "agent",
-                        "error"
-                      ]
-                    }
-                  }
-                },
-                "required": [
-                  "accepted",
-                  "failed"
-                ],
-                "description": "Agents that accepted the new revision (applied between their turns), and any that could not be reached"
+                "$ref": "#/components/schemas/ApplyResult"
               }
             }
           }
         ]
+      },
+      "ApplyResult": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "agent": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "agent",
+                "error"
+              ]
+            }
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "number"
+              },
+              "updated": {
+                "type": "number"
+              },
+              "queued": {
+                "type": "number"
+              },
+              "failed": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "total",
+              "updated",
+              "queued",
+              "failed"
+            ]
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "agent": {
+                  "type": "string"
+                },
+                "requestId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "updated",
+                    "queued",
+                    "failed"
+                  ]
+                },
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "agent",
+                "requestId",
+                "status"
+              ]
+            }
+          }
+        },
+        "required": [
+          "accepted",
+          "failed",
+          "counts",
+          "results"
+        ],
+        "description": "Snapshot for eligible live agents, including legacy channel conversations. Queued is not completed: poll GET /v1/agents/{agent}/requests/{requestId} for the final outcome. Expired, revoked and purged agents are excluded."
       },
       "DefinitionUpdate": {
         "type": "object",
@@ -2248,7 +2337,8 @@
             "type": "string"
           },
           "revision": {
-            "type": "number"
+            "type": "number",
+            "description": "0 means a legacy channel conversation that has not yet adopted a definition revision"
           }
         },
         "required": [
@@ -2978,6 +3068,51 @@
         "responses": {
           "202": {
             "description": "The accepted request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestRecord"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/configuration": {
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigureInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Configuration accepted; poll its request for completion. Conversation history is preserved",
             "content": {
               "application/json": {
                 "schema": {

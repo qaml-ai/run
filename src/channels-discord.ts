@@ -19,18 +19,19 @@ const RECONNECT = 4000;
 const MAX_BACKOFF_MS = 60_000;
 
 /** A message the bot should answer: a DM, or one that mentions it. Exported for tests. */
-export function parseMessage(message: any, botId: string): Inbound | undefined {
-  if (!message?.author || message.author.bot || message.webhook_id || typeof message.channel_id !== "string" || typeof message.id !== "string") return undefined;
+export function parseMessage(message: any, botId: string, ignored?: (reason: string) => void): Inbound | undefined {
+  const skip = (reason: string) => { ignored?.(reason); return undefined; };
+  if (!message?.author || message.author.bot || message.webhook_id || typeof message.channel_id !== "string" || typeof message.id !== "string") return skip("bot_webhook_or_invalid");
   // Default messages and replies; not joins, pins, or thread notices.
-  if (message.type !== 0 && message.type !== 19) return undefined;
+  if (message.type !== 0 && message.type !== 19) return skip("message_type");
   const direct = !message.guild_id;
   const mentioned = Array.isArray(message.mentions) && message.mentions.some((user: any) => user?.id === botId);
-  if (!direct && !mentioned) return undefined;
+  if (!direct && !mentioned) return skip(message.mention_roles?.length ? "role_mention_without_bot_mention" : "not_mentioned");
   const text = String(message.content ?? "").replaceAll(`<@${botId}>`, "").replaceAll(`<@!${botId}>`, "").trim();
   const images = (Array.isArray(message.attachments) ? message.attachments : [])
     .filter((file: any) => typeof file?.content_type === "string" && file.content_type.startsWith("image/") && typeof file.url === "string" && (file.size ?? 0) <= MAX_IMAGE_BYTES)
     .map((file: any) => String(file.url));
-  if (!text && !images.length) return undefined;
+  if (!text && !images.length) return skip("empty_message");
   const author = message.author;
   return {
     // A DM, a channel, or a thread: each is a Discord channel, and each gets its own agent.
@@ -83,6 +84,7 @@ export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number 
     let lastHeartbeatAt: number | null = null;
     let received = 0;
     let accepted = 0;
+    const ignored: Record<string, number> = {};
     let ready = false;
     let lastHealthAt = 0;
     const log = (type: string, fields: Record<string, unknown> = {}) => {
@@ -142,7 +144,7 @@ export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number 
           lastAckAt = Date.now();
           if (lastAckAt - lastHealthAt >= 60_000) {
             lastHealthAt = lastAckAt;
-            log("health", { ready, sequence, received, accepted, lastEventAt, lastAckAt,
+            log("health", { ready, sequence, received, accepted, ignored, lastEventAt, lastAckAt,
               heartbeatLatencyMs: lastHeartbeatAt === null ? null : lastAckAt - lastHeartbeatAt });
           }
         }
@@ -164,7 +166,12 @@ export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number 
           } else if (payload.t === "RESUMED") { failures = 0; ready = true; clearTimeout(handshake); log("resumed", { sequence }); }
           else if (payload.t === "MESSAGE_CREATE" && botId) {
             received++;
-            const inbound = parseMessage(payload.d, botId);
+            const inbound = parseMessage(payload.d, botId, reason => {
+              ignored[reason] = (ignored[reason] ?? 0) + 1;
+              if (reason === "role_mention_without_bot_mention" || reason === "empty_message") {
+                log("message_ignored", { messageId: payload.d.id, conversationId: payload.d.channel_id, reason });
+              }
+            });
             if (inbound) { accepted++; log("message", { messageId: inbound.messageId, conversationId: inbound.conversationId, sequence }); }
             if (inbound) void handlers.message(inbound).catch(error => log("message_failed", { error: error instanceof Error ? error.message : String(error) }));
           }

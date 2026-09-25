@@ -415,6 +415,8 @@ test("runs queue per agent: a busy agent accepts more work, and runs that never 
   const agent2 = await f.start({ echo: echo(async () => { blocked.resolve(); return new Promise(() => {}); }) });
   const began = agent2.execute('return await tools.echo({value:"b"})', { idempotencyKey: "began" }).catch(error => error);
   await blocked.promise;
+  const config = await f.post(agent2, "/requests", { id: "queued-config", method: "configure", params: { systemPrompt: "Survives deployment" } });
+  assert.equal(config.status, 202);
   const waiting = agent2.execute("return 3", { idempotencyKey: "waiting" }).catch(error => error);
   await sleep(100);
   await agent2.close();
@@ -424,6 +426,8 @@ test("runs queue per agent: a busy agent accepts more work, and runs that never 
   f.clients.push(resumed);
   const settledWaiting = await resumed.waitForRequest("waiting", { timeoutMs: 20_000 });
   assert.equal(settledWaiting.output[0], "3", "the queued run ran exactly once after the restart");
+  assert.deepEqual(await resumed.waitForRequest("queued-config"), { configured: true });
+  assert.equal((await f.header(agent2.session.id)).config.systemPrompt, "Survives deployment");
   const beganRecord = (await resumed.outcomes()).requests.find(request => request.id === "began")!;
   assert.equal(beganRecord.state, "completed");
   assert.equal(beganRecord.outcome && "error" in beganRecord.outcome && beganRecord.outcome.uncertain, true);

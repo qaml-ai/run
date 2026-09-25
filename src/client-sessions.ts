@@ -330,7 +330,7 @@ export class ClientSessions {
     const queued: RequestRecord[] = [];
     const resumed: RequestRecord[] = [];
     for (const request of [...session.running.values()]) {
-      if (RUN_METHODS.includes(request.method) && !request.began && request.params !== undefined) queued.push(request);
+      if ((request.method === "configure" || (RUN_METHODS.includes(request.method) && !request.began)) && request.params !== undefined) queued.push(request);
       else if (resumable(request) && (request.resumes ?? 0) < MAX_RESUMES) {
         resumed.push(this.upsertRequest(session, { ...request, resumes: (request.resumes ?? 0) + 1 }));
       } else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true } });
@@ -925,19 +925,19 @@ export class ClientSessions {
     } catch (error) { throw new HttpError(400, errorText(error)); }
     const limited = await this.runLimit(session, body.method);
     if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
-    // Reads, aborts and applied definitions never need a process; runs start it when their turn comes.
-    if (!isRun && !applying && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
+    // Reads, aborts and configuration do not need a process; runs start it when their turn comes.
+    if (!isRun && !["configure", "history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
     // Concurrent retries may have waited on the same process startup.
     const raced = existing();
     if (raced) return { status: 200, record: visible(raced) };
     const record = this.upsertRequest(session, {
       startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
       ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-      id: body.id, method: body.method, fingerprint, state: "running", ...(isRun ? { params } : {}), ...(actor ? { actor } : {}),
+      id: body.id, method: body.method, fingerprint, state: "running", ...(isRun || body.method === "configure" ? { params } : {}), ...(actor ? { actor } : {}),
     });
     await this.commit(session, true);
-    // A definition is applied between runs, when the agent is not busy.
-    if (isRun || applying) this.enqueue(session, record, params);
+    // Configuration is applied between runs, when the agent is not busy.
+    if (isRun || body.method === "configure") this.enqueue(session, record, params);
     else void this.run(session, record, params);
     return { status: 202, record: visible(record) };
   }
@@ -958,14 +958,14 @@ export class ClientSessions {
     if (record.method === "status" && !live) return { running: false };
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
-      const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
+      const applied = params.definition !== undefined ? await this.definitionUpdate(session, params.definition.id) : undefined;
       const update = applied?.update ?? configurationUpdate(params);
       // A new model may belong to another provider: the agent needs that provider's key.
       const resolved = update.model ? await this.apiKey(session, update.model.provider) : undefined;
       const apiKey = resolved?.key;
       if (update.model && this.options.apiKeyFor && !apiKey) throw new Error(`No ${update.model.provider} API key is configured for this tenant; set one with PUT /v1/providers/${update.model.provider}/key`);
       // An agent that is not running takes its new configuration when it next starts.
-      const result = live || params.definition === undefined ? await this.supervisor.request(id, "configure", {
+      const result = live ? await this.supervisor.request(id, "configure", {
         ...update, ...apiKey ? { apiKey } : {},
         // Replacing the application's tools keeps the runtime's own.
         ...update.tools ? { tools: await this.toolset(session, update.tools, applied ? applied.sources : session.header.sources) } : {},
@@ -993,9 +993,18 @@ export class ClientSessions {
   }
 
   /** The configuration an agent takes from its definition's current revision; tools added at creation stay. */
-  private async definitionUpdate(session: Session) {
-    const current = session.header.definition;
-    if (!current) throw new Error("This agent was not made from a definition");
+  private async definitionUpdate(session: Session, requestedId: string) {
+    let current = session.header.definition;
+    if (!current) {
+      // Pre-definition channel agents are linked through their conversation. Adopt
+      // the reference only as part of the owned, durable configuration update.
+      const linked = await this.db.query(`select 1 from channel_conversations cc join channels c on c.id = cc.channel
+        where cc.agent = $1 and c.tenant = $2 and c.channel->>'definition' = $3`,
+      [session.header.id, session.header.tenant, requestedId]);
+      if (!linked.rowCount) throw new Error("This agent was not made from this definition");
+      current = { id: requestedId, revision: 0 };
+    }
+    if (current.id !== requestedId) throw new Error("This agent belongs to another definition");
     const resolved = await this.options.definitionFor!(session.header.tenant, current.id);
     // The attached server's tools stay; the tools list is rebuilt with the definition's sources.
     return { update: { ...resolved.config, tools: session.header.definitions }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };
@@ -1018,6 +1027,13 @@ export class ClientSessions {
   private async run(session: Session, record: RequestRecord, params: unknown) {
     let value: Outcome;
     try {
+      if (record.method === "configure" && (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running")) return;
+      if (record.method === "configure") {
+        // Configuration is an idempotent assignment: retain its parameters until
+        // completion so an interrupted write can be replayed by the next owner.
+        record = this.upsertRequest(session, { ...record, began: Date.now() });
+        await this.commit(session, true);
+      }
       if (RUN_METHODS.includes(record.method)) {
         if (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running") return;
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
@@ -1175,7 +1191,8 @@ export class ClientSessions {
    */
   private async interrupt(session: Session, reason: string, handOff = false) {
     for (const request of [...session.running.values()]) {
-      const queued = RUN_METHODS.includes(request.method) && (!request.began || session.resuming.has(request.id));
+      const queued = (request.method === "configure" && request.params !== undefined) ||
+        (RUN_METHODS.includes(request.method) && (!request.began || session.resuming.has(request.id)));
       if (handOff && (queued || resumable(request))) continue;
       const { params: _params, ...rest } = request;
       this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: queued ? { error: reason } : { error: reason, uncertain: true } });
@@ -1271,7 +1288,7 @@ export class ClientSessions {
   private working(session: Session) {
     let count = (session.starting ? 1 : 0) + session.settling;
     for (const request of session.running.values()) {
-      if (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method)) count++;
+      if (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method) && request.method !== "configure") count++;
     }
     return count;
   }

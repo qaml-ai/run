@@ -135,8 +135,12 @@ export class Definitions {
   /** The tenant's live agents made from a definition, and the revision each has. */
   async agents(tenant: string, id: string): Promise<{ id: string; revision: number }[]> {
     const { rows } = await this.db.query(`
-      select id, (header->'definition'->>'revision')::bigint as revision from agents
-      where tenant = $1 and header->'definition'->>'id' = $2 and not revoked and purged_at is null
+      select id, coalesce((header->'definition'->>'revision')::bigint, 0) as revision from agents a
+      where tenant = $1 and (header->'definition'->>'id' = $2 or (
+        header->'definition'->>'id' is null and exists (
+          select 1 from channel_conversations cc join channels c on c.id = cc.channel
+          where cc.agent = a.id and c.tenant = a.tenant and c.channel->>'definition' = $2
+        ))) and not revoked and purged_at is null
         and (expires_at is null or expires_at > $3) order by id`, [tenant, id, Date.now()]);
     return rows.map(row => ({ id: row.id, revision: row.revision }));
   }
@@ -148,16 +152,26 @@ export class Definitions {
   async apply(definition: Definition, submit: (agent: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>) {
     const agents = (await this.agents(definition.tenant, definition.id)).map(agent => agent.id);
     const accepted: string[] = [], failed: { agent: string; error: string }[] = [];
+    const results: { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }[] = [];
     const queue = [...agents];
     await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
       for (let agent; (agent = queue.shift());) {
+        const requestId = `apply_${definition.id}_${definition.revision}`;
         try {
-          await submit(agent, { id: `apply_${definition.id}_${definition.revision}`, method: "configure", params: { definition: { id: definition.id, revision: definition.revision } } });
+          const record = await submit(agent, { id: requestId, method: "configure", params: { definition: { id: definition.id, revision: definition.revision } } });
+          if (record.outcome?.error !== undefined) throw new Error(record.outcome.error);
           accepted.push(agent);
-        } catch (error) { failed.push({ agent, error: errorText(error) }); }
+          results.push({ agent, requestId, status: record.state === "completed" ? "updated" : "queued" });
+        } catch (error) {
+          failed.push({ agent, error: errorText(error) });
+          results.push({ agent, requestId, status: "failed", error: errorText(error) });
+        }
       }
     }));
-    return { accepted: accepted.sort(), failed };
+    return { accepted: accepted.sort(), failed: failed.sort((a, b) => a.agent.localeCompare(b.agent)),
+      counts: { total: agents.length, updated: results.filter(r => r.status === "updated").length,
+        queued: results.filter(r => r.status === "queued").length, failed: failed.length },
+      results: results.sort((a, b) => a.agent.localeCompare(b.agent)) };
   }
 
   /**
