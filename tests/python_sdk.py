@@ -12,7 +12,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from agent_client import AgentRuntime, ToolContext, tool
+from camelai_agent_runtime import AgentRuntime, ToolContext, tool
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 

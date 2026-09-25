@@ -33,7 +33,7 @@ const agent = await runtime.createAgent({
 await agent.prompt("Which open tickets look urgent?");
 console.log((await agent.history()).messages.at(-1));`;
   const python = `import asyncio, os
-from agent_client import AgentRuntime, tool
+from camelai_agent_runtime import AgentRuntime, tool
 
 @tool
 async def open_tickets():

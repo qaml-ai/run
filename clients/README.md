@@ -62,11 +62,11 @@ the agent is idle and delivered to its next run.
 
 ## Python
 
-Install `clients/python/requirements.txt` and import the local `agent_client.py`
-module (the complete demo adds its directory to `sys.path`).
+`pip install camelai-agent-runtime` (Python 3.11+), or from this repository add
+`clients/python` to `sys.path` as the demos do.
 
 ```python
-from agent_client import AgentRuntime, ToolContext, tool
+from camelai_agent_runtime import AgentRuntime, ToolContext, tool
 
 @tool
 async def read_inventory():
