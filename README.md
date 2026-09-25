@@ -973,39 +973,27 @@ products) are acknowledged and ignored. Setup: create a secret or restricted key
 
 ## Tenant isolation contract
 
-This prototype is **single-tenant, with one trusted operator**. Separate agent
-processes and scoped SDK session credentials do not constitute a multi-tenant
-authorization system. The operator credential controls the whole runtime.
+Every request is authenticated as a tenant: an operator token from the tenants
+file or secret, a console session, an API token, or an agent's own token on the
+SDK routes. Each agent, volume, definition, channel and schedule records its
+tenant, and every API access check compares it with the caller's; another
+tenant's agent is not found. Tests prove tenant A cannot list, read, prompt,
+inspect or delete tenant B's agents. Per-tenant limits bound hosted agents
+(`maxAgents`), model spend (`maxMonthlyCost`) and, for prepaid tenants, credit.
 
 - **Generated code:** QuickJS/WASM confines generated JavaScript to the exposed
-  capabilities. It does not enforce tenant ownership of agents, tools or data.
-- **Application tools:** Tool implementations are trusted host code. Applications
-  must limit them to the intended workspace, data and credentials; model-supplied
-  arguments are not a trusted source of tenant identity.
-- **Shared chat:** Anyone who can reach `/a/:agentId` can access that agent's
-  shared conversation and send prompts. The URL does not create a private
-  conversation per visitor. Studio's developer access protects inspection and
-  configuration data, not access to the shared conversation.
-- **Host resources:** Guest execution limits do not enforce per-tenant quotas
-  or isolate all host-process memory, filesystem permissions and network access.
-
-Before deploying a shared multi-tenant service, implement authenticated tenant
-identity as an end-to-end authorization boundary: derive it from verified
-credentials and carry it through agent creation, storage access, tool connections
-and every API access check. Bind tool capabilities and credentials to that
-identity. Do not treat knowledge of an agent ID as permission to access it, and
-define an explicit access policy for end-user chat links.
-
-Acceptance tests must prove tenant A cannot list, read, prompt, inspect, stop or
-attach tools to tenant B's agents, including after reconnects and restarts.
-Then enforce per-tenant concurrency, CPU/memory, tool-use and inference-spending
-quotas. Restrict host-process permissions and use OS/container containment as
-appropriate for the code being hosted; hosting customers' arbitrary Node/Python
-tool implementations requires a separate isolation boundary.
-
-Multiple agents per VM remains the intended architecture; this does not require
-a VM per tenant. A `tenantId` field alone provides no protection, so add it with
-the authentication and enforcement design rather than as a placeholder.
+  capabilities. Tenant ownership is enforced by the runtime around it, not by
+  the sandbox.
+- **Application tools:** Tool implementations are trusted code in the tenant's
+  application. Applications must limit them to the intended data and
+  credentials; model-supplied arguments are not a trusted source of identity.
+- **Shared chat (Studio):** Anyone who can reach Studio's `/a/:agentId` can
+  access that agent's shared conversation and send prompts. Studio's developer
+  access protects inspection and configuration data, not the conversation.
+- **Host resources:** Guest execution limits do not isolate all host-process
+  memory, filesystem permissions and network access; hosting customers'
+  arbitrary Node/Python tool implementations would need a separate isolation
+  boundary.
 
 ## Sandbox boundary and remaining production work
 
@@ -1098,20 +1086,14 @@ Regression tests allocate retained bulk arrays and strings beyond the nominal
 heap limit and verify that the fixed WASM boundary stops them.
 
 The supervisor, Pi process, tool schemas and tool implementations remain trusted
-code with OS access. The example filesystem adapter rejects traversal, symlinks
-(including dangling links), hard links and special files, uses `O_NOFOLLOW` for
-file opens, and bounds reads, writes and directory listings. Its workspace must
-be owned exclusively by the service: this portable adapter does not provide
-race-proof directory traversal against another OS process replacing directories.
-Use DO/R2-backed tools or an OS-contained filesystem service for that threat.
+code with OS access.
 
 The tests cover known escape patterns and limits; they are not a security audit
 or proof against engine vulnerabilities. A sandbox process serves many tenants'
 executions in turn, so an escape that persists in one would see later executions
-routed to it. Production shared-VM operation still needs resource quotas around the sandbox, tenant
-authentication, tool-specific authorization, controlled egress for tool hosts,
-and a maintained engine/security update process. No deployed environment has
-been changed.
+routed to it. Shared-VM operation still needs resource quotas around the
+sandbox, tool-specific authorization, controlled egress for tool hosts, and a
+maintained engine/security update process.
 
 ## Integration seam and next extraction
 
@@ -1141,4 +1123,4 @@ application.
 Remaining production migration work includes model/provider reconfiguration,
 billing enforcement at the inference boundary, and testing application tools
 under real deployment conditions. Configuration changes during a run are rejected;
-they do not abort and regenerate the turn. Nothing has been deployed.
+they do not abort and regenerate the turn.

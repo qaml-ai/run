@@ -148,8 +148,6 @@ export interface ClientSessionOptions {
   prefix?: string;
   /** With ownership, each agent is served by one node at a time. */
   ownership?: Ownership;
-  /** Fallback provider key when `apiKeyFor` is absent (single-tenant hosts and tests). */
-  apiKey?: string;
   /** The provider key an agent uses, resolved per tenant at process start; never persisted. `platform` keys are not the tenant's own. */
   apiKeyFor?: (tenant: string, provider: string) => Promise<ProviderKey | string | undefined> | ProviderKey | string | undefined;
   /** At most this many hosted agents per tenant at once on this node (default: no per-tenant limit). */
@@ -473,7 +471,7 @@ export class ClientSessions {
   }
 
   private async apiKey(session: Session, provider: string): Promise<{ key?: string; platform: boolean }> {
-    const resolved = this.options.apiKeyFor ? await this.options.apiKeyFor(session.header.tenant, provider) : this.options.apiKey;
+    const resolved = await this.options.apiKeyFor?.(session.header.tenant, provider);
     return typeof resolved === "object" ? resolved : { key: resolved, platform: false };
   }
 

@@ -298,7 +298,7 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   const ownership = new Ownership(db, { node: "http://n" });
   await ownership.start();
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
-  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "tail-test-secret-with-32-characters!", apiKey: "fixture-only" });
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "tail-test-secret-with-32-characters!", apiKeyFor: () => "fixture-only" });
   let calls = 0;
   const provider = createServer(async (req, res) => {
     for await (const _ of req);
@@ -375,7 +375,7 @@ test("an agent woken thirty times, one execute each, keeps a bounded number of S
   const ownership = new Ownership(db, { node: "http://n" });
   await ownership.start();
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
-  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "tail-test-secret-with-32-characters!", apiKey: "fixture-only" });
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "tail-test-secret-with-32-characters!", apiKeyFor: () => "fixture-only" });
   t.after(async () => {
     await sessions.close(); await supervisor.close(); await ownership.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });

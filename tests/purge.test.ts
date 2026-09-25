@@ -23,7 +23,7 @@ async function node(t: Context, db: pg.Pool, storage: ReturnType<typeof memorySt
   const ownership = new Ownership(db, { node: `http://${name}` });
   await ownership.start();
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
-  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "purge-test-secret-with-32-characters!", apiKey: "fixture-only" });
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "purge-test-secret-with-32-characters!", apiKeyFor: () => "fixture-only" });
   t.after(async () => {
     await sessions.close(); await supervisor.close(); await ownership.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });

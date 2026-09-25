@@ -64,7 +64,7 @@ test("a stale owner's header write loses to a takeover in flight, and the header
   await ownership.start();
   const storage = memoryStorage(postgresTail(db));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
-  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "fencing-test-secret-with-32-characters", apiKey: "fixture-only" });
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "fencing-test-secret-with-32-characters", apiKeyFor: () => "fixture-only" });
   t.after(async () => {
     await sessions.close(); await supervisor.close(); await ownership.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
@@ -149,7 +149,7 @@ test("two creates of one agent at once on one node leave one claim, still curren
   const storage = memoryStorage(postgresTail(db));
   const volumes = new VolumeService({ db, storage, ownership });
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
-  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, volumes, secret: "fencing-test-secret-with-32-characters", apiKey: "fixture-only" });
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, volumes, secret: "fencing-test-secret-with-32-characters", apiKeyFor: () => "fixture-only" });
   t.after(async () => {
     await sessions.close(); await supervisor.close(); await volumes.close(); await ownership.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });

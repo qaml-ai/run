@@ -164,7 +164,7 @@ test("compaction summaries bill their tokens and cost to the tenant, apart from 
   const { db } = await testDatabase();
   const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db });
   const root = await mkdtemp(join(tmpdir(), "compaction-usage-"));
-  const sessions = new ClientSessions(supervisor, { db, root, secret: "compaction-usage-secret-32-characters", apiKey: "fixture", onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message) });
+  const sessions = new ClientSessions(supervisor, { db, root, secret: "compaction-usage-secret-32-characters", apiKeyFor: () => "fixture", onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message) });
   t.after(async () => { await sessions.close(); await rm(root, { recursive: true, force: true }); });
   const { id } = await sessions.create([], { model: fake.model(8000, "turns") }, "billed", {}, "acme");
   for (let index = 0; index < 4; index++) {

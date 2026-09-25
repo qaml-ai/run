@@ -27,7 +27,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
   const root = await mkdtemp(join(tmpdir(), "camelai-sse-test-"));
   const { db } = await testDatabase();
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, maxAgents: options.maxAgents });
-  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKey: "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs });
+  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs });
   let model = configuredModel();
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
@@ -69,7 +69,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
     async restartHost() {
       await sessions.close();
       await supervisor.close();
-      sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKey: "fixture-only" });
+      sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only" });
     },
   };
 }

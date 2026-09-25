@@ -4,8 +4,7 @@ Expose ordinary application functions. The runtime runs the model loop, saves
 conversation history, and executes generated code in QuickJS/WASM. The SDK
 handles provisioning, SSE, tool results, reconnects, and shutdown.
 
-These are local prototype SDKs for trusted TypeScript backends and Python; no package has been
-published. Remote connections require HTTPS. The model key stays on the host.
+These SDKs are for trusted TypeScript backends and Python. Remote connections require HTTPS. The model key stays on the host.
 
 ## TypeScript
 
@@ -172,11 +171,11 @@ SSE/HTTP callbacks without calling a paid model. It cleans up its host, agents,
 and temporary journals. `AGENT_RUNTIME=node` or `bun` selects the child runtime.
 
 For a model-driven run, start `npm start` with the provider configuration
-in the [host README](../README.md#run-locally-or-on-a-vm), then run:
+and tenants file in the [host README](../README.md#configuration), then run:
 
 ```sh
 export AGENT_URL=http://127.0.0.1:8790
-export AGENT_RUNTIME_TOKEN=your-host-operator-token
+export AGENT_RUNTIME_TOKEN=your-tenant-operator-token
 bun examples/release-board.ts --prompt \
   "Review release readiness and save a note naming blockers and owners."
 /tmp/camelai-client-demo/bin/python examples/inventory.py --prompt \
@@ -241,7 +240,7 @@ that two different calls represent the same business operation. Ordinary tool
 exceptions are returned to the model; uncertainty is explicit for interrupted
 execution. Keep handlers and schemas trusted.
 
-## Persistence and prototype limits
+## Persistence and limits
 
 - Host journals are append-only logs under `AGENT_DATA_DIR/client-sessions`,
   fsynced when a request is accepted, a run begins, and an outcome is recorded.
@@ -250,7 +249,7 @@ execution. Keep handlers and schemas trusted.
   application-owned directories. Do not share one SDK journal between concurrent
   application processes.
 - Sessions and deduplication records survive a host restart with the same data
-  directory and operator secret. A request that was running when the host died
+  directory and session secret. A request that was running when the host died
   completes with an `uncertain` error; the interrupted turn is closed with
   "outcome unknown" results when the agent next starts, and is never rerun.
 - Session credentials expire after 24 hours and can be revoked via `destroy()`.

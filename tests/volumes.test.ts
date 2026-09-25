@@ -273,7 +273,7 @@ async function agents(t: Context) {
   const { db } = await testDatabase();
   let sessions: ClientSessions;
   const volumes = new VolumeService({ db, storage, deliver: (agent, tenant, request) => sessions.submit(agent, tenant, request) });
-  sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", secret: "volumes-test-secret-with-32-characters", apiKey: "fixture-only", volumes });
+  sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", secret: "volumes-test-secret-with-32-characters", apiKeyFor: () => "fixture-only", volumes });
   let model = (await fixtureModel(t)).model;
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
