@@ -89,8 +89,8 @@ test("Exa, Parallel and Firecrawl are POSTed JSON, and their answers become plai
   const firecrawlBody = parse(firecrawlRequest.body);
   assert.deepEqual([firecrawlBody.limit, firecrawlBody.tbs, firecrawlBody.scrapeOptions.formats], [5, "qdr:m", ["markdown"]]);
   assert.equal(parse(firecrawlSearch().request({ query: "q", count: 5 }, "k").body).scrapeOptions, undefined);
-  assert.deepEqual(firecrawl.results({ data: { web: [{ url: "https://f.example", title: "F", description: "d", markdown: "# F\n\nbody", metadata: { publishedTime: "2026-09-01T00:00:00Z" } }] } }),
-    [{ title: "F", url: "https://f.example", snippet: "d", date: "2026-09-01", content: "# F\n\nbody" }]);
+  assert.deepEqual(firecrawl.results({ data: { web: [{ url: "https://f.example", title: "F", description: "[The Right Honourable](https://en.wikipedia.org/wiki/X) d ![logo](https://i.example/l.png \"L\")", markdown: "# F\n\nbody", metadata: { publishedTime: "2026-09-01T00:00:00Z" } }] } }),
+    [{ title: "F", url: "https://f.example", snippet: "The Right Honourable d logo", date: "2026-09-01", content: "# F\n\nbody" }]);
   assert.deepEqual([exa.results({}), parallel.results(null), firecrawl.results({ data: {} })], [[], [], []]);
 });
 

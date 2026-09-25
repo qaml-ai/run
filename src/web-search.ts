@@ -31,9 +31,11 @@ export const SEARCH = { count: 5, maxCount: 10, timeoutMs: 15_000, maxBytes: 2 *
 /** Search providers, by the provider key they use; the first is the one `web_search` uses unless the operator picks another. */
 export const SEARCH_PROVIDERS = ["brave"] as const;
 
-const text = (value: unknown, max: number) => typeof value === "string" ? readableText(`<p>${value}</p>`).text.replace(/\s+/g, " ").slice(0, max) : "";
-/** Page text an API returned (markdown or plain), its line breaks kept. */
-const pageText = (value: unknown, max = SEARCH.content) => typeof value === "string" ? value.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, max) : "";
+/** Markdown links and images reduced to their text: a snippet's link targets are noise to the model. */
+const unlink = (value: string) => value.replace(/!?\[([^\]]*)\]\([^)\s]*(?:\s+"[^"]*")?\)/g, "$1");
+const text = (value: unknown, max: number) => typeof value === "string" ? readableText(`<p>${unlink(value)}</p>`).text.replace(/\s+/g, " ").slice(0, max) : "";
+/** Page text an API returned (markdown or plain), its line breaks kept and its links reduced to their text. */
+const pageText = (value: unknown, max = SEARCH.content) => typeof value === "string" ? unlink(value).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, max) : "";
 /** A date as YYYY-MM-DD, if it parses. */
 const day = (value: unknown) => typeof value === "string" && value && !Number.isNaN(Date.parse(value)) ? new Date(value).toISOString().slice(0, 10) : undefined;
 const PERIOD_DAYS = { day: 1, week: 7, month: 31, year: 366 } satisfies Record<Freshness, number>;
