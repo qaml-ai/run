@@ -15,6 +15,7 @@ import { api, formatTime, useApi, type Definition } from "@/lib/api";
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const BUILTINS = [
   { id: "web_fetch", label: "web_fetch", help: "read public web pages as text" },
+  { id: "web_search", label: "web_search", help: "search the web (a brave key on Models & keys, or the platform's, billed per search)" },
   { id: "schedule", label: "schedule", help: "set, list and cancel its own wake-ups" },
 ];
 const DEFAULT = "default";

@@ -46,7 +46,7 @@ export function useApi<T>(path: string | undefined, intervalMs?: number) {
 
 export interface Me { tenant: string; via: "operator" | "token" | "console"; login?: string; canStoreKeys: boolean }
 export interface KeyStatus { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number }
-export interface Provider { id: string; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
+export interface Provider { id: string; kind: "model" | "search"; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
 export interface Model {
   id: string; provider: string; modelId: string; name: string; api: string; reasoning: boolean; input: string[];
   contextWindow: number; maxTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number }; available: boolean;

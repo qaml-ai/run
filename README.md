@@ -232,7 +232,8 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead (see [Billing](#billing)) |
 | `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | how old a GitHub account must be for a new tenant's starting credit (default 30) |
 | `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
-| `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
+| `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_PRICE_WEB_SEARCH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 0.005, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
+| `AGENT_WEB_SEARCH_PROVIDER`, `AGENT_BRAVE_SEARCH_URL` | the `web_search` API (`brave`, the only one so far) and its endpoint (default Brave's; tests point it at a local server) |
 | `AGENT_BILLING_INTERVAL_MS` | how often a node checks whether today's storage charge has run (default 3600000) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
@@ -467,7 +468,7 @@ reconfiguration, not at a refresh.
 
 ### Built-ins a definition enables
 
-`"builtins": ["web_fetch", "schedule"]`:
+`"builtins": ["web_fetch", "web_search", "schedule"]`:
 
 - `web_fetch` (`{url, maxCharacters?}`) GETs a public URL through the outbound
   guard. An `http://` link is tried as `https://`. Up to five redirects are
@@ -481,9 +482,26 @@ reconfiguration, not at a refresh.
   claim, so a node that lost the agent mid-turn cannot schedule or cancel for it.
   The limits are those of `/v1/agents/:id/schedules`: 100 per agent, at most a
   year ahead, and repeats at least a minute apart.
-- Web search is not built in: no provider-neutral search exists without a paid
-  API. A definition can add one as an MCP server (several search providers
-  publish one).
+- `web_search` (`{query, count?, freshness?}`) asks a web search API and returns
+  `{query, results: [{title, url, snippet, date?}]}`: 5 results by default, at
+  most 10, plain text (snippets at most 500 characters), `https://`/`http://`
+  links only; `freshness` (`day`, `week`, `month`, `year`) keeps recent pages. The
+  results are for finding pages: with `web_fetch` enabled too, its description
+  tells the model to read a result in full with `web_fetch`, whose `url` it takes
+  as is. The API is [Brave Search](https://brave.com/search/api/) (its own index of
+  the web, one GET per search, page dates, about $5 per 1,000 searches) behind a
+  small `SearchProvider` interface in `src/web-search.ts`, so another can be
+  added (`AGENT_WEB_SEARCH_PROVIDER` picks it). Its key is a provider key named
+  `brave`: the tenant's own (`PUT /v1/providers/brave/key`, or the console's
+  Models & keys page; not checked when set, as a check would cost a search), an
+  admin's `apiKeys.brave` in the tenants file, else for a prepaid tenant the
+  platform's `platformKeys.brave`. A `*` key never counts, as it is a model key.
+  Without one, a search fails with a tool error saying so. A search on a key that
+  is not the tenant's own is charged to credit at `AGENT_PRICE_WEB_SEARCH_USD`
+  (default $0.005) once the API answers; every search appears in `/v1/usage` as
+  the model `brave/web_search`. The request goes through the outbound guard, with
+  the key sent to the API's origin only (`AGENT_BRAVE_SEARCH_URL` overrides the
+  endpoint, for tests).
 
 ### MCP servers
 
@@ -809,6 +827,9 @@ runs on the platform's keys, the tenants file's top-level `platformKeys`
   own key cost no credit. `/v1/usage` reports `platformResponses` and `platformCost`.
 - **Agent time**, $0.01 per hour an agent spends in a run (model calls and tool
   execution, not idle loaded time), metered continuously, with or without its own key.
+- **Web searches** on the platform's search key (`platformKeys.brave`), $0.005
+  each (`AGENT_PRICE_WEB_SEARCH_USD`), reported with the tokens: see `web_search`
+  under [Built-ins](#built-ins-a-definition-enables).
 - **Storage**, $0.10 per GB-month of what its agents and volumes keep in Storage
   (transcripts, journals, volume trees and snapshots, file chunks), measured once a
   UTC day on one node and charged for that day.

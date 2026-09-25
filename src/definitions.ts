@@ -27,7 +27,7 @@ export interface DefinitionSpec {
   mcpServers?: McpServerSpec[];
   /** OpenAPI specs whose operations the runtime calls; credentials sealed. */
   openApi?: OpenApiSpec[];
-  /** Built-in tools to enable: web_fetch, schedule. */
+  /** Built-in tools to enable: web_fetch, web_search, schedule. */
   builtins?: string[];
   /** Made from this channel's inline template, so that channel may rewrite it. */
   channel?: string;

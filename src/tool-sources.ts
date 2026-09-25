@@ -7,6 +7,7 @@ import type { McpConnections, McpServer } from "./mcp.ts";
 import type { Outbound } from "./outbound.ts";
 import type { Claim } from "./ownership.ts";
 import type { Scheduler } from "./scheduler.ts";
+import type { WebSearch } from "./web-search.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { defaultExposure, jsonResult, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
@@ -222,11 +223,11 @@ export class ToolSources {
   private readonly accounts?: Accounts;
   private readonly mcp: McpConnections;
   private readonly outbound: Outbound;
-  private readonly options: { scheduler?: Scheduler };
+  private readonly options: { scheduler?: Scheduler; search?: WebSearch };
 
   private readonly signer?: RuntimeSigner;
 
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner }) {
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
@@ -315,7 +316,7 @@ export class ToolSources {
       },
       call: async ({ name, args, signal, origin, actor }) => {
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}) };
-        if (builtins.includes(name)) return jsonResult(await runBuiltin({ outbound: this.outbound, scheduler: this.options.scheduler }, context, name, args, signal));
+        if (builtins.includes(name)) return jsonResult(await runBuiltin({ outbound: this.outbound, scheduler: this.options.scheduler, search: this.options.search }, context, name, args, signal));
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
         if (api && operation) {

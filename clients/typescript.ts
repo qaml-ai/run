@@ -115,7 +115,7 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
 interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number }
 export interface DefinitionInput {
   name: string; model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
-  limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: ("web_fetch" | "schedule")[];
+  limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: ("web_fetch" | "web_search" | "schedule")[];
   mcpServers?: (SourceOptions & { url: string })[];
   openApi?: (SourceOptions & { spec?: string | Record<string, unknown>; baseUrl?: string })[];
 }

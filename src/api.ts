@@ -95,7 +95,8 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "get", path: "/v1/providers", responses: { 200: reply("Key status per provider", z.array(schema.Provider)) } }), async c => {
     const keys = new Map((await accounts.keyStatus(c.var.principal.tenant)).map(status => [status.provider, status]));
     const wildcard = keys.get("*");
-    return json(c, 200, listProviders().map(provider => ({ ...provider, key: keys.get(provider.id) ?? (wildcard && provider.apiKey ? wildcard : null) })));
+    // A `*` key is a model key: it never stands for a search provider's.
+    return json(c, 200, listProviders().map(provider => ({ ...provider, key: keys.get(provider.id) ?? (wildcard && provider.apiKey && provider.kind === "model" ? wildcard : null) })));
   });
 
   const provider = (c: Context) => {
@@ -110,7 +111,9 @@ export function api(context: ApiContext) {
     if (!info.apiKey) throw new HttpError(400, `${id} needs ${info.requires}, not just an API key; it is not supported yet`);
     if (!accounts.canStoreKeys) throw new HttpError(503, "This runtime is not configured to store provider keys");
     const { apiKey, verify } = parse(schema.KeyInput, await readJson(c.req.raw.body, 16 * 1024, {}));
-    const check = verify === false || context.verifyKeys === false ? { status: "unverified" as const, detail: "Verification skipped" } : await checkProviderKey(id, apiKey);
+    const check = verify === false || context.verifyKeys === false ? { status: "unverified" as const, detail: "Verification skipped" }
+      // Checking a search key would cost a search: it is checked by the first one.
+      : info.kind === "search" ? { status: "unverified" as const, detail: `${id} has no free way to check a key; the first web_search will` } : await checkProviderKey(id, apiKey);
     if (check.status === "invalid") throw new HttpError(422, check.detail);
     await accounts.setKey(tenant, id, apiKey);
     await clients.providerKeyChanged(tenant, id);

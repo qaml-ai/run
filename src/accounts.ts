@@ -147,13 +147,16 @@ export class Accounts {
     return (await this.db.query("select provider, sealed, last4, set_at from provider_keys where tenant = $1", [tenant])).rows as { provider: string; sealed: Sealed; last4: string; set_at: number }[];
   }
 
-  /** The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid tenant, the platform's. */
-  async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource } | undefined> {
+  /**
+   * The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid tenant,
+   * the platform's. Without `wildcard`, `*` keys (model keys) do not count: a search provider's key is its own.
+   */
+  async providerKey(tenant: string, provider: string, wildcard = true): Promise<{ key: string; source: KeySource } | undefined> {
     const stored = this.secretsKey && validTenant(tenant) ? (await this.db.query("select sealed from provider_keys where tenant = $1 and provider = $2", [tenant, provider])).rows[0] : undefined;
     if (stored) return { key: this.unseal(`${tenant}:${provider}`, stored.sealed), source: "tenant" };
-    const admin = this.tenants.apiKey(tenant, provider);
+    const admin = this.tenants.apiKey(tenant, provider, wildcard);
     if (admin) return { key: admin, source: "admin" };
-    const platform = this.tenants.platformKey(provider);
+    const platform = this.tenants.platformKey(provider, wildcard);
     if (platform && await this.billing.mode(tenant) === "prepaid") return { key: platform, source: "platform" };
     return undefined;
   }

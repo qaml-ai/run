@@ -2,14 +2,20 @@ import type { ToolDefinition } from "./protocol.ts";
 import type { Outbound } from "./outbound.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import type { Claim } from "./ownership.ts";
+import { FRESHNESS, SEARCH, type WebSearch } from "./web-search.ts";
+import { readableText } from "./html-text.ts";
+
+export { readableText };
 
 /**
  * Built-in tools a definition can enable (`builtins`), answered by the runtime:
- * `web_fetch` reads a public page through the outbound guard, and `schedule`
- * lets an agent set, list and cancel its own wake-ups in the shared scheduler.
+ * `web_fetch` reads a public page through the outbound guard, `web_search` asks a
+ * web search API (see web-search.ts), and `schedule` lets an agent set, list and
+ * cancel its own wake-ups in the shared scheduler.
  */
 export const BUILTINS = {
   web_fetch: ["web_fetch"],
+  web_search: ["web_search"],
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
 } as const;
 export type Builtin = keyof typeof BUILTINS;
@@ -24,6 +30,15 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
     parameters: { type: "object", additionalProperties: false, required: ["url"], properties: {
       url: { type: "string", description: "An https:// URL" },
       maxCharacters: { type: "integer", minimum: 100, maximum: FETCH.maxCharacters },
+    } },
+  },
+  web_search: {
+    name: "web_search", exposure: "both",
+    description: `Search the web. Returns up to ${SEARCH.count} results by default (count: at most ${SEARCH.maxCount}), each with title, url, a short snippet and, when known, the page's date. Snippets are brief: to answer from a page, read it with web_fetch.`,
+    parameters: { type: "object", additionalProperties: false, required: ["query"], properties: {
+      query: { type: "string", minLength: 1, maxLength: SEARCH.query, description: "What to search for, as you would type it into a search engine" },
+      count: { type: "integer", minimum: 1, maximum: SEARCH.maxCount },
+      freshness: { type: "string", enum: [...FRESHNESS], description: "Only pages from the past day, week, month or year" },
     } },
   },
   schedule: {
@@ -44,12 +59,19 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
 };
 
-export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => DEFINITIONS[name]);
+/** The built-ins' tools; with web_fetch not enabled, web_search does not point the model at it. */
+export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => name === "web_search" && !builtins.includes("web_fetch")
+  ? { ...DEFINITIONS[name], description: DEFINITIONS[name].description.replace(" Snippets are brief: to answer from a page, read it with web_fetch.", " Snippets are brief summaries of each page.") }
+  : DEFINITIONS[name]);
 
 export type BuiltinContext = { tenant: string; agent: string; claim?: Claim };
 
-export async function runBuiltin(services: { outbound: Outbound; scheduler?: Scheduler }, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+export async function runBuiltin(services: { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch }, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
   if (name === "web_fetch") return webFetch(services.outbound, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
+  if (name === "web_search") {
+    if (!services.search) throw new Error("Web search is not enabled on this runtime");
+    return services.search.search(context, args, signal);
+  }
   const scheduler = services.scheduler;
   if (!scheduler) throw new Error("Schedules are not enabled on this runtime");
   if (name === "schedule") {
@@ -87,28 +109,4 @@ async function webFetch(outbound: Outbound, url: string, maxCharacters: number, 
   const page = /html/i.test(type) || (!type && /^\s*<(!doctype html|html)/i.test(raw)) ? readableText(raw.slice(0, FETCH.htmlBytes)) : { text: raw };
   const text = page.text.length > maxCharacters ? page.text.slice(0, maxCharacters) : page.text;
   return { url: response.url || url, status: response.status, contentType: type.split(";")[0] || undefined, ...(page.title ? { title: page.title } : {}), text, ...(text.length < page.text.length ? { truncated: true, totalCharacters: page.text.length } : {}) };
-}
-
-const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " ", mdash: "—", ndash: "–", hellip: "…", rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“", copy: "©", reg: "®", trade: "™", middot: "·", bull: "•" };
-const decode = (text: string) => text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
-  if (code[0] === "#") {
-    const point = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : Number(code.slice(1));
-    return point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : entity;
-  }
-  return ENTITIES[code.toLowerCase()] ?? entity;
-});
-
-/** The text a reader sees on an HTML page: no scripts, styles or markup, with block breaks kept. */
-export function readableText(html: string): { title?: string; text: string } {
-  const title = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html)?.[1];
-  const text = html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style|noscript|svg|template|head|iframe|canvas|object)\b[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<(br|hr)\b[^>]*>/gi, "\n")
-    .replace(/<li\b[^>]*>/gi, "\n- ")
-    .replace(/<\/?(p|div|section|article|header|footer|main|nav|aside|h[1-6]|ul|ol|table|tr|blockquote|pre|form|figure|figcaption|dl|dt|dd)\b[^>]*>/gi, "\n")
-    .replace(/<(td|th)\b[^>]*>/gi, " ")
-    .replace(/<[^>]*>/g, "");
-  const lines = decode(text).split("\n").map(line => line.replace(/[ \t\f\v ]+/g, " ").trim());
-  return { ...(title ? { title: decode(title).replace(/\s+/g, " ").trim() } : {}), text: lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() };
 }

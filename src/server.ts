@@ -37,6 +37,7 @@ import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from
 import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
+import { searchProviderFromEnvironment, WebSearch } from "./web-search.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 
@@ -122,7 +123,16 @@ const outbound = outboundFromEnvironment();
 const mcp = new McpConnections({ outbound });
 // Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
 const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
-const toolSources = new ToolSources({ accounts, mcp, outbound, signer, get scheduler() { return scheduler; } });
+// web_search: the tenant's key for the search provider, else (prepaid) the platform's, whose searches are charged to credit.
+const search = new WebSearch({
+  outbound, provider: searchProviderFromEnvironment(), price: accounts.billing.pricing.webSearch,
+  key: async (tenant, provider) => {
+    const resolved = await accounts.providerKey(tenant, provider, false);
+    return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
+  },
+  onSearch: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
+});
+const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, get scheduler() { return scheduler; } });
 const definitions = new Definitions({ db, accounts, outbound });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */

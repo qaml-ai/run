@@ -22,6 +22,7 @@ const KeyStatus = z.object({
 
 export const Provider = z.object({
   id: z.string(),
+  kind: z.enum(["model", "search"]).openapi({ description: "model: an LLM provider; search: a web search API, whose key the web_search built-in uses" }),
   models: z.number().int(),
   apiKey: z.boolean().openapi({ description: "Whether one API key is enough to use this provider" }),
   requires: z.string().optional().openapi({ description: "What the provider needs instead of an API key" }),
@@ -252,7 +253,7 @@ const definitionFields = {
   thinkingLevel: ThinkingLevel,
   limits: DefinitionLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
-  builtins: z.array(z.enum(["web_fetch", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text; schedule lets the agent set, list and cancel its own wake-ups" }),
+  builtins: z.array(z.enum(["web_fetch", "web_search", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups" }),
   mcpServers: z.array(McpServerInput).max(16).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
   openApi: z.array(OpenApiInput).max(16).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
 };

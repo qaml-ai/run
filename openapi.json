@@ -72,6 +72,14 @@
           "id": {
             "type": "string"
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "model",
+              "search"
+            ],
+            "description": "model: an LLM provider; search: a web search API, whose key the web_search built-in uses"
+          },
           "models": {
             "type": "integer"
           },
@@ -89,6 +97,7 @@
         },
         "required": [
           "id",
+          "kind",
           "models",
           "apiKey",
           "key"
@@ -1548,11 +1557,12 @@
               "type": "string",
               "enum": [
                 "web_fetch",
+                "web_search",
                 "schedule"
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups"
           },
           "mcpServers": {
             "type": "array",
@@ -1788,11 +1798,12 @@
               "type": "string",
               "enum": [
                 "web_fetch",
+                "web_search",
                 "schedule"
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups"
           },
           "mcpServers": {
             "type": "array",
@@ -2106,11 +2117,12 @@
               "type": "string",
               "enum": [
                 "web_fetch",
+                "web_search",
                 "schedule"
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups"
           },
           "mcpServers": {
             "type": [

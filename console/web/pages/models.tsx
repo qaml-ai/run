@@ -11,8 +11,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ConfirmButton, CopyButton, ErrorAlert, PageHeader } from "@/components/common";
 import { api, formatNumber, formatTime, useApi, type Me, type Model, type Provider } from "@/lib/api";
 
-/** Providers most people want, listed first. */
-const FEATURED = ["anthropic", "openai", "google", "openrouter"];
+/** Providers most people want, listed first (brave: web search). */
+const FEATURED = ["anthropic", "openai", "google", "openrouter", "brave"];
 
 function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose: () => void; onSaved: () => void }) {
   const [key, setKey] = useState("");
@@ -34,7 +34,9 @@ function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose
           <DialogHeader>
             <DialogTitle>{provider.key?.source === "tenant" ? "Replace" : "Add"} {provider.id} key</DialogTitle>
             <DialogDescription>
-              The key is checked with {provider.id}, then stored encrypted. It is never shown again; your agents use it for {provider.id} models and usage bills to it.
+              {provider.kind === "search"
+                ? <>The key is stored encrypted and never shown again. Agents whose definition enables web_search search with it, and {provider.id} bills the searches to it.</>
+                : <>The key is checked with {provider.id}, then stored encrypted. It is never shown again; your agents use it for {provider.id} models and usage bills to it.</>}
             </DialogDescription>
           </DialogHeader>
           <ErrorAlert error={error} title="The key was not saved" />
@@ -84,7 +86,7 @@ export function ModelsPage({ me }: { me: Me }) {
                 {shown.map(provider => (
                   <TableRow key={provider.id}>
                     <TableCell className="font-medium">{provider.id}</TableCell>
-                    <TableCell className="text-muted-foreground">{provider.models}</TableCell>
+                    <TableCell className="text-muted-foreground">{provider.kind === "search" ? "web search" : provider.models}</TableCell>
                     <TableCell><KeyBadge provider={provider} /></TableCell>
                     <TableCell className="text-muted-foreground hidden text-xs md:table-cell">{formatTime(provider.key?.setAt)}</TableCell>
                     <TableCell className="text-right whitespace-nowrap">
@@ -93,7 +95,7 @@ export function ModelsPage({ me }: { me: Me }) {
                       </Button>
                       {provider.key?.source === "tenant" && (
                         <span className="ml-2 inline-block"><ConfirmButton size="xs" variant="ghost" label="Remove" title={`Remove your ${provider.id} key?`}
-                          description={`Agents using ${provider.id} models stop working until a key is added again.`} confirm="Remove key"
+                          description={provider.kind === "search" ? "web_search uses the platform's key if you have one, otherwise it fails until a key is added again." : `Agents using ${provider.id} models stop working until a key is added again.`} confirm="Remove key"
                           onConfirm={async () => { try { await api(`/v1/providers/${provider.id}/key`, { method: "DELETE" }); await providers.reload(); } catch (caught) { setError((caught as Error).message); } }} /></span>
                       )}
                     </TableCell>
@@ -112,7 +114,7 @@ export function ModelsPage({ me }: { me: Me }) {
           </p>
         )}
       </section>
-      <ModelCatalog providers={supported} />
+      <ModelCatalog providers={supported.filter(provider => provider.kind === "model")} />
       {editing && <KeyDialog provider={editing} onClose={() => setEditing(undefined)} onSaved={() => void providers.reload()} />}
     </>
   );

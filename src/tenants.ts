@@ -116,8 +116,8 @@ export class Tenants {
   /** How an admin tenant is billed; undefined for tenants not in the file. */
   billing(id: string) { const tenant = this.byId.get(id); return tenant && (tenant.billing ?? "none"); }
 
-  /** The platform's key for `provider` (`*` covers any provider). */
-  platformKey(provider: string): string | undefined { return this.platform[provider] ?? this.platform["*"]; }
+  /** The platform's key for `provider` (`*` covers any model provider, when `wildcard`). */
+  platformKey(provider: string, wildcard = true): string | undefined { return this.platform[provider] ?? (wildcard ? this.platform["*"] : undefined); }
 
   /** Providers the platform has keys for. Names only. */
   platformProviders() { return Object.keys(this.platform); }
@@ -125,10 +125,10 @@ export class Tenants {
   /** Providers an admin configured keys for (`*` covers any provider). Names only. */
   providers(id: string) { return Object.keys(this.byId.get(id)?.apiKeys ?? {}); }
 
-  /** The key an agent of `tenantId` uses for `provider`; `*` is a tenant-wide fallback. */
-  apiKey(tenantId: string, provider: string): string | undefined {
+  /** The key an agent of `tenantId` uses for `provider`; `*` is a tenant-wide fallback for model providers, when `wildcard`. */
+  apiKey(tenantId: string, provider: string, wildcard = true): string | undefined {
     const keys = this.byId.get(tenantId)?.apiKeys;
-    return keys?.[provider] ?? keys?.["*"];
+    return keys?.[provider] ?? (wildcard ? keys?.["*"] : undefined);
   }
 }
 

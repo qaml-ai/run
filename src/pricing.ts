@@ -9,6 +9,8 @@ export interface Pricing {
   agentHour: number;
   /** Per GB (10^9 bytes) stored for a month, charged daily pro rata. */
   storageGbMonth: number;
+  /** Per web_search on the platform's search key (Brave's list price by default). */
+  webSearch: number;
   /** Fee on a credit purchase, in basis points (550 = 5.5%). */
   purchaseFeeBps: number;
   minPurchase: number;
@@ -30,6 +32,7 @@ export const micros = (usd: number) => Math.round(usd * MICROS);
 export const DEFAULT_PRICING: Pricing = Object.freeze({
   agentHour: micros(0.01),
   storageGbMonth: micros(0.10),
+  webSearch: micros(0.005),
   purchaseFeeBps: 550,
   minPurchase: micros(5),
   maxPurchase: micros(1000),
@@ -39,7 +42,7 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
 
 /**
  * Rates from the environment, in USD (AGENT_PRICE_AGENT_HOUR_USD, AGENT_PRICE_STORAGE_GB_MONTH_USD,
- * AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
+ * AGENT_PRICE_WEB_SEARCH_USD, AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
  * AGENT_CREDIT_GRANT_USD, AGENT_FREE_MAX_AGENTS, AGENT_FREE_HOURLY_SPEND_USD); unset ones keep the defaults.
  */
 export function pricingFromEnvironment(env = process.env): Pricing {
@@ -56,6 +59,7 @@ export function pricingFromEnvironment(env = process.env): Pricing {
   const pricing: Pricing = {
     agentHour: usd("AGENT_PRICE_AGENT_HOUR_USD", DEFAULT_PRICING.agentHour),
     storageGbMonth: usd("AGENT_PRICE_STORAGE_GB_MONTH_USD", DEFAULT_PRICING.storageGbMonth),
+    webSearch: usd("AGENT_PRICE_WEB_SEARCH_USD", DEFAULT_PRICING.webSearch),
     purchaseFeeBps: fee,
     minPurchase: usd("AGENT_CREDIT_MIN_PURCHASE_USD", DEFAULT_PRICING.minPurchase),
     maxPurchase: usd("AGENT_CREDIT_MAX_PURCHASE_USD", DEFAULT_PRICING.maxPurchase),
