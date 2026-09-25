@@ -6,6 +6,7 @@ import type { AgentConfig, ToolBridge } from "./protocol.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
+import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
@@ -115,6 +116,7 @@ export class AgentSupervisor {
       if (method === "cancel-tools") return this.cancelTools(handle);
       if (method === "transcript") return this.transcriptRequest(handle, params);
       if (method === "spend-limit") return (await handle.bridge.spendLimit?.()) ?? null;
+      if (method === "search") return this.search(handle, params);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
@@ -122,6 +124,13 @@ export class AgentSupervisor {
     try { return await rpc.request("init", init); }
     catch (error) { await this.stop(id); throw error; }
     finally { clearTimeout(timeout); }
+  }
+
+  /** `tools.search` from an agent's code: the bridge's search (with rerankers), else keywords over its code-mode tools. */
+  private search(handle: Handle, params: unknown) {
+    const query = searchQuery(params);
+    if (handle.bridge.search) return handle.bridge.search(query);
+    return searchTools(handle.bridge.definitions.filter(tool => tool.exposure !== "direct"), query);
   }
 
   /** An agent process's transcript operations. Appends are applied before the first await, so they keep IPC order. */
@@ -144,6 +153,7 @@ export class AgentSupervisor {
       tool: (name, args, toolCallId) => this.dispatchTool(handle, { name, args: structuredClone(args), toolCallId }),
       cancelTools: async () => this.cancelTools(handle),
       spendLimit: async () => handle.bridge.spendLimit?.(),
+      search: async query => structuredClone(await this.search(handle, structuredClone(query))),
     });
     this.agents.set(id, handle);
     this.starting.delete(id);

@@ -6,6 +6,8 @@ import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { frames } from "./sandbox-wire.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
+import { HOST_CALLS } from "./sandbox-bootstrap.ts";
+import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
 
 /** How long a cancelled guest gets to unwind before its worker is terminated and replaced. */
 const CANCEL_GRACE_MS = 250;
@@ -311,6 +313,19 @@ function guestResult(value: any, maxOutputCharacters: number): { output: string[
   return { output, truncated: value.truncated };
 }
 
+/** `tools.search`, `tools.describe` and `tools.namespaces`: answered from the catalog, which stays out of the sandbox. */
+async function hostCall(bridge: ToolBridge, name: string, args: unknown) {
+  if (name === HOST_CALLS.describe) {
+    const tool = typeof args === "string" ? bridge.definitions.find(entry => entry.name === args) : undefined;
+    if (!tool) return null;
+    const { resultFormat: _format, ...described } = tool;
+    return described;
+  }
+  if (name === HOST_CALLS.namespaces) return namespaces(bridge.definitions);
+  const query = searchQuery(args);
+  return bridge.search ? bridge.search(query) : searchTools(bridge.definitions, query);
+}
+
 export async function executeCode(options: {
   code: string; bridge: ToolBridge; signal?: AbortSignal;
   timeoutMs?: number; maxOutputCharacters?: number;
@@ -328,8 +343,8 @@ export async function executeCode(options: {
   // Loaded here: sandbox processes import this module for CodePool alone, and typebox would cost each about 25 MB.
   const { validateDefinitions, validateToolCall } = await import("./tool-policy.ts");
   validateDefinitions(options.bridge.definitions);
-  // What code sees of each tool (`tools.describe`). How the runtime delivers a result is not part of it: code gets data either way.
-  const catalog = options.bridge.definitions.map(({ resultFormat: _format, ...tool }) => tool);
+  // Code gets the tools' names; their schemas and search are answered here (hostCall).
+  const names = options.bridge.definitions.map(tool => tool.name);
   // Most code is plain JavaScript, and sucrase is most of what preparing it costs. Code
   // without a "<" goes to the sandbox as it is: QuickJS compiles it and, if that fails,
   // answers without running any of it, and it comes back here to be stripped. Never
@@ -386,6 +401,10 @@ export async function executeCode(options: {
     let transferred = 0;
     channel.handler = async (method, params) => {
       if (method !== "tool") throw new Error("Unknown tool");
+      if (Object.values(HOST_CALLS).includes(params.name)) {
+        if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
+        return JSON.stringify(await hostCall(options.bridge, params.name, params.args));
+      }
       const checked = validateToolCall(options.bridge.definitions, params.name, params.args);
       if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
       if (inflight >= SANDBOX_LIMITS.concurrentTools) throw new Error("Too many concurrent tool calls");
@@ -406,7 +425,7 @@ export async function executeCode(options: {
     // answer at that moment is a wall-clock failure, which should read as the timeout.
     const remainingMs = Math.max(1, Math.ceil(timeoutMs - (performance.now() - started)));
     // The worker answers only after disposing the guest, so an answer means it is free again.
-    const result = await channel.request("execute", { code, tools: catalog, maxOutputCharacters, timeoutMs: remainingMs, ...(javascriptOnly ? { javascriptOnly } : {}) })
+    const result = await channel.request("execute", { code, tools: names, maxOutputCharacters, timeoutMs: remainingMs, ...(javascriptOnly ? { javascriptOnly } : {}) })
       .finally(() => { responded = !controller.signal.aborted; });
     // Believed only when asked, and when nothing ran: no tool call, no output.
     if (javascriptOnly && result?.typescript === true && !calls && !events) typescript = true;

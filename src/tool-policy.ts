@@ -1,11 +1,15 @@
 import { Compile, type Validator } from "typebox/compile";
 import type { ToolDefinition } from "./protocol.ts";
-import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
+import { CATALOG_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
+
+/** Catalogs already checked: one is checked again at every js_exec, and large ones are not free to check. */
+const validated = new WeakSet<ToolDefinition[]>();
 
 export function validateDefinitions(definitions: ToolDefinition[]) {
   if (!Array.isArray(definitions)) throw new Error("Tool definitions must be an array");
-  if (definitions.length > 128) throw new Error("Too many tool definitions");
-  jsonWithinLimit(definitions, 256 * 1024, "Tool catalog");
+  if (validated.has(definitions)) return;
+  if (definitions.length > CATALOG_LIMITS.tools) throw new Error(`Too many tool definitions (at most ${CATALOG_LIMITS.tools})`);
+  jsonWithinLimit(definitions, CATALOG_LIMITS.bytes, "Tool catalog");
   const names = new Set<string>();
   for (const tool of definitions) {
     if (!tool || typeof tool.name !== "string" || typeof tool.description !== "string" ||
@@ -13,7 +17,7 @@ export function validateDefinitions(definitions: ToolDefinition[]) {
       throw new Error("Invalid tool definition");
     }
     if (!/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(tool.name) ||
-      ["js_exec", "then", "constructor", "prototype", "search", "describe"].includes(tool.name) || names.has(tool.name)) {
+      ["js_exec", "then", "constructor", "prototype", "search", "describe", "namespaces"].includes(tool.name) || names.has(tool.name)) {
       throw new Error(`Invalid, duplicate, or reserved tool name: ${tool.name}`);
     }
     if (tool.exposure !== undefined && !["direct", "codemode", "both"].includes(tool.exposure)) throw new Error("Invalid tool exposure");
@@ -21,6 +25,7 @@ export function validateDefinitions(definitions: ToolDefinition[]) {
     if (tool.resultFormat !== undefined && !["json", "content"].includes(tool.resultFormat)) throw new Error("Invalid tool result format");
     names.add(tool.name);
   }
+  validated.add(definitions);
 }
 
 /** Compiled once per schema object: a tool's definition stays the same object for as long as the agent runs. */
@@ -36,8 +41,12 @@ export function compiles(schema: object) {
   try { validator(schema); return true; } catch { return false; }
 }
 
+const indexes = new WeakMap<ToolDefinition[], Map<string, ToolDefinition>>();
+
 export function validateToolCall(definitions: ToolDefinition[], name: unknown, args: unknown) {
-  const tool = definitions.find(tool => tool.name === name);
+  let index = indexes.get(definitions);
+  if (!index) indexes.set(definitions, index = new Map(definitions.map(tool => [tool.name, tool])));
+  const tool = typeof name === "string" ? index.get(name) : undefined;
   if (!tool) throw new Error("Unknown tool");
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Tool arguments must be a JSON object");
   const json = jsonWithinLimit(args, SANDBOX_LIMITS.argumentBytes, "Tool arguments");

@@ -4,7 +4,6 @@ import {
 } from "quickjs-emscripten";
 import { SANDBOX_LIMITS } from "./limits.ts";
 import { SANDBOX_BOOTSTRAP } from "./sandbox-bootstrap.ts";
-import type { ToolDefinition } from "./protocol.ts";
 
 /** What the running execution lends the image's host functions and interrupt handler. */
 type Execution = {
@@ -189,7 +188,8 @@ export async function runSandbox(options: {
    * `{ typescript: true }` without running any of it, and the runtime strips it.
    */
   javascriptOnly?: boolean;
-  tools: ToolDefinition[];
+  /** The names of the tools code may call; their schemas and search stay on the host. */
+  tools: string[];
   timeoutMs: number;
   maxOutputCharacters: number;
   /** Resolves with the result as JSON, already within the size and transfer limits. */

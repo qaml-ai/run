@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "./protocol.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { compiles, validateDefinitions } from "./tool-policy.ts";
+import { CATALOG_LIMITS } from "./limits.ts";
 
 /**
  * A tool call as a server gets it; `toolCallId` is the model's id for the call, `origin` where the
@@ -51,7 +52,7 @@ export function valueServer(tools: ToolDefinition[], run: (call: ToolCall) => Pr
   return { tools: () => tools, call: async call => jsonResult(await run(call)) };
 }
 
-const BUDGET = { count: 128, bytes: 256 * 1024 };
+const BUDGET = { count: CATALOG_LIMITS.tools, bytes: CATALOG_LIMITS.bytes };
 /** A source with at most this many tools offers them to the model directly as well as from js_exec. */
 export const SMALL_SOURCE = 10;
 
@@ -72,7 +73,7 @@ export function defaultExposure(tools: ToolDefinition[], exposure?: ToolDefiniti
  */
 function select(lists: ToolDefinition[][], visit: (list: number, tool: ToolDefinition, excluded?: string) => void) {
   const names = new Set<string>();
-  let bytes = 0;
+  let bytes = 0, direct = 0;
   lists.forEach((list, index) => {
     for (const listed of list) {
       const tool: ToolDefinition = { ...listed, resultFormat: "content" };
@@ -82,6 +83,12 @@ function select(lists: ToolDefinition[][], visit: (list: number, tool: ToolDefin
         : bytes + size > BUDGET.bytes ? `past the catalog's limit of ${BUDGET.bytes / 1024} KiB`
         : !valid(tool) ? "its name or input schema is not valid" : undefined;
       if (!excluded) { names.add(tool.name); bytes += size; }
+      // Past the model's budget of direct tools, tools offered both ways are reached from js_exec
+      // only, earlier servers keeping theirs: many small sources must not crowd the model's context.
+      if (!excluded && (tool.exposure === "direct" || tool.exposure === "both")) {
+        if (direct < CATALOG_LIMITS.direct || tool.exposure === "direct") direct++;
+        else tool.exposure = "codemode";
+      }
       visit(index, tool, excluded);
     }
   });

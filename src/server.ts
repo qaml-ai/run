@@ -41,6 +41,7 @@ import { pricingFromEnvironment } from "./pricing.ts";
 import { searchProviderFromEnvironment, WebSearch } from "./web-search.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
+import { rerankersFromEnv } from "./tool-search.ts";
 
 // Hosted mode reads tenants (operator token hashes and provider keys) from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 // Without either, one operator token (AGENT_RUNTIME_TOKEN) and key (AGENT_API_KEY) serve everything.
@@ -68,6 +69,8 @@ const retireMaxMs = Number(process.env.AGENT_RETIRE_MAX_MS ?? 6 * 60 * 60_000);
 if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RETIRE_MAX_MS must be a non-negative integer");
 // Where js_exec runs, reported in the "listening" line; fails startup if isolation is required but absent.
 const sandbox = await checkSandbox();
+// How tools.search ranks: keywords alone, or fused with the operator's rerank stages.
+const rerankers = rerankersFromEnv();
 // Control plane: coordination and small mutable state in Postgres.
 const db = await databaseFromEnvironment();
 await migrate(db);
@@ -287,6 +290,7 @@ const clients = new ClientSessions(supervisor, {
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
   onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
   spendLimit: tenant => accounts.runLimit(tenant),
+  rerankers,
   creditLimit: tenant => accounts.billing.creditLimit(tenant),
   db, storage, prefix: "client-sessions/", ownership, volumes,
   get scheduler() { return scheduler; },
@@ -437,7 +441,7 @@ server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
   if (!process.env.AGENT_PUBLIC_URL) signer.issuer = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, keyStorage: accounts.canStoreKeys, sandbox, stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
 });
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
 const reloadTenants = (announce: boolean) => tenants.reload().then(

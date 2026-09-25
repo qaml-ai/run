@@ -49,7 +49,7 @@ async function phases(code: string) {
   let last = performance.now();
   const result = await runSandbox({
     wasmModule, cancel: new Int32Array(new SharedArrayBuffer(4)), signal: new AbortController().signal,
-    code: prepared, javascriptOnly: !typescript, tools: bridge.definitions, timeoutMs: 30_000, maxOutputCharacters: 32_000,
+    code: prepared, javascriptOnly: !typescript, tools: bridge.definitions.map(tool => tool.name), timeoutMs: 30_000, maxOutputCharacters: 32_000,
     call: async (name, args) => JSON.stringify(await bridge.call(name, args as Record<string, unknown>, new AbortController().signal)),
     onOutput: () => {},
     mark: phase => { const now = performance.now(); timings[phase] = (timings[phase] ?? 0) + now - last; last = now; },

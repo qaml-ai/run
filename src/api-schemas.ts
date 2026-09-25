@@ -222,7 +222,7 @@ const McpServerInput = z.object({
 const openApiFields = {
   name: z.string().openapi({ description: "Its operations reach the model as <name>__<operationId>: 1–32 letters and digits, single underscores between them" }),
   baseUrl: z.string().optional().openapi({ description: "Where requests go; default the spec's first server. https, on a public address" }),
-  allowTools: z.array(z.string()).max(128).optional().openapi({ description: "Only these operations (by operationId); at most 128 in all" }),
+  allowTools: z.array(z.string()).max(1024).optional().openapi({ description: "Only these operations (by operationId); at most 1024 in all" }),
   denyTools: z.array(z.string()).max(4096).optional().openapi({ description: "None of these operations" }),
   exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its operations: directly, from js_exec (the default), or both" }),
   timeoutMs: z.number().int().min(1_000).max(300_000).optional().openapi({ description: "Per call; default 30000" }),
@@ -254,8 +254,8 @@ const definitionFields = {
   limits: DefinitionLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
   builtins: z.array(z.enum(["web_fetch", "web_search", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text; web_search searches the web (with the tenant's search provider key, or the platform's billed per search); schedule lets the agent set, list and cancel its own wake-ups" }),
-  mcpServers: z.array(McpServerInput).max(16).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
-  openApi: z.array(OpenApiInput).max(16).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
+  mcpServers: z.array(McpServerInput).max(64).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
+  openApi: z.array(OpenApiInput).max(64).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
 };
 const optional = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.optional()])) as { [K in keyof T]: z.ZodOptional<T[K]> };
 const removable = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.nullable().optional()])) as { [K in keyof T]: z.ZodOptional<z.ZodNullable<T[K]>> };

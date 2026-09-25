@@ -12,6 +12,12 @@ export const SANDBOX_LIMITS = Object.freeze({
   outputEvents: 1024,
 });
 
+/**
+ * An agent's tool catalog. Most tools are reached from js_exec, where only names enter the
+ * sandbox and search runs on the host; at most `direct` are declared to the model itself.
+ */
+export const CATALOG_LIMITS = Object.freeze({ tools: 4096, bytes: 16 * 1024 * 1024, direct: 64 });
+
 /** Transient provider failures (overload, rate limit, 5xx, network) are retried with backoff. */
 export const DEFAULT_RETRY = Object.freeze({ maxAttempts: 3, baseDelayMs: 2_000 });
 

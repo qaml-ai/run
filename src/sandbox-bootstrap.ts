@@ -2,7 +2,11 @@
 // accept/return strings; their JS wrappers and prototypes belong to the guest.
 // It runs once per sandbox image, before the snapshot that every execution starts
 // from (quickjs-sandbox.ts), and returns what the host calls per execution:
-// `install`, which defines `tools` from that execution's catalog, and the error formatter.
+// `install`, which defines `tools` from that execution's tool names, and the error formatter.
+
+/** Calls answered by the host rather than a tool: no tool name contains a dot. */
+export const HOST_CALLS = Object.freeze({ search: "tools.search", describe: "tools.describe", namespaces: "tools.namespaces" });
+
 export const SANDBOX_BOOTSTRAP = `
 (function(call, emit) {
   "use strict";
@@ -22,15 +26,15 @@ export const SANDBOX_BOOTSTRAP = `
     ["log", "info", "warn", "error", "debug"].map(name => [name, (...values) => { for (const value of values) text(value); }])
   ));
   Object.defineProperties(globalThis, { text: { value: text }, console: { value: console } });
-  const install = catalogJSON => {
-    const catalog = parse(catalogJSON);
+  // Only names: search, schemas and the calls themselves are answered by the host.
+  const install = namesJSON => {
     const tools = Object.create(null);
-    for (const definition of catalog) {
-      tools[definition.name] = async (args = {}) => parse(await call(definition.name, stringify(args)));
+    for (const name of parse(namesJSON)) {
+      tools[name] = async (args = {}) => parse(await call(name, stringify(args)));
     }
-    tools.search = async (query = "") => parse(stringify(catalog.filter(d =>
-      (d.name + " " + d.description).toLowerCase().includes(StringCtor(query).toLowerCase()))));
-    tools.describe = async name => parse(stringify(catalog.find(d => d.name === name) ?? null));
+    tools.search = async (query = "") => parse(await call("${HOST_CALLS.search}", stringify(query)));
+    tools.describe = async name => parse(await call("${HOST_CALLS.describe}", stringify(StringCtor(name))));
+    tools.namespaces = async () => parse(await call("${HOST_CALLS.namespaces}", "null"));
     Object.defineProperty(globalThis, "tools", { value: Object.freeze(tools) });
   };
   const formatError = error => {

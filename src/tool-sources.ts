@@ -73,7 +73,9 @@ const MAX_DESCRIPTION = 4_000;
 const sealedAad = (definition: string, name: string, kind: "mcp" | "openapi" = "mcp") => `definition:${definition}:${kind}:${name}`;
 const SPEC_BYTES = 8 * 1024 * 1024;
 /** At most the agent's whole tool catalog: a bigger API chooses its operations with allowTools. */
-const MAX_OPERATIONS = 128;
+const MAX_OPERATIONS = 1024;
+/** MCP servers, and OpenAPI specs, per definition. */
+const MAX_SOURCES = 64;
 const API_TIMEOUT_MS = 30_000;
 type Context = { accounts?: Accounts; outbound: Outbound };
 const bad = (message: string) => new HttpError(400, message);
@@ -112,7 +114,7 @@ function credentialHeaders(headers: unknown, auth: unknown) {
  * origin, so editing its tool filters does not need its secrets again.
  */
 export function mcpServersInput(input: unknown, previous: McpServerSpec[] | undefined, definition: string, context: Context): McpServerSpec[] {
-  if (!Array.isArray(input) || input.length > 16) throw bad("mcpServers must be a list of at most 16 servers");
+  if (!Array.isArray(input) || input.length > MAX_SOURCES) throw bad(`mcpServers must be a list of at most ${MAX_SOURCES} servers`);
   const names = new Set<string>();
   return input.map((server: any) => {
     if (!server || typeof server !== "object" || Array.isArray(server)) throw bad("An MCP server is { name, url, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs? }");
@@ -139,7 +141,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
  * checked, and turned into its operations, with credentials sealed as for MCP servers.
  */
 export async function openApiInput(input: unknown, previous: OpenApiSpec[] | undefined, definition: string, context: Context): Promise<OpenApiSpec[]> {
-  if (!Array.isArray(input) || input.length > 16) throw bad("openApi must be a list of at most 16 specs");
+  if (!Array.isArray(input) || input.length > MAX_SOURCES) throw bad(`openApi must be a list of at most ${MAX_SOURCES} specs`);
   const names = new Set<string>();
   return Promise.all(input.map(async (entry: any) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw bad("An OpenAPI source is { name, spec (a URL or the document), baseUrl?, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs? }");

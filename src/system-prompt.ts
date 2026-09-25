@@ -5,7 +5,7 @@ import { SENDER_INSTRUCTIONS } from "./sender.ts";
 const runtimeInstructions = `You operate through an application agent runtime.
 
 Runtime tools and execution:
-- Use js_exec to discover and call the application's tools. Begin tool-based tasks with await tools.search("") to discover the available tools; use await tools.describe(name) for parameter schemas. A narrow search is not the full catalog. Never invent tools.
+- Use js_exec to discover and call the application's tools. Search before calling: await tools.search("what you need") returns the best-matching tools ({ name, description }), most relevant first; await tools.search("") lists tools in catalog order. await tools.namespaces() lists the sources (the part of a tool name before "__") and how many tools each has; pass { query, namespace, limit } to search one source or get more than 20 results. Use await tools.describe(name) for a tool's parameter schema. If a search finds nothing fitting, search again in other words before concluding a tool does not exist. Never invent tools.
 - Call tools by name with JSON arguments: await tools.tool_name({ ... }). Inspect returned values before using them. Await all calls; Promise.all can compose independent calls.
 - js_exec runs JavaScript/TypeScript in a fresh QuickJS/WebAssembly sandbox. There is no filesystem, network, imports, process, Node/Bun API, or timers. Variables do not persist between executions. Access application data only through exposed tools.
 - Use return, text(value), or console.log(value) to inspect results. Output alone does not save application data: use an available write/save tool when asked to persist a change.

@@ -10,6 +10,7 @@ import { scriptValue } from "./mcp-results.ts";
 import type { AgentConfig, ToolBridge } from "./protocol.ts";
 import { applicationInstructions, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
 import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
+import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, legacySnapshotPath, readTranscriptLog, summaryMessage, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
@@ -27,6 +28,8 @@ export interface HostIO {
   spendLimit(): Promise<string | undefined>;
   /** The agent's transcript, which its supervisor writes. */
   transcript: AppendLog<TranscriptRecord>;
+  /** `tools.search`, answered by the supervisor (which holds the rerankers); without it, code searches here. */
+  search?(query: SearchQuery): Promise<SearchHit[]>;
 }
 
 /**
@@ -161,6 +164,7 @@ export function createAgentHost(io: HostIO) {
         // MCP tools answer with content; code gets their data.
         return config.tools.find(tool => tool.name === name)?.resultFormat === "content" ? scriptValue(value) : value;
       },
+      ...(io.search ? { search: io.search } : {}),
     };
   }
 
@@ -274,7 +278,7 @@ export function createAgentHost(io: HostIO) {
       const directTools = directAgentTools(config.tools);
       const jsExec: AgentTool = {
         name: "js_exec", label: "JavaScript",
-        description: "Execute JavaScript or TypeScript in a fresh QuickJS/WebAssembly sandbox. Only approved tools and output helpers are available: no filesystem, network, imports, process, Node/Bun APIs, or timers. Use await tools.search(query), await tools.describe(name), and await tools.<name>(args). Use text(value), console.log(value), or return to emit output. Calls can be composed with Promise.all. State does not survive between invocations.",
+        description: "Execute JavaScript or TypeScript in a fresh QuickJS/WebAssembly sandbox. Only approved tools and output helpers are available: no filesystem, network, imports, process, Node/Bun APIs, or timers. Use await tools.search(query) (ranked matches), await tools.namespaces(), await tools.describe(name), and await tools.<name>(args). Use text(value), console.log(value), or return to emit output. Calls can be composed with Promise.all. State does not survive between invocations.",
         parameters: {
           type: "object", required: ["code"],
           properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },

@@ -17,7 +17,7 @@ function sandbox(code: string, options: { call?: (name: string, args: unknown) =
   return runSandbox({
     wasmModule, code, cancel: options.cancel ?? new Int32Array(new SharedArrayBuffer(4)), signal: options.signal ?? new AbortController().signal,
     javascriptOnly: options.javascriptOnly, timeoutMs: options.timeoutMs ?? 10_000, maxOutputCharacters: 32_000,
-    tools: (options.tools ?? ["probe"]).map(name => ({ name, description: `The ${name} tool`, parameters: { type: "object" } })),
+    tools: options.tools ?? ["probe"],
     call: options.call ?? (async () => "null"), onOutput: () => {}, mark: options.mark,
   });
 }
@@ -79,9 +79,9 @@ test("each execution on a worker gets its own Math.random seed, its tenant's too
   assert.equal(new Set(draws.flat()).size, draws.length * 4, "No two executions draw the same numbers");
   assert.ok(draws.flat().every(value => value >= 0 && value < 1));
 
-  assert.deepEqual(await run(`globalThis.stash = await tools.alpha({}); Object.prototype.owner = "alpha"; return Object.keys(tools);`, "alpha"), ["alpha", "search", "describe"]);
+  assert.deepEqual(await run(`globalThis.stash = await tools.alpha({}); Object.prototype.owner = "alpha"; return Object.keys(tools);`, "alpha"), ["alpha", "search", "describe", "namespaces"]);
   assert.deepEqual(await run(`return [Object.keys(tools), (await tools.search("")).map(tool => tool.name), await tools.describe("alpha"), typeof stash, ({}).owner ?? null, await tools.beta({})];`, "beta"),
-    [["beta", "search", "describe"], ["beta"], null, "undefined", null, "beta"]);
+    [["beta", "search", "describe", "namespaces"], ["beta"], null, "undefined", null, "beta"]);
   assert.equal(pool.slots.size, 1, "Both tenants ran on the same worker");
 
   const first = await run("return Date.now();");

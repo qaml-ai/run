@@ -3,11 +3,14 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 
 import type { ToolDefinition } from "../shared/client-protocol.ts";
 export type { ToolDefinition };
+import type { SearchHit, SearchQuery } from "./tool-search.ts";
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown>;
   /** Why the agent's tenant may not spend more on models, if it has reached a limit. */
   spendLimit?(): Promise<string | undefined> | string | undefined;
+  /** Answer a `tools.search` query over the agent's code-mode tools, with the operator's rerankers. */
+  search?(query: SearchQuery): Promise<SearchHit[]>;
 }
 export interface AgentConfig {
   id: string;

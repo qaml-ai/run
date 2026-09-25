@@ -215,6 +215,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_DATABASE_CA` | PEM bundle the server's certificate must chain to (e.g. `/etc/ssl/rds-global-bundle.pem`); TLS settings in a URL are then ignored |
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_DATABASE_QUERY_TIMEOUT_MS` | how long a query may take before it fails and its connection is replaced (default 30000; 0 for none), so a connection that went dark in a failover cannot hang a request |
+| `AGENT_TOOL_SEARCH` | rerank stages for `tools.search` after keyword ranking: `keyword` (default, none), or from `embeddings`, `rerank`, `jev` in order, e.g. `embeddings,jev`; with `AGENT_TOOL_SEARCH_API_KEY`, `AGENT_TOOL_SEARCH_URL` (default OpenRouter) and `AGENT_TOOL_SEARCH_<STAGE>_MODEL` (see [Tool search](#tool-search)) |
 | `AGENT_STORAGE` | `file` (default; one node only), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
@@ -301,7 +302,7 @@ are disconnected rather than buffering unbounded events. Event replay is not
 implemented for this legacy HTTP control surface. The client SDK SSE surface
 supports bounded replay and durable request/tool outcomes (see its guide).
 
-Codemode supports `tools.search(query)`, `tools.describe(name)`,
+Codemode supports `tools.search(query)`, `tools.namespaces()`, `tools.describe(name)`,
 `tools.<name>(args)`, `text(value)`, `console.log(value)`, top-level `await`, and
 `return`. It can compose parallel calls with `Promise.all`. `tools.read`,
 `tools.write`, and `tools.ls` are the supplied local adapter; results follow
@@ -532,12 +533,13 @@ reconfiguration, not at a refresh.
 - Tools reach the model as `<server>__<tool>` (other characters become `_`),
   filtered by `allowTools` and `denyTools`, with the server's input schemas. A
   schema that is not a valid tool schema drops that tool, and the agent's
-  catalog stays within its limits (128 tools, 256 KiB). `exposure` is `codemode`
+  catalog stays within its limits (4096 tools, 16 MiB). `exposure` is `codemode`
   (call them as `tools.kb__search(...)` in js_exec), `direct` or `both`. Without
   one, a source of up to 10 tools gets `both`, so a call is one step rather than
   a discovery in js_exec first, and a bigger one `codemode`, so its tools do not
   crowd the model's context. The same default applies to OpenAPI sources and an
-  application's attached server.
+  application's attached server. At most 64 tools are declared to the model
+  directly: past that, `both` tools from later sources are reached from js_exec only.
 - Calls from the model and from js_exec go through the same path as every tool.
   Arguments are checked against the schema, the result is capped at 1 MiB of
   JSON, and each call has a timeout (`timeoutMs`, default 60 s). Text and image
@@ -571,7 +573,7 @@ every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   parallel.
 - The spec is fetched (through the outbound guard, up to five redirects, 8 MiB)
   and checked when the definition is saved, and its operations, after
-  `allowTools` and `denyTools` (at most 128, the agent's whole catalog), are stored with it: an agent's tools
+  `allowTools` and `denyTools` (at most 1024), are stored with it: an agent's tools
   do not change under it, and saving the definition again takes a spec's
   changes. `spec` may also be the document itself; a source saved without `spec`
   keeps the operations it has.
@@ -613,6 +615,36 @@ or `prompt(text, { from })` in the SDKs (`from_=` in Python; also on `steer` and
   someone else. `actor` alone tells tools who is acting without telling the model.
 - Channels set it for every message: `from.id` is `<type>:<the service's user id>`
   (`telegram:42`, `slack:U0123ABCD`), with the sender's display name and username.
+
+### Tool search
+
+Code finds tools with `tools.search(query)` or `tools.search({ query, namespace, limit })`:
+the best matches as `{ name, description }`, most relevant first (20 by default,
+at most 128). An empty query lists tools in catalog order. `tools.namespaces()`
+lists the sources (what precedes `__` in names) with their tool counts, and
+`tools.describe(name)` a tool's schema. Only tool names enter the sandbox; search,
+schemas and calls are answered by the host, so a catalog of thousands of tools
+costs a script nothing until it asks.
+
+- Ranking is by keywords (after Executor's): names, sources and descriptions,
+  words split at camelCase and `_`, stemmed, stopwords dropped, a bonus for
+  matching every word. It runs locally in about a millisecond, and misses
+  synonyms: "money back" does not find `refund_payment`.
+- `AGENT_TOOL_SEARCH` adds rerank stages that rank by meaning, in order,
+  comma-separated: `embeddings` (scores the whole catalog; tool embeddings are
+  cached and computed when an agent starts), `rerank` (a Cohere-style reranking
+  model) and `jev` (TypeSafe's decision model, one choice over the candidates).
+  A stage that takes fewer candidates than the catalog (rerank and Jev take 100)
+  gets the best of the order so far, so put one that sees everything first:
+  `embeddings,jev`. The orders are fused with the keyword order (reciprocal rank
+  fusion). A stage that fails, or is not done within 2.5 s in all, is left out
+  and logged (`tool_search_rerank_failed`); keyword ranking always answers.
+- All stages use OpenRouter by default (`AGENT_TOOL_SEARCH_URL`,
+  `https://openrouter.ai/api/v1`) with `AGENT_TOOL_SEARCH_API_KEY`; any
+  compatible API works (OpenAI embeddings, Cohere rerank, `https://api.typesafe.ai/v1`
+  for Jev). `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL`, `_RERANK_MODEL` and `_JEV_MODEL`
+  override the defaults (`openai/text-embedding-3-small`, `cohere/rerank-4-fast`,
+  `typesafe/jev-1.13`).
 
 ### Identity tokens (`auth: { type: "runtime" }`)
 

@@ -30,6 +30,7 @@ import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity } from "./identity.ts";
 import { senderInput } from "./sender.ts";
 import { compose, defaultExposure, describeSources, valueServer, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -79,6 +80,8 @@ type Session = {
   route?: Map<string, ToolServer>;
   /** The servers the running agent's tools were built from, and what each listed then. */
   servers?: ToolServer[];
+  /** The tools its code reaches (not direct-only), which `tools.search` ranks. */
+  searchable?: ToolDefinition[];
   /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
   runs: Promise<void>;
   /** Runs that began on a lost node, queued here to resume their turn. */
@@ -179,6 +182,8 @@ export interface ClientSessionOptions {
   definitionFor?: (tenant: string, id: string) => Promise<DefinitionConfig>;
   /** Tools the runtime calls itself (MCP servers), from the agent's definition. */
   sources?: ToolSources;
+  /** Stages that order `tools.search` results by meaning, fused with keyword ranking (AGENT_TOOL_SEARCH). */
+  rerankers?: Reranker[];
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; sources?: Sources };
@@ -487,6 +492,7 @@ export class ClientSessions {
           return typeof limited === "string" ? limited : limited?.message;
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...(context ? { toolCallId: context.toolCallId } : {}) }),
+        search: query => this.searchTools(session, query),
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
@@ -529,6 +535,9 @@ export class ClientSessions {
     const { tools: definitions, route } = await compose(servers);
     session.route = route;
     session.servers = servers;
+    session.searchable = definitions.filter(tool => tool.exposure !== "direct");
+    // Rerankers that index the catalog (embeddings) start now, so the first search need not wait.
+    for (const stage of this.options.rerankers ?? []) stage.warm?.(session.searchable);
     return definitions;
   }
 
@@ -1084,6 +1093,14 @@ export class ClientSessions {
    * connection or deadline cut short has an unknown outcome. After a crash, the turn's transcript
    * says the same: a tool call without a result is closed as unknown, never sent again.
    */
+  /** A `tools.search` query over the agent's code-mode tools; a rerank stage that fails is logged and left out. */
+  private searchTools(session: Session, query: SearchQuery) {
+    return searchTools(session.searchable ?? [], query, {
+      rerankers: this.options.rerankers ?? [],
+      onError: (error, stage) => console.error(JSON.stringify({ type: "tool_search_rerank_failed", reranker: stage.kind, agent: session.header.id, error: errorText(error) })),
+    });
+  }
+
   private async callAttached(session: Session, { name, args, signal, toolCallId, origin, actor }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
