@@ -3,29 +3,31 @@ import assert from "node:assert/strict";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { listen, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+import { AgentRuntime } from "../clients/typescript.ts";
+import { listen, OPERATOR, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
-const ISSUER = "https://agents.example.test";
 
 /**
  * A tool server that trusts only the runtime's identity tokens, as an application's would: every
  * request's bearer token is verified against the runtime's published keys, for this server's URL.
  * It serves MCP at /mcp and one OpenAPI operation at /api/whoami, and records what each saw.
  */
-async function toolServer(t: T, jwksUrl: () => string) {
+async function toolServer(t: T, runtimeBase: () => string) {
   const seen: { path: string; claims?: JWTPayload; error?: string }[] = [];
   let base = "";
   const verify = async (authorization: string | undefined, audience: string) => {
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
-    const { payload } = await jwtVerify(token, createRemoteJWKSet(new URL(jwksUrl())), { issuer: ISSUER, audience, algorithms: ["EdDSA"] });
+    // Without AGENT_PUBLIC_URL the runtime's issuer is the address it listens on.
+    const { payload } = await jwtVerify(token, createRemoteJWKSet(new URL(`${runtimeBase()}/.well-known/jwks.json`)), { issuer: runtimeBase(), audience, algorithms: ["EdDSA"] });
     return payload;
   };
   const url = await listen(t, async (req, res) => {
     let text = "";
     for await (const chunk of req) text += chunk;
     const path = new URL(req.url!, "http://x").pathname;
-    const audience = path === "/mcp" ? `${base}/mcp` : `${base}/api`;
+    // The OpenAPI source names its own audience; the MCP server's is its URL.
+    const audience = path === "/mcp" ? `${base}/mcp` : "urn:app-api";
     let claims: JWTPayload;
     try { claims = await verify(req.headers.authorization, audience); }
     catch (error) { seen.push({ path, error: String(error) }); res.writeHead(401).end(); return; }
@@ -46,8 +48,8 @@ const spec = { openapi: "3.1.0", info: { title: "App", version: "1" }, paths: { 
 
 test("tool servers with auth \"runtime\" get a short-lived token the runtime signs, naming the agent's subject, context and the turn's actor", async t => {
   let base = "";
-  const app = await toolServer(t, () => `${base}/.well-known/jwks.json`);
-  const r = await runtime(t, (_body, index) => [toolCall("app__whoami", {}), toolCall("api__whoami", {})][index] ?? { role: "assistant", content: "done" }, LOCAL);
+  const app = await toolServer(t, () => base);
+  const r = await runtime(t, (_body, index) => [toolCall("app__whoami", {}), toolCall("api__whoami", {})][index] ?? { role: "assistant", content: "done" }, { ...LOCAL, AGENT_PUBLIC_URL: "" });
   base = r.base;
 
   const jwks = await fetch(`${r.base}/.well-known/jwks.json`);
@@ -56,9 +58,14 @@ test("tool servers with auth \"runtime\" get a short-lived token the runtime sig
   assert.equal(keys.length, 1);
   assert.deepEqual([keys[0].kty, keys[0].crv, keys[0].alg, "d" in keys[0]], ["OKP", "Ed25519", "EdDSA", false], "only the public key is published");
 
-  const created = await r.call("/v1/definitions", { body: { name: "App", mcpServers: [{ name: "app", url: `${app.url}/mcp`, auth: { type: "runtime" }, exposure: "direct" }], openApi: [{ name: "api", spec, baseUrl: `${app.url}/api`, auth: { type: "runtime" }, exposure: "direct" }] } });
-  assert.equal(created.status, 201, created.text);
-  assert.deepEqual(created.json.mcpServers[0].auth, { type: "runtime" });
+  // Through the SDK's definition helpers.
+  const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const definition = await sdk.createDefinition({ name: "App", mcpServers: [{ name: "app", url: `${app.url}/mcp`, auth: { type: "runtime" } }], openApi: [{ name: "api", spec, baseUrl: `${app.url}/api`, auth: { type: "runtime" }, audience: "urn:app-api" }] });
+  assert.deepEqual(definition.mcpServers![0].auth, { type: "runtime" });
+  assert.equal((await sdk.definitions()).length, 1);
+  const created = { json: definition };
+  const bearerAudience = await r.call("/v1/definitions", { body: { name: "Bad", openApi: [{ name: "api", spec, baseUrl: `${app.url}/api`, audience: "urn:app-api" }] } });
+  assert.equal(bearerAudience.status, 400, "an audience is only for the runtime's own tokens");
   const clash = await r.call("/v1/definitions", { body: { name: "Clash", mcpServers: [{ name: "app", url: `${app.url}/mcp`, auth: { type: "runtime" }, headers: { Authorization: "Bearer x" } }] } });
   assert.equal(clash.status, 400, "the runtime's token is the Authorization");
 
@@ -73,7 +80,7 @@ test("tool servers with auth \"runtime\" get a short-lived token the runtime sig
 
   assert.deepEqual(app.seen.filter(entry => entry.error), [], "every request carried a valid token");
   const call = app.seen.find(entry => entry.path === "/mcp" && entry.claims?.act)!.claims!;
-  assert.equal(call.iss, ISSUER);
+  assert.equal(call.iss, r.base);
   assert.equal(call.aud, `${app.url}/mcp`);
   assert.equal(call.sub, "u_123");
   assert.equal(call.act, "u_456");
@@ -84,7 +91,7 @@ test("tool servers with auth \"runtime\" get a short-lived token the runtime sig
   const listing = app.seen.find(entry => entry.path === "/mcp" && !entry.claims?.act);
   assert.ok(listing, "requests outside a turn (listing tools) carry the agent's identity without an actor");
   const api = app.seen.find(entry => entry.path === "/api/whoami")!.claims!;
-  assert.deepEqual([api.aud, api.sub, api.act], [`${app.url}/api`, "u_123", "u_456"]);
+  assert.deepEqual([api.aud, api.sub, api.act], ["urn:app-api", "u_123", "u_456"]);
   assert.equal(new Set(app.seen.map(entry => entry.claims?.jti)).size, app.seen.length, "every request has its own token");
 
   // Identity is the tenant's to set: the agent's own token cannot change it, and actor is only for runs.

@@ -402,7 +402,9 @@ A definition is a tenant's reusable agent configuration: name, model, system
 prompt, thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs), limits
 (`ttlSeconds`) and optional mounts. Tenants manage them with `/v1/definitions` or the console's
 Definitions page, and make agents from one with `POST /v1/agents
-{"definition": "def_…"}` (or `createAgent({ definition })` in the SDKs). The
+{"definition": "def_…"}` (or `createAgent({ definition })` in the SDKs, which also
+create and update them: `createDefinition`, `updateDefinition`, `definition(s)`,
+`deleteDefinition`, and `create_definition` and so on in Python). The
 definition supplies the model, prompt, thinking level and tool sources; `name`,
 `type`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
 its defaults, and an SDK app's tools are added as its attached server.
@@ -491,8 +493,11 @@ its tools from its OpenAPI spec, or from a remote MCP server.
   filtered by `allowTools` and `denyTools`, with the server's input schemas. A
   schema that is not a valid tool schema drops that tool, and the agent's
   catalog stays within its limits (128 tools, 256 KiB). `exposure` is `codemode`
-  by default (call them as `tools.kb__search(...)` in js_exec), or `direct` or
-  `both`.
+  (call them as `tools.kb__search(...)` in js_exec), `direct` or `both`. Without
+  one, a source of up to 10 tools gets `both`, so a call is one step rather than
+  a discovery in js_exec first, and a bigger one `codemode`, so its tools do not
+  crowd the model's context. The same default applies to OpenAPI sources and an
+  application's attached server.
 - Calls from the model and from js_exec go through the same path as every tool.
   Arguments are checked against the schema, the result is capped at 1 MiB of
   JSON, and each call has a timeout (`timeoutMs`, default 60 s). Text and image
@@ -536,7 +541,7 @@ every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   `headers` and `auth` are sealed as for MCP servers and sent to that origin only.
 - A 2xx answer is the result: its JSON, else its text. Any other status is a tool
   error quoting the method, path, status and the start of the body.
-- `exposure` is `codemode` by default, as for MCP servers. The API shows each
+- `exposure` defaults as for MCP servers. The API shows each
   source's `tools` (operation names) and `baseUrl`, never its credentials.
 
 ### Identity tokens (`auth: { type: "runtime" }`)
@@ -561,11 +566,18 @@ request. Nothing per user is stored anywhere, and there is no shared secret.
 - `act` is who is acting in the turn: the `actor` given with the prompt
   (`POST /v1/agents/:id/prompt {text, actor}`, or `prompt(text, { actor })`),
   and `origin` where a channel turn came from. Requests outside a turn (listing
-  an MCP server's tools when an agent starts) carry neither.
+  an MCP server's tools when an agent starts) carry neither. `actor` reaches the
+  tools, not the model: an application that lets several people talk to one
+  agent says who is speaking in the prompt itself, as channels do. That agent's
+  conversation is shared by all of them, so private data belongs with agents of
+  one person each.
 - `aud` is the MCP server's URL, or the OpenAPI source's `baseUrl`, so a token
-  cannot be replayed against another server. Tokens live two minutes, and each
+  cannot be replayed against another server. A source can name its own
+  `audience` instead, for a server that knows itself by another URL (behind a
+  proxy, say). Tokens live two minutes, and each
   request gets its own (`jti`). Each agent has its own MCP session with a
   server that uses them.
+- `iss` is `AGENT_PUBLIC_URL`, or without it the address the runtime listens on.
 - Tokens are EdDSA (Ed25519). The public keys are at
   `/.well-known/jwks.json` (keys have `kid`; cache for minutes); the private key
   is sealed with `AGENT_SECRETS_KEY` in `signing_keys` and made on first use.

@@ -9,7 +9,7 @@ import type { Claim } from "./ownership.ts";
 import type { Scheduler } from "./scheduler.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { jsonResult, type ToolServer } from "./tool-servers.ts";
+import { defaultExposure, jsonResult, type ToolServer } from "./tool-servers.ts";
 import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
 import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, RESULT_BYTES, type Operation } from "./openapi.ts";
 
@@ -32,6 +32,8 @@ export interface McpServerSpec {
   allowTools?: string[]; denyTools?: string[];
   exposure?: Exposure;
   timeoutMs?: number;
+  /** The `aud` of its identity tokens when not its URL (a server behind a proxy, say); auth "runtime" only. */
+  audience?: string;
 }
 /**
  * An OpenAPI spec as a definition stores it: fetched and checked when the definition is saved,
@@ -50,6 +52,8 @@ export interface OpenApiSpec {
   allowTools?: string[]; denyTools?: string[];
   exposure?: Exposure;
   timeoutMs?: number;
+  /** The `aud` of its identity tokens when not its URL (a server behind a proxy, say); auth "runtime" only. */
+  audience?: string;
 }
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 export interface Sources { builtins?: string[]; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[] }
@@ -111,7 +115,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
   const names = new Set<string>();
   return input.map((server: any) => {
     if (!server || typeof server !== "object" || Array.isArray(server)) throw bad("An MCP server is { name, url, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs? }");
-    const { name, url, headers, auth, allowTools, denyTools, exposure, timeoutMs } = server;
+    const { name, url, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience } = server;
     if (typeof name !== "string" || name.length > 32 || !SERVER_NAME.test(name)) throw bad("An MCP server's name is 1–32 letters and digits, single underscores between them, starting with a letter");
     if (names.has(name)) throw bad(`Two MCP servers are named ${name}`);
     names.add(name);
@@ -124,7 +128,8 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
       name, url: checked.toString(), ...(allowTools !== undefined ? { allowTools: strings(allowTools, "allowTools", 512) } : {}),
       ...(denyTools !== undefined ? { denyTools: strings(denyTools, "denyTools", 512) } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
     };
-    return { ...spec, ...sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context) };
+    const credentials = sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context);
+    return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`) };
   });
 }
 
@@ -137,7 +142,7 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
   const names = new Set<string>();
   return Promise.all(input.map(async (entry: any) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw bad("An OpenAPI source is { name, spec (a URL or the document), baseUrl?, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs? }");
-    const { name, spec, baseUrl, headers, auth, allowTools, denyTools, exposure, timeoutMs } = entry;
+    const { name, spec, baseUrl, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience } = entry;
     if (typeof name !== "string" || name.length > 32 || !SERVER_NAME.test(name)) throw bad("An OpenAPI source's name is 1–32 letters and digits, single underscores between them, starting with a letter");
     if (names.has(name)) throw bad(`Two OpenAPI sources are named ${name}`);
     names.add(name);
@@ -172,7 +177,8 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
       name, ...(specUrl ? { spec: specUrl } : {}), baseUrl: checked.toString(), operations: chosen,
       ...(allow ? { allowTools: allow } : {}), ...(deny ? { denyTools: deny } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
     };
-    return { ...stored, ...sealCredentials(headers, auth, kept && { ...kept, url: kept.baseUrl }, checked, sealedAad(definition, name, "openapi"), context) };
+    const credentials = sealCredentials(headers, auth, kept && { ...kept, url: kept.baseUrl }, checked, sealedAad(definition, name, "openapi"), context);
+    return { ...stored, ...credentials, ...audienceInput(audience, credentials.auth, `OpenAPI source ${name}`) };
   }));
 }
 
@@ -196,6 +202,14 @@ function sealCredentials(headers: unknown, auth: unknown, previous: { url: strin
     ...(headers && Object.keys(headers).length ? { headerNames: Object.keys(headers) } : {}), ...(kind ? { auth: kind } : {}),
     sealed: context.accounts.seal(aad, JSON.stringify(credentials)),
   };
+}
+
+/** An identity token audience other than the source's URL: only with auth "runtime". */
+function audienceInput(audience: unknown, auth: SourceAuth | undefined, label: string) {
+  if (audience === undefined) return {};
+  if (typeof audience !== "string" || !audience.trim() || audience.length > 2048) throw bad(`${label}: audience is a string of 1–2048 characters`);
+  if (auth?.type !== "runtime") throw bad(`${label}: audience is for auth { type: "runtime" }, whose tokens it names`);
+  return { audience };
 }
 
 /** What callers see of a server: never its credentials. */
@@ -233,7 +247,7 @@ export class ToolSources {
     const headers = this.headers(sealedAad(context.definition, spec.name), spec.sealed);
     if (spec.auth?.type !== "runtime") return { url: spec.url, headers };
     // Each request is signed for the turn it is made in (callScope), and each agent has its own session.
-    return { url: spec.url, headers, token: () => this.identityToken(context, spec.url), scope: context.agent };
+    return { url: spec.url, headers, token: () => this.identityToken(context, spec.audience ?? spec.url), scope: context.agent };
   }
 
   private offered(spec: McpServerSpec, tool: Tool) {
@@ -252,16 +266,16 @@ export class ToolSources {
         const lists = await Promise.all((sources?.mcpServers ?? []).map(async spec => {
           try {
             const tools = await withTimeout(this.mcp.tools(context.tenant, this.endpoint(context, spec)), LIST_TIMEOUT_MS);
-            return tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => ({
+            return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => ({
               name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
-              parameters: tool.inputSchema as Record<string, unknown>, exposure: spec.exposure ?? "codemode",
-            }));
+              parameters: tool.inputSchema as Record<string, unknown>,
+            })), spec.exposure);
           } catch (error) {
             console.error(JSON.stringify({ type: "mcp_tools_unavailable", tenant: context.tenant, agent: context.agent, server: spec.name, error: errorText(error) }));
             return [];
           }
         }));
-        const apis = (sources?.openApi ?? []).flatMap(api => api.operations.map(operation => operationTool(api.name, operation, api.exposure)));
+        const apis = (sources?.openApi ?? []).flatMap(api => defaultExposure(api.operations.map(operation => operationTool(api.name, operation)), api.exposure));
         return [...builtinDefinitions(sources?.builtins), ...apis, ...lists.flat()];
       },
       call: async ({ name, args, signal, origin, actor }) => {
@@ -272,7 +286,7 @@ export class ToolSources {
         if (api && operation) {
           const { url, init } = operationRequest(api.baseUrl, operation, args);
           const secrets = this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed);
-          if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, api.baseUrl, turn)}`;
+          if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, api.audience ?? api.baseUrl, turn)}`;
           const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: RESULT_BYTES, secrets });
           return operationResult(operation, response);
         }

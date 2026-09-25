@@ -28,7 +28,7 @@ import { contentResult, type McpResult } from "./mcp-results.ts";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity } from "./identity.ts";
-import { compose, valueServer, type ToolCall, type ToolServer } from "./tool-servers.ts";
+import { compose, defaultExposure, valueServer, type ToolCall, type ToolServer } from "./tool-servers.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -512,7 +512,7 @@ export class ClientSessions {
     const volumes = this.options.volumes;
     const servers: ToolServer[] = [
       ...feature ? [feature] : [],
-      { tools: () => tools, call: call => this.callAttached(session, call) },
+      { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call) },
       ...volumes && header.mounts?.length ? [valueServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool({ tenant, agent: header.id, mounts: header.mounts ?? [] }, name, args, signal))] : [],
       ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}) }, sources)] : [],
     ];

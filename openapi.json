@@ -1503,6 +1503,10 @@
             "maximum": 600000,
             "description": "Per call; default 60000"
           },
+          "audience": {
+            "type": "string",
+            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)"
+          },
           "headerNames": {
             "type": "array",
             "items": {
@@ -1574,6 +1578,10 @@
             "minimum": 1000,
             "maximum": 300000,
             "description": "Per call; default 30000"
+          },
+          "audience": {
+            "type": "string",
+            "description": "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)"
           },
           "spec": {
             "type": "string",
@@ -1717,6 +1725,10 @@
             "maximum": 600000,
             "description": "Per call; default 60000"
           },
+          "audience": {
+            "type": "string",
+            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)"
+          },
           "headers": {
             "type": "object",
             "additionalProperties": {
@@ -1812,6 +1824,10 @@
             "minimum": 1000,
             "maximum": 300000,
             "description": "Per call; default 30000"
+          },
+          "audience": {
+            "type": "string",
+            "description": "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)"
           },
           "spec": {
             "anyOf": [

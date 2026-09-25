@@ -186,6 +186,7 @@ const mcpServerFields = {
   denyTools: z.array(z.string()).max(512).optional().openapi({ description: "None of these of its tools" }),
   exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its tools: directly, from js_exec (the default), or both" }),
   timeoutMs: z.number().int().min(1_000).max(600_000).optional().openapi({ description: "Per call; default 60000" }),
+  audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)" }),
 };
 const McpServerInput = z.object({
   ...mcpServerFields,
@@ -199,6 +200,7 @@ const openApiFields = {
   denyTools: z.array(z.string()).max(4096).optional().openapi({ description: "None of these operations" }),
   exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its operations: directly, from js_exec (the default), or both" }),
   timeoutMs: z.number().int().min(1_000).max(300_000).optional().openapi({ description: "Per call; default 30000" }),
+  audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)" }),
 };
 const OpenApiInput = z.object({
   ...openApiFields,

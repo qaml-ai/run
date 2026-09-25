@@ -98,8 +98,11 @@ test("tool lists refresh when the server says they changed, and edits keep seale
   assert.deepEqual(definition.mcpServers[0].headerNames, ["Authorization", "X-Team"]);
   const tools = (index: number) => r.model.bodies[index].tools.map((tool: any) => tool.function.name).filter((name: string) => name.startsWith("kb__")).sort();
   await r.prompt((await r.call("/v1/agents", { body: { definition: definition.id } })).json.id, "hi");
-  assert.deepEqual(tools(0), [], "codemode tools are reached through js_exec, not declared to the model");
-  const inCode = r.model.bodies[0].tools.find((tool: any) => tool.function.name === "js_exec");
+  assert.deepEqual(tools(0), ["kb__echo", "kb__fail", "kb__hidden_tool", "kb__picture"], "a server of a few tools is declared to the model as well, by default");
+  const codemode = (await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { mcpServers: [{ name: "kb", url: mcp.url, exposure: "codemode" }] } })).json;
+  await r.prompt((await r.call("/v1/agents", { body: { definition: codemode.id, name: "codemode" } })).json.id, "hi");
+  assert.deepEqual(tools(1), [], "codemode tools are reached through js_exec, not declared to the model");
+  const inCode = r.model.bodies[1].tools.find((tool: any) => tool.function.name === "js_exec");
   assert.ok(inCode);
 
   mcp.addTool();
@@ -108,7 +111,7 @@ test("tool lists refresh when the server says they changed, and edits keep seale
   const direct = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { mcpServers: [{ name: "kb", url: mcp.url, exposure: "direct" }] } });
   assert.deepEqual(direct.json.mcpServers[0].headerNames, ["Authorization", "X-Team"], "credentials were kept");
   await r.prompt((await r.call("/v1/agents", { body: { definition: definition.id } })).json.id, "hi");
-  assert.deepEqual(tools(1), ["kb__echo", "kb__fail", "kb__hidden_tool", "kb__later", "kb__picture"]);
+  assert.deepEqual(tools(2), ["kb__echo", "kb__fail", "kb__hidden_tool", "kb__later", "kb__picture"]);
 
   // Moving the server to another origin drops its credentials: they belong to the old one.
   const other = await listen(t, (_req, res) => res.writeHead(401).end());
