@@ -170,7 +170,7 @@ test("channel credentials are encrypted, never returned, and the webhook is regi
   assert.equal((await r.call("/v1/channels", { body: { type: "telegram", credentials: { botToken: "999:not-the-fixture-token-at-all-x" } } })).status, 422);
   assert.equal((await r.call("/v1/channels", { body: { type: "telegram", credentials: {} } })).status, 400);
   assert.equal((await r.call("/v1/channels", { body: { type: "sms", credentials: { botToken: BOT_TOKEN } } })).status, 400);
-  const { channel, secret } = await r.createChannel({ name: "Support", access: { allow: ["@ada"] }, template: { systemPrompt: "Be brief." } });
+  const { channel, secret } = await r.createChannel({ name: "Support", access: { allow: ["@ada"] } });
   assert.equal(channel.webhookUrl, `https://agents.example.test/channels/telegram/${channel.id}`);
   assert.deepEqual(r.tg.calls.find(entry => entry.method === "setWebhook")!.body, { url: channel.webhookUrl, secret_token: secret, allowed_updates: ["message"] });
   assert.equal(channel.credentials.botToken, "123456789:…fXYZ");
@@ -317,10 +317,9 @@ test("send_message reaches the chat mid-turn, and tools see who is asking", asyn
   assert.deepEqual(seen, [{ channel: { id: channel.id, type: "telegram" }, conversationId: "42", sender: { id: "42", username: "ada", name: "Ada" } }]);
 });
 
-test("a channel's agents are made from its definition; an inline template becomes the channel's own", async t => {
+test("a channel's agents are made from its definition; one created without gets an empty one of its own", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `system: ${body.messages[0].content.includes("Pirate") ? "pirate" : "plain"}` }));
   const pirate = (await r.call("/v1/definitions", { body: { name: "Pirate", systemPrompt: "Pirate talk only." } })).json;
-  assert.equal((await r.call("/v1/channels", { body: { type: "telegram", credentials: { botToken: BOT_TOKEN }, definition: pirate.id, template: {} } })).status, 400);
   const { channel, secret } = await r.createChannel({ access: { allow: ["@ada"] }, definition: pirate.id });
   assert.equal(channel.definition, pirate.id);
   assert.equal("template" in channel, false);
@@ -331,23 +330,13 @@ test("a channel's agents are made from its definition; an inline template become
   assert.deepEqual(detail.definition, { id: pirate.id, revision: 1 });
   assert.equal((await r.call(`/v1/definitions/${pirate.id}`, { method: "DELETE" })).status, 409, "a channel uses it");
 
-  // The older form: an inline template is kept as a definition of the channel's own, rewritten in place.
-  const legacy = await r.createChannel({ name: "Legacy", access: { allow: ["@bob"] }, template: { systemPrompt: "Be brief." } });
-  const own = (await r.call(`/v1/definitions/${legacy.channel.definition}`)).json;
-  assert.deepEqual([own.name, own.systemPrompt, own.revision], ["Legacy", "Be brief.", 1]);
-  const patched = await r.call(`/v1/channels/${legacy.channel.id}`, { method: "PATCH", body: { template: { systemPrompt: "Be briefer." } } });
-  assert.equal(patched.json.definition, own.id);
-  const rewritten = (await r.call(`/v1/definitions/${own.id}`)).json;
-  assert.deepEqual([rewritten.systemPrompt, rewritten.revision], ["Be briefer.", 2]);
-  // Pointed at a shared definition and then given a template again, it gets a new one of its own; the shared one is untouched.
-  assert.equal((await r.call(`/v1/channels/${legacy.channel.id}`, { method: "PATCH", body: { definition: pirate.id } })).json.definition, pirate.id);
-  const fresh = (await r.call(`/v1/channels/${legacy.channel.id}`, { method: "PATCH", body: { template: { systemPrompt: "Mine again." } } })).json.definition;
-  assert.notEqual(fresh, pirate.id);
-  assert.equal((await r.call(`/v1/definitions/${pirate.id}`)).json.systemPrompt, "Pirate talk only.");
-  // Deleting the channel deletes the definition it owns, and only that.
-  assert.equal((await r.call(`/v1/channels/${legacy.channel.id}`, { method: "DELETE" })).status, 200);
-  assert.equal((await r.call(`/v1/definitions/${fresh}`)).status, 404);
-  assert.equal((await r.call(`/v1/definitions/${own.id}`)).status, 200);
+  // Created without a definition, a channel gets an empty one of its own, which it keeps and which is deleted with it.
+  const plain = await r.createChannel({ name: "Plain", access: { allow: ["@bob"] } });
+  const own = (await r.call(`/v1/definitions/${plain.channel.definition}`)).json;
+  assert.deepEqual([own.name, own.revision], ["Plain", 1]);
+  assert.equal((await r.call(`/v1/channels/${plain.channel.id}`, { method: "PATCH", body: { name: "Renamed" } })).json.definition, own.id);
+  assert.equal((await r.call(`/v1/channels/${plain.channel.id}`, { method: "DELETE" })).status, 200);
+  assert.equal((await r.call(`/v1/definitions/${own.id}`)).status, 404);
   assert.equal((await r.call(`/v1/definitions/${pirate.id}`)).status, 200);
 });
 

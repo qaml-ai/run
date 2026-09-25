@@ -84,16 +84,12 @@ export class SendError extends Error {
   constructor(message: string, permanent: boolean, retryAfterMs?: number) { super(message); this.permanent = permanent; this.retryAfterMs = retryAfterMs; }
 }
 
-/** How channels described their agents before definitions; the API still takes one, as a definition of the channel's own. */
-export interface Template { model?: string; systemPrompt?: string; thinkingLevel?: string }
 export interface Channel {
   id: string; tenant: string; type: string; name: string;
   /** Where the service delivers messages; channels that receive over a socket have none. */
   webhookUrl?: string;
-  /** What each conversation's agent is made from. Channels written by the previous release have only `template`. */
-  definition?: string;
-  /** Kept on migrated channels for nodes of the previous release; unused otherwise. */
-  template?: Template;
+  /** What each conversation's agent is made from. */
+  definition: string;
   /** Senders by id or @username; `public` lets anyone in. */
   access: { public: boolean; allow: string[] };
   limits: { perSenderPerMinute: number; turnsPerDay: number };
@@ -103,7 +99,7 @@ export interface Channel {
   sealed: Sealed;
   createdAt: number; updatedAt: number;
 }
-export type ChannelInput = Partial<Pick<Channel, "name" | "definition" | "template" | "greeting">> & {
+export type ChannelInput = Partial<Pick<Channel, "name" | "definition" | "greeting">> & {
   type?: string; credentials?: Credentials;
   access?: Partial<Channel["access"]>; limits?: Partial<Channel["limits"]>;
 };
@@ -227,7 +223,7 @@ export class Channels {
     return JSON.parse(this.options.accounts.unseal(`channel:${channel.id}`, channel.sealed));
   }
   /** Credentials never leave the runtime: callers see a masked form. */
-  view({ sealed: _sealed, masked, template: _template, ...channel }: Channel) { return { ...channel, credentials: masked }; }
+  view({ sealed: _sealed, masked, ...channel }: Channel) { return { ...channel, credentials: masked }; }
 
   async list(tenant: string) {
     const { rows } = await this.db.query("select channel from channels where tenant = $1 order by created_at, id", [tenant]);
@@ -249,7 +245,7 @@ export class Channels {
     const name = input.name ?? `${provider.label} ${account.username ? `@${account.username}` : id}`;
     const channel: Channel = {
       id, tenant, type, name, ...(provider.verify ? { webhookUrl } : {}),
-      definition: await this.definition(tenant, id, name, input.definition === undefined && input.template === undefined ? { template: {} } : input), access: { public: false, allow: [], ...settings.access }, limits: { ...DEFAULT_LIMITS, ...settings.limits },
+      definition: await this.definition(tenant, id, name, input), access: { public: false, allow: [], ...settings.access }, limits: { ...DEFAULT_LIMITS, ...settings.limits },
       ...(settings.greeting ? { greeting: settings.greeting } : {}), account, masked,
       sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials: input.credentials, secret })), createdAt: now, updatedAt: now,
     };
@@ -285,8 +281,8 @@ export class Channels {
     try { await this.provider(channel.type).teardown(this.secrets(channel).credentials); }
     catch (error) { console.error(JSON.stringify({ type: "channel_teardown_failed", channel: id, error: errorText(error) })); }
     await this.db.query("delete from channels where id = $1 and tenant = $2", [id, tenant]);
-    // A definition made from the channel's inline template goes with it, unless another channel took it up.
-    if (channel.definition && (await this.options.definitions.read(tenant, channel.definition).catch(() => undefined))?.spec.channel === id) {
+    // A definition made for the channel goes with it, unless another channel took it up.
+    if ((await this.options.definitions.read(tenant, channel.definition).catch(() => undefined))?.spec.channel === id) {
       await this.options.definitions.remove(tenant, channel.definition).catch(() => {});
     }
   }
@@ -296,20 +292,12 @@ export class Channels {
   }
 
   /**
-   * The definition a channel's agents are made from: the one named, or for an inline
-   * template (the older form of the API), a definition of the channel's own holding it.
+   * The definition a channel's agents are made from: the one named, else the one it has,
+   * else (a new channel given none) an empty definition of the channel's own.
    */
-  private async definition(tenant: string, id: string, name: string, input: ChannelInput, current?: string): Promise<string | undefined> {
-    if (input.definition !== undefined && input.template !== undefined) throw new HttpError(400, "Give a definition or a template, not both");
-    if (input.definition !== undefined) {
-      return (await this.options.definitions.read(tenant, input.definition)).id;
-    }
-    const template = input.template;
-    if (template === undefined) return current;
-    const fields = { model: template.model ?? null, systemPrompt: template.systemPrompt ?? null, thinkingLevel: template.thinkingLevel ?? null };
-    const owned = current && await this.options.definitions.read(tenant, current).catch(() => undefined);
-    if (owned && owned.spec.channel === id) return (await this.options.definitions.update(tenant, owned.id, fields)).id;
-    return (await this.options.definitions.create(tenant, { name: name.slice(0, 120), ...fields }, { channel: id })).id;
+  private async definition(tenant: string, id: string, name: string, input: ChannelInput, current?: string): Promise<string> {
+    if (input.definition !== undefined) return (await this.options.definitions.read(tenant, input.definition)).id;
+    return current ?? (await this.options.definitions.create(tenant, { name: name.slice(0, 120) }, { channel: id })).id;
   }
 
   // Inbound ---------------------------------------------------------------------
@@ -615,7 +603,7 @@ export class Channels {
     const generation = stored ? stored.generation + 1 : 0;
     const label = sender.username ? `@${sender.username}` : sender.name ?? sender.id;
     const params = {
-      ...channel.definition ? { definition: channel.definition } : channel.template,
+      definition: channel.definition,
       name: `${this.provider(channel.type).label}: ${label}`.slice(0, 120), type: "channel",
       // A conversation outlives any session TTL: its agent lives until deleted (DELETE /v1/agents/:id).
       ttlSeconds: null,

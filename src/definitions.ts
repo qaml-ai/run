@@ -32,7 +32,7 @@ export interface DefinitionSpec {
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
   webSearch?: { providers: string[] };
-  /** Made from this channel's inline template, so that channel may rewrite it. */
+  /** Made for this channel, and deleted with it. */
   channel?: string;
 }
 export interface Definition { id: string; tenant: string; name: string; revision: number; spec: DefinitionSpec; createdAt: number; updatedAt: number }

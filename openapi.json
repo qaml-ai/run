@@ -1389,10 +1389,7 @@
           },
           "definition": {
             "type": "string",
-            "description": "The definition each conversation's agent is made from (GET /v1/definitions)"
-          },
-          "template": {
-            "$ref": "#/components/schemas/ChannelTemplate"
+            "description": "The definition each conversation's agent is made from (GET /v1/definitions); a channel created without one gets an empty definition of its own"
           },
           "access": {
             "type": "object",
@@ -1442,33 +1439,6 @@
           "credentials"
         ]
       },
-      "ChannelTemplate": {
-        "type": "object",
-        "properties": {
-          "model": {
-            "type": "string",
-            "description": "A model id from GET /v1/models; the runtime default when omitted"
-          },
-          "systemPrompt": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 32000
-          },
-          "thinkingLevel": {
-            "type": "string",
-            "enum": [
-              "off",
-              "minimal",
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          }
-        },
-        "description": "Deprecated: give a definition instead. An inline template becomes a definition of the channel's own"
-      },
       "ChannelUpdate": {
         "type": "object",
         "properties": {
@@ -1487,10 +1457,7 @@
           },
           "definition": {
             "type": "string",
-            "description": "The definition each conversation's agent is made from (GET /v1/definitions)"
-          },
-          "template": {
-            "$ref": "#/components/schemas/ChannelTemplate"
+            "description": "The definition each conversation's agent is made from (GET /v1/definitions); a channel created without one gets an empty definition of its own"
           },
           "access": {
             "type": "object",

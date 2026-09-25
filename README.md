@@ -763,11 +763,9 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   https://agents.camelai.dev/v1/channels
 ```
 
-Each conversation's agent is made from the channel's `definition`. The older
-inline `template` (`{model, systemPrompt, thinkingLevel}`) is still
-accepted for one release: it becomes a definition of the channel's own, which
-later templates for that channel rewrite and which is deleted with the channel.
-Migration 006 turned every existing channel's template into such a definition.
+Each conversation's agent is made from the channel's `definition`. A channel
+created without one gets an empty definition of its own, which is deleted with
+the channel.
 
 | Service | Credentials | Messages arrive | A conversation (one agent) is |
 | --- | --- | --- | --- |

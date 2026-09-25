@@ -117,7 +117,7 @@ test("the SDK makes an agent from a definition with its attached server's tools,
   assert.deepEqual(await names(), [["lookup", "App's lookup"], ["extra", "Something else"]]);
 });
 
-test("the migration gives each existing channel a definition made from its template", async () => {
+test("the migrations give each existing channel a definition made from its template, then drop the template", async () => {
   const { db } = await testDatabase({ migrate: false });
   const all = fileURLToPath(new URL("../migrations", import.meta.url));
   const before = mkdtempSync(join(tmpdir(), "migrations-"));
@@ -138,9 +138,24 @@ test("the migration gives each existing channel a definition made from its templ
     assert.equal(definition.name, channel.name);
     assert.equal(definition.revision, 1);
     assert.equal(definition.spec.channel, id);
-    assert.ok(channel.template, "the template stays for nodes of the previous release");
+    assert.equal("template" in channel, false, "014 strips the template once it is a definition");
   }
   const support = definitions.get(channels.find(row => row.id === "ch_0123456789abcdef0123")!.channel.definition)!;
   assert.deepEqual({ systemPrompt: support.spec.systemPrompt, tools: support.spec.tools }, template);
   assert.deepEqual(await migrate(db), [], "nothing is left to apply");
+});
+
+test("stripping channel templates stops, changing nothing, while a channel has no definition", async () => {
+  const { db } = await testDatabase({ migrate: false });
+  const all = fileURLToPath(new URL("../migrations", import.meta.url));
+  const before = mkdtempSync(join(tmpdir(), "migrations-"));
+  for (const name of readdirSync(all).filter(name => name < "014")) cpSync(join(all, name), join(before, name));
+  await migrate(db, before);
+  const channel = { id: "ch_0123456789abcdef0123", tenant: "alice", type: "telegram", name: "Late", template: { systemPrompt: "Be brief." } };
+  await db.query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [channel.id, "alice", JSON.stringify(channel), 1]);
+  await assert.rejects(migrate(db), /Channels without a definition: ch_0123456789abcdef0123/);
+  assert.deepEqual((await db.query("select channel from channels")).rows[0].channel, channel, "the template is still there");
+  await db.query("update channels set channel = (channel::jsonb || '{\"definition\": \"def_x\"}')::json");
+  assert.deepEqual(await migrate(db), ["014_channel_template.sql"]);
+  assert.equal("template" in (await db.query("select channel from channels")).rows[0].channel, false);
 });

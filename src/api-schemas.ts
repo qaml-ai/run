@@ -285,11 +285,6 @@ export const DefinitionUpdated = Definition.extend({
 }).openapi("DefinitionUpdated");
 export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
 
-const ChannelTemplate = z.object({
-  model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
-  systemPrompt: z.string().trim().min(1).max(32_000).optional(),
-  thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
-}).openapi("ChannelTemplate");
 const ChannelAccess = z.object({
   public: z.boolean().optional().openapi({ description: "Let anyone message the channel; off by default" }),
   allow: z.array(z.string().trim().min(1).max(64)).max(1000).optional().openapi({ description: "Senders allowed in: user ids, or @usernames (Telegram, Discord)" }),
@@ -301,8 +296,7 @@ const ChannelLimits = z.object({
 const channelFields = {
   name: z.string().trim().min(1).max(120).optional(),
   credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. Stored encrypted and never returned" }),
-  definition: z.string().optional().openapi({ description: "The definition each conversation's agent is made from (GET /v1/definitions)" }),
-  template: ChannelTemplate.optional().openapi({ description: "Deprecated: give a definition instead. An inline template becomes a definition of the channel's own" }),
+  definition: z.string().optional().openapi({ description: "The definition each conversation's agent is made from (GET /v1/definitions); a channel created without one gets an empty definition of its own" }),
   access: ChannelAccess.optional(),
   limits: ChannelLimits.optional(),
   greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start (Telegram)" }),
