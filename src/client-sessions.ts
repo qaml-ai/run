@@ -105,6 +105,12 @@ const validId = (value: unknown): value is string => typeof value === "string" &
 const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 const has = (object: object, key: string) => Object.hasOwn(object, key);
 const RUN_METHODS = ["prompt", "execute", "continue"];
+/**
+ * Requests queued behind the agent's runs. Each keeps its params for as long as it may
+ * run again on the agent's next owner: a run until it begins, and configuration (an
+ * idempotent assignment) until it settles.
+ */
+const QUEUED_METHODS = [...RUN_METHODS, "configure"];
 /** Runs that call the model; code executions do not, so spend limits leave them alone. */
 const MODEL_RUNS = ["prompt", "continue"];
 /** A running run's active time is reported at least this often. */
@@ -330,7 +336,7 @@ export class ClientSessions {
     const queued: RequestRecord[] = [];
     const resumed: RequestRecord[] = [];
     for (const request of [...session.running.values()]) {
-      if ((request.method === "configure" || (RUN_METHODS.includes(request.method) && !request.began)) && request.params !== undefined) queued.push(request);
+      if (request.params !== undefined) queued.push(request);
       else if (resumable(request) && (request.resumes ?? 0) < MAX_RESUMES) {
         resumed.push(this.upsertRequest(session, { ...request, resumes: (request.resumes ?? 0) + 1 }));
       } else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true } });
@@ -925,19 +931,19 @@ export class ClientSessions {
     } catch (error) { throw new HttpError(400, errorText(error)); }
     const limited = await this.runLimit(session, body.method);
     if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
-    // Reads, aborts and configuration do not need a process; runs start it when their turn comes.
-    if (!isRun && !["configure", "history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
+    const queued = QUEUED_METHODS.includes(body.method);
+    // Reads and aborts need no process; queued requests start it (if at all) when their turn comes.
+    if (!queued && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
     // Concurrent retries may have waited on the same process startup.
     const raced = existing();
     if (raced) return { status: 200, record: visible(raced) };
     const record = this.upsertRequest(session, {
       startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
       ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-      id: body.id, method: body.method, fingerprint, state: "running", ...(isRun || body.method === "configure" ? { params } : {}), ...(actor ? { actor } : {}),
+      id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}),
     });
     await this.commit(session, true);
-    // Configuration is applied between runs, when the agent is not busy.
-    if (isRun || body.method === "configure") this.enqueue(session, record, params);
+    if (queued) this.enqueue(session, record, params);
     else void this.run(session, record, params);
     return { status: 202, record: visible(record) };
   }
@@ -1018,15 +1024,10 @@ export class ClientSessions {
   private async run(session: Session, record: RequestRecord, params: unknown) {
     let value: Outcome;
     try {
-      if (record.method === "configure" && (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running")) return;
-      if (record.method === "configure") {
-        // Configuration is an idempotent assignment: retain its parameters until
-        // completion so an interrupted write can be replayed by the next owner.
-        record = this.upsertRequest(session, { ...record, began: Date.now() });
-        await this.commit(session, true);
-      }
+      if (QUEUED_METHODS.includes(record.method) && (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running")) return;
+      // Configuration keeps its params when it begins: the next owner replays one that was interrupted.
+      if (record.method === "configure") record = this.upsertRequest(session, { ...record, began: Date.now() });
       if (RUN_METHODS.includes(record.method)) {
-        if (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running") return;
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
         if (!session.resuming.has(record.id)) {
           const limited = await this.runLimit(session, record.method);
@@ -1182,8 +1183,7 @@ export class ClientSessions {
    */
   private async interrupt(session: Session, reason: string, handOff = false) {
     for (const request of [...session.running.values()]) {
-      const queued = (request.method === "configure" && request.params !== undefined) ||
-        (RUN_METHODS.includes(request.method) && (!request.began || session.resuming.has(request.id)));
+      const queued = request.params !== undefined || session.resuming.has(request.id);
       if (handOff && (queued || resumable(request))) continue;
       const { params: _params, ...rest } = request;
       this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: queued ? { error: reason } : { error: reason, uncertain: true } });
@@ -1279,7 +1279,7 @@ export class ClientSessions {
   private working(session: Session) {
     let count = (session.starting ? 1 : 0) + session.settling;
     for (const request of session.running.values()) {
-      if (request.began ? !session.resuming.has(request.id) : !RUN_METHODS.includes(request.method) && request.method !== "configure") count++;
+      if (request.began ? !session.resuming.has(request.id) : !QUEUED_METHODS.includes(request.method)) count++;
     }
     return count;
   }

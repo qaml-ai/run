@@ -6,6 +6,7 @@ import type { Accounts, Principal } from "./accounts.ts";
 import type { ClientSessions } from "./client-sessions.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
 import { listModels, listProviders, providerInfo } from "./catalog.ts";
+import { resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
@@ -177,8 +178,15 @@ export function api(context: ApiContext) {
     responses: { 202: reply("Configuration accepted; poll its request for completion. Conversation history is preserved", schema.RequestRecord) },
   }), async c => {
     const { requestId, ...params } = parse(schema.ConfigureInput, await readJson(c.req.raw.body, 1024 * 1024, {}));
-    const submit = context.submit ?? ((id, tenant, request) => clients.submit(id, tenant, request));
-    return json(c, 202, await submit(c.req.param("id")!, c.var.principal.tenant, { id: requestId ?? randomUUID(), method: "configure", params }));
+    const tenant = c.var.principal.tenant;
+    // A model the agent could not call is refused now, not when the request runs.
+    if (params.model !== undefined) {
+      let provider: string;
+      try { provider = resolveModel(params.model).provider; } catch (error) { throw new HttpError(400, errorText(error)); }
+      if (!await accounts.hasKey(tenant, provider)) throw new HttpError(400, `No ${provider} API key is configured for this tenant; set one with PUT /v1/providers/${provider}/key`);
+    }
+    const submit = context.submit ?? clients.submit.bind(clients);
+    return json(c, 202, await submit(c.req.param("id")!, tenant, { id: requestId ?? randomUUID(), method: "configure", params }));
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/requests/{requestId}", request: { params: agentId.extend({ requestId: z.string() }) },

@@ -40,6 +40,8 @@ export interface Definition { id: string; tenant: string; name: string; revision
 export type DefinitionInput = { name?: string; revision?: number } & { [K in keyof DefinitionSpec]?: unknown };
 /** What an agent records about the definition it was made from. */
 export interface DefinitionRef { id: string; revision: number }
+/** What applying a definition's revision did to one agent. */
+export interface ApplyResult { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
@@ -143,31 +145,24 @@ export class Definitions {
 
   /**
    * Reconfigure every live agent made from a definition to its current revision,
-   * through each agent's `configure` request (idempotent per revision).
+   * through each agent's `configure` request (idempotent per revision). Each agent's
+   * result says whether it took the revision already, has it queued between its
+   * turns, or failed.
    */
   async apply(definition: Definition, submit: (agent: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>) {
-    const agents = (await this.agents(definition.tenant, definition.id)).map(agent => agent.id);
-    const accepted: string[] = [], failed: { agent: string; error: string }[] = [];
-    const results: { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }[] = [];
-    const queue = [...agents];
+    const requestId = `apply_${definition.id}_${definition.revision}`;
+    const results: ApplyResult[] = [];
+    const queue = (await this.agents(definition.tenant, definition.id)).map(agent => agent.id);
     await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
       for (let agent; (agent = queue.shift());) {
-        const requestId = `apply_${definition.id}_${definition.revision}`;
         try {
           const record = await submit(agent, { id: requestId, method: "configure", params: { definition: { id: definition.id, revision: definition.revision } } });
           if (record.outcome?.error !== undefined) throw new Error(record.outcome.error);
-          accepted.push(agent);
           results.push({ agent, requestId, status: record.state === "completed" ? "updated" : "queued" });
-        } catch (error) {
-          failed.push({ agent, error: errorText(error) });
-          results.push({ agent, requestId, status: "failed", error: errorText(error) });
-        }
+        } catch (error) { results.push({ agent, requestId, status: "failed", error: errorText(error) }); }
       }
     }));
-    return { accepted: accepted.sort(), failed: failed.sort((a, b) => a.agent.localeCompare(b.agent)),
-      counts: { total: agents.length, updated: results.filter(r => r.status === "updated").length,
-        queued: results.filter(r => r.status === "queued").length, failed: failed.length },
-      results: results.sort((a, b) => a.agent.localeCompare(b.agent)) };
+    return results.sort((a, b) => a.agent.localeCompare(b.agent));
   }
 
   /**

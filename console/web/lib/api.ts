@@ -56,6 +56,7 @@ export interface RequestRecord {
   id: string; method: string; state: "running" | "completed"; startedAt?: number; endedAt?: number; prompt?: string;
   outcome?: { result?: unknown; error?: string; uncertain?: boolean };
 }
+export interface ApplyResult { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }
 export type Exposure = "direct" | "codemode" | "both";
 export interface ToolSource {
   kind: "channel" | "application" | "files" | "builtin" | "mcp" | "openapi"; name: string;
@@ -101,5 +102,3 @@ export interface Channel {
   access: { public: boolean; allow: string[] }; limits: { perSenderPerMinute: number; turnsPerDay: number };
   greeting?: string; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
 }
-
-export type { ApplyResult } from "../../../clients/typescript";

@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type Definition, type ApplyResult, type Model } from "@/lib/api";
+import { api, formatTime, useApi, type Definition, type ApplyResult, type Model, type RequestRecord } from "@/lib/api";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const BUILTINS = [
@@ -50,27 +50,18 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
   const [apply, setApply] = useState(forChannel);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [applied, setApplied] = useState<ApplyResult>();
+  const [applied, setApplied] = useState<ApplyResult[]>();
+  // Queued agents take the revision between their turns: check on them until they have.
   useEffect(() => {
-    if (!applied?.counts.queued) return;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      try {
-        const results = await Promise.all(applied.results.map(async entry => {
-          if (entry.status !== "queued") return entry;
-          const record = await api<{ state: string; outcome?: { error?: string } }>(`/v1/agents/${entry.agent}/requests/${entry.requestId}`);
-          if (record.state !== "completed") return entry;
-          return { ...entry, status: record.outcome?.error !== undefined ? "failed" as const : "updated" as const, ...(record.outcome?.error !== undefined ? { error: record.outcome.error } : {}) };
-        }));
-        if (cancelled) return;
-        setError(undefined);
-        setApplied({ ...applied, results, failed: results.filter(r => r.status === "failed").map(r => ({ agent: r.agent, error: r.error ?? "Configuration failed" })),
-          counts: { total: results.length, updated: results.filter(r => r.status === "updated").length, queued: results.filter(r => r.status === "queued").length, failed: results.filter(r => r.status === "failed").length } });
-      } catch (caught) {
-        if (!cancelled) { setError(`Could not refresh results: ${(caught as Error).message}`); setApplied({ ...applied }); }
-      }
-    }, 2000);
-    return () => { cancelled = true; clearTimeout(timer); };
+    if (!applied?.some(entry => entry.status === "queued")) return;
+    const timer = setTimeout(async () => setApplied(await Promise.all(applied.map(async entry => {
+      if (entry.status !== "queued") return entry;
+      const record = await api<RequestRecord>(`/v1/agents/${entry.agent}/requests/${entry.requestId}`).catch(() => undefined);
+      if (record?.state !== "completed") return entry;
+      const error = record.outcome?.error;
+      return error === undefined ? { ...entry, status: "updated" as const } : { ...entry, status: "failed" as const, error };
+    }))), 2000);
+    return () => clearTimeout(timer);
   }, [applied]);
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -100,20 +91,21 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
     } catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
   }
-  if (applied) return (
-    <Dialog open onOpenChange={value => { if (!value) onClose(); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Definition saved</DialogTitle>
-          <DialogDescription>{applied.counts.total === 0 ? "No existing conversations or agents were eligible. New conversations will use this definition." : `${applied.counts.updated} updated · ${applied.counts.queued} queued · ${applied.counts.failed} failed. Queued changes take effect between turns; results refresh automatically.`}</DialogDescription>
-        </DialogHeader>
-        <ErrorAlert error={error} />
-        {applied.failed.length > 0 && <ErrorAlert title={`${applied.failed.length} could not be reached`} error={applied.failed.map(entry => `${entry.agent}: ${entry.error}`).join("\n")} />}
-        <div className="max-h-48 overflow-y-auto text-xs">{applied.results.map(result => <p key={result.agent}><span className="font-mono">{result.agent}</span>: {result.status}</p>)}</div>
-        <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+  if (applied) {
+    const count = (status: ApplyResult["status"]) => applied.filter(entry => entry.status === status).length;
+    return (
+      <Dialog open onOpenChange={value => { if (!value) onClose(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Applied to {applied.length} agent{applied.length === 1 ? "" : "s"}</DialogTitle>
+            <DialogDescription>{count("updated")} updated · {count("queued")} queued · {count("failed")} failed. Queued agents take the new revision between their turns.</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-48 overflow-y-auto text-xs">{applied.map(entry => <p key={entry.agent}><span className="font-mono">{entry.agent}</span>: {entry.status}{entry.error && <span className="text-destructive"> ({entry.error})</span>}</p>)}</div>
+          <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
   return (
     <Dialog open onOpenChange={value => { if (!value) onClose(); }}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
@@ -126,7 +118,7 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
             </DialogDescription>
           </DialogHeader>
           <ErrorAlert error={error} />
-          {forChannel && <p className="text-sm text-muted-foreground">Update this bot’s model and prompt here. This definition may also be shared by other channels; applying it updates all its existing conversations and agents.</p>}
+          {forChannel && <p className="text-sm text-muted-foreground">This is the channel’s definition: applying it updates every agent made from it, in this channel and any other that shares it.</p>}
           <div className="flex flex-col gap-2">
             <Label htmlFor="definition-name">Name</Label>
             <Input id="definition-name" autoFocus value={name} onChange={event => setName(event.target.value)} />
@@ -179,7 +171,7 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
           {definition && (
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={apply} onChange={event => setApply(event.target.checked)} />
-              Apply to all existing conversations and agents using this definition
+              Apply to existing agents made from this definition
             </label>
           )}
           <DialogFooter>

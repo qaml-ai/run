@@ -2090,7 +2090,11 @@
             "type": "object",
             "properties": {
               "applied": {
-                "$ref": "#/components/schemas/ApplyResult"
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ApplyResult"
+                },
+                "description": "With apply: \"all\", one entry per live agent made from the definition"
               }
             }
           }
@@ -2099,91 +2103,31 @@
       "ApplyResult": {
         "type": "object",
         "properties": {
-          "accepted": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+          "agent": {
+            "type": "string"
           },
-          "failed": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "agent": {
-                  "type": "string"
-                },
-                "error": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "agent",
-                "error"
-              ]
-            }
+          "requestId": {
+            "type": "string",
+            "description": "The agent's configure request: poll GET /v1/agents/{agent}/requests/{requestId} for a queued one's outcome"
           },
-          "counts": {
-            "type": "object",
-            "properties": {
-              "total": {
-                "type": "number"
-              },
-              "updated": {
-                "type": "number"
-              },
-              "queued": {
-                "type": "number"
-              },
-              "failed": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "total",
+          "status": {
+            "type": "string",
+            "enum": [
               "updated",
               "queued",
               "failed"
-            ]
+            ],
+            "description": "updated: the agent has the revision; queued: it takes it between its turns; failed: see error"
           },
-          "results": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "agent": {
-                  "type": "string"
-                },
-                "requestId": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "updated",
-                    "queued",
-                    "failed"
-                  ]
-                },
-                "error": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "agent",
-                "requestId",
-                "status"
-              ]
-            }
+          "error": {
+            "type": "string"
           }
         },
         "required": [
-          "accepted",
-          "failed",
-          "counts",
-          "results"
-        ],
-        "description": "Snapshot for eligible live agents. Queued is not completed: poll GET /v1/agents/{agent}/requests/{requestId} for the final outcome. Expired, revoked and purged agents are excluded."
+          "agent",
+          "requestId",
+          "status"
+        ]
       },
       "DefinitionUpdate": {
         "type": "object",

@@ -32,7 +32,7 @@ const TYPES: Record<ChannelType, { label: string; help: string; fields: { key: s
   },
   discord: {
     label: "Discord",
-    help: "Each DM, channel or thread gets its own agent. In servers, select the bot user with the App badge when mentioning it. A role with the same name will not trigger a reply.",
+    help: "Each DM, and each channel or thread where someone @mentions the bot, gets its own agent.",
     fields: [{ key: "botToken", label: "Bot token", placeholder: "From the Bot page" }],
     senders: "@username, 123456789012345678",
   },
@@ -96,9 +96,9 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
             </div>
           )}
           {type === "discord" && !channel && <ol className="list-decimal pl-5 text-sm space-y-2">
-            <li><a className="underline" href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Open the Discord Developer Portal</a> and create an application.</li>
-            <li>On its Bot page, copy the bot token into the field below. It is stored encrypted; you do not need to paste it into a chat or terminal.</li>
-            <li>Save here to validate the token, then use the invite link to add the bot to your server.</li>
+            <li>In the <a className="underline" href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Discord Developer Portal</a>, create an application.</li>
+            <li>On its Bot page, copy the bot token and paste it below.</li>
+            <li>Save: the token is checked, and you get the bot's invite link.</li>
           </ol>}
           {channel?.type === "discord" && <DiscordHelp channel={channel} />}
           {info.fields.map(field => (
@@ -141,12 +141,14 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
   );
 }
 
+/** View Channel, Send Messages, Read Message History and Send Messages in Threads. */
+const DISCORD_PERMISSIONS = (1n << 10n | 1n << 11n | 1n << 16n | 1n << 38n).toString();
+
 function DiscordHelp({ channel }: { channel: Channel }) {
   return <div className="rounded border p-3 text-sm space-y-2">
-    <a className="underline" href={`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(channel.account.id)}&scope=bot&permissions=68608`} target="_blank" rel="noreferrer">Invite {channel.account.username ?? "bot"} to your server</a>
-    <p>For a test message, copy the text below into Discord and send it. It mentions the bot user directly.</p>
+    <a className="underline" href={`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(channel.account.id)}&scope=bot&permissions=${DISCORD_PERMISSIONS}`} target="_blank" rel="noreferrer">Invite {channel.account.username ?? "bot"} to your server</a>
+    <p>To test it, send this in a channel the bot can see. In autocomplete, pick the bot with the App badge: mentioning a role of the same name does not reach it.</p>
     <Input aria-label="Discord test message" readOnly value={`<@${channel.account.id}> status`} onFocus={event => event.target.select()} />
-    <p className="text-muted-foreground text-xs">When using autocomplete, select the bot with the App badge, not the similarly named role. DMs need no mention.</p>
   </div>;
 }
 

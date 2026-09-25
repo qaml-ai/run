@@ -280,12 +280,13 @@ export const Definition = z.object({
   updatedAt: z.number(),
 }).openapi("Definition");
 export const ApplyResult = z.object({
-  accepted: z.array(z.string()), failed: z.array(z.object({ agent: z.string(), error: z.string() })),
-  counts: z.object({ total: z.number(), updated: z.number(), queued: z.number(), failed: z.number() }),
-  results: z.array(z.object({ agent: z.string(), requestId: z.string(), status: z.enum(["updated", "queued", "failed"]), error: z.string().optional() })),
-}).openapi("ApplyResult", { description: "Snapshot for eligible live agents. Queued is not completed: poll GET /v1/agents/{agent}/requests/{requestId} for the final outcome. Expired, revoked and purged agents are excluded." });
+  agent: z.string(),
+  requestId: z.string().openapi({ description: "The agent's configure request: poll GET /v1/agents/{agent}/requests/{requestId} for a queued one's outcome" }),
+  status: z.enum(["updated", "queued", "failed"]).openapi({ description: "updated: the agent has the revision; queued: it takes it between its turns; failed: see error" }),
+  error: z.string().optional(),
+}).openapi("ApplyResult");
 export const DefinitionUpdated = Definition.extend({
-  applied: ApplyResult.optional(),
+  applied: z.array(ApplyResult).optional().openapi({ description: "With apply: \"all\", one entry per live agent made from the definition" }),
 }).openapi("DefinitionUpdated");
 export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
 

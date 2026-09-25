@@ -87,9 +87,8 @@ test("agents are made from a definition, record its revision, and take a new one
   const applied = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { systemPrompt: "You are support v3.", apply: "all" } });
   assert.equal(applied.status, 200, applied.text);
   assert.equal(applied.json.revision, 3);
-  assert.deepEqual(applied.json.applied.accepted, [first, second.id].sort());
-  assert.deepEqual(applied.json.applied.failed, []);
-  assert.equal(applied.json.applied.counts.total, 2);
+  assert.deepEqual(applied.json.applied.map((entry: any) => entry.agent), [first, second.id].sort());
+  assert.equal(applied.json.applied.some((entry: any) => entry.status === "failed"), false);
   await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((agent: any) => agent.revision === 3), "both agents to take revision 3");
   detail = (await r.call(`/v1/agents/${first}`)).json;
   assert.equal(detail.systemPrompt, "You are support v3.");
@@ -98,7 +97,7 @@ test("agents are made from a definition, record its revision, and take a new one
   assert.match(systemText(r.model.bodies.at(-1)), /You are support v3\./, "the running agent was reconfigured");
 
   // Applying again with nothing changed is a no-op per agent.
-  assert.deepEqual((await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { apply: "all" } })).json.applied.failed, []);
+  assert.deepEqual((await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { apply: "all" } })).json.applied.map((entry: any) => entry.status), ["updated", "updated"]);
   // Deleting the definition leaves its agents as they are.
   assert.equal((await r.call(`/v1/definitions/${definition.id}`, { method: "DELETE" })).status, 200);
   assert.equal((await r.prompt(first, "still here")).outcome.result.reply, "ok");
@@ -196,6 +195,9 @@ test("public configuration waits between turns, preserves history, and reports v
   for (const body of [{}, { model: "missing/model" }, { apiKey: "never-accepted" }, { systemPrompt: "" }]) {
     assert.equal((await r.call(path, { method: "PATCH", body })).status, 400);
   }
+  const keyless = await r.call(path, { method: "PATCH", body: { model: "anthropic/claude-sonnet-5" } });
+  assert.equal(keyless.status, 400);
+  assert.match(keyless.json.error, /No anthropic API key .* PUT \/v1\/providers\/anthropic\/key/);
   const turn = r.prompt(agent, "Keep this in history");
   await until(() => r.model.bodies.length === 1, "model starts");
   const configured = await r.call(path, { method: "PATCH", body: { requestId: "config-1", systemPrompt: "After" } });
@@ -220,7 +222,7 @@ test("public configuration waits between turns, preserves history, and reports v
 });
 
 
-test("apply reports completed failures separately from accepted and queued requests", async t => {
+test("apply reports each agent as updated, queued or failed", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const definitions = new Definitions({ db: r.db });
   const definition = await definitions.create("alice", { name: "Reporting" });
@@ -232,9 +234,11 @@ test("apply reports completed failures separately from accepted and queued reque
     return { id: request.id, method: "configure", fingerprint: "fixture", state: index === 1 ? "running" : "completed",
       ...(index === 0 ? { outcome: { result: { configured: true } } } : index === 2 ? { outcome: { error: "Missing provider key" } } : {}) };
   });
-  assert.deepEqual(result.counts, { total: 4, updated: 1, queued: 1, failed: 2 });
-  assert.deepEqual(result.accepted, agents.slice(0, 2).sort());
-  assert.equal(result.results.find(row => row.agent === agents[2])?.error, "Missing provider key");
-  assert.equal(result.results.find(row => row.agent === agents[3])?.error, "Unreachable");
-  assert.equal(result.results.every(row => row.requestId === `apply_${definition.id}_1`), true);
+  const requestId = `apply_${definition.id}_1`;
+  assert.deepEqual(result, [
+    { agent: agents[0], requestId, status: "updated" },
+    { agent: agents[1], requestId, status: "queued" },
+    { agent: agents[2], requestId, status: "failed", error: "Missing provider key" },
+    { agent: agents[3], requestId, status: "failed", error: "Unreachable" },
+  ].sort((a, b) => a.agent.localeCompare(b.agent)));
 });

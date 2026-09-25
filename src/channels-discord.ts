@@ -44,8 +44,9 @@ export function parseMessage(message: any, botId: string, ignored?: (reason: str
 /**
  * Discord bots. Messages arrive over the Gateway, a WebSocket the channels core
  * keeps open on one node; replies go out through the REST API. The tenant creates
- * an application, adds a bot, invites it with Send Messages and Read Message
- * History, and gives its token. `apiUrl` is configurable so tests run against a fake.
+ * an application, adds a bot, gives its token, and invites it with View Channel,
+ * Send Messages, Send Messages in Threads and Read Message History (the console's
+ * invite link asks for these). `apiUrl` is configurable so tests run against a fake.
  */
 export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number } = {}): ChannelProvider {
   const base = (options.apiUrl ?? "https://discord.com/api/v10").replace(/\/+$/, "");

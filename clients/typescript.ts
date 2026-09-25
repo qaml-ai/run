@@ -121,16 +121,13 @@ export interface DefinitionInput {
   mcpServers?: (SourceOptions & { url: string })[];
   openApi?: (SourceOptions & { spec?: string | Record<string, unknown>; baseUrl?: string })[];
 }
-export interface ApplyResult {
-  accepted: string[]; failed: { agent: string; error: string }[];
-  counts: { total: number; updated: number; queued: number; failed: number };
-  results: { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }[];
-}
+/** What applying a definition's revision did to one agent; poll a queued one's request for its outcome. */
+export interface ApplyResult { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }
 /** A definition as the runtime returns it: credentials are never included. */
 export interface Definition extends Omit<DefinitionInput, "mcpServers" | "openApi"> {
   id: string; revision: number; createdAt: number; updatedAt: number;
   mcpServers?: Record<string, unknown>[]; openApi?: Record<string, unknown>[];
-  applied?: ApplyResult;
+  applied?: ApplyResult[];
 }
 /** One source of an agent's tools; `excluded` says why the model does not get a tool, when it does not. */
 export interface ToolSource {
