@@ -422,6 +422,8 @@ app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorTex
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 server.requestTimeout = 30_000;
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
+  // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
+  if (!process.env.AGENT_PUBLIC_URL) signer.issuer = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, keyStorage: accounts.canStoreKeys, sandbox, stripe: stripe ? (stripe.live ? "live" : "test") : false }));
 });
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.

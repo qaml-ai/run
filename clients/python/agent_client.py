@@ -191,8 +191,26 @@ class AgentRuntime:
 
     def _operator(self):
         if not self.api_key:
-            raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to manage volumes and mounts")
+            raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to manage definitions, volumes and mounts")
         return self.api_key
+
+    # Definitions: reusable agent configurations with their tool sources (mcpServers, openApi, builtins).
+    # Make agents from one with create_agent(definition=id). Fields use the REST names (systemPrompt, mcpServers...).
+    async def create_definition(self, **fields):
+        return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", fields, retry=False)
+
+    async def update_definition(self, definition_id, **fields):
+        """Replace the fields given (None removes one); apply="all" also reconfigures its live agents."""
+        return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "PATCH", fields, retry=False)
+
+    async def definition(self, definition_id):
+        return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator())
+
+    async def definitions(self):
+        return await _http(self.http, self.base, "/v1/definitions", self._operator())
+
+    async def delete_definition(self, definition_id):
+        return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "DELETE", retry=False)
 
     async def create_volume(self, *, name=None):
         return await _http(self.http, self.base, "/v1/volumes", self._operator(), "POST", {} if name is None else {"name": name}, retry=False)

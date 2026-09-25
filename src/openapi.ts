@@ -125,10 +125,10 @@ function serverUrl(doc: Record<string, unknown>, specUrl?: string): string | und
   try { return new URL(url, specUrl).toString(); } catch { return undefined; }
 }
 
-/** An operation as the agent sees it: `<source>__<operation>`, codemode by default, reads in parallel. */
-export function definition(source: string, operation: Operation, exposure: ToolDefinition["exposure"] = "codemode"): ToolDefinition {
+/** An operation as the agent sees it: `<source>__<operation>`, reads in parallel. */
+export function definition(source: string, operation: Operation): ToolDefinition {
   return {
-    name: `${source}__${operation.name}`.slice(0, 80), description: operation.description, parameters: operation.inputSchema, exposure,
+    name: `${source}__${operation.name}`.slice(0, 80), description: operation.description, parameters: operation.inputSchema,
     ...(operation.readOnly ? { executionMode: "parallel" as const } : {}),
   };
 }

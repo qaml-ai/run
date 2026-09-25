@@ -26,7 +26,8 @@ type Keys = { signing?: { kid: string; key: CryptoKey }; published: JWK[] };
 export const callScope = new AsyncLocalStorage<{ actor?: string; origin?: Record<string, unknown> }>();
 
 export class RuntimeSigner {
-  readonly issuer: string;
+  /** The runtime's public URL; without AGENT_PUBLIC_URL, the address it listens on, once known. */
+  issuer: string;
   private readonly db: Db;
   private readonly accounts: Accounts;
   private cache?: { at: number; keys: Promise<Keys> };

@@ -31,6 +31,18 @@ export function valueServer(tools: ToolDefinition[], run: (call: ToolCall) => Pr
 }
 
 const BUDGET = { count: 128, bytes: 256 * 1024 };
+/** A source with at most this many tools offers them to the model directly as well as from js_exec. */
+export const SMALL_SOURCE = 10;
+
+/**
+ * A source's tools with its default exposure where they set none: a few tools are declared
+ * to the model directly as well (a call costs one step, not a discovery in js_exec first);
+ * many are reached from js_exec only, so they do not crowd the model's context.
+ */
+export function defaultExposure(tools: ToolDefinition[], exposure?: ToolDefinition["exposure"]): ToolDefinition[] {
+  const chosen = exposure ?? (tools.length <= SMALL_SOURCE ? "both" : "codemode");
+  return tools.map(tool => tool.exposure ? tool : { ...tool, exposure: chosen });
+}
 
 /**
  * An agent's tools from its servers in order of precedence: a name an earlier server lists

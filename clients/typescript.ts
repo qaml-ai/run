@@ -109,6 +109,22 @@ export interface CreateAgentOptions extends AgentOptions {
   mounts?: Mount[];
 }
 /** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
+/** How a tool source is authenticated: a stored bearer token, or identity tokens the runtime signs for each request. */
+export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" };
+/** Options every tool source takes. `exposure` defaults to both for a source of up to 10 tools, else codemode. */
+interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number }
+export interface DefinitionInput {
+  name: string; model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
+  limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: ("web_fetch" | "schedule")[];
+  mcpServers?: (SourceOptions & { url: string })[];
+  openApi?: (SourceOptions & { spec?: string | Record<string, unknown>; baseUrl?: string })[];
+}
+/** A definition as the runtime returns it: credentials are never included. */
+export interface Definition extends Omit<DefinitionInput, "mcpServers" | "openApi"> {
+  id: string; revision: number; createdAt: number; updatedAt: number;
+  mcpServers?: Record<string, unknown>[]; openApi?: Record<string, unknown>[];
+  applied?: { accepted: string[]; failed: { agent: string; error: string }[] };
+}
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
 export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string }
@@ -210,7 +226,7 @@ export class AgentRuntime {
     catch (error) { await client.close(); throw error; }
   }
   private operator() {
-    if (!this.options.apiKey) throw new AgentError("Set apiKey to manage volumes and mounts");
+    if (!this.options.apiKey) throw new AgentError("Set apiKey to manage definitions, volumes and mounts");
     return this.options.apiKey;
   }
   createVolume(options: { name?: string } = {}): Promise<Volume> { return this.transport.json("/v1/volumes", this.operator(), "POST", options, false); }
@@ -220,6 +236,16 @@ export class AgentRuntime {
     if (!/^vol_[a-f0-9]{24}$/.test(id)) throw new AgentError("Invalid volume id");
     return new VolumeHandle(this.transport, this.operator(), id);
   }
+  /**
+   * Definitions: reusable agent configurations with their tool sources (MCP servers, OpenAPI
+   * specs, built-ins). Make agents from one with `createAgent({ definition: id })`.
+   */
+  createDefinition(input: DefinitionInput): Promise<Definition> { return this.transport.json("/v1/definitions", this.operator(), "POST", input, false); }
+  /** Replace the fields given (null removes one); `apply: "all"` also reconfigures its live agents between their turns. */
+  updateDefinition(id: string, input: Partial<DefinitionInput> & { revision?: number; apply?: "all" }): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "PATCH", input, false); }
+  definition(id: string): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator()); }
+  definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }
+  deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
   /** Replace an agent's mounts; an idle agent restarts so its tools describe them. */
   setMounts(agentId: string, mounts: Mount[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
