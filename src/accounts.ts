@@ -25,7 +25,7 @@ export interface GithubUser { login: string; id?: number; createdAt?: number }
 type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
 /**
  * What a tenant owes from a batch: model tokens, and web searches and renders, on the platform's keys
- * (USD, with their counts), tool searches ranked by meaning (a platform fee, with their count), and
+ * (USD, with their counts), tool search's ranking by meaning (at cost, with the searches' count), and
  * active agent time.
  */
 type Charge = { platformCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number };
@@ -268,9 +268,9 @@ export class Accounts {
     if (message.platform) {
       const charge = this.charge(tenant);
       // Web searches, renders and tool searches are counted apart from model tokens, so the hour's ledger entry shows each.
-      if (message.toolSearches) {
+      if (message.toolSearch) {
         charge.toolSearchCost += cost;
-        charge.toolSearches += message.toolSearches;
+        charge.toolSearches += message.toolSearches ?? 0;
       } else if (message.searches || message.renders) {
         charge.toolCost += cost;
         charge.searches += message.searches ?? 0;
@@ -357,7 +357,7 @@ export class Accounts {
         billed.push({ tenant, amount, metadata: {
           tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs),
           ...(charge.searches || charge.renders ? { web: Math.round(charge.toolCost * MICROS), searches: charge.searches, renders: charge.renders } : {}),
-          ...(charge.toolSearches ? { toolSearch: Math.round(charge.toolSearchCost * MICROS), toolSearches: charge.toolSearches } : {}),
+          ...(charge.toolSearchCost ? { toolSearch: Math.round(charge.toolSearchCost * MICROS), toolSearches: charge.toolSearches } : {}),
         } });
       }
     }

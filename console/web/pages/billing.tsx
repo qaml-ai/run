@@ -218,7 +218,7 @@ export function BillingPage() {
                 model tokens at list price on the platform's keys ·
                 web searches on the platform's keys at {Object.entries(data.rates.webSearch).map(([provider, price]) => `${formatMicros(price)} (${provider})`).join(", ")} each ·
                 rendered pages {formatMicros(data.rates.webRender)} each, all free with your own keys ·
-                tool searches ranked by meaning {formatMicros(data.rates.toolSearch)} each.
+                tool searches ranked by meaning at cost.
                 {data.freeCredit && " Tenants on free credit have lower agent and hourly spend limits until their first purchase."}
               </CardDescription>
             </CardHeader>

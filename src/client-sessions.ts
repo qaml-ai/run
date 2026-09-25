@@ -184,17 +184,16 @@ export interface ClientSessionOptions {
   sources?: ToolSources;
   /** Stages that order `tools.search` results by meaning, fused with keyword ranking (AGENT_TOOL_SEARCH). */
   rerankers?: Reranker[];
-  /** Micro-USD charged (as platform usage, through `onUsage`) per search a rerank stage answered. */
-  toolSearchPrice?: number;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
- * rendered), or tool searches ranked by meaning (`toolSearches`), with its cost in `usage.cost.total`.
+ * rendered), or tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
+ * embedding a catalog ahead of them), with its cost in `usage.cost.total`.
  */
-export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number; toolSearches?: number };
+export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number };
 /** Why runs are refused: a message (402), or an error with its own status. */
 export type Refusal = string | HttpError;
 /** A provider key and whether it is the platform's rather than the tenant's own. */
@@ -542,8 +541,8 @@ export class ClientSessions {
     session.route = route;
     session.servers = servers;
     session.searchable = definitions.filter(tool => tool.exposure !== "direct");
-    // Rerankers that index the catalog (embeddings) start now, so the first search need not wait.
-    for (const stage of this.options.rerankers ?? []) stage.warm?.(session.searchable);
+    // Rerankers that index the catalog (embeddings) start now, so the first search need not wait; the agent's tenant pays for it at cost.
+    for (const stage of this.options.rerankers ?? []) stage.warm?.(session.searchable, usd => this.toolSearchUsage(session, usd, 0));
     return definitions;
   }
 
@@ -1101,17 +1100,20 @@ export class ClientSessions {
    */
   /**
    * A `tools.search` query over the agent's code-mode tools; a rerank stage that fails is logged and
-   * left out. A search a stage answered is platform usage at the tool search price, whichever
-   * provider served it: the tenant pays the runtime, not the provider, and never with its own keys.
+   * left out. Ranking by meaning is platform usage at what its providers charged: the tenant pays
+   * the runtime, never with its own keys, so which provider serves it stays the runtime's choice.
    */
   private searchTools(session: Session, query: SearchQuery) {
-    const tenant = session.header.tenant ?? DEFAULT_TENANT;
     return searchTools(session.searchable ?? [], query, {
       rerankers: this.options.rerankers ?? [],
       onError: (error, stage) => console.error(JSON.stringify({ type: "tool_search_rerank_failed", reranker: stage.kind, agent: session.header.id, error: errorText(error) })),
-      onRanked: () => this.options.onUsage?.(tenant, session.header.id, {
-        provider: "runtime", model: "tool_search", usage: { cost: { total: (this.options.toolSearchPrice ?? 0) / 1_000_000 } }, platform: true, toolSearches: 1,
-      }),
+      onRanked: ({ cost }) => this.toolSearchUsage(session, cost, 1),
+    });
+  }
+
+  private toolSearchUsage(session: Session, usd: number, searches: number) {
+    this.options.onUsage?.(session.header.tenant ?? DEFAULT_TENANT, session.header.id, {
+      provider: "runtime", model: "tool_search", usage: { cost: { total: usd } }, platform: true, toolSearch: true, toolSearches: searches,
     });
   }
 

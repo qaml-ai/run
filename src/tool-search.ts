@@ -17,6 +17,9 @@ export type SearchQuery = { query?: string; namespace?: string; limit?: number }
 export type SearchHit = { name: string; description: string };
 export type Candidate = { name: string; description: string };
 
+/** Told what each provider call cost, in USD: tool search is billed at cost. */
+export type Meter = (usd: number) => void;
+
 /** Orders candidates by relevance to a query: a score per candidate, higher is better. */
 export interface Reranker {
   readonly kind: string;
@@ -27,9 +30,9 @@ export interface Reranker {
    * results keep only tools it scored at or above it. None means nothing fits: an empty result.
    */
   readonly relevantAt?: number;
-  rerank(query: string, candidates: Candidate[], signal: AbortSignal): Promise<number[]>;
+  rerank(query: string, candidates: Candidate[], signal: AbortSignal, meter?: Meter): Promise<number[]>;
   /** Index a catalog ahead of its first search (embeddings embed its tools); failures are ignored. */
-  warm?(candidates: Candidate[]): void;
+  warm?(candidates: Candidate[], meter?: Meter): void;
 }
 
 export const DEFAULT_LIMIT = 20;
@@ -156,8 +159,11 @@ const fuse = (signals: Map<number, number>[], size: number) =>
 export async function searchTools(tools: Candidate[], search: SearchQuery, options: {
   rerankers?: Reranker[]; signal?: AbortSignal; timeoutMs?: number;
   onError?: (error: unknown, reranker: Reranker) => void;
-  /** Called once when at least one rerank stage answered: the search was ranked by meaning (and is billed). */
-  onRanked?: (stages: string[]) => void;
+  /**
+   * Called once after reranking with the stages that answered and what the providers charged (USD),
+   * when either is not nothing: the search is billed at that cost.
+   */
+  onRanked?: (outcome: { stages: string[]; cost: number }) => void;
 } = {}): Promise<SearchHit[]> {
   const namespace = search.namespace?.trim();
   const pool = namespace ? tools.filter(tool => namespaceOf(tool.name) === namespace || tool.name === namespace) : tools;
@@ -168,6 +174,8 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
   /** Tools a relevance stage judged relevant; undefined while none has answered. */
   let relevant: Set<number> | undefined;
   const answered: string[] = [];
+  let cost = 0;
+  const meter: Meter = usd => { if (Number.isFinite(usd) && usd > 0) cost += usd; };
   const stages = pool.length > 1 ? options.rerankers ?? [] : [];
   if (stages.length) {
     const controller = new AbortController();
@@ -186,7 +194,7 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
           chosen = [...best, ...chosen.filter(index => !seen.has(index))].slice(0, stage.maxCandidates);
         }
         try {
-          const scores = await stage.rerank(query, chosen.map(index => pool[index]), controller.signal);
+          const scores = await stage.rerank(query, chosen.map(index => pool[index]), controller.signal, meter);
           if (scores.length !== chosen.length || scores.some(score => typeof score !== "number" || Number.isNaN(score))) throw new Error(`${stage.kind} returned ${scores.length} scores for ${chosen.length} tools`);
           const order = ranks(scores);
           signals.push(new Map([...order].map(([position, rank]) => [chosen[position], rank])));
@@ -205,7 +213,7 @@ export async function searchTools(tools: Candidate[], search: SearchQuery, optio
       options.signal?.removeEventListener("abort", abort);
     }
   }
-  if (answered.length) options.onRanked?.(answered);
+  if (answered.length || cost) options.onRanked?.({ stages: answered, cost });
   const ordered = [...ranks(fuse(signals, pool.length), 0).entries()].sort((a, b) => a[1] - b[1]).map(([index]) => index);
   const kept = relevant === undefined ? ordered : ordered.filter(index => relevant!.has(index));
   return kept.slice(0, limit).map(index => hit(pool[index]));
@@ -237,6 +245,16 @@ class Lru<V> {
   }
 }
 
+/**
+ * What a call cost: the provider's own figure where it reports one (OpenRouter does, as `usage.cost`),
+ * else the tokens it counted at a list price per million.
+ */
+function callCost(json: any, tokens: unknown, usdPerMillion: number) {
+  const reported = json?.usage?.cost;
+  if (typeof reported === "number" && Number.isFinite(reported)) return reported;
+  return typeof tokens === "number" && Number.isFinite(tokens) ? tokens * usdPerMillion / 1_000_000 : 0;
+}
+
 /** A key, or where to read the current one (the platform's, which the tenants file can change). */
 export type KeySource = string | (() => string | undefined);
 
@@ -253,12 +271,13 @@ async function post(url: string, key: KeySource, body: unknown, signal: AbortSig
  * Embeddings from an OpenAI-compatible `/embeddings` endpoint (OpenRouter, OpenAI, a local server).
  * Tool texts are embedded once and cached by content, so a search usually embeds only its query.
  */
-export function embeddingReranker(options: { url: string; apiKey: KeySource; model: string; cacheSize?: number }): Reranker {
+export function embeddingReranker(options: { url: string; apiKey: KeySource; model: string; cacheSize?: number; usdPerMillionTokens?: number }): Reranker {
   const cache = new Lru<number[]>(options.cacheSize ?? 20_000);
   // Texts being embedded now, so a search that arrives while a catalog warms waits for it instead of embedding it again.
   const inflight = new Map<string, Promise<void>>();
   const key = (text: string) => createHash("sha256").update(`${options.model}\0${text}`).digest("base64url");
-  async function embed(texts: string[], signal: AbortSignal): Promise<number[][]> {
+  /** The embeddings of `texts`, embedding only what is neither cached nor being embedded; `meter` pays for what this call embeds. */
+  async function embed(texts: string[], signal: AbortSignal, meter?: Meter): Promise<number[][]> {
     const waiting = new Set<Promise<void>>();
     const missing: string[] = [];
     for (const text of new Set(texts)) {
@@ -270,7 +289,7 @@ export function embeddingReranker(options: { url: string; apiKey: KeySource; mod
     for (let start = 0; start < missing.length; start += 256) batches.push(missing.slice(start, start + 256));
     // A few at a time: a catalog of thousands embeds in a second or two, without flooding the provider.
     const own = Promise.all(Array.from({ length: Math.min(4, batches.length) }, async () => {
-      for (let batch = batches.shift(); batch; batch = batches.shift()) await embedBatch(batch, signal);
+      for (let batch = batches.shift(); batch; batch = batches.shift()) await embedBatch(batch, signal, meter);
     })).then(() => {});
     for (const text of missing) inflight.set(key(text), own);
     try { await own; }
@@ -278,11 +297,13 @@ export function embeddingReranker(options: { url: string; apiKey: KeySource; mod
     await Promise.allSettled(waiting);
     // What another call was embedding and failed to: embed it here.
     const left = [...new Set(texts.filter(text => !cache.get(key(text))))];
-    for (let start = 0; start < left.length; start += 256) await embedBatch(left.slice(start, start + 256), signal);
+    for (let start = 0; start < left.length; start += 256) await embedBatch(left.slice(start, start + 256), signal, meter);
     return texts.map(text => cache.get(key(text))!);
   }
-  async function embedBatch(batch: string[], signal: AbortSignal) {
+  async function embedBatch(batch: string[], signal: AbortSignal, meter?: Meter) {
     const json = await post(endpoint(options.url, "embeddings"), options.apiKey, { model: options.model, input: batch }, signal);
+    // text-embedding-3-small's list price where the API reports no cost.
+    meter?.(callCost(json, json?.usage?.prompt_tokens ?? json?.usage?.total_tokens, options.usdPerMillionTokens ?? 0.02));
     const data = json?.data;
     if (!Array.isArray(data) || data.length !== batch.length) throw new Error("The embeddings endpoint returned an unexpected shape");
     for (const entry of data) {
@@ -293,9 +314,9 @@ export function embeddingReranker(options: { url: string; apiKey: KeySource; mod
   }
   return {
     kind: "embeddings", maxCandidates: Infinity,
-    warm(candidates) { void embed(candidates.map(toolText), AbortSignal.timeout(120_000)).catch(() => {}); },
-    async rerank(query, candidates, signal) {
-      const [queryVector, ...vectors] = await embed([query, ...candidates.map(toolText)], signal);
+    warm(candidates, meter) { void embed(candidates.map(toolText), AbortSignal.timeout(120_000), meter).catch(() => {}); },
+    async rerank(query, candidates, signal, meter) {
+      const [queryVector, ...vectors] = await embed([query, ...candidates.map(toolText)], signal, meter);
       return vectors.map(vector => cosine(queryVector, vector));
     },
   };
@@ -310,16 +331,18 @@ const endpoint = (base: string, path: string) => `${base.replace(/\/$/, "")}/${p
  * answer is an independent probability, so it both orders the candidates and says which are
  * irrelevant (below 0.5).
  */
-export function jevReranker(options: { url: string; apiKey: KeySource; model: string }): Reranker {
+export function jevReranker(options: { url: string; apiKey: KeySource; model: string; usdPerMillionTokens?: number }): Reranker {
   return {
     kind: "jev", maxCandidates: STAGE_CANDIDATES, relevantAt: 0.5,
-    async rerank(query, candidates, signal) {
+    async rerank(query, candidates, signal, meter) {
       // One short sentence per tool: Jev bills input tokens, and structured instructions or yes/no
       // rubrics repeated per question cost about 2.5x as much, with no better answers.
       const questions = Object.fromEntries(candidates.map((tool, index) => [`t${index}`, {
         type: "noul", instructions: `Could ${tool.name} (${tool.description.slice(0, DESCRIPTION_CHARS)}) do what is being searched for, or a step of it?`,
       }]));
       const json = await post(endpoint(options.url, "systemone"), options.apiKey, { model: options.model, state: query, questions }, signal);
+      // Jev bills input tokens only ($0.042 per million at list price) where the API reports no cost.
+      meter?.(callCost(json, json?.usage?.input_tokens, options.usdPerMillionTokens ?? 0.042));
       return candidates.map((_, index) => {
         const answer = json?.answers?.[`t${index}`]?.noul;
         if (typeof answer !== "number") throw new Error("Jev returned no answer for a candidate");

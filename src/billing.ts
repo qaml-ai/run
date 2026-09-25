@@ -230,7 +230,7 @@ export class Billing {
       billing: mode, balance, freeCredit: mode === "prepaid" && purchased <= 0, checkout: !!this.options.stripe,
       month: { since, ...thisMonth },
       recent: (await this.ledger(tenant, { limit: 10 })).entries,
-      rates: { agentHour: pricing.agentHour, storageGbMonth: pricing.storageGbMonth, purchaseFeeBps: pricing.purchaseFeeBps, minPurchase: pricing.minPurchase, maxPurchase: pricing.maxPurchase, webSearch: { ...pricing.webSearch }, webRender: pricing.webRender, toolSearch: pricing.toolSearch },
+      rates: { agentHour: pricing.agentHour, storageGbMonth: pricing.storageGbMonth, purchaseFeeBps: pricing.purchaseFeeBps, minPurchase: pricing.minPurchase, maxPurchase: pricing.maxPurchase, webSearch: { ...pricing.webSearch }, webRender: pricing.webRender },
     };
   }
 

@@ -305,7 +305,7 @@ const clients = new ClientSessions(supervisor, {
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
   onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
   spendLimit: tenant => accounts.runLimit(tenant),
-  rerankers, toolSearchPrice: accounts.billing.pricing.toolSearch,
+  rerankers,
   creditLimit: tenant => accounts.billing.creditLimit(tenant),
   db, storage, prefix: "client-sessions/", ownership, volumes,
   get scheduler() { return scheduler; },

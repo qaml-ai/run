@@ -235,7 +235,6 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
 | `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
 | `AGENT_PRICE_WEB_SEARCH_EXA_USD`, `AGENT_PRICE_WEB_SEARCH_BRAVE_USD`, `AGENT_PRICE_WEB_SEARCH_PARALLEL_USD`, `AGENT_PRICE_WEB_RENDER_USD` | per platform-key `web_search` by the provider that answered, and per page `web_fetch` has Firecrawl render (defaults 0.007, 0.005, 0.001, 0.00083); `AGENT_PRICE_WEB_SEARCH_USD` sets all three search prices at once |
-| `AGENT_PRICE_TOOL_SEARCH_USD` | per `tools.search` ranked by meaning (`AGENT_TOOL_SEARCH`), a platform fee whichever provider serves it; keyword-only searches are free (default 0.0002) |
 | `AGENT_WEB_SEARCH_PROVIDERS` | the providers `web_search` tries, in order (default `exa,brave,parallel`) |
 | `AGENT_WEB_SEARCH_TIMEOUT_MS` | how long each search provider gets before the next is tried (default 5000) |
 | `AGENT_EXA_SEARCH_URL`, `AGENT_BRAVE_SEARCH_URL`, `AGENT_PARALLEL_SEARCH_URL`, `AGENT_FIRECRAWL_SCRAPE_URL` | the providers' endpoints (default their own; tests point them at local servers) |
@@ -681,11 +680,12 @@ costs a script nothing until it asks.
   within 2.5 s in all, is left out and logged (`tool_search_rerank_failed`);
   keyword ranking always answers.
 - Cost per search: embeddings a fraction of a millionth of a dollar (the query),
-  Jev about $0.00015 at 100 candidates. Tenants pay a flat platform fee per
-  search ranked by meaning (`AGENT_PRICE_TOOL_SEARCH_USD`, default $0.0002),
-  recorded as platform usage (`runtime/tool_search`) and counted in the hour's
-  ledger entry (`toolSearches`); a search ranked by keywords alone, or whose
-  stages all failed, is free. It always runs on the platform's key, never a
+  Jev about $0.00015 at 100 candidates. Tenants pay it at cost: what the
+  providers charged for the search (OpenRouter reports it; an API that does not
+  is priced by its tokens at list price), plus embedding the agent's catalog
+  when it starts, recorded as platform usage (`runtime/tool_search`) and counted
+  in the hour's ledger entry (`toolSearch`, `toolSearches`). A search ranked by
+  keywords alone is free. It always runs on the platform's key, never a
   tenant's own, so which provider serves it stays the runtime's choice. Both use OpenRouter by default
   (`AGENT_TOOL_SEARCH_URL`, `https://openrouter.ai/api/v1`) with
   `AGENT_TOOL_SEARCH_API_KEY`; any compatible API works (OpenAI embeddings,

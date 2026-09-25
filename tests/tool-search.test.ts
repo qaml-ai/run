@@ -228,31 +228,40 @@ test("a search while the catalog is still warming waits for those embeddings ins
   assert.deepEqual(inputs, [catalog.length, 1], "the search embedded only its query");
 });
 
-test("a search counts as ranked (and billed) only when a rerank stage answered", async () => {
-  const ranked: string[][] = [];
-  const onRanked = (stages: string[]) => ranked.push(stages);
+test("a search is billed at what its stages' providers charged, only when reranking ran", async () => {
+  const outcomes: { stages: string[]; cost: number }[] = [];
+  const onRanked = (outcome: { stages: string[]; cost: number }) => outcomes.push(outcome);
+  const costs = (usd: number, name: string): Reranker => ({ kind: `costs-${usd}`, maxCandidates: Infinity, rerank: async (_query, candidates, _signal, meter) => { meter?.(usd); return candidates.map(entry => entry.name === name ? 1 : 0); } });
+  const paidThenFailed: Reranker = { kind: "paid-then-failed", maxCandidates: Infinity, rerank: async (_query, _candidates, _signal, meter) => { meter?.(0.002); throw new Error("bad answer"); } };
   const broken: Reranker = { kind: "broken", maxCandidates: Infinity, rerank: async () => { throw new Error("down"); } };
-  await searchTools(catalog, { query: "issue" }, { rerankers: [broken, favors("github__create_issue")], onRanked, onError: () => {} });
+  await searchTools(catalog, { query: "issue" }, { rerankers: [costs(0.001, "github__create_issue"), costs(0.003, "github__create_issue")], onRanked });
+  await searchTools(catalog, { query: "issue" }, { rerankers: [paidThenFailed], onRanked, onError: () => {} });
   await searchTools(catalog, { query: "issue" }, { rerankers: [broken], onRanked, onError: () => {} });
   await searchTools(catalog, { query: "issue" }, { onRanked });
-  await searchTools(catalog, {}, { rerankers: [favors("x")], onRanked });
-  assert.deepEqual(ranked, [["fake"]], "only the search a stage answered, naming the stages that did");
+  await searchTools(catalog, {}, { rerankers: [costs(1, "x")], onRanked });
+  assert.deepEqual(outcomes.map(outcome => [outcome.stages, Math.round(outcome.cost * 1e6)]), [
+    [["costs-0.001", "costs-0.003"], 4_000],
+    [[], 2_000],
+  ], "what the providers charged, a failed call included; nothing when no provider was called");
 });
 
-test("every tenant's ranked searches are platform usage at the tool search price, never on its own keys", async t => {
+test("every tenant pays tool search at cost on the platform's key: each search, and embedding its agent's catalog", async t => {
   const sha = (value: string) => createHash("sha256").update(value).digest("hex");
   const PAYG = "payg-operator-token-at-least-24-chars", OPS = "ops-operator-token-at-least-24-chars";
   const keys: (string | undefined)[] = [];
-  const jev = await listen(t, async (req, res) => {
+  const api = await listen(t, async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     keys.push(req.headers.authorization);
-    const { questions } = JSON.parse(raw);
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ answers: Object.fromEntries(Object.keys(questions).map(id => [id, { noul: String(questions[id].instructions).includes("schedule") ? 0.9 : 0.1 }])) }));
+    const body = JSON.parse(raw);
+    const json = (value: unknown) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(value));
+    const near = (text: string) => /schedule|remind/i.test(text);
+    if (req.url === "/v1/embeddings") return json({ data: body.input.map((text: string, index: number) => ({ index, embedding: near(text) ? [1, 0] : [0, 1] })), usage: { prompt_tokens: 10, cost: 0.001 } });
+    json({ answers: Object.fromEntries(Object.entries(body.questions).map(([id, question]: [string, any]) => [id, { noul: near(question.instructions) ? 0.9 : 0.1 }])), usage: { input_tokens: 900, cost: 0.004 } });
   });
   const r = await runtime(t, body => body.messages.at(-1).role === "tool" ? { role: "assistant", content: "done" }
     : toolCall("js_exec", { code: `return [(await tools.search("remind me later")).map(tool => tool.name), (await tools.search("")).length];` }), {
-    AGENT_TOOL_SEARCH: "jev", AGENT_TOOL_SEARCH_URL: `${jev}/v1`, AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_TOOL_SEARCH_USD: "0.01",
+    AGENT_TOOL_SEARCH: "embeddings,jev", AGENT_TOOL_SEARCH_URL: `${api}/v1`, AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0",
   }, {
     tenants: {
       payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
@@ -269,14 +278,17 @@ test("every tenant's ranked searches are platform usage at the tool search price
     assert.ok(found.length && found.every((name: string) => name.includes("schedule")), "Jev kept the schedule tools");
     assert.ok(listed > 0);
   }
-  assert.deepEqual(keys, ["Bearer platform-openrouter-key", "Bearer platform-openrouter-key"], "the platform's key, even for a tenant with its own OpenRouter key");
-  // Only the ranked search is charged; listing the catalog is free.
-  for (const token of [PAYG, OPS]) {
-    const usage = await until(async () => (await r.call("/v1/usage", { token })).json.days.find((day: any) => day.model === "runtime/tool_search"), "the search's usage");
-    assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 1, 0.01]);
+  assert.ok(keys.length && keys.every(key => key === "Bearer platform-openrouter-key"), "the platform's key, even for a tenant with its own OpenRouter key");
+  // The first tenant: its catalog embedded ($0.001), then the search: its query embedded ($0.001) and Jev ($0.004).
+  // The second has the same catalog and query, already embedded on this node: only Jev. Listing is free.
+  for (const [token, micros] of [[PAYG, 6_000], [OPS, 4_000]] as const) {
+    const usage = await until(async () => {
+      const day = (await r.call("/v1/usage", { token })).json.days.find((row: any) => row.model === "runtime/tool_search");
+      return day && Math.round(day.platformCost * 1e6) === micros && day;
+    }, "the searches' usage, at cost");
+    assert.equal(usage.platformCost, usage.cost);
   }
-  await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 990_000, "the prepaid tenant's credit, debited the fee");
-  const entry = (await r.call("/v1/billing/ledger", { token: PAYG })).json.entries.find((row: any) => row.kind === "usage");
-  assert.deepEqual([entry.amount, entry.metadata.toolSearches, entry.metadata.toolSearch], [-10_000, 1, 10_000], "counted apart in the hour's entry");
-  assert.equal((await r.call("/v1/billing", { token: PAYG })).json.rates.toolSearch, 10_000);
+  await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 994_000, "the prepaid tenant's credit, debited at cost");
+  const entries = (await r.call("/v1/billing/ledger", { token: PAYG })).json.entries.filter((row: any) => row.kind === "usage");
+  assert.deepEqual([entries.reduce((sum: number, row: any) => sum + (row.metadata.toolSearch ?? 0), 0), entries.reduce((sum: number, row: any) => sum + (row.metadata.toolSearches ?? 0), 0)], [6_000, 1], "counted apart in the hour's entry");
 });

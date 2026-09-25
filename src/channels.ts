@@ -71,6 +71,8 @@ export interface ChannelProvider {
   readonly typingMs?: number;
 }
 export interface GatewayHandlers {
+  /** Structured transport diagnostics; never message content, credentials or session tokens. */
+  diagnostic?(event: string, fields: Record<string, unknown>): void;
   message(inbound: Inbound): Promise<void>;
   /** The connection cannot work (credentials rejected); it is retried after a pause. */
   failed(error: Error): void;
@@ -333,7 +335,11 @@ export class Channels {
 
   /** Record a message and start on it. Anything the channel does not handle, or from someone not allowed, is dropped. */
   private async accept(channel: Channel, inbound: Inbound) {
-    if (!validConversation(inbound.conversationId) || !this.allowed(channel, inbound.sender)) return;
+    if (!validConversation(inbound.conversationId) || !this.allowed(channel, inbound.sender)) {
+      console.log(JSON.stringify({ type: "channel_message_rejected", channel: channel.id, messageId: inbound.messageId,
+        reason: !validConversation(inbound.conversationId) ? "invalid_conversation" : "access" }));
+      return;
+    }
     if (inbound.continuation) {
       const known = await this.db.query("select 1 from channel_conversations where channel = $1 and conversation = $2", [channel.id, inbound.conversationId]);
       if (!known.rowCount) return;
@@ -402,10 +408,13 @@ export class Channels {
       if (!taken || !("claim" in taken)) continue;
       const { claim } = taken;
       const current = () => this.gateways.get(channel.id)?.claim === claim;
+      console.log(JSON.stringify({ type: "channel_gateway_acquired", channel: channel.id, node: this.options.node, epoch: claim.epoch }));
       const gateway = this.provider(channel.type).connect!(this.secrets(channel).credentials, {
+        diagnostic: (event, fields) => console.log(JSON.stringify({ type: `${channel.type}_gateway_${event}`, channel: channel.id, node: this.options.node, epoch: claim.epoch, ...fields })),
         message: async inbound => {
           const latest = await this.read(channel.id);
           if (latest && current()) await this.accept(latest, inbound);
+          else console.log(JSON.stringify({ type: "channel_gateway_message_skipped", channel: channel.id, node: this.options.node, reason: latest ? "stale_claim" : "deleted" }));
         },
         // Kept claimed, so no other node tries the same credentials; this node retries after a pause.
         failed: error => {
@@ -422,6 +431,8 @@ export class Channels {
   private closeGateway(id: string, release: boolean) {
     const held = this.gateways.get(id);
     if (!held) return;
+    console.log(JSON.stringify({ type: "channel_gateway_released", channel: id, node: this.options.node, epoch: held.claim.epoch,
+      release, draining: this.options.ownership?.draining ?? false, holds: this.options.ownership?.holds(held.claim) ?? false }));
     this.gateways.delete(id);
     held.gateway.close();
     if (release) void this.options.ownership?.release(held.claim).catch(() => {});

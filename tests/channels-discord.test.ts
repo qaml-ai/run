@@ -33,7 +33,7 @@ async function fakeDiscord(t: T) {
   const calls: { method: string; path: string; body: any }[] = [];
   /** Every gateway payload a client sent, by connection. */
   const received: { socket: WebSocket; op: number; d: any }[] = [];
-  const state = { closeOnIdentify: 0 as number, sessions: 0 };
+  const state = { closeOnIdentify: 0 as number, sessions: 0, hello: true, ready: true };
   const server = createServer(async (req, res) => {
     let text = "";
     for await (const chunk of req) text += chunk;
@@ -54,14 +54,14 @@ async function fakeDiscord(t: T) {
   wss.on("connection", socket => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
-    socket.send(JSON.stringify({ op: 10, d: { heartbeat_interval: 200 } }));
+    if (state.hello) socket.send(JSON.stringify({ op: 10, d: { heartbeat_interval: 200 } }));
     socket.on("message", data => {
       const payload = JSON.parse(String(data));
       received.push({ socket, ...payload });
       if (payload.op === 1) socket.send(JSON.stringify({ op: 11 }));
       if (payload.op === 2) {
         if (payload.d.token !== BOT_TOKEN || state.closeOnIdentify) { socket.close(state.closeOnIdentify || 4004, "Authentication failed."); return; }
-        dispatch(socket, "READY", { session_id: `session-${++state.sessions}`, resume_gateway_url: gatewayUrl, user: { id: BOT_ID, username: "fixture_bot", bot: true } });
+        if (state.ready) dispatch(socket, "READY", { session_id: `session-${++state.sessions}`, resume_gateway_url: gatewayUrl, user: { id: BOT_ID, username: "fixture_bot", bot: true } });
       }
       if (payload.op === 6) dispatch(socket, "RESUMED", {});
     });
@@ -209,4 +209,48 @@ test("Discord messages that are not for the bot are ignored", () => {
     { content_type: "image/png", size: 5_000_000, url: "https://cdn.discordapp.com/attachments/1/2/big.png" },
   ] }, BOT_ID);
   assert.deepEqual(photo?.images, ["https://cdn.discordapp.com/attachments/1/2/a.png"]);
+});
+
+for (const stage of ["hello", "ready"] as const) {
+  test(`Discord retries a stalled ${stage} handshake and logs no secrets`, async t => {
+    const api = await fakeDiscord(t);
+    api.state[stage] = false;
+    const events: { event: string; fields: Record<string, unknown> }[] = [];
+    const gateway = discord({ apiUrl: api.url, handshakeTimeoutMs: 120 }).connect!({ botToken: BOT_TOKEN }, {
+      message: async () => {}, failed: error => assert.fail(error.message),
+      diagnostic: (event, fields) => events.push({ event, fields }),
+    });
+    t.after(() => gateway.close());
+    await until(() => events.some(x => x.event === "handshake_timeout"), "handshake timeout");
+    api.state[stage] = true;
+    await until(() => events.some(x => x.event === "ready"), "recovered connection");
+    await until(() => events.some(x => x.event === "health"), "heartbeat health");
+    gateway.close();
+    const serialized = JSON.stringify(events);
+    assert.ok(events.some(x => x.event === "connecting"));
+    assert.ok(events.some(x => x.event === "closed"));
+    assert.ok(events.some(x => x.event === "stopped"));
+    assert.ok(!serialized.includes(BOT_TOKEN));
+    assert.ok(!serialized.includes("session-"));
+  });
+}
+
+test("Discord keeps delivering while a deployment retires its owner, then hands off on stop", async t => {
+  const api = await fakeDiscord(t);
+  const { db } = await testDatabase();
+  const key = randomBytes(32).toString("hex");
+  const a = await node(t, api, db, key, "retiring");
+  const b = await node(t, api, db, key, "replacement");
+  await a.channels.create("default", { type: "discord", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
+  await a.channels.scan();
+  await until(() => api.identified().length === 1, "first connection");
+  await a.ownership.drain();
+  await Promise.all([a.channels.scan(), b.channels.scan()]);
+  api.message({ id: "7001", channel_id: "2001", author: ada, content: "during retirement" });
+  await until(() => api.sent().length === 1, "reply during retirement");
+  a.channels.stop();
+  await until(() => api.sockets.size === 0, "old connection closes");
+  await until(async () => { await b.channels.scan(); return api.identified().length === 2; }, "replacement connects");
+  api.message({ id: "7002", channel_id: "2001", author: ada, content: "after handoff" });
+  await until(() => api.sent().length === 2, "reply after handoff");
 });

@@ -375,8 +375,7 @@ export const Billing = z.object({
     minPurchase: micros("Smallest purchase"), maxPurchase: micros("Largest purchase"),
     webSearch: z.object({ exa: micros("Per search Exa answers"), brave: micros("Per search Brave answers"), parallel: micros("Per search Parallel answers") }).openapi({ description: "Per web_search on the platform's key for the provider that answered" }),
     webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
-    toolSearch: micros("Per tools.search ranked by meaning (searches ranked by keywords alone are free)"),
-  }).openapi({ description: "Model tokens are charged at the provider's list price when they run on the platform's keys" }),
+  }).openapi({ description: "Model tokens are charged at the provider's list price when they run on the platform's keys; tools.search's ranking by meaning at what its providers charge" }),
 }).openapi("Billing");
 export const AdjustmentInput = z.object({
   tenant: z.string(),

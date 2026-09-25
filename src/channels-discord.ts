@@ -46,7 +46,7 @@ export function parseMessage(message: any, botId: string): Inbound | undefined {
  * an application, adds a bot, invites it with Send Messages and Read Message
  * History, and gives its token. `apiUrl` is configurable so tests run against a fake.
  */
-export function discord(options: { apiUrl?: string } = {}): ChannelProvider {
+export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number } = {}): ChannelProvider {
   const base = (options.apiUrl ?? "https://discord.com/api/v10").replace(/\/+$/, "");
   const token = (credentials: Record<string, string>) => {
     const value = credentials.botToken;
@@ -72,11 +72,24 @@ export function discord(options: { apiUrl?: string } = {}): ChannelProvider {
     let socket: WebSocket | undefined;
     let heartbeat: ReturnType<typeof setTimeout> | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let handshake: ReturnType<typeof setTimeout> | undefined;
     let sequence: number | null = null;
     let session: { id: string; url: string } | undefined;
     let botId = "";
     let failures = 0;
-    const log = (type: string, fields: Record<string, unknown> = {}) => console.log(JSON.stringify({ type: `discord_gateway_${type}`, ...fields }));
+    let connection = 0;
+    let lastEventAt: number | null = null;
+    let lastAckAt: number | null = null;
+    let lastHeartbeatAt: number | null = null;
+    let received = 0;
+    let accepted = 0;
+    let ready = false;
+    let lastHealthAt = 0;
+    const log = (type: string, fields: Record<string, unknown> = {}) => {
+      const detail = { connection, ...fields };
+      if (handlers.diagnostic) handlers.diagnostic(type, detail);
+      else console.log(JSON.stringify({ type: `discord_gateway_${type}`, ...detail }));
+    };
     const send = (op: number, d: unknown) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ op, d })); };
 
     async function open() {
@@ -91,17 +104,32 @@ export function discord(options: { apiUrl?: string } = {}): ChannelProvider {
       }
       if (closed) return;
       let acked = true;
+      connection++;
+      ready = false;
+      lastEventAt = lastAckAt = lastHeartbeatAt = null;
+      lastHealthAt = 0;
+      log("connecting", { resume: !!session, sequence });
       const ws = socket = new WebSocket(`${url.replace(/\/+$/, "")}/?v=10&encoding=json`);
+      // Heartbeats only start after Hello and do not prove Identify/Resume completed.
+      handshake = setTimeout(() => {
+        if (closed || socket !== ws || ready) return;
+        log("handshake_timeout", { state: ws.readyState, sequence, lastEventAt, lastAckAt });
+        ws.close(RECONNECT);
+      }, options.handshakeTimeoutMs ?? 30_000);
       ws.onmessage = event => {
+        if (closed || socket !== ws) return;
+        lastEventAt = Date.now();
         let payload: any;
         try { payload = JSON.parse(String(event.data)); } catch { return; }
         if (payload.s != null) sequence = payload.s;
         if (payload.op === 10) {
+          log("hello", { intervalMs: payload.d?.heartbeat_interval, resume: !!session });
           // Hello: beat on Discord's interval, the first at a random point within it, and give up on a link whose beats go unanswered.
           const interval = Number(payload.d?.heartbeat_interval) || 41_250;
           const beat = () => {
             if (!acked) { log("zombie"); ws.close(RECONNECT); return; }
             acked = false;
+            lastHeartbeatAt = Date.now();
             send(1, sequence);
             heartbeat = setTimeout(beat, interval);
           };
@@ -109,11 +137,20 @@ export function discord(options: { apiUrl?: string } = {}): ChannelProvider {
           heartbeat = setTimeout(beat, interval * Math.random());
           if (session) send(6, { token: token(credentials), session_id: session.id, seq: sequence });
           else send(2, { token: token(credentials), intents: INTENTS, properties: { os: "linux", browser: "agent-runtime", device: "agent-runtime" } });
-        } else if (payload.op === 11) acked = true;
-        else if (payload.op === 1) send(1, sequence);
-        else if (payload.op === 7) ws.close(RECONNECT);
+        } else if (payload.op === 11) {
+          acked = true;
+          lastAckAt = Date.now();
+          if (lastAckAt - lastHealthAt >= 60_000) {
+            lastHealthAt = lastAckAt;
+            log("health", { ready, sequence, received, accepted, lastEventAt, lastAckAt,
+              heartbeatLatencyMs: lastHeartbeatAt === null ? null : lastAckAt - lastHeartbeatAt });
+          }
+        }
+        else if (payload.op === 1) { lastHeartbeatAt = Date.now(); send(1, sequence); }
+        else if (payload.op === 7) { log("server_reconnect"); ws.close(RECONNECT); }
         else if (payload.op === 9) {
           // Invalid session: resume if Discord says it can be, otherwise identify afresh.
+          log("invalid_session", { resumable: !!payload.d });
           if (!payload.d) { session = undefined; sequence = null; }
           ws.close(RECONNECT);
         } else if (payload.op === 0) {
@@ -121,23 +158,30 @@ export function discord(options: { apiUrl?: string } = {}): ChannelProvider {
             botId = String(payload.d.user.id);
             session = { id: payload.d.session_id, url: payload.d.resume_gateway_url };
             failures = 0;
-          } else if (payload.t === "RESUMED") failures = 0;
+            ready = true;
+            clearTimeout(handshake);
+            log("ready", { botId, sequence });
+          } else if (payload.t === "RESUMED") { failures = 0; ready = true; clearTimeout(handshake); log("resumed", { sequence }); }
           else if (payload.t === "MESSAGE_CREATE" && botId) {
+            received++;
             const inbound = parseMessage(payload.d, botId);
+            if (inbound) { accepted++; log("message", { messageId: inbound.messageId, conversationId: inbound.conversationId, sequence }); }
             if (inbound) void handlers.message(inbound).catch(error => log("message_failed", { error: error instanceof Error ? error.message : String(error) }));
           }
         }
       };
       ws.onclose = event => {
         if (socket !== ws) return;
+        log("closed", { code: event.code, ready, sequence, lastEventAt, lastAckAt });
         clearTimeout(heartbeat);
+        clearTimeout(handshake);
         socket = undefined;
         if (closed) return;
         if (FATAL.has(event.code)) return fail(new Error(`Discord closed the gateway: ${event.code} ${event.reason || "fatal"}`));
         if (SESSION_LOST.has(event.code)) { session = undefined; sequence = null; }
         reconnect();
       };
-      ws.onerror = () => {};
+      ws.onerror = () => { if (socket === ws) log("socket_error", { ready, sequence }); };
     }
     function reconnect() {
       if (closed) return;
@@ -148,9 +192,12 @@ export function discord(options: { apiUrl?: string } = {}): ChannelProvider {
     }
     function fail(error: Error) { close(); handlers.failed(error); }
     function close() {
+      if (closed) return;
+      log("stopped", { ready, sequence, lastEventAt, lastAckAt, received, accepted });
       closed = true;
       clearTimeout(heartbeat);
       clearTimeout(retry);
+      clearTimeout(handshake);
       socket?.close(1000);
       socket = undefined;
     }
