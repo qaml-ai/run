@@ -46,7 +46,7 @@ const node = [
 const env: Record<string, string> = {
   PORT: String(port), AGENT_DATABASE_URL: url.toString(),
   AGENT_DATA_DIR: join(root, "data"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
-  AGENT_MAX_PROCESSES: String(agents * 2), AGENT_MAX_PROCESSES_PER_TENANT: String(agents * 2),
+  AGENT_MAX_AGENTS: String(agents * 2), AGENT_MAX_AGENTS_PER_TENANT: String(agents * 2),
   AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "bench-session-secret-with-32-characters!!",
 };
 // --cpus runs the runtime in a Linux container with that many CPUs, like a Fargate task,

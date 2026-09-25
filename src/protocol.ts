@@ -23,8 +23,6 @@ export interface AgentConfig {
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** Host policy for retrying transient provider errors. */
   retry?: { maxAttempts: number; baseDelayMs: number };
-  /** The transcript is `transcript.jsonl` in `directory`, which may hold a version-1 snapshot to import. */
-  localTranscript?: boolean;
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
 }

@@ -154,8 +154,6 @@ export interface ClientSessionOptions {
   apiKeyFor?: (tenant: string, provider: string) => Promise<ProviderKey | string | undefined> | ProviderKey | string | undefined;
   /** At most this many hosted agents per tenant at once on this node (default: no per-tenant limit). */
   maxAgentsPerTenant?: number;
-  /** @deprecated The older name of `maxAgentsPerTenant`. */
-  maxProcessesPerTenant?: number;
   /** A tenant's own limit, overriding `maxAgentsPerTenant`; read at each start, so changes apply to the next one. */
   agentLimitFor?: (tenant: string) => Promise<number | undefined> | number | undefined;
   /** Stop an agent's process, and unload its session, after this long without activity. */
@@ -456,7 +454,7 @@ export class ClientSessions {
       return !!idle;
     };
     const own = await this.options.agentLimitFor?.(tenant);
-    const quota = own ?? this.options.maxAgentsPerTenant ?? this.options.maxProcessesPerTenant;
+    const quota = own ?? this.options.maxAgentsPerTenant;
     const source = own !== undefined ? "tenant" : "default";
     const sameTenant = (session: Session) => tenantOf(session) === tenant;
     const reject = (status: 429 | 503, limit: string, value: number, message: string) => {

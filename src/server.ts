@@ -50,17 +50,15 @@ const secrets = await runtimeSecrets();
 const sessionSecret = secrets.sessionSecret;
 if (!sessionSecret || sessionSecret.length < 32) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
 const root = resolve(process.env.AGENT_DATA_DIR ?? ".agent-runtime");
-/** A positive integer setting under its name, or the older name it replaced (which keeps working). */
-function positiveSetting(name: string, legacy: string, fallback: number) {
-  const chosen = process.env[name] !== undefined ? name : process.env[legacy] !== undefined ? legacy : undefined;
-  const value = Number(chosen ? process.env[chosen] : fallback);
-  if (!Number.isInteger(value) || value < 1) throw new Error(`${chosen ?? name} must be a positive integer`);
+/** A positive integer setting. */
+function positiveSetting(name: string, fallback: number) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
   return value;
 }
 // Agents hosted per node and per tenant on a node: processes with AGENT_HOSTING=process, in-process hosts with inline.
-// AGENT_MAX_PROCESSES and AGENT_MAX_PROCESSES_PER_TENANT are the older names.
-const maxAgents = positiveSetting("AGENT_MAX_AGENTS", "AGENT_MAX_PROCESSES", 8);
-const maxAgentsPerTenant = positiveSetting("AGENT_MAX_AGENTS_PER_TENANT", "AGENT_MAX_PROCESSES_PER_TENANT", Math.max(1, Math.ceil(maxAgents / 2)));
+const maxAgents = positiveSetting("AGENT_MAX_AGENTS", 8);
+const maxAgentsPerTenant = positiveSetting("AGENT_MAX_AGENTS_PER_TENANT", Math.max(1, Math.ceil(maxAgents / 2)));
 const port = Number(process.env.PORT ?? 8790);
 const drainMs = Number(process.env.AGENT_DRAIN_TIMEOUT_MS ?? 100_000);
 if (!Number.isInteger(drainMs) || drainMs < 0) throw new Error("AGENT_DRAIN_TIMEOUT_MS must be a non-negative integer");

@@ -12,7 +12,7 @@ import { applicationInstructions, INSTRUCTIONS, leadingSystemMessage } from "./s
 import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
-import { Transcript, legacySnapshotPath, readTranscriptLog, summaryMessage, type CompactionState, type TranscriptRecord } from "./transcript.ts";
+import { Transcript, readTranscriptLog, summaryMessage, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, runCompaction } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY } from "./limits.ts";
@@ -249,7 +249,7 @@ export function createAgentHost(io: HostIO) {
       config = params;
       await mkdir(config.directory, { recursive: true, mode: 0o700 });
       transcript = new Transcript(io.transcript);
-      await transcript.load(config.localTranscript ? legacySnapshotPath(config.directory) : undefined);
+      await transcript.load();
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string } } | undefined;
       if (transcript.active && config.resume) {

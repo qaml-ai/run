@@ -187,8 +187,7 @@ aws logs filter-log-events --region us-west-2 --log-group-name /ecs/camelai-agen
 ## Limits
 
 - Each task holds up to 1000 awake agents, at most 500 per tenant
-  (`AGENT_MAX_AGENTS`, `AGENT_MAX_AGENTS_PER_TENANT`; the older names
-  `AGENT_MAX_PROCESSES` and `AGENT_MAX_PROCESSES_PER_TENANT` still work). Idle agents stop
+  (`AGENT_MAX_AGENTS`, `AGENT_MAX_AGENTS_PER_TENANT`). Idle agents stop
   after 5 minutes. When a tenant or the task is at its limit, the least recently
   used idle agent is stopped; if none is idle, the request is refused (429 for a
   tenant's limit, 503 for the task's). A tenant's own `maxAgents`

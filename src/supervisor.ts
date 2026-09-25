@@ -94,7 +94,7 @@ export class AgentSupervisor {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const storage = this.options.storage;
       const transcript = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
-      const init = { ...config, ...(storage ? {} : { localTranscript: true }), id, directory, tools: bridge.definitions };
+      const init = { ...config, id, directory, tools: bridge.definitions };
       return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript) : await this.startProcess(id, directory, init, bridge, transcript);
     } finally { this.starting.delete(id); }
   }

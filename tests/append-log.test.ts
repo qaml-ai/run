@@ -47,11 +47,12 @@ test("rewrite folds the log from a snapshot taken inside the write sequence", as
   assert.deepEqual(await fileAppendLog(path).read(), [{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }]);
 });
 
-test("transcript appends one record per message and imports a legacy snapshot once", async t => {
+test("transcript appends one record per message", async t => {
   const root = await directory(t);
-  await appendFile(join(root, "session.json"), JSON.stringify({ version: 1, active: true, messages: [{ role: "user", content: "legacy", timestamp: 1 }] }));
   const transcript = new Transcript(fileAppendLog<TranscriptRecord>(join(root, "transcript.jsonl")));
-  await transcript.load(join(root, "session.json"));
+  await transcript.load();
+  await transcript.setActive(true);
+  await transcript.push({ role: "user", content: "first", timestamp: 1 });
   assert.equal(transcript.active, true);
   assert.equal(transcript.total, 1);
   await transcript.setActive(false);
@@ -59,7 +60,6 @@ test("transcript appends one record per message and imports a legacy snapshot on
   await transcript.push({ role: "assistant", content: [], stopReason: "error", errorMessage: "503", timestamp: 3 } as any);
   await transcript.retract();
   const lines = (await readFile(join(root, "transcript.jsonl"), "utf8")).trim().split("\n");
-  assert.deepEqual(lines.map(line => JSON.parse(line).t), ["reset", "turn", "turn", "message", "message", "retract"]);
-  assert.deepEqual((await readTranscript(root)).map(m => (m as { content: unknown }).content), ["legacy", "next"]);
-  await assert.rejects(readFile(join(root, "session.json")), /ENOENT/);
+  assert.deepEqual(lines.map(line => JSON.parse(line).t), ["turn", "message", "turn", "message", "message", "retract"]);
+  assert.deepEqual((await readTranscript(root)).map(m => (m as { content: unknown }).content), ["first", "next"]);
 });

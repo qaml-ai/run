@@ -27,15 +27,12 @@ test("the runtime refuses to start without a tenants file or secret, or a sessio
   assert.match(startupError({ AGENT_SESSION_SECRET: "" }), /Set AGENT_SESSION_SECRET/);
 });
 
-test("hosted-agent caps are AGENT_MAX_AGENTS(_PER_TENANT), and the older AGENT_MAX_PROCESSES names still work", () => {
+test("hosted-agent caps are AGENT_MAX_AGENTS(_PER_TENANT), positive integers", () => {
   assert.match(startupError({ AGENT_MAX_AGENTS: "0" }), /AGENT_MAX_AGENTS must be a positive integer/);
-  assert.match(startupError({ AGENT_MAX_PROCESSES: "0" }), /AGENT_MAX_PROCESSES must be a positive integer/);
   assert.match(startupError({ AGENT_MAX_AGENTS_PER_TENANT: "x" }), /AGENT_MAX_AGENTS_PER_TENANT must be a positive integer/);
-  assert.match(startupError({ AGENT_MAX_PROCESSES_PER_TENANT: "-1" }), /AGENT_MAX_PROCESSES_PER_TENANT must be a positive integer/);
-  // The new name wins when both are set.
-  assert.match(startupError({ AGENT_MAX_AGENTS: "0", AGENT_MAX_PROCESSES: "10" }), /AGENT_MAX_AGENTS must be/);
+  assert.match(startupError({ AGENT_MAX_AGENTS_PER_TENANT: "-1" }), /AGENT_MAX_AGENTS_PER_TENANT must be a positive integer/);
   // Valid caps get past the check (to the database, absent here).
-  assert.doesNotMatch(startupError({ AGENT_MAX_AGENTS: "10", AGENT_MAX_PROCESSES_PER_TENANT: "5" }), /must be a positive integer/);
+  assert.doesNotMatch(startupError({ AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "5" }), /must be a positive integer/);
 });
 
 test("a tenant's maxAgents is a positive integer; an invalid one rejects the reload and keeps the last good tenants", async () => {

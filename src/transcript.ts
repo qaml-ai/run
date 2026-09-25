@@ -1,11 +1,9 @@
-import { readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { createCompactionSummaryMessage, type AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SystemMessage } from "@earendil-works/pi-ai";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 
 export const transcriptPath = (directory: string) => join(directory, "transcript.jsonl");
-export const legacySnapshotPath = (directory: string) => join(directory, "session.json");
 
 /** A compaction: `summary` replaces every message before absolute index `cut`. */
 export interface CompactionState {
@@ -35,14 +33,9 @@ export type TranscriptRecord =
    */
   | ({ t: "compaction"; system?: SystemMessage } & CompactionState);
 
-/** Read an agent's full history from a single-host directory, including a legacy snapshot. */
+/** Read an agent's full history from a single-host directory. */
 export async function readTranscript(directory: string): Promise<AgentMessage[]> {
-  const records = await fileAppendLog<TranscriptRecord>(transcriptPath(directory)).read();
-  if (!records.length) {
-    try { return (JSON.parse(await readFile(legacySnapshotPath(directory), "utf8")) as { messages: AgentMessage[] }).messages ?? []; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-  }
-  return historyOf(records);
+  return historyOf(await fileAppendLog<TranscriptRecord>(transcriptPath(directory)).read());
 }
 
 /** Read an agent's full history from any log. Never writes, so it is safe beside a live owner. */
@@ -96,21 +89,8 @@ export class Transcript {
     return view;
   }
 
-  async load(legacySnapshotPath?: string) {
-    const records = await this.log.read();
-    if (!records.length && legacySnapshotPath && await this.importLegacy(legacySnapshotPath)) return;
-    for (const record of records) this.apply(record);
-  }
-
-  /** Version 1 kept the whole transcript in one JSON file, rewritten per message. */
-  private async importLegacy(path: string) {
-    let snapshot: { version: number; active: boolean; messages: AgentMessage[] };
-    try { snapshot = JSON.parse(await readFile(path, "utf8")); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-    if (snapshot.version !== 1 || !Array.isArray(snapshot.messages)) throw new Error("Invalid legacy session snapshot");
-    await this.replace(snapshot.messages, snapshot.active);
-    await rename(path, `${path}.migrated`);
-    return true;
+  async load() {
+    for (const record of await this.log.read()) this.apply(record);
   }
 
   apply(record: TranscriptRecord) {
