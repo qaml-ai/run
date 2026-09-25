@@ -404,34 +404,28 @@ the tenant can apply a definition, never an agent's own token. `GET
 a definition leaves its agents as they are; a definition a channel uses cannot
 be deleted.
 
-In Channels, **Model & prompt** opens the definition with application to existing
-conversations selected. Shared definitions update all their linked agents. Legacy
-channel conversations are also included: their listed revision is `0` until the
-first successful apply adopts the reference, preserving their history and tools.
+The response's `applied` lists each agent with its `requestId` and `status`:
+`updated` (it has the revision), `queued` (it takes it after its current turn;
+poll `GET /v1/agents/:id/requests/:requestId` for the outcome) or `failed`, with
+an `error`. On the console's Channels page, **Model & prompt** opens a channel's
+definition with apply selected.
 
-The update response's `applied` field includes `counts` (`total`, `updated`,
-`queued`, `failed`) and per-agent `results` (`agent`, `requestId`, `status`, optional
-`error`). `accepted` remains the list of accepted submissions; it does not mean
-completion. Poll `GET /v1/agents/{agent}/requests/{requestId}` until `completed`,
-then check `outcome.error`. The console does this while the results dialog is open.
-Expired, revoked and purged agents are excluded; a zero total explicitly means no
-existing agents were updated.
-
-To configure just one agent without changing its definition or history:
+`PATCH /v1/agents/:id/configuration` changes one agent's `model`,
+`systemPrompt` or `thinkingLevel` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration
-Content-Type: application/json
 Authorization: Bearer <API token>
+Content-Type: application/json
 
-{"requestId":"model-change-1","model":"openrouter/openai/gpt-6-luna"}
+{"requestId": "model-change-1", "model": "openrouter/openai/gpt-6-luna"}
 ```
 
-The response is an accepted request (`202`), not proof of completion. Poll the
-request endpoint above. `systemPrompt` and `thinkingLevel` are also supported.
-Changes queue between turns and survive restart; reuse `requestId` to retry the
-same change. Models come from `GET /v1/models`, backed by the installed Pi catalog;
-upgrade Pi to refresh that catalog. An `openrouter/…` model uses OpenRouter.
+It answers `202` with the request, which is queued like an applied definition
+and survives a restart; poll it for the outcome, and reuse `requestId` to retry.
+A model must be in `GET /v1/models`, and the tenant must have a key for its
+provider, or the change is refused with `400`. An agent that is not running
+takes the change when it next starts.
 
 ## Tool sources
 
@@ -820,28 +814,22 @@ only masked values.
   there; later messages in that thread reach its agent without a mention. The
   same message sent as both `app_mention` and `message` is handled once. Slack has
   no typing indicator for bots.
-- **Discord.** Create an application, add a bot, and invite it with Send
-  Messages and Read Message History. There is no webhook for ordinary messages:
-  each Discord channel is an actor (`gateway:<id>` in `actor_owners`) and the node
+- **Discord.** Create an application, add a bot, and invite it with View
+  Channel, Send Messages, Send Messages in Threads and Read Message History.
+  There is no webhook for ordinary messages: each Discord channel is an actor (`gateway:<id>` in `actor_owners`) and the node
   that holds it keeps the Gateway connection, with heartbeats, resume after a
   dropped link, and a fresh identify when the session is lost. Every node's
   channel scan picks up connections that are not held, so when the holder
   drains, fences or dies, another node connects within one scan of its
   heartbeat expiring (at once after a drain). A token Discord rejects is retried
   every five minutes, not in a loop. The bot needs no privileged intents: it
-  answers only DMs and messages that mention the **bot user**, not its similarly
-  named role. In autocomplete select the bot with the App badge, or paste
-  `<@BOT_USER_ID> status`. Role-only mentions may have their content withheld by
-  Discord; they are diagnosed as `role_mention_without_bot_mention`, not a dead
-  connection. Gateway health logs include received, accepted and ignored counts,
-  without message text or tokens. The console validates and encrypts the token,
-  then offers an invite link and a copyable direct-mention test. Replies never ping anyone
-  (`allowed_mentions` is empty).
-
-  Gateway resume state is currently process-local: a replacement node starts a
-  fresh Discord session, so messages during that gap are not guaranteed to replay.
-  Persisting session handoff and load-testing large bot fleets remain separate
-  reliability/scaling work; neither was the cause of the role-mention incident.
+  answers only DMs and messages that mention the bot user. A mention of a role
+  with the bot's name does not count: in autocomplete, pick the entry with the
+  App badge. Replies never ping anyone (`allowed_mentions` is empty). The health
+  log counts messages received, accepted and ignored by reason, and a message
+  ignored as a role mention (`role_mention_without_bot_mention`) or as empty is
+  logged with its id. Once the token is saved, the console shows an invite link
+  and a test mention to paste into Discord.
 
 What all three share:
 
@@ -1162,5 +1150,5 @@ application.
 
 Remaining production migration work includes model/provider reconfiguration,
 billing enforcement at the inference boundary, and testing application tools
-under real deployment conditions. Configuration changes during a run are rejected;
-they do not abort and regenerate the turn.
+under real deployment conditions. Configuration changes wait for a running turn;
+they do not abort and regenerate it.
