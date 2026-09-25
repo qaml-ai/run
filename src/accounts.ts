@@ -155,14 +155,14 @@ export class Accounts {
 
   /**
    * The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid tenant,
-   * the platform's. Without `wildcard`, `*` keys (model keys) do not count: a search provider's key is its own.
+   * the platform's.
    */
-  async providerKey(tenant: string, provider: string, wildcard = true): Promise<{ key: string; source: KeySource } | undefined> {
+  async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource } | undefined> {
     const stored = this.secretsKey && validTenant(tenant) ? (await this.db.query("select sealed from provider_keys where tenant = $1 and provider = $2", [tenant, provider])).rows[0] : undefined;
     if (stored) return { key: this.unseal(`${tenant}:${provider}`, stored.sealed), source: "tenant" };
-    const admin = this.tenants.apiKey(tenant, provider, wildcard);
+    const admin = this.tenants.apiKey(tenant, provider);
     if (admin) return { key: admin, source: "admin" };
-    const platform = this.tenants.platformKey(provider, wildcard);
+    const platform = this.tenants.platformKey(provider);
     if (platform && await this.billing.mode(tenant) === "prepaid") return { key: platform, source: "platform" };
     return undefined;
   }
@@ -177,7 +177,7 @@ export class Accounts {
     return [...statuses.values()].sort((a, b) => a.provider.localeCompare(b.provider));
   }
 
-  /** Providers an agent of `tenant` can call (its own key, an admin key or `*` key, or for a prepaid tenant the platform's). */
+  /** Providers an agent of `tenant` can call (its own key, an admin key, or for a prepaid tenant the platform's). */
   async keyedProviders(tenant: string): Promise<(provider: string) => boolean> {
     const own = this.canStoreKeys && validTenant(tenant) ? new Set((await this.storedKeys(tenant)).map(key => key.provider)) : new Set<string>();
     const platform = await this.billing.mode(tenant) === "prepaid";

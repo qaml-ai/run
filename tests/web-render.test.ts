@@ -12,9 +12,9 @@ const OPS = "ops-operator-token-at-least-24-chars";
 const tenantsFile = {
   tenants: {
     payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
-    ops: { tokenSha256: sha(OPS), apiKeys: { "*": "fixture-model-key" } },
+    ops: { tokenSha256: sha(OPS), apiKeys: { openrouter: "fixture-model-key" } },
   },
-  platformKeys: { "*": "fixture-platform-model-key", firecrawl: "platform-firecrawl-key" },
+  platformKeys: { openrouter: "fixture-platform-model-key", firecrawl: "platform-firecrawl-key" },
 };
 /** A single-page app: kilobytes of script, an empty mount point, and no text until the script runs. */
 const SHELL = `<!doctype html><html><head><title>App</title><script>${"window.x=1;".repeat(600)}</script></head><body><div id="root"></div></body></html>`;

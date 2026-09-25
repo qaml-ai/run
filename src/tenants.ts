@@ -55,6 +55,7 @@ export class Tenants {
     if (!parsed?.tenants || typeof parsed.tenants !== "object") throw new Error("Tenants file must contain a `tenants` object");
     const platform = parsed.platformKeys ?? {};
     if (typeof platform !== "object" || Array.isArray(platform) || Object.values(platform).some(key => typeof key !== "string" || !key)) throw new Error("platformKeys must map provider names to API keys");
+    if ("*" in platform) throw new Error("platformKeys cannot have a `*` key: name each provider");
     this.set(Object.entries(parsed.tenants).map(([id, tenant]) => ({ id, ...tenant })));
     this.platform = { ...platform };
   }
@@ -68,6 +69,7 @@ export class Tenants {
       if (hashes.has(tenant.tokenSha256)) throw new Error(`Tenant ${tenant.id} reuses another tenant's token`);
       // Optional: a tenant without keys of its own sets them itself, or pays for the platform's.
       if (tenant.apiKeys !== undefined && (!tenant.apiKeys || typeof tenant.apiKeys !== "object" || Array.isArray(tenant.apiKeys) || Object.values(tenant.apiKeys).some(key => typeof key !== "string" || !key))) throw new Error(`Tenant ${tenant.id} has invalid apiKeys`);
+      if (tenant.apiKeys && "*" in tenant.apiKeys) throw new Error(`Tenant ${tenant.id} has a \`*\` API key: name each provider`);
       hashes.add(tenant.tokenSha256);
       if (tenant.github !== undefined && (typeof tenant.github !== "string" || !/^[A-Za-z0-9-]{1,39}$/.test(tenant.github))) throw new Error(`Tenant ${tenant.id} has an invalid github login`);
       if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
@@ -108,20 +110,17 @@ export class Tenants {
   /** How an admin tenant is billed; undefined for tenants not in the file. */
   billing(id: string) { const tenant = this.byId.get(id); return tenant && (tenant.billing ?? "none"); }
 
-  /** The platform's key for `provider` (`*` covers any model provider, when `wildcard`). */
-  platformKey(provider: string, wildcard = true): string | undefined { return this.platform[provider] ?? (wildcard ? this.platform["*"] : undefined); }
+  /** The platform's key for `provider`. */
+  platformKey(provider: string): string | undefined { return this.platform[provider]; }
 
   /** Providers the platform has keys for. Names only. */
   platformProviders() { return Object.keys(this.platform); }
 
-  /** Providers an admin configured keys for (`*` covers any provider). Names only. */
+  /** Providers an admin configured keys for. Names only. */
   providers(id: string) { return Object.keys(this.byId.get(id)?.apiKeys ?? {}); }
 
-  /** The key an agent of `tenantId` uses for `provider`; `*` is a tenant-wide fallback for model providers, when `wildcard`. */
-  apiKey(tenantId: string, provider: string, wildcard = true): string | undefined {
-    const keys = this.byId.get(tenantId)?.apiKeys;
-    return keys?.[provider] ?? (wildcard ? keys?.["*"] : undefined);
-  }
+  /** The key an admin configured for agents of `tenantId` to use for `provider`. */
+  apiKey(tenantId: string, provider: string): string | undefined { return this.byId.get(tenantId)?.apiKeys[provider]; }
 }
 
 /** Tenants from AGENT_TENANTS_SECRET_ARN (the tenants file's JSON in Secrets Manager) or AGENT_TENANTS_FILE. */

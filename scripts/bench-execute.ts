@@ -33,7 +33,7 @@ await admin.query(`create database ${database}`);
 const url = new URL(databaseUrl);
 url.pathname = `/${database}`;
 const root = await mkdtemp(join(tmpdir(), "agent-bench-"));
-await writeFile(join(root, "tenants.json"), JSON.stringify({ tenants: { bench: { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: { "*": "unused-key" } } } }));
+await writeFile(join(root, "tenants.json"), JSON.stringify({ tenants: { bench: { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: { anthropic: "unused-key" } } } }));
 
 const port = await new Promise<number>(done => { const server = createServer().listen(0, "127.0.0.1", () => { const { port } = server.address() as { port: number }; server.close(() => done(port)); }); });
 const profile = args.profile && resolve(args.profile);

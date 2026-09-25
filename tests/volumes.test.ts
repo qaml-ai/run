@@ -382,7 +382,7 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   const root = await mkdtemp(join(tmpdir(), "volumes-api-"));
   const sha = (value: string) => createHash("sha256").update(value).digest("hex");
   const alice = "alice-volumes-token-at-least-24-chars", bob = "bob-volumes-token-at-least-24-chars";
-  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(alice), apiKeys: { "*": "fixture-key" } }, bob: { tokenSha256: sha(bob), apiKeys: { "*": "fixture-key" } } } }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(alice), apiKeys: { anthropic: "fixture-key" } }, bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "fixture-key" } } } }));
   const { url: databaseUrl } = await testDatabase();
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: { PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, PORT: "0", HOST: "127.0.0.1", AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "volumes-api-session-secret-with-32-chars", ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}) } as NodeJS.ProcessEnv,

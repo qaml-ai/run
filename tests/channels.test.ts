@@ -111,7 +111,7 @@ const lastUser = (body: any) => {
 
 async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}) {
   const root = await mkdtemp(join(tmpdir(), "agent-channels-"));
-  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(operator), apiKeys: { "*": "fixture-model-key" } } } }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(operator), apiKeys: { openrouter: "fixture-model-key" } } } }));
   const model = await fakeModel(t, respond);
   const tg = await fakeTelegram(t);
   const { db, url: databaseUrl } = await testDatabase();

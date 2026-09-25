@@ -157,7 +157,7 @@ test("tenants load from a Secrets Manager secret, and a bad refresh keeps the la
   await assert.rejects(tenants.reload(), /Invalid tenant id/);
   assert.equal(tenants.authenticate("Bearer alice-token")?.id, "alice", "the last good tenants stay in force");
 
-  secret = JSON.stringify({ tenants: { bob: { tokenSha256: sha("bob-token"), apiKeys: { "*": "sk-bob" } } } });
+  secret = JSON.stringify({ tenants: { bob: { tokenSha256: sha("bob-token"), apiKeys: { anthropic: "sk-bob" } } } });
   await tenants.reload();
   assert.equal(tenants.authenticate("Bearer alice-token"), undefined);
   assert.equal(tenants.authenticate("Bearer bob-token")?.id, "bob");

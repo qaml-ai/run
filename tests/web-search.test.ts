@@ -15,10 +15,10 @@ const OPS = "ops-operator-token-at-least-24-chars";
 const tenantsFile = {
   tenants: {
     payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
-    own: { tokenSha256: sha(OWN), apiKeys: { "*": "fixture-model-key" } },
-    ops: { tokenSha256: sha(OPS), apiKeys: { "*": "fixture-model-key" } },
+    own: { tokenSha256: sha(OWN), apiKeys: { openrouter: "fixture-model-key" } },
+    ops: { tokenSha256: sha(OPS), apiKeys: { openrouter: "fixture-model-key" } },
   },
-  platformKeys: { "*": "fixture-platform-model-key", brave: "platform-brave-key" },
+  platformKeys: { openrouter: "fixture-platform-model-key", brave: "platform-brave-key" },
 };
 const PAGE = "<html><head><title>Agent runtime docs</title></head><body><h1>Agent runtime</h1><p>Hosts agents.</p></body></html>";
 
@@ -276,7 +276,7 @@ test("a definition pins web_search's providers; a platform search is charged at 
   }, {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", ...fake.env,
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_PARALLEL_USD: "0.02",
-  }, { ...tenantsFile, platformKeys: { "*": "fixture-platform-model-key", exa: "platform-exa-key", brave: "platform-brave-key", parallel: "platform-parallel-key" } });
+  }, { ...tenantsFile, platformKeys: { openrouter: "fixture-platform-model-key", exa: "platform-exa-key", brave: "platform-brave-key", parallel: "platform-parallel-key" } });
   assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_search"], webSearch: { providers: ["bing"] } }, token: PAYG })).status, 400);
   assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_search"], webSearch: { providers: ["exa", "exa"] } }, token: PAYG })).status, 400);
   assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_search"], webSearch: { order: ["exa"] } }, token: PAYG })).status, 400);

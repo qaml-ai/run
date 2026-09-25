@@ -136,7 +136,7 @@ test('tenants provision and see only their own agents, billed to their own provi
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'own', method: 'status', params: {} }, alice)).status, 202);
   // The same idempotency key in another tenant is a different agent.
   const sameKey = (token: string) => fetch(new URL('/client-sessions', (created as Response).url), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'shared-key' }, body: JSON.stringify({}) });
-  await writeFile(path, tenants({ carol: { tokenSha256: sha(carol), apiKeys: { '*': 'carol-provider-key' } } }));
+  await writeFile(path, tenants({ carol: { tokenSha256: sha(carol), apiKeys: { [configuredModel().provider]: 'carol-provider-key' } } }));
   f.child.kill('SIGHUP');
   let carolAgent: Response | undefined;
   for (let i = 0; i < 50 && carolAgent?.status !== 201; i++) { carolAgent = await sameKey(carol); if (carolAgent.status !== 201) await new Promise(resolve => setTimeout(resolve, 20)); }

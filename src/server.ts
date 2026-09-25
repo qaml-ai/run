@@ -71,7 +71,7 @@ const sandbox = await checkSandbox();
 // How tools.search ranks: keywords alone, or fused with the operator's rerank stages.
 // The key: a dedicated one if set (AGENT_TOOL_SEARCH_API_KEY, or the tool-search secret), else the
 // platform's OpenRouter key from the tenants file, read at each search so a reload takes effect.
-const platformOpenRouter = () => tenants.platformKey("openrouter", false);
+const platformOpenRouter = () => tenants.platformKey("openrouter");
 const rerankers = rerankersFromEnv(process.env, secrets.toolSearchKey || platformOpenRouter);
 if (rerankers.length && !secrets.toolSearchKey && !platformOpenRouter()) {
   console.error(JSON.stringify({ type: "tool_search_not_configured", reason: "no platformKeys.openrouter in the tenants file and no AGENT_TOOL_SEARCH_API_KEY; tools.search ranks by keywords until one is set" }));
@@ -137,7 +137,7 @@ const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
 // web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else (prepaid) the
 // platform's, whose calls are charged to credit at that provider's price.
 const webKey = async (tenant: string, provider: string) => {
-  const resolved = await accounts.providerKey(tenant, provider, false);
+  const resolved = await accounts.providerKey(tenant, provider);
   return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
 };
 const searchTimeoutMs = Number(process.env.AGENT_WEB_SEARCH_TIMEOUT_MS ?? 5_000);

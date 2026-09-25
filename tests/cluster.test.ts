@@ -29,7 +29,7 @@ async function freePort() {
 async function cluster(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(join(tmpdir(), "agent-cluster-"));
   const { db, url: databaseUrl } = await testDatabase();
-  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { "*": "fixture-key" } } } }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { anthropic: "fixture-key", openrouter: "fixture-key" } } } }));
   const children: ChildProcess[] = [];
   const start = async (name: string, env: Record<string, string> = {}, fixedPort?: number) => {
     const port = fixedPort ?? await freePort();

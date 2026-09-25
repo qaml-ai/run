@@ -387,7 +387,7 @@ test("a tenant's monthly spend cap ends a turn after the response that crosses i
   }).listen(0, "127.0.0.1");
   await once(model, "listening");
   t.after(async () => { model.closeAllConnections(); await new Promise(resolve => model.close(resolve)); });
-  const tenants = (cap: number) => ({ alice: { tokenSha256: sha(alice), apiKeys: { "*": "fixture-key" }, maxMonthlyCost: cap } });
+  const tenants = (cap: number) => ({ alice: { tokenSha256: sha(alice), apiKeys: { openrouter: "fixture-key" }, maxMonthlyCost: cap } });
   const { root, call, child, logged } = await runtime(t, undefined, {
     AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_BASE_URL: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`,
     ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),

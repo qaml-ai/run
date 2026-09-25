@@ -86,3 +86,16 @@ test("a tenant's apiKeys are optional, and invalid ones still reject the reload"
     await assert.rejects(tenants.reload(), /invalid apiKeys/, JSON.stringify(bad));
   }
 });
+
+test("a `*` provider key is rejected in a tenant's apiKeys and in platformKeys", async () => {
+  const token = createHash("sha256").update("acme-token").digest("hex");
+  let secret = JSON.stringify({ tenants: { acme: { tokenSha256: token, apiKeys: { anthropic: "sk-acme" } } } });
+  const tenants = new Tenants({ read: async () => secret });
+  await tenants.reload();
+  secret = JSON.stringify({ tenants: { acme: { tokenSha256: token, apiKeys: { "*": "sk-any" } } } });
+  await assert.rejects(tenants.reload(), /`\*` API key/);
+  secret = JSON.stringify({ tenants: { acme: { tokenSha256: token } }, platformKeys: { "*": "sk-platform" } });
+  await assert.rejects(tenants.reload(), /platformKeys cannot have a `\*` key/);
+  assert.equal(tenants.apiKey("acme", "anthropic"), "sk-acme", "the last good tenants stay in force");
+  assert.equal(tenants.apiKey("acme", "openai"), undefined);
+});

@@ -265,9 +265,9 @@ test("every tenant pays tool search at cost on the platform's key: each search, 
   }, {
     tenants: {
       payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
-      ops: { tokenSha256: sha(OPS), apiKeys: { "*": "fixture-model-key", openrouter: "ops-own-openrouter-key" } },
+      ops: { tokenSha256: sha(OPS), apiKeys: { openrouter: "ops-own-openrouter-key" } },
     },
-    platformKeys: { "*": "fixture-platform-model-key", openrouter: "platform-openrouter-key" },
+    platformKeys: { openrouter: "platform-openrouter-key" },
   });
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
   for (const token of [PAYG, OPS]) {

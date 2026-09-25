@@ -505,8 +505,7 @@ reconfiguration, not at a refresh.
   the tenant's own (`PUT /v1/providers/<provider>/key`, or the console's Models &
   keys page; not checked when set, as a check would cost a search), else an
   admin's `apiKeys.<provider>` in the tenants file, else for a prepaid tenant the
-  platform's `platformKeys.<provider>`; a `*` key never counts, as it is a model
-  key. A provider without a key is skipped. One that times out (5 s each,
+  platform's `platformKeys.<provider>`. A provider without a key is skipped. One that times out (5 s each,
   `AGENT_WEB_SEARCH_TIMEOUT_MS`), can't be reached, answers 429 or 5xx, refuses
   the key (401, 402, 403) or answers something other than JSON hands over to the
   next; any other 4xx means the request itself is bad and ends the search with
@@ -884,7 +883,8 @@ admin tenants from the tenants file are unbilled unless their entry sets
 `"billing": "prepaid"` (the default is `"none"`). Tenants that signed up before
 billing existed stay unbilled. A prepaid tenant without a provider key of its own
 runs on the platform's keys, the tenants file's top-level `platformKeys`
-(`{"anthropic": "...", "*": "..."}`, like a tenant's `apiKeys`), and pays for:
+(`{"anthropic": "...", "openrouter": "..."}`, like a tenant's `apiKeys`: one key
+per provider, never a `*` wildcard), and pays for:
 
 - **Model tokens** on the platform's keys, at the provider's list price from the
   model catalog (no markup), turns and compaction alike. Responses on the tenant's

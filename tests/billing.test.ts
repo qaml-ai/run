@@ -23,9 +23,9 @@ const OPS = "ops-operator-token-at-least-24-chars";
 const tenantsFile = {
   tenants: {
     payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
-    ops: { tokenSha256: sha(OPS), apiKeys: { "*": "ops-admin-key" } },
+    ops: { tokenSha256: sha(OPS), apiKeys: { anthropic: "ops-admin-key", openrouter: "ops-admin-key" } },
   },
-  platformKeys: { "*": "fixture-platform-key" },
+  platformKeys: { anthropic: "fixture-platform-key", openrouter: "fixture-platform-key" },
 };
 const fileTenants = () => new Tenants({ read: async () => JSON.stringify(tenantsFile) });
 async function accountsOn(db: Db, pricing = DEFAULT_PRICING) {
@@ -229,7 +229,7 @@ test("a self-serve tenant gets its starting credit once; tenants from before bil
   // Self-serve prepaid tenants use the platform's keys; unbilled ones need their own.
   assert.equal((await accounts.providerKey("carol", "anthropic"))?.source, "platform");
   assert.equal(await accounts.providerKey("veteran", "anthropic"), undefined);
-  assert.deepEqual((await accounts.keyStatus("carol")).map(status => [status.provider, status.source]), [["*", "platform"]]);
+  assert.deepEqual((await accounts.keyStatus("carol")).map(status => [status.provider, status.source]), [["anthropic", "platform"], ["openrouter", "platform"]]);
 });
 
 test("storage is charged once a UTC day, pro rata, to prepaid tenants by what their agents and volumes store, as tracked", async () => {

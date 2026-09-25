@@ -94,9 +94,7 @@ export function api(context: ApiContext) {
 
   route(createRoute({ method: "get", path: "/v1/providers", responses: { 200: reply("Key status per provider", z.array(schema.Provider)) } }), async c => {
     const keys = new Map((await accounts.keyStatus(c.var.principal.tenant)).map(status => [status.provider, status]));
-    const wildcard = keys.get("*");
-    // A `*` key is a model key: it never stands for a search provider's.
-    return json(c, 200, listProviders().map(provider => ({ ...provider, key: keys.get(provider.id) ?? (wildcard && provider.apiKey && provider.kind === "model" ? wildcard : null) })));
+    return json(c, 200, listProviders().map(provider => ({ ...provider, key: keys.get(provider.id) ?? null })));
   });
 
   const provider = (c: Context) => {

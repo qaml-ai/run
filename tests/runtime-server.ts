@@ -69,8 +69,8 @@ export const toolResults = (body: any) => body.messages.filter((message: any) =>
 export async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}, tenantsFile?: object) {
   const root = await mkdtemp(join(tmpdir(), "agent-runtime-server-"));
   writeFileSync(join(root, "tenants.json"), JSON.stringify(tenantsFile ?? { tenants: {
-    alice: { tokenSha256: sha(OPERATOR), apiKeys: { "*": "fixture-model-key" } },
-    bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { "*": "fixture-model-key" } },
+    alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
+    bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
   } }));
   const model = await fakeModel(t, respond);
   const { db, url: databaseUrl } = await testDatabase();
