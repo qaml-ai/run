@@ -286,10 +286,10 @@ export function jevReranker(options: { url: string; apiKey: string; model: strin
   return {
     kind: "jev", maxCandidates: STAGE_CANDIDATES, relevantAt: 0.5,
     async rerank(query, candidates, signal) {
+      // One short sentence per tool: Jev bills input tokens, and structured instructions or yes/no
+      // rubrics repeated per question cost about 2.5x as much, with no better answers.
       const questions = Object.fromEntries(candidates.map((tool, index) => [`t${index}`, {
-        type: "noul",
-        instructions: { question: "Could this tool do what is being searched for, or a step of it?", tool: { name: tool.name, description: tool.description.slice(0, DESCRIPTION_CHARS) } },
-        criteria: { true: "The tool fits the search", false: "The tool is unrelated to the search" },
+        type: "noul", instructions: `Could ${tool.name} (${tool.description.slice(0, DESCRIPTION_CHARS)}) do what is being searched for, or a step of it?`,
       }]));
       const json = await post(endpoint(options.url, "systemone"), options.apiKey, { model: options.model, state: query, questions }, signal);
       return candidates.map((_, index) => {

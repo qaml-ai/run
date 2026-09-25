@@ -151,7 +151,7 @@ test("the embeddings and Jev backends speak their APIs; embeddings are cached an
     assert.equal(req.headers.authorization, "Bearer key");
     const json = (value: unknown) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(value));
     if (req.url === "/v1/embeddings") return json({ data: body.input.map((text: string, index: number) => ({ index, embedding: text.includes("message") || text === "email someone" ? [1, 0] : [0, 1] })) });
-    if (req.url === "/v1/systemone") return json({ answers: Object.fromEntries(Object.entries(body.questions).map(([id, question]: [string, any]) => [id, { type: "noul", noul: question.instructions.tool.name === "send_message" ? 0.9 : 0.05 }])) });
+    if (req.url === "/v1/systemone") return json({ answers: Object.fromEntries(Object.entries(body.questions).map(([id, question]: [string, any]) => [id, { type: "noul", noul: question.instructions.startsWith("Could send_message ") ? 0.9 : 0.05 }])) });
     res.writeHead(404).end();
   });
   const base = `${url}/v1`;
@@ -170,7 +170,7 @@ test("the embeddings and Jev backends speak their APIs; embeddings are cached an
   assert.equal(jev.model, "typesafe/jev-1.13");
   assert.equal(Object.keys(jev.questions).length, catalog.length);
   assert.equal(jev.questions.t3.type, "noul");
-  assert.deepEqual(jev.questions.t3.instructions.tool, { name: "remove_file", description: "Delete a file from the workspace" });
+  assert.equal(jev.questions.t3.instructions, "Could remove_file (Delete a file from the workspace) do what is being searched for, or a step of it?");
 });
 
 test("rerank stages come from AGENT_TOOL_SEARCH", () => {

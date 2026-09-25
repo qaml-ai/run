@@ -643,7 +643,7 @@ costs a script nothing until it asks.
   within 2.5 s in all, is left out and logged (`tool_search_rerank_failed`);
   keyword ranking always answers.
 - Cost per search: embeddings a fraction of a millionth of a dollar (the query),
-  Jev about $0.0004 at 100 candidates. Both use OpenRouter by default
+  Jev about $0.00015 at 100 candidates. Both use OpenRouter by default
   (`AGENT_TOOL_SEARCH_URL`, `https://openrouter.ai/api/v1`) with
   `AGENT_TOOL_SEARCH_API_KEY`; any compatible API works (OpenAI embeddings,
   `https://api.typesafe.ai/v1` for Jev). `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` and
