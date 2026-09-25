@@ -9,10 +9,12 @@ import type { Stripe } from "./stripe.ts";
 /**
  * Prepaid credit. Tenants with `billing: "prepaid"` (every tenant created by sign-in)
  * pay from a balance: model tokens that ran on the platform's keys, time their agents
- * spend in turns, and storage. Every movement is a row in the append-only
- * `credit_ledger`, in integer micro-USD, under an idempotency key naming its cause,
- * and moves `credit_accounts.balance` in the same statement, so a retried flush, job
- * or webhook never posts twice. A tenant whose balance is spent may not start runs;
+ * spend in turns, and storage. Every movement is in `credit_ledger`, in integer
+ * micro-USD, under an idempotency key naming its cause, and moves
+ * `credit_accounts.balance` in the same statement, so a retried flush, job or webhook
+ * never posts twice and the ledger always sums to the balance. Entries are appended
+ * and never change, except usage: each tenant's usage charges accrue into one entry
+ * per UTC hour (see `accrueUsage`). A tenant whose balance is spent may not start runs;
  * a turn already running stops after its current response, so the overdraft is
  * bounded by one response and the time around it.
  */
@@ -21,6 +23,8 @@ export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustmen
 export const LEDGER_KINDS: LedgerKind[] = ["grant", "purchase", "usage", "storage", "adjustment", "refund"];
 export interface LedgerEntry { tenant: string; kind: LedgerKind; amount: number; key: string; metadata?: Record<string, unknown> }
 export interface LedgerRow { id: number; kind: LedgerKind; amount: number; metadata: Record<string, unknown>; createdAt: number }
+/** What a usage flush charges a tenant: `amount` micro-USD spent, and its breakdown (numbers, summed over the hour). */
+export interface UsageCharge { tenant: string; amount: number; metadata: Record<string, number> }
 /** What limits a tenant's runs: its balance, what it ever bought (none: on free credit), and its usage charges in the last hour. */
 type Account = { balance: number; purchased: number; lastHour: number };
 
@@ -34,6 +38,8 @@ const usd = (amount: number) => `${amount < 0 ? "-" : ""}$${(Math.abs(amount) / 
 /** Marks checkout sessions this runtime created: the Stripe account also serves other products, whose events are ignored. */
 const PURPOSE = "agent-runtime-credit";
 const CENT = 10_000;
+const HOUR = 3_600_000;
+const MINUTE = 60_000;
 
 /**
  * Append the entries whose keys are new and move their tenants' balances, in one
@@ -61,6 +67,41 @@ export async function postLedger(sql: Sql, entries: LedgerEntry[], now = Date.no
     )
     select id, tenant, kind, amount, idempotency_key as key, metadata from appended`, [JSON.stringify(entries), now]);
   return rows;
+}
+
+/**
+ * Debit usage charges and add them to each tenant's usage entry for the current UTC
+ * hour (key `usage:<tenant>:<hour>`): the hour's first flush creates it, later ones
+ * add to its amount and to the numbers in its metadata, so the ledger has one usage
+ * row per tenant per hour, not one per flush, and still sums to the balance. The same
+ * statement counts the spend by minute (`credit_spend_minutes`), which the free hourly
+ * limit reads as a sliding hour. It is not idempotent by itself: a usage flush runs it
+ * in the transaction that records its batch id, so a retried flush applies once.
+ * Concurrent flushes for a tenant queue on its entry's row lock, then add up.
+ */
+export async function accrueUsage(sql: Sql, charges: UsageCharge[], now = Date.now()) {
+  if (!charges.length) return;
+  for (const charge of charges) if (!Number.isSafeInteger(charge.amount) || charge.amount <= 0) throw new Error("Usage charges are positive integer micro-USD");
+  const hour = new Date(Math.floor(now / HOUR) * HOUR).toISOString();
+  await sql.query(`
+    with input as (
+      select * from jsonb_to_recordset($1::jsonb) as t(tenant text, amount bigint, metadata jsonb)
+    ), accrued as (
+      -- In tenant order, so flushes on different nodes lock rows in the same order.
+      insert into credit_ledger as entry (tenant, kind, amount, idempotency_key, metadata, created_at)
+      select tenant, 'usage', -amount, 'usage:' || tenant || ':' || $2, metadata || jsonb_build_object('hour', $2::text), $3 from input order by tenant
+      on conflict (idempotency_key) do update set amount = entry.amount + excluded.amount, metadata = (
+        select jsonb_object_agg(key, case
+          when jsonb_typeof(entry.metadata -> key) = 'number' and jsonb_typeof(excluded.metadata -> key) = 'number'
+          then to_jsonb((entry.metadata ->> key)::numeric + (excluded.metadata ->> key)::numeric) else value end)
+        from jsonb_each(entry.metadata || excluded.metadata))
+    ), spent as (
+      insert into credit_spend_minutes (tenant, minute, amount) select tenant, $4, amount from input order by tenant
+      on conflict (tenant, minute) do update set amount = credit_spend_minutes.amount + excluded.amount
+    )
+    insert into credit_accounts (tenant, balance) select tenant, -amount from input order by tenant
+    on conflict (tenant) do update set balance = credit_accounts.balance + excluded.balance`,
+  [JSON.stringify(charges), hour, Date.parse(hour), Math.floor(now / MINUTE)]);
 }
 
 export interface BillingOptions {
@@ -121,8 +162,8 @@ export class Billing {
       reading = (async () => {
         await this.options.flush?.();
         const { rows: [row] } = await this.db.query(`
-          select balance, purchased, (select coalesce(-sum(amount), 0) from credit_ledger where tenant = $1 and kind = 'usage' and created_at > $2) as last_hour
-          from (select $1::text as tenant) as t left join credit_accounts using (tenant)`, [tenant, Date.now() - 3_600_000]);
+          select balance, purchased, (select coalesce(sum(amount), 0) from credit_spend_minutes where tenant = $1 and minute >= $2) as last_hour
+          from (select $1::text as tenant) as t left join credit_accounts using (tenant)`, [tenant, Math.floor((Date.now() - HOUR) / MINUTE)]);
         const value = { balance: row.balance ?? 0, purchased: row.purchased ?? 0, lastHour: Number(row.last_hour) };
         this.accounts.set(tenant, { ...value, until: Date.now() + BALANCE_CACHE_MS });
         return value;
@@ -292,6 +333,8 @@ export class Billing {
    * charge is keyed by the day, so a job retried after a crash never charges twice.
    */
   async chargeStorage(storage: Storage, node: string, now = Date.now()) {
+    // The free hourly limit reads the last hour of spend by minute; older minutes are done with.
+    await this.db.query("delete from credit_spend_minutes where minute < $1", [Math.floor((now - 2 * HOUR) / MINUTE)]);
     if (!storage.objects) return false;
     const day = new Date(now).toISOString().slice(0, 10);
     const claim = `${node} ${randomUUID()}`;

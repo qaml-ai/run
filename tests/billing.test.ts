@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Accounts } from "../src/accounts.ts";
-import { postLedger } from "../src/billing.ts";
+import { accrueUsage, postLedger } from "../src/billing.ts";
 import { migrate, type Db } from "../src/db.ts";
 import { DEFAULT_PRICING, micros, pricingFromEnvironment, purchaseFee } from "../src/pricing.ts";
 import { Tenants } from "../src/tenants.ts";
-import { memoryStorage } from "../shared/storage.ts";
+import { memoryStorage, type Storage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { testDatabase } from "./database.ts";
 import { attachSilently, listen, runtime, toolCall, until } from "./runtime-server.ts";
@@ -34,6 +34,15 @@ async function accountsOn(db: Db, pricing = DEFAULT_PRICING) {
 }
 const balance = async (db: Db, tenant: string) => Number((await db.query("select balance from credit_accounts where tenant = $1", [tenant])).rows[0]?.balance ?? 0);
 const ledgerSum = async (db: Db, tenant: string) => Number((await db.query("select coalesce(sum(amount), 0) as sum from credit_ledger where tenant = $1", [tenant])).rows[0].sum);
+/** The invariant: every tenant's balance is the sum of its ledger entries. */
+async function assertLedgerMatchesBalances(db: Db) {
+  const { rows } = await db.query(`
+    select tenant, coalesce(a.balance, 0) as balance, coalesce(l.sum, 0) as sum
+    from credit_accounts a full join (select tenant, sum(amount) as sum from credit_ledger group by tenant) l using (tenant)
+    where coalesce(a.balance, 0) <> coalesce(l.sum, 0)`);
+  assert.deepEqual(rows, [], "balances equal to their ledger entries");
+}
+const HOUR = 3_600_000;
 /** A response of `cost` USD that ran on the platform's key (or the tenant's own). */
 const response = (cost: number, platform = true) => ({ provider: "openrouter", model: "m", usage: { input: 10, output: 1, cost: { total: cost } }, platform });
 
@@ -77,7 +86,14 @@ test("two nodes debiting one tenant at once lose no debit, and each flush posts 
   }
   assert.equal(await balance(db, "payg"), expected);
   assert.equal(await ledgerSum(db, "payg"), expected);
-  assert.equal(Number((await db.query("select count(*) from credit_ledger where kind = 'usage'")).rows[0].count), 40, "one entry per node per flush");
+  await assertLedgerMatchesBalances(db);
+  // One entry per UTC hour, however many flushes and nodes: one, or two if the test crossed an hour.
+  const hours = (await db.query("select amount, metadata, created_at from credit_ledger where kind = 'usage' order by id")).rows;
+  assert.ok(hours.length === 1 || hours.length === 2, `${hours.length} usage entries`);
+  assert.equal(new Set(hours.map(row => Number(row.created_at))).size, hours.length);
+  for (const row of hours) assert.equal(row.metadata.hour, new Date(Number(row.created_at)).toISOString());
+  assert.equal(hours.reduce((sum, row) => sum + row.metadata.tokens, 0), micros(0.06), "the hour's breakdown: tokens");
+  assert.equal(hours.reduce((sum, row) => sum + row.metadata.activeMs, 0), 120, "and active time");
   const usage = await first.usage("payg", Date.now() - 86_400_000);
   assert.equal(usage.totals.responses, 80);
   assert.equal(usage.totals.platformResponses, 40);
@@ -87,6 +103,56 @@ test("two nodes debiting one tenant at once lose no debit, and each flush posts 
   first.recordActive("ops", "a", 1000);
   await first.flushUsage();
   assert.equal(Number((await db.query("select count(*) from credit_ledger where tenant = 'ops'")).rows[0].count), 0);
+});
+
+test("usage accrues into one entry per tenant per UTC hour, updated in place until the hour ends, and the ledger still sums to the balance", async () => {
+  const { db } = await testDatabase();
+  const ten = Date.parse("2026-09-25T10:00:00Z");
+  await postLedger(db, [{ tenant: "acme", kind: "grant", amount: micros(5), key: "grant:acme" }], ten - 5 * HOUR);
+  // A per-flush entry from before hourly accrual is history like any other.
+  await postLedger(db, [{ tenant: "acme", kind: "usage", amount: -7, key: "usage:0b1c:acme", metadata: { tokens: 7, activeMs: 0 } }], ten - HOUR);
+  await accrueUsage(db, [{ tenant: "acme", amount: 100, metadata: { tokens: 60, activeMs: 4 } }, { tenant: "beta", amount: 5, metadata: { tokens: 5, activeMs: 0 } }], ten + 1_000);
+  await postLedger(db, [{ tenant: "acme", kind: "purchase", amount: micros(10), key: "purchase:1" }], ten + 2_000);
+  await accrueUsage(db, [{ tenant: "acme", amount: 30, metadata: { tokens: 0, activeMs: 3, searches: 2 } }], ten + HOUR - 1);
+  await accrueUsage(db, [{ tenant: "acme", amount: 1, metadata: { tokens: 1, activeMs: 0 } }], ten + HOUR);
+  const usage = (await db.query("select tenant, amount, metadata, created_at, idempotency_key from credit_ledger where kind = 'usage' order by id")).rows
+    .map(row => [row.tenant, Number(row.amount), row.metadata, Number(row.created_at), row.idempotency_key]);
+  assert.deepEqual(usage, [
+    ["acme", -7, { tokens: 7, activeMs: 0 }, ten - HOUR, "usage:0b1c:acme"],
+    ["acme", -130, { tokens: 60, activeMs: 7, searches: 2, hour: "2026-09-25T10:00:00.000Z" }, ten, "usage:acme:2026-09-25T10:00:00.000Z"],
+    ["beta", -5, { tokens: 5, activeMs: 0, hour: "2026-09-25T10:00:00.000Z" }, ten, "usage:beta:2026-09-25T10:00:00.000Z"],
+    ["acme", -1, { tokens: 1, activeMs: 0, hour: "2026-09-25T11:00:00.000Z" }, ten + HOUR, "usage:acme:2026-09-25T11:00:00.000Z"],
+  ]);
+  assert.equal(await balance(db, "acme"), micros(15) - 138);
+  assert.equal(await balance(db, "beta"), -5);
+  await assertLedgerMatchesBalances(db);
+  await assert.rejects(accrueUsage(db, [{ tenant: "acme", amount: -1, metadata: {} }]), /positive integer/);
+  // The free hourly limit reads spend by minute; the billing timer drops minutes older than it needs.
+  const minutes = async () => (await db.query("select minute, amount from credit_spend_minutes where tenant = 'acme' order by minute")).rows.map(row => [Number(row.minute) * 60_000 - ten, Number(row.amount)]);
+  assert.deepEqual(await minutes(), [[0, 100], [HOUR - 60_000, 30], [HOUR, 1]]);
+  await (await accountsOn(db)).billing.chargeStorage({} as Storage, "node-a", ten + 2 * HOUR + 60_000);
+  assert.deepEqual(await minutes(), [[HOUR - 60_000, 30], [HOUR, 1]]);
+});
+
+test("the ledger sums to every balance under concurrent flushes, grants, purchases and refunds on several nodes", async () => {
+  const { db } = await testDatabase();
+  const pricing = { ...DEFAULT_PRICING, agentHour: micros(3600) };
+  const nodes = [await accountsOn(db, pricing), await accountsOn(db, pricing), await accountsOn(db, pricing)];
+  const work: Promise<unknown>[] = [];
+  for (let round = 0; round < 15; round++) {
+    for (const [index, node] of nodes.entries()) {
+      node.recordUsage("payg", "a", response(0.0001 * (round + 1)));
+      node.recordActive("payg", "a", index + 1);
+      node.recordUsage(`t${round % 4}`, "a", response(0.001));
+      work.push(node.flushUsage());
+    }
+    work.push(nodes[round % 3].billing.post([{ tenant: "payg", kind: round % 2 ? "purchase" : "grant", amount: 1_000 + round, key: `credit:${round}` }]));
+    work.push(accrueUsage(db, [{ tenant: "payg", amount: 3, metadata: { searches: 1 } }, { tenant: "t1", amount: 2, metadata: {} }]));
+  }
+  await Promise.all(work);
+  await Promise.all(nodes.map(node => node.flushUsage()));
+  await assertLedgerMatchesBalances(db);
+  assert.ok(Number((await db.query("select count(*) from credit_ledger where kind = 'usage' and tenant = 'payg'")).rows[0].count) <= 2);
 });
 
 test("a flush whose commit acknowledgement is lost is retried without counting twice", async () => {
@@ -263,7 +329,8 @@ test("responses on the tenant's own key cost no credit for tokens, but time in t
   assert.ok(activeMs >= 300 && activeMs <= elapsed, `two responses of at least 150 ms each, within the turn (${activeMs} of ${elapsed} ms)`);
   for (const entry of entries) {
     assert.equal(entry.metadata.tokens, 0);
-    assert.ok(Math.abs(entry.amount + entry.metadata.activeMs * 1000) <= 1000, "$1 per second of agent time");
+    // Each flush rounds its time to the millisecond, and an hour's entry adds up several flushes.
+    assert.ok(Math.abs(entry.amount + entry.metadata.activeMs * 1000) <= 2000, "$1 per second of agent time");
   }
   assert.equal((await call("/v1/usage", { token: PAYG })).json.totals.platformResponses, 0);
 });

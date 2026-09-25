@@ -836,9 +836,17 @@ runs on the platform's keys, the tenants file's top-level `platformKeys`
 
 Every movement is an entry in `credit_ledger` (grant, purchase, usage, storage,
 adjustment, refund), in integer micro-USD, under an idempotency key naming its
-cause; the same statement moves the balance in `credit_accounts`. Token and time
-charges ride the usage flush (a few seconds after a response), each batch in one
-transaction that a retry after a lost commit skips. A prepaid tenant at or below
+cause; the same statement moves the balance in `credit_accounts`, so the ledger
+always sums to the balance. Token and time charges ride the usage flush (a few
+seconds after a response), each batch in one transaction that a retry after a lost
+commit skips. They debit the balance at once but accrue into **one usage entry per
+tenant per UTC hour** (key `usage:<tenant>:<hour>`), which each flush in that hour
+updates in place, adding to its amount and to its breakdown in `metadata` (`tokens`,
+`activeMs`, and any other counts); from the next hour on it no longer changes. An hour
+keeps the ledger to 24 usage rows per tenant a day (instead of one per flush per node)
+while a row is still a useful line of history; spend is also kept by minute for an
+hour (`credit_spend_minutes`), for the free-credit limit below. Usage entries from
+before hourly accrual are one per flush, and stay as they are. A prepaid tenant at or below
 zero gets **402** for new runs, code executions included, with where to add credit;
 a running turn ends after the response that spent the last credit, as at the
 [monthly spend cap](#persistence). The balance counts this node's unwritten charges

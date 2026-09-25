@@ -21,6 +21,8 @@ function detail(entry: LedgerEntry) {
   const meta = entry.metadata;
   if (entry.kind === "usage") {
     const parts = [];
+    // Usage accrues into one entry per UTC hour (older entries are one per flush).
+    if (meta.hour) parts.push(Date.now() < entry.createdAt + 3_600_000 ? "This hour so far" : "Hour total");
     if (meta.tokens) parts.push(`${formatMicros(meta.tokens)} model tokens`);
     if (meta.activeMs) parts.push(`${formatNumber(Math.round(meta.activeMs / 1000))} s of agent time`);
     return parts.join(" · ");

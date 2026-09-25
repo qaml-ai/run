@@ -347,7 +347,7 @@ export const LedgerEntry = z.object({
   id: z.number().int(),
   kind: z.enum(["grant", "purchase", "usage", "storage", "adjustment", "refund"]),
   amount: micros("Positive adds credit, negative spends it"),
-  metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: tokens (micro-USD on platform keys) and activeMs; storage: day and bytes" }),
+  metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: one entry per UTC hour (`hour`, its start), updated until the hour ends, with the hour's tokens (micro-USD on platform keys) and activeMs; storage: day and bytes" }),
   createdAt: z.number(),
 }).openapi("LedgerEntry");
 export const Ledger = z.object({

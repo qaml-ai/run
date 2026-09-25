@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import { transaction, type Db } from "./db.ts";
 import type { Tenants } from "./tenants.ts";
 import type { UsageRecord } from "./client-sessions.ts";
-import { Billing, postLedger, type LedgerEntry } from "./billing.ts";
+import { accrueUsage, Billing, type UsageCharge } from "./billing.ts";
 import { activeCharge, MICROS, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
 import type { HttpError } from "./http.ts";
@@ -299,9 +299,10 @@ export class Accounts {
   }
 
   /**
-   * Write pending usage: add it to the per-tenant daily totals, and debit prepaid tenants,
-   * in one transaction per batch. Flushes run one at a time; a batch that fails stays
-   * queued, under the same id, for the next flush.
+   * Write pending usage: add it to the per-tenant daily totals, and debit prepaid tenants
+   * into their usage entries for the hour (`accrueUsage`), in one transaction per batch.
+   * Flushes run one at a time; a batch that fails stays queued, under the same id, for
+   * the next flush.
    */
   flushUsage(): Promise<void> {
     const run = this.flushes.then(() => this.flushPending());
@@ -332,11 +333,11 @@ export class Accounts {
       const [tenant, day, model] = JSON.parse(key);
       return { tenant, day, model, ...totals };
     });
-    const entries: LedgerEntry[] = [];
+    const billed: UsageCharge[] = [];
     for (const [tenant, charge] of charges) {
       const amount = this.amount(charge);
       if (amount > 0 && await this.billing.mode(tenant) === "prepaid") {
-        entries.push({ tenant, kind: "usage", amount: -amount, key: `usage:${id}:${tenant}`, metadata: { tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs) } });
+        billed.push({ tenant, amount, metadata: { tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs) } });
       }
     }
     await transaction(this.db, async sql => {
@@ -350,7 +351,7 @@ export class Accounts {
           cache_read = usage.cache_read + excluded.cache_read, cache_write = usage.cache_write + excluded.cache_write, cost = usage.cost + excluded.cost,
           platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
       [JSON.stringify(rows)]);
-      await postLedger(sql, entries);
+      await accrueUsage(sql, billed);
     });
     this.billing.invalidate(charges.keys());
   }
