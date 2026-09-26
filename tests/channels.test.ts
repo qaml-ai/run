@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Definitions } from "../src/definitions.ts";
-import { Channels, chunks } from "../src/channels.ts";
+import { answerOf, askText, Channels, chunks } from "../src/channels.ts";
 import { LostClaim, Ownership } from "../src/ownership.ts";
 import { telegram } from "../src/channels-telegram.ts";
 import pg from "pg";
@@ -631,4 +631,76 @@ test("replies split at line and word breaks within the limit", () => {
   assert.deepEqual(chunks("aaa\nbbbbbb cc", 10), ["aaa\nbbbbbb", "cc"]);
   assert.deepEqual(chunks("x".repeat(25), 10), ["x".repeat(10), "x".repeat(10), "x".repeat(5)]);
   assert.ok(chunks("😀".repeat(10), 5).every(part => !/[\uD800-\uDBFF]$/.test(part)));
+});
+
+test("a channel asks the agent's questions and approvals as messages; the asker's reply answers, anything else is a new message", async t => {
+  const ask = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU", description: "Frankfurt" }, { label: "US" }] }] };
+  const r = await runtime(t, body => {
+    const last = body.messages.at(-1);
+    if (last.role === "tool" && JSON.parse(last.content).answers["Which region?"]) return { role: "assistant", content: `Deploying to ${JSON.parse(last.content).answers["Which region?"]}` };
+    if (last.role === "tool") return { role: "assistant", content: `Answers: ${body.messages.filter((message: any) => message.role === "tool").slice(-2).map((message: any) => Object.values(JSON.parse(message.content).answers)[0]).join(", ")}` };
+    const twice = (question: string, index: number) => ({ index, id: `call_${question}`, type: "function", function: { name: "ask_user", arguments: JSON.stringify({ questions: [{ question, header: "Q", options: [{ label: "Yes" }, { label: "No" }] }] }) } });
+    if (/twice/.test(lastUser(body))) return { role: "assistant", tool_calls: [twice("First?", 0), twice("Second?", 1)] };
+    return /deploy/.test(lastUser(body)) ? { role: "assistant", content: "One question first.", tool_calls: [{ index: 0, id: `call_${body.messages.length}`, type: "function", function: { name: "ask_user", arguments: JSON.stringify(ask) } }] }
+      : { role: "assistant", content: `echo: ${lastUser(body).split("\n").at(-1)}` };
+  });
+  const definition = (await r.call("/v1/definitions", { body: { name: "Deployer", builtins: ["ask_user"] } })).json;
+  const { channel, secret } = await r.createChannel({ access: { allow: ["@ada", "@bob"] }, definition: definition.id });
+
+  assert.equal(await r.deliver(channel, secret, from(ada, "deploy")), 200);
+  await until(() => r.tg.sent(ada.id).length === 1, "the question");
+  assert.equal(r.tg.sent(ada.id)[0], "One question first.\n\nWhich region?\n1. EU — Frankfurt\n2. US");
+  assert.equal(await r.deliver(channel, secret, from(ada, "2")), 200);
+  await until(() => r.tg.sent(ada.id).length === 2, "the resumed reply");
+  assert.equal(r.tg.sent(ada.id)[1], "Deploying to US");
+
+  // In a group, only whoever asked for the deployment answers; someone else's message is a new one.
+  const group = -100;
+  assert.equal(await r.deliver(channel, secret, from(ada, "deploy", group)), 200);
+  await until(() => r.tg.sent(group).length === 1, "the question in the group");
+  assert.equal(await r.deliver(channel, secret, from(bob, "1", group)), 200);
+  await until(() => r.tg.sent(group).length === 2, "bob's message, answered as a new one");
+  assert.equal(r.tg.sent(group)[1], "echo: 1");
+  const agent = (await r.db.query("select agent from channel_conversations where conversation = $1", [String(group)])).rows[0].agent;
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs`)).json[0].state, "superseded");
+
+  // Several inputs are asked one message at a time.
+  assert.equal(await r.deliver(channel, secret, from(bob, "ask me twice")), 200);
+  await until(() => r.tg.sent(bob.id).length === 1, "the first question");
+  const first = r.tg.sent(bob.id)[0].split("\n")[0];
+  assert.ok(["First?", "Second?"].includes(first));
+  assert.equal(await r.deliver(channel, secret, from(bob, "yes")), 200);
+  await until(() => r.tg.sent(bob.id).length === 2, "the second question");
+  assert.equal(r.tg.sent(bob.id)[1].split("\n")[0], first === "First?" ? "Second?" : "First?");
+  assert.equal(await r.deliver(channel, secret, from(bob, "2")), 200);
+  await until(() => r.tg.sent(bob.id).length === 3, "the resumed reply");
+  assert.match(r.tg.sent(bob.id)[2], /^Answers: (Yes, No|No, Yes)$/);
+});
+
+test("inputs read as messages, and only a reply that fits answers one", () => {
+  const input = (kind: string, detail: object, message = "") => ({ kind, detail, message } as any);
+  const approval = input("approval", { tool: "shop__delete_item", source: "shop", arguments: '{"id":"a"}' });
+  assert.equal(askText(approval), 'Approve this action? shop__delete_item (shop) with {"id":"a"}\nReply approve or deny.');
+  assert.deepEqual(answerOf(approval, "Approve!"), { action: "accept" });
+  assert.deepEqual(answerOf(approval, "no"), { action: "decline" });
+  assert.equal(answerOf(approval, "approve it, sure"), undefined, "only an exact reply counts");
+  const url = input("url", { url: "https://crm.example.test/connect", origin: "https://crm.example.test" }, "Connect your CRM");
+  assert.equal(askText(url), "Connect your CRM\nhttps://crm.example.test/connect\n(on crm.example.test)\nReply done when you have finished.");
+  assert.deepEqual(answerOf(url, "done"), { action: "accept" });
+  assert.equal(answerOf(url, "ok"), undefined);
+  const questions = input("question", { questions: [
+    { question: "Which region?", options: [{ label: "EU" }, { label: "US" }], multiSelect: false, allowOther: false },
+    { question: "Which days?", options: [{ label: "Mon" }, { label: "Tue" }], multiSelect: true, allowOther: true },
+  ] });
+  assert.match(askText(questions), /Reply with one line per question, in order\.$/);
+  assert.deepEqual(answerOf(questions, "eu\n1, 2"), { action: "accept", content: { answers: { "Which region?": "EU", "Which days?": ["Mon", "Tue"] } } });
+  assert.deepEqual(answerOf(questions, "2\nwhenever"), { action: "accept", content: { answers: { "Which region?": "US", "Which days?": ["whenever"] } } });
+  assert.equal(answerOf(questions, "Asia\n1"), undefined);
+  assert.equal(answerOf(questions, "1"), undefined);
+  const confirm = input("form", { requestedSchema: { type: "object", properties: {} } }, "Delete shop?");
+  assert.deepEqual(answerOf(confirm, "yes"), { action: "accept", content: {} });
+  const count = input("form", { requestedSchema: { type: "object", properties: { count: { type: "integer" } } } }, "How many?");
+  assert.equal(askText(count), "How many?\nReply with the count.");
+  assert.deepEqual(answerOf(count, " 3 "), { action: "accept", content: { count: 3 } });
+  assert.equal(answerOf(count, "three"), undefined);
 });

@@ -739,15 +739,15 @@ export class ClientSessions {
   }
 
   /**
-   * Answer a tenant's agent's inputs, on the node that serves it: all of them or none. An input
-   * settles once: the same answer again is 200, a different one 409. Whoever a request names
-   * (`from`, `actor`) must be among those who may answer (403). The last answer of a suspension
-   * queues its `resume` run, returned in `requests`.
+   * Answer a tenant's agent's inputs, all of them or none, on any node. An input settles once: the
+   * same answer again is 200, a different one 409. Whoever a request names (`from`, `actor`) must be
+   * among those who may answer (403). The last answer of a suspension queues its `resume` run on the
+   * node serving the agent, returned in `requests`.
    */
   async answer(id: string, tenant: string, answers: { id: string; body: any }[], via: Responder["via"] = "api"): Promise<{ status: 200 | 202; inputs: Input[]; requests: RequestRecord[] }> {
     const inputs = this.options.inputs;
-    const session = inputs && (await this.owns(id, tenant)) ? await this.load(id) : undefined;
-    if (!session) throw new HttpError(404, "Unknown agent");
+    if (!inputs) throw new HttpError(404, "Unknown agent");
+    const { header } = await this.headerFor(id, tenant);
     if (!answers.length || answers.length > 100 || new Set(answers.map(entry => entry.id)).size !== answers.length) throw new HttpError(400, "Answer 1 to 100 different inputs");
     const checked: { input: InputRow; answer: Answer }[] = [];
     for (const { id: inputId, body } of answers) {
@@ -756,7 +756,7 @@ export class ClientSessions {
       let by: Responder;
       try { by = { via, ...(body?.from !== undefined ? { from: senderInput(body.from) } : {}), ...(body?.actor !== undefined ? { actor: actorInput(body.actor) } : {}) }; }
       catch (error) { throw new HttpError(400, errorText(error)); }
-      if (!mayAnswer(input, by, session.header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
+      if (!mayAnswer(input, by, header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
       checked.push({ input, answer: { ...answerInput(input, body), by, at: Date.now() } });
     }
     const settled = checked.every(({ input }) => input.state === "pending") ? await inputs!.settleAll(checked.map(({ input, answer }) => ({ id: input.id, answer }))) : undefined;
@@ -766,12 +766,23 @@ export class ClientSessions {
       const current = await Promise.all(checked.map(({ input }) => inputs!.get(input.id))) as InputRow[];
       const same = current.every((row, index) => row.answer && !row.answer.by.system && row.answer.action === checked[index].answer.action && canonical(row.answer.content ?? null) === canonical(checked[index].answer.content ?? null));
       if (!same) throw Object.assign(new HttpError(409, current.length === 1 ? `This input is already ${current[0].state}` : "An input is already settled"), { input: current.length === 1 ? inputView(current[0]) : current.map(inputView) });
-      return { status: 200, inputs: current.map(inputView), requests: suspensions.flatMap(suspension => session.requests.get(resumeId(suspension)) ?? []) };
+      return { status: 200, inputs: current.map(inputView), requests: await this.resumeAnywhere(id, tenant, suspensions) };
     }
-    for (const input of settled) this.resolved(session, input);
+    // Announced here when this node serves the agent; otherwise its resume run announces them.
+    const local = this.sessions.get(id);
+    if (local) for (const input of settled) this.resolved(local, input);
+    return { status: 202, inputs: settled.map(inputView), requests: await this.resumeAnywhere(id, tenant, suspensions) };
+  }
+
+  /** Resume each of these suspensions none of whose inputs is pending, on the node serving the agent; idempotent per suspension. */
+  private async resumeAnywhere(agent: string, tenant: string, suspensions: string[]) {
+    const submit = this.options.submit ?? ((agent, tenant, request) => this.submit(agent, tenant, request));
     const requests: RequestRecord[] = [];
-    for (const suspension of suspensions) { const request = await this.resumeSettled(session, suspension); if (request) requests.push(request); }
-    return { status: 202, inputs: settled.map(inputView), requests };
+    for (const suspension of suspensions) {
+      if ((await this.options.inputs!.forRequest(agent, suspension)).some(row => row.state === "pending")) continue;
+      requests.push(await submit(agent, tenant, { id: resumeId(suspension), method: "resume", params: { suspension } }));
+    }
+    return requests;
   }
 
   /** A tenant's inputs across its agents, newest first: the inbox of what waits on someone. */
@@ -793,9 +804,7 @@ export class ClientSessions {
         if (expired) suspensions.set(`${expired.agent} ${expired.requestId}`, expired);
       }
       for (const input of suspensions.values()) {
-        if ((await inputs.forRequest(input.agent, input.requestId)).some(row => row.state === "pending")) continue;
-        const submit = this.options.submit ?? ((agent, tenant, request) => this.submit(agent, tenant, request));
-        await submit(input.agent, input.tenant, { id: resumeId(input.requestId), method: "resume", params: { suspension: input.requestId } })
+        await this.resumeAnywhere(input.agent, input.tenant, [input.requestId])
           .catch(error => console.error(JSON.stringify({ type: "input_expiry_failed", agent: input.agent, error: errorText(error) })));
       }
       if (batch.length < 100) break;
@@ -1447,8 +1456,8 @@ export class ClientSessions {
     const inputs = this.options.inputs!;
     const rows = await inputs.forRequest(session.header.id, suspension);
     if (rows.some(row => row.state === "pending")) throw new Error("Inputs of this turn are still waiting for an answer");
-    // Inputs another node expired are announced here, on the agent's stream.
-    for (const row of rows) if (row.state === "expired") this.resolved(session, row);
+    // Inputs settled away from this node (expired, or answered in a channel) are announced here, on the agent's stream.
+    for (const row of rows) if (row.state === "expired" || row.answer?.by.via === "channel") this.resolved(session, row);
     const onExpire = session.header.sources?.humanInput?.onExpire;
     const calls: { toolCallId: string; result?: unknown; retry?: true }[] = [];
     session.retries = new Map();

@@ -491,7 +491,8 @@ export function createAgentHost(io: HostIO) {
       await recoverFailedResponses(active.signal);
       if (persistenceError) throw persistenceError;
       await transcript.setActive(false);
-      const last = agent.state.messages.at(-1) as AssistantMessage | undefined;
+      // A suspended turn ends on its open calls: what the model said as it made them is the reply so far.
+      const last = (transcript.awaiting.length ? agent.state.messages.findLast(message => message.role === "assistant") : agent.state.messages.at(-1)) as AssistantMessage | undefined;
       return { messages: transcript.total, ...answer(last), error: agent.state.errorMessage ?? null, ...(stopped ?? {}) };
     } finally {
       // Release what compaction folded away: the next run starts from summary + kept messages.

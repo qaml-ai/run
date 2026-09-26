@@ -43,7 +43,7 @@ import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
-import { Inputs } from "./inputs.ts";
+import { Inputs, inputView } from "./inputs.ts";
 
 // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
@@ -292,6 +292,8 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
   req.pipe(upstream);
 }
 
+// Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
+const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
   secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, agentLimitFor: async tenant => {
     // An admin's limit for the tenant, else, on free credit, the free limit (never above the default).
@@ -320,8 +322,7 @@ const clients = new ClientSessions(supervisor, {
     return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false }, sources: sources(spec) };
   },
   sources: toolSources,
-  // Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
-  inputs: new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) }),
+  inputs,
   submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
@@ -351,6 +352,10 @@ const channels = new Channels({
     ref: (agent, tenant, path) => clients.fileFor(agent, tenant, path),
     read: (tenant, ref) => volumes.stream(tenant, ref),
     link: async (agent, tenant, path) => (await clients.linkFor(agent, tenant, path, FILE_LIMITS.maxLinkSeconds)).url,
+  },
+  inputs: {
+    pending: async agent => (await inputs.pending(agent)).map(inputView),
+    answer: (agent, tenant, input, answer) => clients.answer(agent, tenant, [{ id: input, body: answer }], "channel"),
   },
   ...(process.env.AGENT_CHANNEL_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_CHANNEL_RETRY_MS) } : {}),
 });

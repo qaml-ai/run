@@ -12,6 +12,7 @@ import { PreconditionFailed } from "../shared/storage.ts";
 import { transaction, type Db } from "./db.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { validFileRef, type FileRef } from "./files.ts";
+import type { Input } from "./inputs.ts";
 
 /**
  * Channels let people talk to agents through messaging services. Each external
@@ -206,6 +207,11 @@ export interface ChannelsOptions {
   submit(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }): Promise<RequestRecord>;
   /** Files in and out of agents' volumes; without it attachments are noted but not saved, and files are not sent. */
   files?: ChannelFiles;
+  /** Human input an agent waits on: its pending inputs, oldest first, and answering one (as its sender, who must be allowed to). */
+  inputs?: {
+    pending(agent: string): Promise<Input[]>;
+    answer(agent: string, tenant: string, input: string, answer: { action: "accept" | "decline"; content?: unknown; from: { id: string; name?: string; username?: string } }): Promise<unknown>;
+  };
   retryBaseMs?: number;
 }
 export interface ChannelFiles {
@@ -562,6 +568,8 @@ export class Channels {
     const { credentials } = this.secrets(channel);
     void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
     const agent = await this.agentFor(channel, item.conversationId, inbound.sender);
+    // A reply to the question the agent waits on answers it; anything else is a new message, which supersedes it.
+    if (await this.answerInput(channel, agent, inbound)) return this.finish(current);
     const prompt = this.prompt(channel, inbound, await this.attach(channel, credentials, agent, item.id, inbound.files ?? []));
     // Submitted before submitting: the turn may end (and its reply be settled) before submit returns.
     const next = await this.save(current, { state: "submitted", agent, prompt, due: Date.now() + RECHECK_MS }, false);
@@ -614,6 +622,29 @@ export class Channels {
     const from = { id: `${channel.type}:${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}) };
     const text = [inbound.text, ...notes].filter(Boolean).join("\n") || (files.length === 1 ? "(sent a file)" : files.length ? `(sent ${files.length} files)` : "");
     return { text, from, ...(files.length ? { files } : {}) };
+  }
+
+  /**
+   * Answer the input the conversation's agent waits on (its oldest) with this message, when the
+   * message is an answer to it (see `answerOf`) from someone allowed to answer. The next waiting
+   * input, if any, is asked right away. False when the message is not an answer.
+   */
+  private async answerInput(channel: Channel, agent: string, inbound: Inbound): Promise<boolean> {
+    const inputs = this.options.inputs;
+    const input = inputs && !inbound.files?.length ? (await inputs.pending(agent))[0] : undefined;
+    const answer = input && answerOf(input, inbound.text);
+    if (!input || !answer) return false;
+    const { id, name, username } = inbound.sender;
+    try { await inputs!.answer(agent, channel.tenant, input.id, { ...answer, from: { id: `${channel.type}:${id}`, ...(name ? { name } : {}), ...(username ? { username } : {}) } }); }
+    catch (error) {
+      // Not theirs to answer (403), or settled meanwhile (409): the message is a new one.
+      if ([403, 409].includes((error as { status?: number }).status ?? 0)) return false;
+      throw error;
+    }
+    const next = (await inputs!.pending(agent)).find(other => other.requestId === input.requestId);
+    const binding = await this.binding(agent);
+    if (next && binding) await this.enqueue({ id: agent, tenant: channel.tenant }, binding, `ask_${next.id}`, askText(next));
+    return true;
   }
 
   /** A submitted message whose turn end this runtime did not see: ask again (idempotently) how it went. */
@@ -742,7 +773,7 @@ export class Channels {
 
   readonly hooks: SessionHooks = {
     runStarted: (agent, record) => {
-      if (record.method !== "prompt") return;
+      if (record.method !== "prompt" && record.method !== "resume") return;
       void this.binding(agent.id).then(async binding => {
         const channel = binding && await this.read(binding.channel);
         if (!binding || !channel || this.typing.has(agent.id)) return;
@@ -760,7 +791,7 @@ export class Channels {
     },
     runEnded: (agent, record) => {
       this.stopTyping(agent.id);
-      if (record.method !== "prompt") return;
+      if (record.method !== "prompt" && record.method !== "resume") return;
       void this.settle(agent, record).catch(error => console.error(JSON.stringify({ type: "channel_reply_failed", agent: agent.id, request: record.id, error: errorText(error) })));
     },
     // A channel's agents get send_message, for updates before the final reply.
@@ -795,11 +826,13 @@ export class Channels {
     this.typing.delete(agent);
   }
 
-  /** A channel agent's turn ended: its reply goes to the conversation. */
+  /** A channel agent's turn ended: its reply goes to the conversation, and the first input it waits on, if any. */
   private async settle(agent: AgentRef, record: RequestRecord) {
     const binding = await this.binding(agent.id);
     if (!binding) return;
     const reply = replyOf(record);
+    const waiting = (record.outcome?.result as { inputs?: Input[] } | undefined)?.inputs?.[0];
+    if (waiting) reply.text = [reply.text, askText(waiting)].filter(Boolean).join("\n\n");
     const empty = !reply.text && !reply.files.length;
     if (!record.id.startsWith("in_")) {
       // Turns not started by a message (schedules, the API) reply to the conversation too.
@@ -819,6 +852,68 @@ export class Channels {
       return this.deliver(channel, next).catch(error => this.failed(next.item, error));
     }
   }
+}
+
+/**
+ * An input as a message: a question's options numbered, an approval as the runtime's card of the
+ * call, a URL step with its address and site, and a confirmation or one-field form.
+ */
+export function askText(input: Input): string {
+  if (input.kind === "question") {
+    const questions = input.detail.questions as { question: string; options: { label: string; description?: string }[]; multiSelect: boolean; allowOther: boolean }[];
+    return [
+      ...questions.map(question => [
+        question.question,
+        ...question.options.map((option, index) => `${index + 1}. ${option.label}${option.description ? ` — ${option.description}` : ""}`),
+        question.multiSelect ? "Reply with one or more, separated by commas." : "", question.allowOther ? "Or reply in your own words." : "",
+      ].filter(Boolean).join("\n")),
+      ...questions.length > 1 ? ["Reply with one line per question, in order."] : [],
+    ].join("\n\n");
+  }
+  if (input.kind === "approval") {
+    return [`Approve this action? ${input.detail.tool} (${input.detail.source}) with ${input.detail.arguments}`, ...input.detail.reason ? [`The tool says: ${input.detail.reason}`] : [], "Reply approve or deny."].join("\n");
+  }
+  if (input.kind === "url") return `${input.message}\n${input.detail.url}\n(on ${new URL(input.detail.url).hostname})\nReply done when you have finished.`;
+  const fields = Object.keys(input.detail.requestedSchema?.properties ?? {});
+  if (!fields.length) return `${input.message}\nReply yes or no.`;
+  return fields.length === 1 ? `${input.message}\nReply with the ${fields[0]}.` : `${input.message}\n(This needs a form; answer it in the application.)`;
+}
+
+/**
+ * A message as the answer to an input, or undefined when it is not one: an option's number or label
+ * (or free text, where allowed) for each question; exactly approve/yes or deny/no for an approval
+ * or a confirmation; done for a URL step; the value of a one-field form. Anything else is a new message.
+ */
+export function answerOf(input: Input, text: string): { action: "accept" | "decline"; content?: unknown } | undefined {
+  const said = text.trim().replace(/[.!]+$/, "").toLowerCase();
+  const fields = Object.entries((input.detail.requestedSchema?.properties ?? {}) as Record<string, { type?: string }>);
+  if (input.kind === "approval" || (input.kind === "form" && !fields.length)) {
+    if (["approve", "approved", "yes", "y"].includes(said)) return input.kind === "form" ? { action: "accept", content: {} } : { action: "accept" };
+    return ["deny", "denied", "no", "n"].includes(said) ? { action: "decline" } : undefined;
+  }
+  if (input.kind === "url") return said === "done" ? { action: "accept" } : undefined;
+  if (input.kind === "form") {
+    if (fields.length !== 1) return undefined;
+    const [name, field] = fields[0];
+    const value = field.type === "number" || field.type === "integer" ? Number(text.trim()) : field.type === "boolean" ? (["yes", "true"].includes(said) ? true : ["no", "false"].includes(said) ? false : undefined) : text.trim();
+    return value === undefined || Number.isNaN(value) || value === "" ? undefined : { action: "accept", content: { [name]: value } };
+  }
+  const questions = input.detail.questions as { question: string; options: { label: string }[]; multiSelect: boolean; allowOther: boolean }[];
+  const lines = questions.length === 1 ? [text.trim()] : text.trim().split(/\n+/).map(line => line.trim());
+  if (lines.length !== questions.length) return undefined;
+  const answers: Record<string, string | string[]> = {};
+  for (const [index, question] of questions.entries()) {
+    const choose = (part: string) => {
+      const number = /^\d+$/.test(part) ? question.options[Number(part) - 1]?.label : undefined;
+      return number ?? question.options.find(option => option.label.toLowerCase() === part.toLowerCase())?.label;
+    };
+    const parts = question.multiSelect ? lines[index].split(",").map(part => part.trim()).filter(Boolean) : [lines[index]];
+    const chosen = parts.map(choose);
+    if (chosen.every(Boolean)) answers[question.question] = question.multiSelect ? chosen as string[] : chosen[0]!;
+    else if (question.allowOther && lines[index]) answers[question.question] = question.multiSelect ? [lines[index]] : lines[index];
+    else return undefined;
+  }
+  return { action: "accept", content: { answers } };
 }
 
 /** What a finished prompt says back: the final answer and the files it presented, or an apology when the turn failed. */
