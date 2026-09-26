@@ -23,8 +23,8 @@ import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.t
 import { deleteTail } from "./log-tail.ts";
 import { OVERRIDES, type DefinitionRef } from "./definitions.ts";
 import type { Sources, ToolSources } from "./tool-sources.ts";
-import { contentResult, type McpResult } from "./mcp-results.ts";
-import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { callParams, contentResult, type McpResult } from "./mcp-results.ts";
+import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
 import { senderInput } from "./sender.ts";
@@ -109,6 +109,8 @@ type Session = {
   outputs?: { files: Map<string, WrittenFile>; presented: (FileRef & { caption?: string })[] };
   /** In a `resume` run, how each answered call is run again, by tool call id. */
   retries?: Map<string, RetryPlan>;
+  /** A channel's conversation: someone there answers the agent's inputs. */
+  channel?: boolean;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -552,6 +554,7 @@ export class ClientSessions {
     const tenant = header.tenant;
     const agent: AgentRef = { id: header.id, tenant, claim: session.claim };
     const feature = await this.options.hooks?.server?.(agent);
+    session.channel = !!feature;
     const volumes = this.options.volumes;
     const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
       ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
@@ -639,6 +642,7 @@ export class ClientSessions {
         ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}),
         ...(plan?.approval ? { approval: { input: plan.approval.input, by: this.approver(plan.approval.by), at: plan.approval.at } } : {}),
         ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),
+        ...(this.humanSurface(session) ? { elicit: true } : {}),
       });
     } catch (error) {
       // MCP's older form of a URL step (-32042): the user opens each URL, then the call is retried.
@@ -651,6 +655,16 @@ export class ClientSessions {
     // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
     if (plan) content.content.push({ type: "text", text: plan.note });
     return content;
+  }
+
+  /**
+   * Whether the agent has someone to ask: a channel's conversation, a definition that set up human
+   * input (humanInput, ask_user), or an application connected to its stream. Only then may its
+   * tools' servers ask for input (MCP's elicitation capability).
+   */
+  private humanSurface(session: Session) {
+    const sources = session.header.sources;
+    return !!(sources?.humanInput || sources?.builtins?.includes("ask_user") || session.channel || session.attached?.open);
   }
 
   /** Who approved a call, as tools are told: ids only, never names a person chose. */
@@ -1562,7 +1576,7 @@ export class ClientSessions {
     });
   }
 
-  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, origin, actor, onProgress, approval }: ToolCall): Promise<McpResult> {
+  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, origin, actor, onProgress, approval, inputResponses, requestState, elicit }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
     const timeout = this.options.toolTimeoutMs ?? 15_000;
@@ -1580,7 +1594,7 @@ export class ClientSessions {
     };
     session.inflight++;
     try {
-      return await attached.client.callTool({ name, arguments: args, _meta }, undefined, { signal, timeout, maxTotalTimeout: timeout, ...(onProgress ? { onprogress: onProgress } : {}) }) as McpResult;
+      return await attached.client.request({ method: "tools/call", params: callParams(name, args, _meta, { inputResponses, requestState, elicit }) } as never, CallToolResultSchema, { signal, timeout, maxTotalTimeout: timeout, ...(onProgress ? { onprogress: onProgress } : {}) }) as McpResult;
     } catch (error) {
       if (!signal.aborted && error instanceof McpError && [ErrorCode.ConnectionClosed, ErrorCode.RequestTimeout].includes(error.code)) {
         throw new Error(`${error.message}, after the call was sent to the application. Its outcome is unknown: it may or may not have taken effect.`);

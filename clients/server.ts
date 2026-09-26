@@ -167,7 +167,7 @@ export function serveTools(tools: Tools | ToolServer, options: ServeOptions): (r
     const answers = await Promise.all(messages.map(async (message: any) => {
       if (!message || typeof message.method !== "string") return message && "id" in message ? { jsonrpc: "2.0", id: message.id ?? null, error: { code: -32600, message: "Invalid request" } } : undefined;
       if (message.id === undefined) return undefined;
-      const answer = await answerMcp(message, server, params => toolContext(params._meta && typeof params._meta === "object" ? params._meta : {}, String(message.id), request.signal, identity), options.serverInfo);
+      const answer = await answerMcp(message, server, params => toolContext(params, String(message.id), request.signal, identity), options.serverInfo);
       return { jsonrpc: "2.0", id: message.id, ...answer };
     }));
     const replies = answers.filter(answer => answer !== undefined);

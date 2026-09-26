@@ -48,6 +48,28 @@ export interface ToolContext {
   origin?: Record<string, unknown>;
   /** Who the call is for: always set by `serveTools`; set for attached tools by runtimes that send it. */
   identity?: RuntimeIdentity;
+  /**
+   * Ask the user, and get their answer. The call ends here and the agent's turn waits, for days if need
+   * be; once they answer, the runtime calls the tool again with the same arguments, and this returns
+   * the answer. So everything before an ask runs again on that call: ask first, act after.
+   * `confirm`: whether they said yes. `ask`: what they filled in (a flat object schema), or undefined
+   * if they declined. `requireUrl`: whether they say they have done what the https page asks.
+   */
+  confirm(message: string): Promise<boolean>;
+  ask<T extends Record<string, unknown> = Record<string, unknown>>(message: string, schema: Record<string, unknown>): Promise<T | undefined>;
+  requireUrl(url: string, message: string): Promise<boolean>;
+}
+/** Thrown by a ToolContext's asks: the call answers MCP's `input_required`, and runs again once the user answers. */
+export class InputRequired extends Error {
+  readonly inputRequests: Record<string, { method: string; params: Record<string, unknown> }>;
+  /** The answers so far, which the runtime hands back on the next call (MCP's `requestState`). */
+  readonly requestState?: string;
+  constructor(inputRequests: InputRequired["inputRequests"], requestState?: string) {
+    super("Waiting for the user's input");
+    this.name = "InputRequired";
+    this.inputRequests = inputRequests;
+    if (requestState) this.requestState = requestState;
+  }
 }
 export interface Tool<T = any> {
   description: string;
@@ -84,15 +106,32 @@ export interface ToolServer {
 const META = "agent-runtime/";
 function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 
-/** A call's context from its `_meta`: ids, origin, and the identity the runtime sent (or `identity`, from a verified token). */
-export function toolContext(meta: Record<string, any>, fallbackId: string, signal: AbortSignal, identity?: RuntimeIdentity): ToolContext {
+/**
+ * A call's context from its params: ids, origin, and the identity the runtime sent in `_meta` (or
+ * `identity`, from a verified token); its asks answer from the retry's `inputResponses`, by position.
+ */
+export function toolContext(params: Record<string, any>, fallbackId: string, signal: AbortSignal, identity?: RuntimeIdentity): ToolContext {
+  const meta: Record<string, any> = isRecord(params._meta) ? params._meta : {};
   const sent = isRecord(meta[`${META}identity`]) ? identityFromClaims(meta[`${META}identity`]) : undefined;
   const who = identity ?? sent;
   const origin = isRecord(meta[`${META}origin`]) ? meta[`${META}origin`] : who?.origin;
+  // Each round answers only its own ask: earlier answers come back in the state this call handed out.
+  let earlier: Record<string, unknown> = {};
+  try { earlier = typeof params.requestState === "string" ? JSON.parse(atob(params.requestState)) : {}; } catch { /* not ours: start over */ }
+  const responses: Record<string, unknown> = { ...isRecord(earlier) ? earlier : {}, ...isRecord(params.inputResponses) ? params.inputResponses : {} };
+  let asked = 0;
+  const request = async (input: Record<string, unknown>): Promise<{ action?: string; content?: any }> => {
+    const key = `input_${++asked}`;
+    if (isRecord(responses[key])) return responses[key];
+    throw new InputRequired({ [key]: { method: "elicitation/create", params: input } }, Object.keys(responses).length ? btoa(JSON.stringify(responses)) : undefined);
+  };
   return {
     callId: typeof meta[`${META}callId`] === "string" ? meta[`${META}callId`] : fallbackId, signal,
     ...(typeof meta[`${META}toolCallId`] === "string" ? { toolCallId: meta[`${META}toolCallId`] } : {}),
     ...(origin ? { origin } : {}), ...(who ? { identity: who } : {}),
+    confirm: async message => (await request({ mode: "form", message, requestedSchema: { type: "object", properties: {} } })).action === "accept",
+    ask: async (message, schema) => { const answer = await request({ mode: "form", message, requestedSchema: schema }); return answer.action === "accept" ? answer.content : undefined; },
+    requireUrl: async (url, message) => (await request({ mode: "url", message, url, elicitationId: `${fallbackId}-${asked + 1}` })).action === "accept",
   };
 }
 
@@ -137,6 +176,7 @@ export function toolServer(tools: Tools): ToolServer {
       let result: unknown;
       try { result = await definition.execute(args, context); }
       catch (error) {
+        if (error instanceof InputRequired) return { resultType: "input_required", inputRequests: error.inputRequests, ...(error.requestState ? { requestState: error.requestState } : {}) };
         if (context.signal.aborted) throw error;
         return { content: [{ type: "text", text: String(error).slice(0, 2048) }], isError: true };
       }
@@ -671,7 +711,7 @@ export class AgentClient {
     const controller = new AbortController();
     if (message.method === "tools/call") this.active.set(key, controller);
     try {
-      const answer = await answerMcp(message, this.server, params => toolContext(isRecord(params._meta) ? params._meta : {}, key, controller.signal));
+      const answer = await answerMcp(message, this.server, params => toolContext(params, key, controller.signal));
       await this.transport.json(this.path("/mcp"), this.session.token, "POST", { jsonrpc: "2.0", id: message.id, ...answer }, true, { "X-Agent-Connection": connection ?? "" });
     } finally { this.active.delete(key); }
   }

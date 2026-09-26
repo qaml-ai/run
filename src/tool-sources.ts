@@ -367,7 +367,7 @@ export class ToolSources {
           ...mcp,
         ];
       },
-      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, onProgress, approval }) => {
+      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, onProgress, approval, inputResponses, requestState, elicit }) => {
         // An approved call proves it to the tool: in its identity token and its `_meta`.
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}) };
         const callFiles = files(name, runId);
@@ -393,7 +393,7 @@ export class ToolSources {
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
         if (needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true) && !approval) return APPROVAL_REQUIRED;
         const resolved = await resolveFiles(args, tool.inputSchema, callFiles) as Record<string, unknown>;
-        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTotalMs: MAX_TIMEOUT_MS }, { ...callMeta({ toolCallId, innerCallId, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}) }, onProgress)) as McpResult;
+        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTotalMs: MAX_TIMEOUT_MS }, { ...callMeta({ toolCallId, innerCallId, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}) }, onProgress, { inputResponses, requestState, elicit })) as McpResult;
         return savedContent(result, callFiles);
       },
     };

@@ -60,6 +60,16 @@ def identity_from_claims(claims):
                            approval=claims["approval"] if isinstance(claims.get("approval"), dict) else None)
 
 
+class InputRequired(Exception):
+    """Raised by a ToolContext's asks: the call answers MCP's input_required, and runs again once the user answers."""
+
+    def __init__(self, input_requests, request_state=None):
+        super().__init__("Waiting for the user's input")
+        self.input_requests = input_requests
+        # The answers so far, which the runtime hands back on the next call (MCP's requestState).
+        self.request_state = request_state
+
+
 @dataclass
 class ToolContext:
     call_id: str
@@ -67,6 +77,33 @@ class ToolContext:
     origin: dict | None = None
     # Who the call is for: always set by serve_tools; set for attached tools by runtimes that send it.
     identity: RuntimeIdentity | None = None
+    # The user's answers to this call's asks, on the call the runtime makes once they answered.
+    input_responses: dict = field(default_factory=dict, repr=False)
+    _asked: int = field(default=0, repr=False)
+
+    # Ask the user and get their answer. The call ends at the first ask and the agent's turn waits, for days if
+    # need be; once they answer, the runtime calls the tool again with the same arguments and the ask returns the
+    # answer. So everything before an ask runs again on that call: ask first, act after.
+    async def confirm(self, message):
+        """Whether the user said yes."""
+        return (await self._request({"mode": "form", "message": message, "requestedSchema": {"type": "object", "properties": {}}})).get("action") == "accept"
+
+    async def ask(self, message, schema):
+        """What the user filled in (`schema` is a flat JSON Schema object), or None if they declined."""
+        answer = await self._request({"mode": "form", "message": message, "requestedSchema": schema})
+        return answer.get("content") if answer.get("action") == "accept" else None
+
+    async def require_url(self, url, message):
+        """Whether the user says they have done what the https page at `url` asks (connect an account, say)."""
+        return (await self._request({"mode": "url", "message": message, "url": url, "elicitationId": f"{self.call_id}-{self._asked + 1}"})).get("action") == "accept"
+
+    async def _request(self, params):
+        self._asked += 1
+        key = f"input_{self._asked}"
+        if isinstance(self.input_responses.get(key), dict):
+            return self.input_responses[key]
+        state = base64.b64encode(json.dumps(self.input_responses).encode()).decode() if self.input_responses else None
+        raise InputRequired({key: {"method": "elicitation/create", "params": params}}, state)
 
 
 @dataclass
@@ -148,6 +185,12 @@ async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sd
             raise ValueError(f"Unknown tool {params.get('name')}")
         args = dict(params.get("arguments") or {})
         context = context_for(params.get("_meta") or {})
+        # Each round answers only its own ask: earlier answers come back in the state this call handed out.
+        try:
+            earlier = json.loads(base64.b64decode(params["requestState"])) if isinstance(params.get("requestState"), str) else {}
+        except ValueError:
+            earlier = {}
+        context.input_responses = {**(earlier if isinstance(earlier, dict) else {}), **(params.get("inputResponses") if isinstance(params.get("inputResponses"), dict) else {})}
         needs = definition.needs_approval
         if callable(needs):
             needs = await needs(dict(args), context)
@@ -160,6 +203,8 @@ async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sd
             answer = _call_tool_result(await definition.function(**args))
         except asyncio.CancelledError:
             raise
+        except InputRequired as asked:
+            answer = {"resultType": "input_required", "inputRequests": asked.input_requests, **({"requestState": asked.request_state} if asked.request_state else {})}
         except Exception as error:
             # The tool's own failure is an MCP error result: the model sees it.
             answer = {"content": [{"type": "text", "text": str(error)[:2048]}], "isError": True}

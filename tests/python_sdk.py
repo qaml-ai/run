@@ -225,6 +225,15 @@ async def whoami(context: ToolContext) -> dict:
 DELETED = []
 
 
+@tool
+async def archive(name: str, context: ToolContext) -> dict:
+    """Archive a project, once the user confirms and says why"""
+    if not await context.confirm(f"Archive {name}?"):
+        return {"cancelled": True}
+    why = await context.ask("Why?", {"type": "object", "properties": {"reason": {"type": "string"}}})
+    return {"archived": name, "reason": why["reason"]}
+
+
 @tool(needs_approval=True)
 async def delete_todo(text: str) -> dict:
     """Delete a to-do"""
@@ -292,6 +301,16 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         done = await self.runtime.call_tool(app, self.APP, "delete_todo", {"text": "ship it"}, subject="alice", claims={"approval": approval})
         self.assertEqual(done["structuredContent"], {"deleted": "ship it"})
         self.assertEqual(DELETED, ["ship it"])
+
+    async def test_a_tool_asks_the_user_and_runs_again_with_each_answer(self):
+        call = lambda params: _answer_mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "archive", "arguments": {"name": "x"}, **params}},
+                                          {"archive": archive}, lambda meta: _tool_context(meta, "1"))
+        first = (await call({}))["result"]
+        self.assertEqual(first["inputRequests"]["input_1"]["params"]["message"], "Archive x?")
+        second = (await call({"inputResponses": {"input_1": {"action": "accept", "content": {}}}}))["result"]
+        self.assertEqual(second["inputRequests"]["input_2"]["params"]["message"], "Why?")
+        done = (await call({"inputResponses": {"input_2": {"action": "accept", "content": {"reason": "old"}}}, "requestState": second["requestState"]}))["result"]
+        self.assertEqual(done["structuredContent"], {"archived": "x", "reason": "old"})
 
     async def test_protected_resource_metadata_and_post_only(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app)) as client:

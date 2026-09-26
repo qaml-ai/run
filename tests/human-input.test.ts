@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lastUser, listen, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { lastUser, listen, OPERATOR, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
-/** A stateless MCP server answering in JSON: each tool is (arguments, params) => result. It records each call's params and credentials. */
+/** A stateless MCP server answering in JSON: each tool is (arguments, params) => result, or { error } for a JSON-RPC error. It records each call's params and credentials. */
 async function rawMcp(t: T, tools: Record<string, { annotations?: object; call: (args: any, params: any) => object }>) {
   const calls: { params: any; authorization?: string }[] = [];
   const url = await listen(t, async (req, res) => {
@@ -18,7 +19,9 @@ async function rawMcp(t: T, tools: Record<string, { annotations?: object; call: 
     if (message.method === "tools/list") return reply({ tools: Object.entries(tools).map(([name, tool]) => ({ name, description: name, inputSchema: { type: "object", properties: { id: { type: "string" } } }, ...(tool.annotations ? { annotations: tool.annotations } : {}) })) });
     if (message.method === "tools/call") {
       calls.push({ params: message.params, authorization: req.headers.authorization });
-      return reply(tools[message.params.name].call(message.params.arguments, message.params));
+      const result = tools[message.params.name].call(message.params.arguments, message.params) as { error?: object };
+      if (result.error) return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: result.error }));
+      return reply(result);
     }
     reply({});
   });
@@ -163,4 +166,81 @@ test("an approval policy asks before a gated tool runs: the approved call runs o
   await until(async () => r.model.bodies.length === 4, "the model to hear of it");
   assert.match(toolResults(r.model.bodies[3]).at(-1), /The user declined this call: keep it\. It did not run/);
   assert.equal(shop.calls.length, 1);
+});
+
+test("an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state", async t => {
+  const text = (value: string) => ({ content: [{ type: "text", text: value }] });
+  const form = { mode: "form", message: "New name?", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } };
+  const server = await rawMcp(t, {
+    rename: { call: (_args, params) => params.inputResponses ? text(`renamed to ${params.inputResponses.name.content.name} (state ${params.requestState})`)
+      : { resultType: "input_required", inputRequests: { name: { method: "elicitation/create", params: form } }, requestState: "opaque-state" } },
+    connect: { call: (_args, params) => params.inputResponses ? text(`connected: ${params.inputResponses.url_0.action}`)
+      : { error: { code: -32042, message: "Connect first", data: { elicitations: [{ mode: "url", url: "https://crm.example.test/connect", message: "Connect your CRM", elicitationId: "e1" }] } } } },
+  });
+  const r = await runtime(t, (body, index) => [toolCall("tools__rename", {}, "call_rename"), { role: "assistant", content: toolResults(body).at(-1) },
+    toolCall("tools__connect", {}, "call_connect"), { role: "assistant", content: toolResults(body).at(-1) },
+    toolCall("js_exec", { code: "return await tools.tools__rename({})" }), { role: "assistant", content: toolResults(body).at(-1) }][index] ?? { role: "assistant", content: "?" }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Tools", humanInput: {}, mcpServers: [{ name: "tools", url: server.url, exposure: "both" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+
+  const [input] = (await r.prompt(agent, "Rename it")).outcome.result.inputs;
+  assert.deepEqual({ kind: input.kind, message: input.message, detail: input.detail }, { kind: "form", message: "New name?", detail: { requestedSchema: form.requestedSchema } });
+  assert.deepEqual(server.calls[0].params._meta["io.modelcontextprotocol/clientCapabilities"], { elicitation: { form: {}, url: {} } }, "an agent with someone to ask says it can elicit");
+  assert.equal(JSON.stringify((await r.db.query("select input from agent_inputs")).rows).includes("opaque-state"), false, "the server's state is sealed at rest");
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", content: { name: 7 } } })).status, 400, "a form's content fits its schema");
+  const answered = await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", content: { name: "Bob" } } });
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/${answered.json.request.id}`)).json.state === "completed", "the retry");
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /renamed to Bob \(state opaque-state\)[\s\S]*Answered by the application after/);
+  assert.equal(server.calls[1].params.requestState, "opaque-state");
+
+  const [url] = (await r.prompt(agent, "Connect the CRM")).outcome.result.inputs;
+  assert.deepEqual({ kind: url.kind, message: url.message, detail: url.detail }, { kind: "url", message: "Connect your CRM", detail: { url: "https://crm.example.test/connect", origin: "https://crm.example.test" } });
+  const done = await r.call(`/v1/agents/${agent}/inputs/${url.id}`, { body: { action: "accept" } });
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/${done.json.request.id}`)).json.state === "completed", "the retry");
+  assert.match(toolResults(r.model.bodies[3]).at(-1), /connected: accept/);
+  assert.equal(server.calls[3].params.requestState, undefined, "no state was given, so none is sent");
+
+  // Code cannot wait for a person: the call from js_exec fails and says how to make it.
+  const fromCode = await r.prompt(agent, "Rename from code");
+  assert.match(fromCode.outcome.result.reply, /tools__rename needs the user's input: call tools__rename directly/);
+  assert.equal(fromCode.outcome.result.stopped, undefined);
+});
+
+test("an agent with no one to ask does not tell servers it can elicit", async t => {
+  const server = await rawMcp(t, { plain: { call: () => ({ content: [{ type: "text", text: "ok" }] }) } });
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("tools__plain", {}) : { role: "assistant", content: "done" }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Headless", mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
+  await r.prompt((await r.call("/v1/agents", { body: { definition: definition.id } })).json.id, "go");
+  assert.equal(server.calls[0].params._meta?.["io.modelcontextprotocol/clientCapabilities"], undefined);
+});
+
+test("an attached tool asks with ctx.confirm and ctx.ask: the call runs again with the answers, everything before an ask included", async t => {
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("delete_app", { app: "shop" }, "call_delete") : { role: "assistant", content: toolResults(body).at(-1) });
+  let runs = 0;
+  const deleted: string[] = [];
+  const tools = { delete_app: tool({
+    description: "Delete an app", input: schema.Object({ app: schema.String() }),
+    execute: async ({ app }, ctx) => {
+      runs++;
+      if (!await ctx.confirm(`Delete ${app}? Its URL stops working.`)) return { cancelled: true };
+      const reason = await ctx.ask<{ reason: string }>("Why?", { type: "object", properties: { reason: { type: "string" } }, required: ["reason"] });
+      deleted.push(`${app}: ${reason?.reason}`);
+      return { deleted: app };
+    },
+  }) };
+  const agent = await new AgentRuntime({ url: r.base, apiKey: OPERATOR, journalStore: memoryJournalStore() }).createAgent({ tools });
+  t.after(() => agent.close());
+  const first = await agent.prompt("Delete the shop app", { timeoutMs: 30_000 });
+  assert.equal(first.stopped, "input_required");
+  assert.deepEqual({ kind: first.inputs[0].kind, message: first.inputs[0].message }, { kind: "form", message: "Delete shop? Its URL stops working." });
+  const post = (id: string, body: object) => r.call(`/v1/agents/${agent.session.id}/inputs/${id}`, { body });
+  const confirmed = await post(first.inputs[0].id, { action: "accept", content: {} });
+  const second = await agent.waitForRequest(confirmed.json.request.id, { timeoutMs: 30_000 });
+  assert.equal(second.stopped, "input_required", "the second ask is a second round");
+  assert.equal(second.inputs[0].message, "Why?");
+  const reasoned = await post(second.inputs[0].id, { action: "accept", content: { reason: "retired" } });
+  const done = await agent.waitForRequest(reasoned.json.request.id, { timeoutMs: 30_000 });
+  assert.match(done.reply, /"deleted":"shop"/);
+  assert.deepEqual(deleted, ["shop: retired"]);
+  assert.equal(runs, 3, "the code before each ask ran again on every retry");
 });

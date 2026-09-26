@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { ToolListChangedNotificationSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolResultSchema, ToolListChangedNotificationSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { canonical } from "../shared/durable-json.ts";
 import { errorText } from "./protocol.ts";
 import type { Outbound } from "./outbound.ts";
 import type { Progress } from "./tool-servers.ts";
+import { callParams, type CallInput } from "./mcp-results.ts";
 
 /**
  * Remote MCP servers as a tool source. Connections are made lazily, one per tenant
@@ -128,9 +129,10 @@ export class McpConnections {
    * sends for it (the call carries a progressToken) restarts that wait, up to `maxTotalMs` in all.
    * `onProgress` hears each.
    */
-  async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, { timeoutMs, maxTotalMs }: { timeoutMs: number; maxTotalMs: number }, meta?: Record<string, unknown>, onProgress?: (progress: Progress) => void) {
+  async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, { timeoutMs, maxTotalMs }: { timeoutMs: number; maxTotalMs: number }, meta: Record<string, unknown> = {}, onProgress?: (progress: Progress) => void, input?: CallInput) {
     const connection = this.connection(tenant, server);
-    return this.retrying(connection, client => client.callTool({ name, arguments: args, ...(meta && Object.keys(meta).length ? { _meta: meta } : {}) }, undefined, {
+    // A plain request, not callTool: its result may be MCP's `input_required`, which callTool's output checks refuse.
+    return this.retrying(connection, client => client.request({ method: "tools/call", params: callParams(name, args, meta, input) } as never, CallToolResultSchema, {
       signal, timeout: timeoutMs, maxTotalTimeout: Math.max(timeoutMs, maxTotalMs), resetTimeoutOnProgress: true, onprogress: progress => onProgress?.(progress),
     }));
   }

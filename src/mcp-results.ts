@@ -15,6 +15,18 @@ export type McpResult = {
 export type McpTool = { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; _meta?: Record<string, unknown> };
 export const META = "agent-runtime/";
 
+/** What a `tools/call` carries for human input (inputs.ts): answers and state on a retry, and whether the agent has someone to ask. */
+export type CallInput = { inputResponses?: Record<string, unknown>; requestState?: string; elicit?: boolean };
+/**
+ * A `tools/call` request's params. A retry after a person answered carries MCP's `inputResponses` and
+ * the server's `requestState`; an agent with someone to ask declares, per request, that it can
+ * elicit forms and URLs, so the server may answer `input_required`. Other agents declare nothing.
+ */
+export function callParams(name: string, args: Record<string, unknown>, meta: Record<string, unknown>, { inputResponses, requestState, elicit }: CallInput = {}) {
+  const _meta = { ...meta, ...(elicit ? { "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {}, url: {} } } } : {}) };
+  return { name, arguments: args, ...(Object.keys(_meta).length ? { _meta } : {}), ...(inputResponses ? { inputResponses } : {}), ...(requestState !== undefined ? { requestState } : {}) };
+}
+
 /**
  * An MCP tool result as a content result: text and images pass through; other content is described in text.
  * File references pass only from the runtime's own servers (`files`): its file tools, and tool sources' saved outputs.
