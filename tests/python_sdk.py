@@ -222,6 +222,16 @@ async def whoami(context: ToolContext) -> dict:
     return {"user": who.user, "subject": who.subject, "actor": who.actor, "tenant": who.tenant, "agent": who.agent, "context": who.context, "origin": context.origin}
 
 
+DELETED = []
+
+
+@tool(needs_approval=True)
+async def delete_todo(text: str) -> dict:
+    """Delete a to-do"""
+    DELETED.append(text)
+    return {"deleted": text}
+
+
 class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
     """serve_tools and verify_runtime_token, against TestRuntime: no runtime needed."""
     APP = "https://app.test/mcp"
@@ -270,6 +280,18 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
             await verify_runtime_token("not-a-token", audience=self.APP, **self.runtime.options)
         identity = await verify_runtime_token(self.runtime.token("https://app.test/mcp/", actor="bob"), audience=self.APP, **self.runtime.options)
         self.assertEqual(identity.user, "bob")
+
+    async def test_a_tool_that_needs_approval_asks_first_and_runs_once_approved(self):
+        app = serve_tools([delete_todo], **self.runtime.options)
+        listed = (await self.runtime.post(app, self.APP, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, subject="alice")).json()
+        self.assertEqual(listed["result"]["tools"][0]["_meta"], {"agent-runtime/needsApproval": True})
+        asked = await self.runtime.call_tool(app, self.APP, "delete_todo", {"text": "ship it"}, subject="alice")
+        self.assertEqual(asked, {"resultType": "input_required", "inputRequests": {"approval": {"method": "agent-runtime/approval"}}})
+        self.assertEqual(DELETED, [])
+        approval = {"input": "inp_1", "by": {"actor": "alice"}, "at": 1}
+        done = await self.runtime.call_tool(app, self.APP, "delete_todo", {"text": "ship it"}, subject="alice", claims={"approval": approval})
+        self.assertEqual(done["structuredContent"], {"deleted": "ship it"})
+        self.assertEqual(DELETED, ["ship it"])
 
     async def test_protected_resource_metadata_and_post_only(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app)) as client:

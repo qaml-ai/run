@@ -26,6 +26,8 @@ export interface RuntimeIdentity {
   context: Record<string, unknown>;
   /** Where the turn came from, e.g. `{ channel, conversationId, sender }` for a channel message. */
   origin?: Record<string, unknown>;
+  /** The call was approved by a person: which input, who (their ids), and when. */
+  approval?: { input: string; by: Record<string, unknown>; at: number };
 }
 /** A runtime identity from its claims (a verified token's payload, or an attached call's `_meta`). */
 export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity {
@@ -37,6 +39,7 @@ export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity
     user: actor ?? subject, subject, ...(actor ? { actor } : {}), tenant: text(claims.tenant) ?? "", agent,
     ...(text(claims.definition) ? { definition: claims.definition } : {}),
     context: isRecord(claims.ctx) ? claims.ctx : {}, ...(isRecord(claims.origin) ? { origin: claims.origin } : {}),
+    ...(isRecord(claims.approval) ? { approval: claims.approval as RuntimeIdentity["approval"] & object } : {}),
   };
 }
 export interface ToolContext {
@@ -53,6 +56,11 @@ export interface Tool<T = any> {
   executionMode?: "sequential" | "parallel";
   input: Record<string, unknown>;
   execute: (args: T, context: ToolContext) => unknown | Promise<unknown>;
+  /**
+   * Ask the user to approve each call before it runs (or only the calls this says need it). The runtime
+   * shows them the real call; the tool is declared to the model directly, as code cannot wait for a person.
+   */
+  needsApproval?: boolean | ((args: T, context: ToolContext) => boolean | Promise<boolean>);
 }
 /** Infer callback arguments from the schema; no manually duplicated argument type. */
 export function tool<S extends TSchema>(definition: Omit<Tool<Static<S>>, "input"> & { input: S }): Tool<Static<S>> {
@@ -61,8 +69,9 @@ export function tool<S extends TSchema>(definition: Omit<Tool<Static<S>>, "input
 export type Tools = Record<string, Tool>;
 /** A tool as an MCP server lists it (`tools/list`). Runtime options ride in `_meta` under "agent-runtime/". */
 export interface McpTool { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown>; _meta?: Record<string, unknown> }
-/** An MCP `tools/call` result. */
-export interface CallToolResult { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean }
+/** An MCP `tools/call` result: complete, or (MCP's multi round-trip requests) asking for input to retry with. */
+export type CallToolResult = { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean; resultType?: "complete" }
+  | { resultType: "input_required"; inputRequests?: Record<string, { method: string; params?: Record<string, unknown> }>; requestState?: string; content?: never };
 /**
  * The MCP server an application attaches to its agent: the SDK relays the runtime's
  * `tools/list` and `tools/call` to it over the agent's connection. Throw from `callTool`
@@ -102,7 +111,7 @@ export async function answerMcp(
   if (message.method !== "tools/call") return { error: { code: -32601, message: `Unknown method ${message.method}` } };
   try {
     const result = await server.callTool(String(params.name), isRecord(params.arguments) ? params.arguments : {}, context(params));
-    if (!isRecord(result) || !Array.isArray(result.content) || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
+    if (!isRecord(result) || (!Array.isArray(result.content) && result.resultType !== "input_required") || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
     return { result };
   } catch (error) {
     return { error: { code: -32603, message: String(error).slice(0, 2048) } };
@@ -113,12 +122,18 @@ export function toolServer(tools: Tools): ToolServer {
   return {
     listTools: () => Object.entries(tools).map(([name, tool]) => ({
       name, description: tool.description, inputSchema: tool.input,
-      ...(tool.exposure || tool.executionMode ? { _meta: { ...(tool.exposure ? { [`${META}exposure`]: tool.exposure } : {}), ...(tool.executionMode ? { [`${META}executionMode`]: tool.executionMode } : {}) } } : {}),
+      ...(tool.exposure || tool.executionMode || tool.needsApproval ? { _meta: {
+        ...(tool.exposure ? { [`${META}exposure`]: tool.exposure } : {}), ...(tool.executionMode ? { [`${META}executionMode`]: tool.executionMode } : {}),
+        ...(tool.needsApproval ? { [`${META}needsApproval`]: true } : {}),
+      } } : {}),
     })),
     async callTool(name, args, context) {
       const definition = tools[name];
       if (!Object.hasOwn(tools, name) || !Check(definition.input, args)) throw new Error("Tool is missing or arguments failed validation");
       context.signal.throwIfAborted();
+      // Not yet approved: the runtime asks the user, showing this call, and calls again once they approve.
+      const asks = typeof definition.needsApproval === "function" ? await definition.needsApproval(args, context) : definition.needsApproval;
+      if (asks && !context.identity?.approval) return { resultType: "input_required", inputRequests: { approval: { method: `${META}approval` } } };
       let result: unknown;
       try { result = await definition.execute(args, context); }
       catch (error) {

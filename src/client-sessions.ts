@@ -1562,7 +1562,7 @@ export class ClientSessions {
     });
   }
 
-  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, origin, actor, onProgress }: ToolCall): Promise<McpResult> {
+  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, origin, actor, onProgress, approval }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
     const timeout = this.options.toolTimeoutMs ?? 15_000;
@@ -1572,10 +1572,11 @@ export class ClientSessions {
     const identity = {
       tenant: header.tenant, agent: header.id, sub: header.identity?.subject ?? header.id,
       ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
-      ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}),
+      ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
     };
     const _meta = {
       "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity, ...callMeta({ toolCallId, innerCallId, origin, actor }),
+      ...(approval ? { "agent-runtime/approval": approval } : {}),
     };
     session.inflight++;
     try {

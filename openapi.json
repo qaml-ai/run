@@ -2048,6 +2048,33 @@
             "type": "string",
             "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)"
           },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "default": {
+                "type": "string",
+                "enum": [
+                  "never",
+                  "always",
+                  "destructive"
+                ],
+                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+              },
+              "tools": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always"
+                  ]
+                },
+                "description": "Per tool, by its own name: overrides the default"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+          },
           "headerNames": {
             "type": "array",
             "items": {
@@ -2123,6 +2150,49 @@
           "audience": {
             "type": "string",
             "description": "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)"
+          },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "default": {
+                "type": "string",
+                "enum": [
+                  "never",
+                  "always",
+                  "destructive"
+                ],
+                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+              },
+              "tools": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always"
+                  ]
+                },
+                "description": "Per tool, by its own name: overrides the default"
+              },
+              "methods": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "GET",
+                    "PUT",
+                    "POST",
+                    "DELETE",
+                    "PATCH",
+                    "HEAD",
+                    "OPTIONS"
+                  ]
+                },
+                "description": "Operations of these methods, unless named in tools"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
           },
           "spec": {
             "type": "string",
@@ -2332,6 +2402,33 @@
             "type": "string",
             "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)"
           },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "default": {
+                "type": "string",
+                "enum": [
+                  "never",
+                  "always",
+                  "destructive"
+                ],
+                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+              },
+              "tools": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always"
+                  ]
+                },
+                "description": "Per tool, by its own name: overrides the default"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+          },
           "headers": {
             "type": "object",
             "additionalProperties": {
@@ -2431,6 +2528,49 @@
           "audience": {
             "type": "string",
             "description": "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)"
+          },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "default": {
+                "type": "string",
+                "enum": [
+                  "never",
+                  "always",
+                  "destructive"
+                ],
+                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+              },
+              "tools": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always"
+                  ]
+                },
+                "description": "Per tool, by its own name: overrides the default"
+              },
+              "methods": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "GET",
+                    "PUT",
+                    "POST",
+                    "DELETE",
+                    "PATCH",
+                    "HEAD",
+                    "OPTIONS"
+                  ]
+                },
+                "description": "Operations of these methods, unless named in tools"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
           },
           "spec": {
             "anyOf": [

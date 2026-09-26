@@ -30,6 +30,12 @@ import type { HumanInputSettings } from "./inputs.ts";
 export type Exposure = "direct" | "codemode" | "both";
 /** How a source is authenticated beyond its headers: a stored bearer token, or a token the runtime signs for each request. */
 export type SourceAuth = { type: "bearer" } | { type: "runtime" };
+/**
+ * Which of a source's tools ask the user before each call: `default` for all (never, always, or
+ * destructive: MCP tools annotated destructiveHint, OpenAPI operations that are not GET, HEAD or
+ * OPTIONS), `tools` by name, and for OpenAPI `methods` (["POST", "DELETE"]). Off by default.
+ */
+export type ApprovalPolicy = { default?: "never" | "always" | "destructive"; tools?: Record<string, "never" | "always">; methods?: string[] };
 /** An MCP server as a definition stores it: its credentials sealed, their header names kept for display. */
 export interface McpServerSpec {
   name: string; url: string;
@@ -42,6 +48,7 @@ export interface McpServerSpec {
   timeoutMs?: number;
   /** The `aud` of its identity tokens when not its URL (a server behind a proxy, say); auth "runtime" only. */
   audience?: string;
+  approval?: ApprovalPolicy;
 }
 /**
  * An OpenAPI spec as a definition stores it: fetched and checked when the definition is saved,
@@ -62,6 +69,7 @@ export interface OpenApiSpec {
   timeoutMs?: number;
   /** The `aud` of its identity tokens when not its URL (a server behind a proxy, say); auth "runtime" only. */
   audience?: string;
+  approval?: ApprovalPolicy;
 }
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
@@ -126,8 +134,8 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
   if (!Array.isArray(input) || input.length > MAX_SOURCES) throw bad(`mcpServers must be a list of at most ${MAX_SOURCES} servers`);
   const names = new Set<string>();
   return input.map((server: any) => {
-    if (!server || typeof server !== "object" || Array.isArray(server)) throw bad("An MCP server is { name, url, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs? }");
-    const { name, url, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience } = server;
+    if (!server || typeof server !== "object" || Array.isArray(server)) throw bad("An MCP server is { name, url, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs?, approval? }");
+    const { name, url, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience, approval } = server;
     if (typeof name !== "string" || name.length > 32 || !SERVER_NAME.test(name)) throw bad("An MCP server's name is 1–32 letters and digits, single underscores between them, starting with a letter");
     if (names.has(name)) throw bad(`Two MCP servers are named ${name}`);
     names.add(name);
@@ -139,6 +147,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
     const spec: McpServerSpec = {
       name, url: checked.toString(), ...(allowTools !== undefined ? { allowTools: strings(allowTools, "allowTools", 512) } : {}),
       ...(denyTools !== undefined ? { denyTools: strings(denyTools, "denyTools", 512) } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
+      ...(approval !== undefined ? { approval: approvalInput(approval, `MCP server ${name}`) } : {}),
     };
     const credentials = sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context);
     return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`) };
@@ -153,8 +162,8 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
   if (!Array.isArray(input) || input.length > MAX_SOURCES) throw bad(`openApi must be a list of at most ${MAX_SOURCES} specs`);
   const names = new Set<string>();
   return Promise.all(input.map(async (entry: any) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw bad("An OpenAPI source is { name, spec (a URL or the document), baseUrl?, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs? }");
-    const { name, spec, baseUrl, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience } = entry;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw bad("An OpenAPI source is { name, spec (a URL or the document), baseUrl?, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs?, approval? }");
+    const { name, spec, baseUrl, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience, approval } = entry;
     if (typeof name !== "string" || name.length > 32 || !SERVER_NAME.test(name)) throw bad("An OpenAPI source's name is 1–32 letters and digits, single underscores between them, starting with a letter");
     if (names.has(name)) throw bad(`Two OpenAPI sources are named ${name}`);
     names.add(name);
@@ -188,11 +197,33 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
     const stored: OpenApiSpec = {
       name, ...(specUrl ? { spec: specUrl } : {}), baseUrl: checked.toString(), operations: chosen,
       ...(allow ? { allowTools: allow } : {}), ...(deny ? { denyTools: deny } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
+      ...(approval !== undefined ? { approval: approvalInput(approval, `OpenAPI source ${name}`, true) } : {}),
     };
     const credentials = sealCredentials(headers, auth, kept && { ...kept, url: kept.baseUrl }, checked, sealedAad(definition, name, "openapi"), context);
     return { ...stored, ...credentials, ...audienceInput(audience, credentials.auth, `OpenAPI source ${name}`) };
   }));
 }
+
+function approvalInput(value: any, label: string, openApi = false): ApprovalPolicy {
+  const usage = `${label}: approval is { default?: "never" | "always" | "destructive", tools?: { <tool>: "never" | "always" }${openApi ? ", methods?: [\"POST\", ...]" : ""} }`;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["default", "tools", ...(openApi ? ["methods"] : [])].includes(key))) throw bad(usage);
+  if (value.default !== undefined && !["never", "always", "destructive"].includes(value.default)) throw bad(usage);
+  if (value.tools !== undefined && (!value.tools || typeof value.tools !== "object" || Array.isArray(value.tools) || Object.keys(value.tools).length > 1024 || Object.values(value.tools).some(mode => mode !== "never" && mode !== "always"))) throw bad(usage);
+  if (value.methods !== undefined && (!Array.isArray(value.methods) || value.methods.some((method: unknown) => typeof method !== "string" || !["GET", "PUT", "POST", "DELETE", "PATCH", "HEAD", "OPTIONS"].includes(method.toUpperCase())))) throw bad(usage);
+  return { ...(value.default ? { default: value.default } : {}), ...(value.tools ? { tools: value.tools } : {}), ...(value.methods ? { methods: value.methods.map((method: string) => method.toUpperCase()) } : {}) };
+}
+
+/** Whether a source's policy asks the user before a call of `tool` (its own name, unprefixed). */
+function needsApproval(policy: ApprovalPolicy | undefined, tool: string, destructive: boolean, method?: string) {
+  const named = policy?.tools?.[tool];
+  if (named) return named === "always";
+  if (method && policy?.methods?.includes(method.toUpperCase())) return true;
+  return policy?.default === "always" || (policy?.default === "destructive" && destructive);
+}
+/** A tool that asks first is declared to the model directly: code in js_exec cannot wait for the user. */
+const gated = (tool: ToolDefinition, ask: boolean): ToolDefinition => ask ? { ...tool, exposure: "direct", needsApproval: true } : tool;
+/** What a gated tool answers before it is approved: the runtime's approval request, as MCP's `input_required`. */
+const APPROVAL_REQUIRED: McpResult = { resultType: "input_required", inputRequests: { approval: { method: "agent-runtime/approval", params: {} } } };
 
 /** What callers see of an OpenAPI source: its tools' names, never its credentials. */
 export const openApiView = ({ sealed: _sealed, operations: list, ...source }: OpenApiSpec) => ({ ...source, tools: list.map(operation => operation.name) });
@@ -268,10 +299,10 @@ export class ToolSources {
 
   /** An MCP server's tools as the model sees them: those the definition offers, named `<server>__<tool>`. */
   private definitions(spec: McpServerSpec, tools: Tool[]) {
-    return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => ({
+    return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => gated({
       name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
       parameters: acceptFiles(tool.inputSchema),
-    })), spec.exposure);
+    }, needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true))), spec.exposure);
   }
 
   /**
@@ -281,7 +312,8 @@ export class ToolSources {
   server(context: SourceContext, sources: Sources | undefined): ToolServer {
     const builtins = builtinNames(sources?.builtins);
     const mcpServer = (name: string) => sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));
-    const apiTools = (api: OpenApiSpec) => defaultExposure(api.operations.map(operation => operationTool(api.name, operation)), api.exposure);
+    const apiAsks = (api: OpenApiSpec, operation: Operation) => needsApproval(api.approval, operation.name, !operation.readOnly, operation.method);
+    const apiTools = (api: OpenApiSpec) => defaultExposure(api.operations.map(operation => gated(operationTool(api.name, operation), apiAsks(api, operation))), api.exposure);
     type Listing = { tools: ToolDefinition[]; at: number } | { error: string; at: number };
     const list = async (spec: McpServerSpec): Promise<Listing> => {
       try {
@@ -335,8 +367,9 @@ export class ToolSources {
           ...mcp,
         ];
       },
-      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, onProgress }) => {
-        const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}) };
+      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, onProgress, approval }) => {
+        // An approved call proves it to the tool: in its identity token and its `_meta`.
+        const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}) };
         const callFiles = files(name, runId);
         if (builtins.includes(name)) {
           const services = { outbound: this.outbound, scheduler: this.options.scheduler, search: this.options.search, render: this.options.render };
@@ -345,6 +378,7 @@ export class ToolSources {
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
         if (api && operation) {
+          if (apiAsks(api, operation) && !approval) return APPROVAL_REQUIRED;
           const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
           const secrets = this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed);
           if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, api.audience ?? api.baseUrl, turn)}`;
@@ -357,8 +391,9 @@ export class ToolSources {
         const server = this.endpoint(context, spec);
         const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
+        if (needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true) && !approval) return APPROVAL_REQUIRED;
         const resolved = await resolveFiles(args, tool.inputSchema, callFiles) as Record<string, unknown>;
-        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTotalMs: MAX_TIMEOUT_MS }, callMeta({ toolCallId, innerCallId, origin, actor }), onProgress)) as McpResult;
+        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTotalMs: MAX_TIMEOUT_MS }, { ...callMeta({ toolCallId, innerCallId, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}) }, onProgress)) as McpResult;
         return savedContent(result, callFiles);
       },
     };

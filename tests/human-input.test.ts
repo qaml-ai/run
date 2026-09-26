@@ -1,6 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lastUser, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
+import { lastUser, listen, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+
+const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
+
+/** A stateless MCP server answering in JSON: each tool is (arguments, params) => result. It records each call's params and credentials. */
+async function rawMcp(t: T, tools: Record<string, { annotations?: object; call: (args: any, params: any) => object }>) {
+  const calls: { params: any; authorization?: string }[] = [];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const message = JSON.parse(text);
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    const reply = (result: object) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    if (message.method === "initialize") return reply({ protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "raw", version: "1" } });
+    if (message.method === "tools/list") return reply({ tools: Object.entries(tools).map(([name, tool]) => ({ name, description: name, inputSchema: { type: "object", properties: { id: { type: "string" } } }, ...(tool.annotations ? { annotations: tool.annotations } : {}) })) });
+    if (message.method === "tools/call") {
+      calls.push({ params: message.params, authorization: req.headers.authorization });
+      return reply(tools[message.params.name].call(message.params.arguments, message.params));
+    }
+    reply({});
+  });
+  return { url: `${url}/mcp`, calls };
+}
+const claims = (authorization?: string) => JSON.parse(Buffer.from(authorization!.split(".")[1], "base64url").toString());
 
 const ASK = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }], allowOther: true }] };
 
@@ -99,4 +123,44 @@ test("only whoever started the turn, or an approver, may answer", async t => {
   const answer = (from?: object) => r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "US" } }, ...(from ? { from } : {}) } });
   assert.equal((await answer({ id: "mallory" })).status, 403);
   assert.equal((await answer({ id: "boss" })).status, 202);
+});
+
+test("an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs", async t => {
+  const text = (value: string) => ({ content: [{ type: "text", text: value }] });
+  const shop = await rawMcp(t, {
+    read_item: { annotations: { readOnlyHint: true }, call: args => text(`item ${args.id}`) },
+    delete_item: { annotations: { destructiveHint: true }, call: args => text(`deleted ${args.id}`) },
+  });
+  const r = await runtime(t, (body, index) => [toolCall("shop__delete_item", { id: "a" }, "call_a"), { role: "assistant", content: toolResults(body).at(-1) },
+    toolCall("shop__delete_item", { id: "b" }, "call_b"), { role: "assistant", content: toolResults(body).at(-1) }][index] ?? { role: "assistant", content: "?" }, LOCAL);
+  const definition = await r.call("/v1/definitions", { body: { name: "Shop", mcpServers: [{ name: "shop", url: shop.url, auth: { type: "runtime" }, approval: { default: "destructive" } }] } });
+  assert.equal(definition.status, 201, definition.text);
+  assert.deepEqual(definition.json.mcpServers[0].approval, { default: "destructive" });
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.json.id } })).json.id;
+
+  const suspended = await r.prompt(agent, "Delete item a");
+  const tools = r.model.bodies[0].tools.map((entry: any) => entry.function.name);
+  assert.ok(tools.includes("shop__delete_item") && tools.includes("shop__read_item"));
+  assert.match(r.model.bodies[0].messages[0].content, /approves each call of these tools before it runs[^\n]*: shop__delete_item\./);
+  const [input] = suspended.outcome.result.inputs;
+  assert.equal(input.kind, "approval");
+  assert.equal(input.message, "Allow shop__delete_item to run?");
+  assert.deepEqual({ ...input.detail, argumentsHash: undefined }, { tool: "shop__delete_item", source: "shop", arguments: '{"id":"a"}', argumentsHash: undefined });
+  assert.equal(shop.calls.length, 0, "nothing ran before the approval");
+
+  const approved = await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", actor: "ops-1" } });
+  assert.equal(approved.status, 202, approved.text);
+  const resumed = await until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${approved.json.request.id}`)).json; return record.state === "completed" && record; }, "the resume");
+  assert.match(resumed.outcome.result.reply, /deleted a[\s\S]*Approved by ops-1 after \d+s/);
+  assert.equal(shop.calls.length, 1);
+  const proof = { input: input.id, by: { via: "api", actor: "ops-1" } };
+  assert.deepEqual({ ...shop.calls[0].params._meta["agent-runtime/approval"], at: undefined }, { ...proof, at: undefined });
+  assert.deepEqual({ ...claims(shop.calls[0].authorization).approval, at: undefined }, { ...proof, at: undefined }, "the identity token carries it too");
+
+  const declined = await r.prompt(agent, "Delete item b");
+  const [second] = declined.outcome.result.inputs;
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs/${second.id}`, { body: { action: "decline", content: { reason: "keep it" } } })).status, 202);
+  await until(async () => r.model.bodies.length === 4, "the model to hear of it");
+  assert.match(toolResults(r.model.bodies[3]).at(-1), /The user declined this call: keep it\. It did not run/);
+  assert.equal(shop.calls.length, 1);
 });

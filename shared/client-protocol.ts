@@ -33,4 +33,6 @@ export interface ToolDefinition {
   resultFormat?: "json" | "content";
   exposure?: "direct" | "codemode" | "both";
   executionMode?: "sequential" | "parallel";
+  /** The user approves each call before it runs (a source's approval policy, or the tool's own needsApproval); such a tool is declared directly. */
+  needsApproval?: boolean;
 }

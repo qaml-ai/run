@@ -42,6 +42,8 @@ class RuntimeIdentity:
     actor: str | None = None
     definition: str | None = None
     origin: dict | None = None
+    # The call was approved by a person: {"input", "by", "at"}.
+    approval: dict | None = None
     # A verified token's full claims (serve_tools, verify_runtime_token).
     claims: dict | None = field(default=None, repr=False, compare=False)
 
@@ -54,7 +56,8 @@ def identity_from_claims(claims):
     actor = text(claims.get("act"))
     return RuntimeIdentity(user=actor or subject, subject=subject, tenant=text(claims.get("tenant")) or "", agent=agent,
                            context=claims["ctx"] if isinstance(claims.get("ctx"), dict) else {}, actor=actor,
-                           definition=text(claims.get("definition")), origin=claims["origin"] if isinstance(claims.get("origin"), dict) else None)
+                           definition=text(claims.get("definition")), origin=claims["origin"] if isinstance(claims.get("origin"), dict) else None,
+                           approval=claims["approval"] if isinstance(claims.get("approval"), dict) else None)
 
 
 @dataclass
@@ -73,13 +76,16 @@ class Tool:
     parameters: dict
     function: object
     with_context: bool
+    # True, or an async function of (arguments, context): the user approves each such call before it runs.
+    needs_approval: object = None
 
     def definition(self):
         return {"name": self.name, "description": self.description, "parameters": self.parameters}
 
     def mcp_tool(self):
         """This tool as an attached MCP server lists it (tools/list)."""
-        return {"name": self.name, "description": self.description, "inputSchema": self.parameters}
+        return {"name": self.name, "description": self.description, "inputSchema": self.parameters,
+                **({"_meta": {"agent-runtime/needsApproval": True}} if self.needs_approval else {})}
 
 
 def _call_tool_result(result):
@@ -88,8 +94,10 @@ def _call_tool_result(result):
     return {"content": [{"type": "text", "text": text}], **({"structuredContent": result} if isinstance(result, dict) else {})}
 
 
-def tool(function=None, *, name=None, description=None):
-    """Expose an async function; infer its JSON schema from Python annotations."""
+def tool(function=None, *, name=None, description=None, needs_approval=None):
+    """Expose an async function; infer its JSON schema from Python annotations. With needs_approval (True, or
+    an async function of the arguments and context), the user approves each call, shown as the runtime sees it,
+    before it runs; such a tool is declared to the model directly, as code cannot wait for a person."""
     def decorate(fn):
         hints = get_type_hints(fn)
         properties, required = {}, []
@@ -110,7 +118,7 @@ def tool(function=None, *, name=None, description=None):
         if not inspect.iscoroutinefunction(fn):
             raise TypeError("Tools must be async functions; use asyncio.to_thread for blocking work")
         return Tool(name or fn.__name__, description or inspect.getdoc(fn) or fn.__name__,
-                    {"type": "object", "properties": properties, "required": required, "additionalProperties": False}, fn, with_context)
+                    {"type": "object", "properties": properties, "required": required, "additionalProperties": False}, fn, with_context, needs_approval)
     return decorate(function) if function else decorate
 
 
@@ -139,8 +147,15 @@ async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sd
         if definition is None:
             raise ValueError(f"Unknown tool {params.get('name')}")
         args = dict(params.get("arguments") or {})
+        context = context_for(params.get("_meta") or {})
+        needs = definition.needs_approval
+        if callable(needs):
+            needs = await needs(dict(args), context)
+        if needs and not (context.identity and context.identity.approval):
+            # Not yet approved: the runtime asks the user, showing this call, and calls again once they approve.
+            return {"result": {"resultType": "input_required", "inputRequests": {"approval": {"method": "agent-runtime/approval"}}}}
         if definition.with_context:
-            args["context"] = context_for(params.get("_meta") or {})
+            args["context"] = context
         try:
             answer = _call_tool_result(await definition.function(**args))
         except asyncio.CancelledError:

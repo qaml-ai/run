@@ -650,3 +650,35 @@ test("a turn suspended on human input survives its node: the answer, taken by an
   assert.equal(model.bodies.length, 2);
   assert.equal(await c.owner(agent), b.url);
 });
+
+test("an approved call whose node dies while it runs ends as outcome unknown on the next owner, never running twice", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, (body, index) => index === 0 ? { role: "assistant", tool_calls: [{ index: 0, id: "call_wipe", type: "function", function: { name: "wipe", arguments: "{}" } }] }
+    : { role: "assistant", content: toolMessages(body).some((content: string) => /outcome is unknown/.test(content)) ? "noted the unknown outcome" : "unexpected" });
+  const a = await c.start("a", model.env);
+  const b = await c.start("b", model.env);
+  let executions = 0;
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const tools = { wipe: tool({ description: "Wipe the disk", input: schema.Object({}, { additionalProperties: false }), needsApproval: async () => true, execute: async () => { executions++; entered.resolve(); await gate.promise; return "wiped"; } }) };
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: "approved-crash" });
+  await created.close();
+  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools });
+  t.after(() => client.close());
+  const suspended = await client.prompt("wipe it", { timeoutMs: 60_000 });
+  assert.equal(suspended.stopped, "input_required");
+  assert.equal(suspended.inputs[0].kind, "approval");
+  assert.equal(executions, 0, "the application's check asked first");
+
+  const approve = await fetch(`${b.url}/v1/agents/${created.session.id}/inputs/${suspended.inputs[0].id}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ action: "accept" }) });
+  assert.equal(approve.status, 202, await approve.clone().text());
+  const resume = (await approve.json() as any).request.id;
+  await entered.promise;
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  await sleep(1500 + 500);
+  const result = await client.waitForRequest(resume, { timeoutMs: 60_000 });
+  assert.equal(result.reply, "noted the unknown outcome");
+  assert.equal(executions, 1, "the approved call was never sent again");
+});

@@ -58,9 +58,12 @@ export function attachedTools(tools: unknown): ToolDefinition[] {
     if (!tool.inputSchema || typeof tool.inputSchema !== "object" || tool.inputSchema.type !== "object" || !compiles(tool.inputSchema)) throw new Error(`MCP tool ${tool.name}: inputSchema must be a JSON Schema for an object`);
     const meta = tool._meta ?? {};
     const exposure = meta[`${META}exposure`], executionMode = meta[`${META}executionMode`];
+    // A tool that asks the user's approval (the SDKs' needsApproval) is declared directly: code cannot wait for the user.
+    const approval = meta[`${META}needsApproval`] === true;
     return {
       name: tool.name, description: tool.description || tool.title || tool.name, parameters: tool.inputSchema,
       ...(exposure !== undefined ? { exposure: exposure as ToolDefinition["exposure"] } : {}), ...(executionMode !== undefined ? { executionMode: executionMode as ToolDefinition["executionMode"] } : {}),
+      ...(approval ? { exposure: "direct" as const, needsApproval: true } : {}),
     };
   });
   validateDefinitions(definitions);
