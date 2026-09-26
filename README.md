@@ -442,9 +442,11 @@ In order of precedence (a name an earlier server lists is left out of later ones
    which the runtime calls itself.
 
 `js_exec` (the QuickJS sandbox) reaches all of them. Every result is an MCP
-result: the model gets its content (text and images) and `isError`; code in
+result: the model gets its content (text, images and saved files) and `isError`; code in
 `js_exec` gets its data (`structuredContent`, or its one text block, parsed when
-it is JSON), and a tool error throws. Each call gets the turn's `origin` (a
+it is JSON, or its one file as `{type: "file", path, contentType, size}`), and a
+tool error throws. Files go in and out of the definition's sources by path, not
+through the model (see [Files through tool calls](#files-through-tool-calls)). Each call gets the turn's `origin` (a
 channel, its conversation and sender) so tools can authorize: MCP servers as
 `_meta["agent-runtime/origin"]`. Only the attached server needs its application
 connected; the rest suit channel agents and anything scheduled. An HTTP API gets
@@ -480,7 +482,10 @@ reconfiguration, not at a refresh.
   followed, each checked; the deadline is 20 s and the response cap 5 MiB. It
   returns `{url, status, contentType, title?, text, truncated?}`: HTML reduced to
   readable text, other text as is, 20,000 characters by default (at most
-  100,000). Other content types are refused. A page that is only a JavaScript
+  100,000). Any other content type (a PDF, an image) is saved to the agent's
+  workspace, up to 64 MiB, and it returns `{url, status, contentType, path, size}`
+  with the file, which the model sees natively when it is an image or PDF it can
+  view; an agent without a writable mount is refused it. A page that is only a JavaScript
   shell (over 5 KB of HTML with under 200 characters of text, or little text
   beside an empty `#root`/`#app` mount point or a "needs JavaScript" notice) is
   rendered by [Firecrawl](https://www.firecrawl.dev/)'s scrape endpoint when a
@@ -578,10 +583,11 @@ reconfiguration, not at a refresh.
   directly: past that, `both` tools from later sources are reached from js_exec only.
 - Calls from the model and from js_exec go through the same path as every tool.
   Arguments are checked against the schema, the result is capped at 1 MiB of
-  JSON, and each call has a timeout (`timeoutMs`, default 60 s). Text and image
-  content reach the model as content results. Other content is described in
-  text, `isError` becomes a tool error, and `structuredContent` is kept as the
-  result's `details`.
+  JSON, and each call has a timeout (`timeoutMs`, default 60 s). Text reaches the
+  model as it is; images, audio, embedded blobs and text resources over 64 KiB are
+  saved to the workspace and reach it as files (below). A `resource_link` stays a
+  link (`Resource: <name> <uri>`): the model can `web_fetch` it. `isError` becomes
+  a tool error, and `structuredContent` is kept as the result's `details`.
 - A server that cannot be reached when an agent starts contributes no tools
   that time (logged as `mcp_tools_unavailable`); the agent starts anyway.
 
@@ -603,9 +609,12 @@ every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   brackets (`metadata[key]=v`, `expand[]=x`, as Stripe reads them). Local `$ref`s
   in an operation's input are inlined up to a depth and size budget (past it, or
   a reference back into itself, a schema is `{}`: any value, which the API still
-  checks), and 3.0's `nullable` becomes a JSON Schema type. Operations whose body
-  is neither (multipart, octet streams) are left out, as are cookie parameters
-  and the bodies GET and HEAD declare. Read-only methods (GET, HEAD, OPTIONS) may run in
+  checks), and 3.0's `nullable` becomes a JSON Schema type. A `multipart/form-data`
+  body is sent as a form whose file fields take `{"$file": path}`, and a body of
+  any other type (`application/octet-stream`, `application/pdf`, `image/*`) as
+  bytes: `body` is `{"$file": path}` (or a string). Either streams the file from
+  the volume, with its length. Cookie parameters and the bodies GET and HEAD
+  declare are left out. Read-only methods (GET, HEAD, OPTIONS) may run in
   parallel.
 - The spec is fetched (through the outbound guard, up to five redirects, 8 MiB)
   and checked when the definition is saved, and its operations, after
@@ -615,12 +624,52 @@ every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   keeps the operations it has.
 - Requests go to `baseUrl`, by default the spec's first server (its variables at
   their defaults, resolved against the spec's URL), through the outbound guard
-  with no redirects, `timeoutMs` (default 30 s) and a 1 MiB response cap.
+  with no redirects, `timeoutMs` (default 30 s) and a 1 MiB cap on text and JSON
+  responses (64 MiB on files).
   `headers` and `auth` are sealed as for MCP servers and sent to that origin only.
-- A 2xx answer is the result: its JSON, else its text. Any other status is a tool
-  error quoting the method, path, status and the start of the body.
+- A 2xx answer is the result: its JSON, else its text, else (any other content
+  type) a file saved to the workspace, named by its `Content-Disposition` or the
+  operation. Any other status is a tool error quoting the method, path, status
+  and the start of the body.
 - `exposure` defaults as for MCP servers. The API shows each
   source's `tools` (operation names) and `baseUrl`, never its credentials.
+
+### Files through tool calls
+
+Tools of the definition's sources (MCP servers, OpenAPI operations, `web_fetch`)
+take and return files without their bytes passing through the model
+(`src/tool-files.ts`).
+
+- **In.** An argument `{"$file": "/workspace/report.pdf"}` names a file in the
+  agent's mounts (a relative path is taken from the first mount). Read-only
+  mounts can be read; a path outside the mounts, or with `..`, is refused. The
+  runtime fills it in by the tool's schema at that place: a base64 field
+  (`contentEncoding: "base64"`, or OpenAPI's `format: "byte"`/`"binary"` in JSON)
+  gets the content as base64, up to 4 MiB; any other gets a signed link to the
+  file (`GET`, valid 15 minutes, see [Signed links](#signed-links)); an OpenAPI
+  multipart or binary body streams the file (above). The model is offered
+  `{"$file": …}` only where the schema takes a file: base64 and binary fields,
+  `format: "uri"` fields, and string fields named like a URL (`url`,
+  `image_url`, `sourceUrl`). Other fields keep their schema, so arguments are
+  checked as before, from direct calls and from js_exec alike. The runtime's
+  instructions tell the model about the convention in one line.
+  An explicit marker rather than a schema hint alone, so nothing is guessed
+  from a plain string, and a field that takes a URL can still take any URL.
+- **Out.** Saved files go to the agent's workspace (the writable `/workspace`
+  mount, else its first writable mount) at
+  `tool-outputs/<tool>/<8 hex digits per call>/<name>`, written by the agent
+  (so they do not wake it), with the content type the tool gave. Names from
+  servers (a resource's URI, a `Content-Disposition`) lose directories, control
+  characters and leading dots; unnamed content is `image-1.png`, `audio-2.wav`.
+  The model gets each as a file reference, `[File <path> (<type>, <size>)]`,
+  shown natively when it is an image or PDF it can view, as attached files are;
+  js_exec code gets the path, type and size, and can read the bytes by path. An
+  MCP image that cannot be saved (no writable mount) reaches the model as
+  before.
+- **Limits.** Saved files are volume files: they count toward the volume's
+  limits and the tenant's storage. One call may save 64 MiB, and all the calls
+  of one run 256 MiB (`TOOL_FILE_LIMITS` in `src/limits.ts`); past that a save
+  fails with the reason, as a tool error or, for MCP content, in text.
 
 ### Who sent a message (`from`)
 

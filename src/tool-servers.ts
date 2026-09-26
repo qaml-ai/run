@@ -5,11 +5,11 @@ import { CATALOG_LIMITS } from "./limits.ts";
 import { validFileRef } from "./files.ts";
 
 /**
- * A tool call as a server gets it; `toolCallId` is the model's id for the call, `origin` where the
- * turn came from (a channel and its sender), and `actor` who the application said is acting in it:
- * set by the runtime, never by the model, so tools can authorize.
+ * A tool call as a server gets it; `toolCallId` is the model's id for the call, `run` the id of the
+ * run it is made in, `origin` where the turn came from (a channel and its sender), and `actor` who
+ * the application said is acting in it: set by the runtime, never by the model, so tools can authorize.
  */
-export type ToolCall = { name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; origin?: Record<string, unknown>; actor?: string };
+export type ToolCall = { name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; run?: string; origin?: Record<string, unknown>; actor?: string };
 
 /**
  * The one interface every source of an agent's tools answers through, shaped like MCP's

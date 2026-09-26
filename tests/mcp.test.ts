@@ -7,8 +7,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { listen, runtime, sleep, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+import { PNG as FIXTURE_PNG } from "./file-fixtures.ts";
 
-const PNG = "iVBORw0KGgo=";
+const PNG = FIXTURE_PNG.toString("base64");
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
 /** A Streamable HTTP MCP server with a few tools, which wants a bearer token. */
@@ -84,7 +85,8 @@ test("an MCP server's tools reach the model and js_exec; its credentials are sea
   assert.match(toolResults(r.model.bodies[1]).at(-1), /echo: hi/);
   assert.match(toolResults(r.model.bodies[2]).at(-1), /ECHO: FROM CODE/);
   assert.match(toolResults(r.model.bodies[3]).at(-1), /a dot/);
-  assert.match(JSON.stringify(r.model.bodies[4].messages), /data:image\/png;base64,iVBORw0KGgo=/, "the image reaches the model");
+  assert.ok(JSON.stringify(r.model.bodies[4].messages).includes(`data:image/png;base64,${PNG}`), "the image reaches the model");
+  assert.match(toolResults(r.model.bodies[4]).at(-2), /\[File \/workspace\/tool-outputs\/kb__picture\/[a-f0-9]{8}\/image-1\.png \(image\/png/, "and is saved to the workspace");
   assert.match(toolResults(r.model.bodies[4]).at(-1), /it broke/);
   assert.match(toolResults(r.model.bodies[5]).at(-1), /Validation failed[\s\S]*required properties text/, "arguments are checked against the server's schema before it is called");
   assert.deepEqual(mcp.seen.calls, ["echo:hi", "echo:from code"]);

@@ -64,10 +64,10 @@ test("an OpenAPI spec's operations are tools: requests built from the spec, data
     toolCall("pets__getPet", { petId: 404 }),
     toolCall("pets__addNote", { petId: 7, body: { text: "good dog", tags: ["a", "b"], meta: { by: "ada" } } }),
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
-  const created = await r.call("/v1/definitions", { body: { name: "Pets", openApi: [{ name: "pets", spec: `${store.url}/openapi.json`, auth: { type: "bearer", token: "s3cret" }, denyTools: ["deletePet"], exposure: "both" }] } });
+  const created = await r.call("/v1/definitions", { body: { name: "Pets", openApi: [{ name: "pets", spec: `${store.url}/openapi.json`, auth: { type: "bearer", token: "s3cret" }, denyTools: ["deletePet", "uploadPhoto"], exposure: "both" }] } });
   assert.equal(created.status, 201, created.text);
   const [source] = created.json.openApi;
-  assert.deepEqual(source.tools, ["listPets", "createPet", "getPet", "addNote"], "the multipart operation is left out, and deletePet denied");
+  assert.deepEqual(source.tools, ["listPets", "createPet", "getPet", "addNote"], "deletePet and uploadPhoto denied");
   assert.equal(source.baseUrl, `${store.url}/v1`);
   assert.deepEqual(source.auth, { type: "bearer" });
   assert.equal(created.text.includes("s3cret") || JSON.stringify((await r.db.query("select spec from definitions")).rows).includes("s3cret"), false, "the token is sealed");

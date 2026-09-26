@@ -150,7 +150,7 @@ const render = new WebRender({
   outbound, key: webKey, price: accounts.billing.pricing.webRender, endpoint: process.env.AGENT_FIRECRAWL_SCRAPE_URL,
   onRender: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
 });
-const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; } });
+const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; }, get volumes() { return volumes; }, get links() { return links; } });
 const definitions = new Definitions({ db, accounts, outbound });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */

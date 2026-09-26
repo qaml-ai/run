@@ -13,7 +13,7 @@ export const META = "agent-runtime/";
 
 /**
  * An MCP tool result as a content result: text and images pass through; other content is described in text.
- * File references pass only from the runtime's own file tools (`files`): anyone else's are described too.
+ * File references pass only from the runtime's own servers (`files`): its file tools, and tool sources' saved outputs.
  */
 export function contentResult(result: McpResult, files = false) {
   const content = (result.content ?? []).map((part: any) => {
@@ -31,8 +31,9 @@ export function contentResult(result: McpResult, files = false) {
 
 /**
  * What `js_exec` code gets from a content result: the data, not the envelope. Structured
- * content when the tool gave it, else one text block (parsed when it is JSON), else the
- * blocks themselves. A tool error throws, as a failed call of any other tool does.
+ * content when the tool gave it, else one text block (parsed when it is JSON) or one saved
+ * file, else the blocks themselves. A saved file is `{ type: "file", path, contentType, size }`.
+ * A tool error throws, as a failed call of any other tool does.
  */
 export function scriptValue(value: { content: any[]; isError?: boolean; details?: unknown }) {
   const texts = value.content.filter(part => part.type === "text").map(part => part.text as string);
@@ -41,7 +42,8 @@ export function scriptValue(value: { content: any[]; isError?: boolean; details?
   if (value.content.length === 1 && texts.length === 1) {
     try { return JSON.parse(texts[0]); } catch { return texts[0]; }
   }
-  return value.content;
+  const content = value.content.map(part => validFileRef(part) ? { type: "file", path: part.path, contentType: part.contentType, size: part.size } : part);
+  return content.length === 1 && content[0].type === "file" ? content[0] : content;
 }
 
 /** An application's attached server's tools as the agent's own (bare-named) tools. */

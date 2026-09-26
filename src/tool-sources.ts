@@ -11,9 +11,13 @@ import type { WebSearch } from "./web-search.ts";
 import type { WebRender } from "./web-render.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { defaultExposure, jsonResult, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { defaultExposure, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
-import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, RESULT_BYTES, type Operation } from "./openapi.ts";
+import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, type Operation } from "./openapi.ts";
+import { acceptFiles, resolveFiles, savedContent, ToolFiles } from "./tool-files.ts";
+import { TOOL_FILE_LIMITS } from "./limits.ts";
+import type { FileLinks } from "./files.ts";
+import type { Mount, VolumeService } from "./volumes.ts";
 
 /**
  * Server-side tool sources: tools the runtime calls itself, configured in a
@@ -60,8 +64,8 @@ export interface OpenApiSpec {
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
 export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[] }
-/** The agent a tool call is for, its owner's claim on it, and the definition whose secrets it may unseal. */
-export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim; identity?: AgentIdentity };
+/** The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal, and its mounts (for files in and out). */
+export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim; identity?: AgentIdentity; mounts?: Mount[] };
 
 const SERVER_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -227,16 +231,16 @@ export class ToolSources {
   private readonly accounts?: Accounts;
   private readonly mcp: McpConnections;
   private readonly outbound: Outbound;
-  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender };
+  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; volumes?: VolumeService; links?: FileLinks };
 
   private readonly signer?: RuntimeSigner;
 
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender }) {
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; volumes?: VolumeService; links?: FileLinks }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
     this.signer = options.signer;
-    // Kept whole: the scheduler may be a getter for one made later.
+    // Kept whole: the scheduler, volumes and links may be getters for ones made later.
     this.options = options;
   }
 
@@ -263,7 +267,7 @@ export class ToolSources {
   private definitions(spec: McpServerSpec, tools: Tool[]) {
     return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => ({
       name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
-      parameters: tool.inputSchema as Record<string, unknown>,
+      parameters: acceptFiles(tool.inputSchema),
     })), spec.exposure);
   }
 
@@ -286,7 +290,17 @@ export class ToolSources {
     };
     // What each MCP server listed when the agent's tools were last built: what its model has.
     const listed = new Map<string, Listing>();
+    // What the calls of the current run may still save to the workspace.
+    let run = { id: undefined as string | undefined, left: TOOL_FILE_LIMITS.runBytes };
+    const files = (tool: string, id: string | undefined) => {
+      const volumes = this.options.volumes;
+      if (!volumes || !context.mounts?.length) return undefined;
+      if (!id || id !== run.id) run = { id, left: TOOL_FILE_LIMITS.runBytes };
+      return new ToolFiles({ volumes, links: this.options.links, tenant: context.tenant, agent: context.agent, mounts: context.mounts, tool, run });
+    };
     return {
+      // Only saved outputs: remote servers' own file references are dropped (savedContent).
+      returnsFiles: true,
       tools: async () => {
         const lists = await Promise.all((sources?.mcpServers ?? []).map(async spec => {
           const listing = await list(spec);
@@ -318,27 +332,31 @@ export class ToolSources {
           ...mcp,
         ];
       },
-      call: async ({ name, args, signal, origin, actor }) => {
+      call: async ({ name, args, signal, origin, actor, run: runId }) => {
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}) };
+        const callFiles = files(name, runId);
         if (builtins.includes(name)) {
           const services = { outbound: this.outbound, scheduler: this.options.scheduler, search: this.options.search, render: this.options.render };
-          return jsonResult(await runBuiltin(services, { ...context, ...(sources?.webSearch ? { searchProviders: sources.webSearch.providers } : {}) }, name, args, signal));
+          return runBuiltin(services, { ...context, ...(sources?.webSearch ? { searchProviders: sources.webSearch.providers } : {}), ...(callFiles ? { files: callFiles } : {}) }, name, args, signal);
         }
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
         if (api && operation) {
-          const { url, init } = operationRequest(api.baseUrl, operation, args);
+          const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
           const secrets = this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed);
           if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, api.audience ?? api.baseUrl, turn)}`;
-          const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: RESULT_BYTES, secrets });
-          return operationResult(operation, response);
+          // Text answers are capped lower as they are read (openapi.ts).
+          const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes, secrets });
+          return operationResult(operation, response, callFiles);
         }
         const spec = mcpServer(name);
         if (!spec) throw new Error(`Unknown tool ${name}`);
         const server = this.endpoint(context, spec);
         const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
-        return await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, args, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, origin && { "agent-runtime/origin": origin })) as McpResult;
+        const resolved = await resolveFiles(args, tool.inputSchema, callFiles) as Record<string, unknown>;
+        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, origin && { "agent-runtime/origin": origin })) as McpResult;
+        return savedContent(result, callFiles);
       },
     };
   }

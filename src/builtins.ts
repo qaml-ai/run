@@ -5,13 +5,18 @@ import type { Claim } from "./ownership.ts";
 import { FRESHNESS, SEARCH, type WebSearch } from "./web-search.ts";
 import { isShell, type WebRender } from "./web-render.ts";
 import { readableText } from "./html-text.ts";
+import type { McpResult } from "./mcp-results.ts";
+import { jsonResult } from "./tool-servers.ts";
+import { readCapped, textual, type ToolFiles } from "./tool-files.ts";
+import { TOOL_FILE_LIMITS } from "./limits.ts";
 
 export { readableText };
 
 /**
  * Built-in tools a definition can enable (`builtins`), answered by the runtime:
  * `web_fetch` reads a public page through the outbound guard (rendering a page that is
- * only a JavaScript shell through Firecrawl, see web-render.ts), `web_search` asks web
+ * only a JavaScript shell through Firecrawl, see web-render.ts) and saves any other file it
+ * fetches (a PDF, an image) to the agent's workspace (tool-files.ts), `web_search` asks web
  * search APIs in turn (see web-search.ts), and `schedule` lets an agent set, list and
  * cancel its own wake-ups in the shared scheduler.
  */
@@ -28,7 +33,7 @@ const FETCH = { timeoutMs: 20_000, maxBytes: 5 * 1024 * 1024, maxRedirects: 5, c
 const DEFINITIONS: Record<string, ToolDefinition> = {
   web_fetch: {
     name: "web_fetch", exposure: "both",
-    description: `Fetch a public web page or file over HTTPS and return its readable text (HTML is reduced to text). Up to ${FETCH.characters} characters by default; pass maxCharacters (at most ${FETCH.maxCharacters}) for more. Private and internal addresses cannot be reached.`,
+    description: `Fetch a public web page or file over HTTPS and return its readable text (HTML is reduced to text). Up to ${FETCH.characters} characters by default; pass maxCharacters (at most ${FETCH.maxCharacters}) for more. Any other file (a PDF, an image) is saved to your workspace and its path returned; you are shown images and PDFs. Private and internal addresses cannot be reached.`,
     parameters: { type: "object", additionalProperties: false, required: ["url"], properties: {
       url: { type: "string", description: "An https:// URL" },
       maxCharacters: { type: "integer", minimum: 100, maximum: FETCH.maxCharacters },
@@ -66,12 +71,16 @@ export const builtinDefinitions = (builtins: string[] = []) => builtinNames(buil
   ? { ...DEFINITIONS[name], description: DEFINITIONS[name].description.replace(" The excerpts often hold the answer, so you may not need to open the page; when they don't, or a result has only a snippet, read the page with web_fetch.", " Answer from the excerpts and snippets: pages cannot be opened.") }
   : DEFINITIONS[name]);
 
-/** `searchProviders`: the order the agent's definition gives web_search, instead of the runtime's. */
-export type BuiltinContext = { tenant: string; agent: string; claim?: Claim; searchProviders?: string[] };
+/** `searchProviders`: the order the agent's definition gives web_search, instead of the runtime's; `files`, where web_fetch saves files. */
+export type BuiltinContext = { tenant: string; agent: string; claim?: Claim; searchProviders?: string[]; files?: ToolFiles };
 export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch; render?: WebRender };
 
-export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   if (name === "web_fetch") return webFetch(services, context, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
+  return jsonResult(await builtinValue(services, context, name, args, signal));
+}
+
+async function builtinValue(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
   if (name === "web_search") {
     if (!services.search) throw new Error("Web search is not enabled on this runtime");
     return services.search.search({ tenant: context.tenant, agent: context.agent, ...(context.searchProviders ? { providers: context.searchProviders } : {}) }, args, signal);
@@ -94,22 +103,34 @@ const view = (schedule: { id: string; text?: string; code?: string; dueAt: numbe
   ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),
 });
 
-async function webFetch({ outbound, render }: BuiltinServices, context: BuiltinContext, url: string, maxCharacters: number, signal: AbortSignal) {
+async function webFetch({ outbound, render }: BuiltinServices, context: BuiltinContext, url: string, maxCharacters: number, signal: AbortSignal): Promise<McpResult> {
   // An http:// link is tried over https unless the operator allows plain http.
   if (/^http:\/\//i.test(url) && !outbound.allowHttp) url = `https://${url.slice(7)}`;
   const response = await outbound.fetch(url, {
-    signal, timeoutMs: FETCH.timeoutMs, maxBytes: FETCH.maxBytes, maxRedirects: FETCH.maxRedirects,
+    // Text is capped lower as it is read.
+    signal, timeoutMs: FETCH.timeoutMs, maxBytes: TOOL_FILE_LIMITS.responseBytes, maxRedirects: FETCH.maxRedirects,
     headers: { Accept: "text/html, text/plain, application/json;q=0.9, */*;q=0.5", "User-Agent": "agent-runtime web_fetch" },
   });
   const type = response.headers.get("content-type") ?? "";
-  if (type && !/^(text\/|application\/(json|xml|xhtml\+xml|rss\+xml|atom\+xml|ld\+json|javascript))|\+json|\+xml/i.test(type)) {
-    await response.body?.cancel();
-    throw new Error(`${response.url || url} is ${type.split(";")[0]}, not text`);
+  if (type && !textual(type)) {
+    const finalUrl = response.url || url;
+    if (!context.files || !response.ok || !response.body) {
+      await response.body?.cancel();
+      throw new Error(`${finalUrl} is ${type.split(";")[0]}, not text${response.ok ? ", and this agent has no workspace to save it to" : ` (HTTP ${response.status})`}`);
+    }
+    let name = "download";
+    try { name = decodeURIComponent(new URL(finalUrl).pathname.split("/").pop() || name); } catch { /* the default name */ }
+    const saved = await context.files.save(name, response.body as unknown as AsyncIterable<Uint8Array>, type).catch(async error => {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`${finalUrl} is ${type.split(";")[0]}, and it was not saved: ${(error as Error).message}`);
+    });
+    const value = { url: finalUrl, status: response.status, contentType: saved.contentType, path: saved.path, size: saved.size };
+    return { content: [{ type: "text", text: JSON.stringify(value) }, saved], structuredContent: value };
   }
   const charset = /charset=([^;\s]+)/i.exec(type)?.[1];
   let decoder: TextDecoder;
   try { decoder = new TextDecoder(charset ?? "utf-8"); } catch { decoder = new TextDecoder("utf-8"); }
-  const raw = decoder.decode(await response.arrayBuffer());
+  const raw = decoder.decode(await readCapped(response, FETCH.maxBytes));
   const html = /html/i.test(type) || (!type && /^\s*<(!doctype html|html)/i.test(raw));
   const page = html ? readableText(raw.slice(0, FETCH.htmlBytes)) : { text: raw };
   const finalUrl = response.url || url;
@@ -119,9 +140,9 @@ async function webFetch({ outbound, render }: BuiltinServices, context: BuiltinC
     if (rendered) {
       const text = rendered.markdown.length > maxCharacters ? rendered.markdown.slice(0, maxCharacters) : rendered.markdown;
       const title = rendered.title ?? page.title;
-      return { url: finalUrl, status: response.status, contentType: "text/markdown", ...(title ? { title } : {}), text, rendered: true, ...(text.length < rendered.markdown.length ? { truncated: true, totalCharacters: rendered.markdown.length } : {}) };
+      return jsonResult({ url: finalUrl, status: response.status, contentType: "text/markdown", ...(title ? { title } : {}), text, rendered: true, ...(text.length < rendered.markdown.length ? { truncated: true, totalCharacters: rendered.markdown.length } : {}) });
     }
   }
   const text = page.text.length > maxCharacters ? page.text.slice(0, maxCharacters) : page.text;
-  return { url: finalUrl, status: response.status, contentType: type.split(";")[0] || undefined, ...(page.title ? { title: page.title } : {}), text, ...(text.length < page.text.length ? { truncated: true, totalCharacters: page.text.length } : {}) };
+  return jsonResult({ url: finalUrl, status: response.status, contentType: type.split(";")[0] || undefined, ...(page.title ? { title: page.title } : {}), text, ...(text.length < page.text.length ? { truncated: true, totalCharacters: page.text.length } : {}) });
 }

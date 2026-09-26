@@ -39,7 +39,7 @@ test("web_fetch reads public pages as text, from the model and js_exec, and neve
   const page = JSON.parse(toolResults(r.model.bodies[1]).at(-1));
   assert.deepEqual(page, { url: `${pages}/page`, status: 200, contentType: "text/html", title: "Release notes & more", text: "Home\n\nHello\n\nWorld — ok ☺\n\n- one\n- two" });
   assert.match(toolResults(r.model.bodies[2]).at(-1), /169\.254\.169\.254 is a private, local or reserved address/);
-  assert.match(toolResults(r.model.bodies[3]).at(-1), /is image\/png, not text/);
+  assert.match(toolResults(r.model.bodies[3]).at(-1), /"path":"\/workspace\/tool-outputs\/web_fetch\/[a-f0-9]{8}\/binary"/, "a file that is not text is saved");
   assert.match(toolResults(r.model.bodies[4]).at(-1), /1000,true,50000/);
 });
 

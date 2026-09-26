@@ -542,7 +542,7 @@ export class ClientSessions {
       ...feature ? [view("channel", feature)] : [],
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
       ...volumes && header.mounts?.length ? [view("files", fileServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
-      ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}) }, sources)] : [],
+      ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: header.mounts ?? [] }, sources)] : [],
     ];
   }
 
@@ -604,7 +604,7 @@ export class ClientSessions {
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
     const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
     await this.beforeEffect(session);
-    return contentResult(await server.call({ ...call, ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}) }), server.returnsFiles);
+    return contentResult(await server.call({ ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}) }), server.returnsFiles);
   }
 
   /** The id of the agent `create` makes for a tenant's idempotency key. */

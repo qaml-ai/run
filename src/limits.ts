@@ -40,6 +40,18 @@ export const FILE_LIMITS = Object.freeze({
   scriptFileBytes: 700 * 1024,
 });
 
+/** Files through tool calls (tool-files.ts): arguments that name a file, and outputs saved to the workspace. */
+export const TOOL_FILE_LIMITS = Object.freeze({
+  /** A file sent as base64 in a tool's arguments. */
+  inlineBytes: 4 * 1024 * 1024,
+  /** A binary response (an OpenAPI operation's, web_fetch's), saved rather than shown. */
+  responseBytes: 64 * 1024 * 1024,
+  /** An MCP text resource longer than this is saved rather than shown. */
+  textBytes: 64 * 1024,
+  /** What one tool call, and all the calls of one run, may save. */
+  callBytes: 64 * 1024 * 1024, runBytes: 256 * 1024 * 1024,
+});
+
 /** Transient provider failures (overload, rate limit, 5xx, network) are retried with backoff. */
 export const DEFAULT_RETRY = Object.freeze({ maxAttempts: 3, baseDelayMs: 2_000 });
 
