@@ -3,6 +3,8 @@ import { parseArgs } from "node:util";
 import { availableParallelism } from "node:os";
 import { CodePool, localGuest, type Guest } from "./codemode.ts";
 import { frames } from "./sandbox-wire.ts";
+import { inspectHere } from "./inspect.ts";
+import { FILE_LIMITS } from "./limits.ts";
 
 // One sandbox process: a CodePool serving executions over a unix socket, one per
 // connection. agent-launcher (sandbox/launcher.c) binds the socket, passes it as
@@ -39,10 +41,13 @@ function serve(socket: Socket) {
     closed.abort();
     guest?.end(answered);
   });
+  let onData: ((message: any) => void) | undefined;
   const send = frames(socket, (message: any) => {
+    if (onData) return onData(message);
     if (execution !== undefined) return guest?.send(message);
     if (message?.type !== "request" || typeof message.id !== "string") return void socket.destroy();
     execution = message.id;
+    if (message.method === "inspect") return receiveFile(message.params, send, socket);
     if (message.method === "probe" && args["test-hooks"]) {
       return void import("./sandbox-probe.ts").then(({ probe }) => probe(message.params))
         .then(result => send({ type: "response", id: execution, result }), error => send({ type: "response", id: execution, error: String(error) }));
@@ -63,6 +68,26 @@ function serve(socket: Socket) {
       acquired.send(message);
     }, () => socket.destroy());
   });
+
+  /** An untrusted file to parse (inspect.ts): its bytes follow in `data` frames, then one response. */
+  function receiveFile(params: any, reply: (message: unknown) => void, socket: Socket) {
+    const size = params?.size;
+    if (!Number.isSafeInteger(size) || size < 0 || size > FILE_LIMITS.inspectBytes) return void socket.destroy();
+    const bytes = Buffer.alloc(size);
+    let received = 0;
+    const run = () => {
+      onData = () => socket.destroy();
+      inspectHere(bytes, params.text === true).then(result => reply({ type: "response", id: execution, result }), error => reply({ type: "response", id: execution, error: String(error) }));
+    };
+    onData = message => {
+      const data = message?.type === "data" && typeof message.data === "string" ? Buffer.from(message.data, "base64") : undefined;
+      if (!data || received + data.length > size) return void socket.destroy();
+      data.copy(bytes, received);
+      received += data.length;
+      if (received === size) run();
+    };
+    if (size === 0) run();
+  }
 }
 
 const server = createServer(serve);

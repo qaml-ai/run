@@ -3,11 +3,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Agent, convertToLlm, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import {
   getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration,
-  type AssistantMessage, type SystemMessage, type Tool,
+  type AssistantMessage, type Message, type SystemMessage, type Tool,
 } from "@earendil-works/pi-ai";
 import { executeCode } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
-import type { AgentConfig, ToolBridge } from "./protocol.ts";
+import { errorText, type AgentConfig, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
 import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -16,6 +16,7 @@ import { Transcript, readTranscriptLog, summaryMessage, type CompactionState, ty
 import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, runCompaction } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY } from "./limits.ts";
+import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 
 /** How a host talks to its supervisor: over IPC in its own process, or directly when inline. */
 export interface HostIO {
@@ -30,6 +31,8 @@ export interface HostIO {
   transcript: AppendLog<TranscriptRecord>;
   /** `tools.search`, answered by the supervisor (which holds the rerankers); without it, code searches here. */
   search?(query: SearchQuery): Promise<SearchHit[]>;
+  /** A file reference's bytes as base64, read by the supervisor: the agent holds no storage access. */
+  file(ref: FileRef): Promise<string>;
 }
 
 /**
@@ -48,6 +51,11 @@ export function createAgentHost(io: HostIO) {
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
   let dropped = new WeakSet<AgentMessage>();
   let summary: { state: CompactionState; message: AgentMessage } | undefined;
+  /** Files' bytes (base64) by content, least recently used first, kept between model requests. */
+  const hydrated = new Map<string, string>();
+  let hydratedBytes = 0;
+  /** Whether the model request being built carries a PDF, whose block the provider payload needs rewritten. */
+  let documents = false;
 
   function summaryView(): AgentMessage[] {
     const state = transcript.compaction;
@@ -177,7 +185,7 @@ export function createAgentHost(io: HostIO) {
           const value = await io.tool(tool.name, args as Record<string, unknown>, toolCallId);
           signal?.throwIfAborted();
           if (tool.resultFormat === "content") {
-            if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string"))) throw new Error("Invalid content tool result");
+            if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
             if (value.isError === true) throw new Error(value.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") || "Tool execution failed");
             return value;
           }
@@ -186,7 +194,61 @@ export function createAgentHost(io: HostIO) {
       }));
   }
 
-  /** The user messages a request adds: given whole, or as text and images; marked with its sender, if any. */
+  async function fileData(ref: FileRef) {
+    const key = ref.chunks.join("");
+    let data = hydrated.get(key);
+    if (data !== undefined) hydrated.delete(key);
+    else {
+      data = await io.file(ref);
+      hydratedBytes += data.length;
+      for (const [old, value] of hydrated) {
+        if (hydratedBytes <= FILE_LIMITS.hydratedBytes) break;
+        hydrated.delete(old);
+        hydratedBytes -= value.length;
+      }
+    }
+    hydrated.set(key, data);
+    return data;
+  }
+
+  /**
+   * The model request's files: the transcript keeps references, and each becomes a line naming it
+   * plus, where the model can take it, its bytes as a native block. The same references always
+   * give the same request, so the provider's cached prefix holds. Past the request's file budget,
+   * older files are named but not shown.
+   */
+  async function hydrate(messages: Message[]): Promise<Message[]> {
+    documents = false;
+    const shown = new Set<FileRef>();
+    let bytes = 0;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const content = messages[index].content;
+      if (!Array.isArray(content)) continue;
+      for (let block = content.length - 1; block >= 0; block--) {
+        const ref = content[block] as unknown as FileRef;
+        if (ref.type !== "file" || !nativeBlock(ref, config.model) || bytes + ref.size > FILE_LIMITS.requestFileBytes || shown.size >= FILE_LIMITS.requestImages) continue;
+        shown.add(ref);
+        bytes += ref.size;
+      }
+    }
+    return Promise.all(messages.map(async message => {
+      if (!Array.isArray(message.content) || !message.content.some(block => (block.type as string) === "file")) return message;
+      const content: unknown[] = [];
+      for (const block of message.content as unknown as (FileRef | { type: string })[]) {
+        if (block.type !== "file") { content.push(block); continue; }
+        const ref = block as FileRef;
+        const kind = shown.has(ref) ? nativeBlock(ref, config.model) : undefined;
+        if (!kind) { content.push({ type: "text", text: describeFile(ref, unseen(ref, config.model) ?? (nativeBlock(ref, config.model) ? "not shown, as this request holds too many files; read it to view it" : undefined)) }); continue; }
+        try {
+          content.push({ type: "text", text: describeFile(ref) }, { type: "image", data: await fileData(ref), mimeType: kind === "image" && ref.media?.kind === "image" ? ref.media.mimeType : "application/pdf" });
+          if (kind === "document") documents = true;
+        } catch (error) { content.push({ type: "text", text: describeFile(ref, `could not be read (${errorText(error)})`) }); }
+      }
+      return { ...message, content } as Message;
+    }));
+  }
+
+  /** The user messages a request adds: given whole, or as text and attached files; marked with its sender, if any. */
   function userMessages(params: Record<string, any>): AgentMessage[] {
     const from = senderInput(params.from);
     if (params.message !== undefined) {
@@ -195,7 +257,10 @@ export function createAgentHost(io: HostIO) {
       return withSender(messages, from);
     }
     if (typeof params.text !== "string" || !params.text.trim()) throw new Error("Prompt text is required");
-    return [{ role: "user", content: [{ type: "text", text: params.text }, ...(params.images ?? [])], timestamp: Date.now(), ...(from ? { from } : {}) } as AgentMessage & { from?: Sender }];
+    const files = params.files ?? [];
+    if (!Array.isArray(files) || files.length > FILE_LIMITS.attachments || !files.every(validFileRef)) throw new Error("Invalid attached files");
+    // Images inline in `images` come only from runs queued before attachments were saved as files.
+    return [{ role: "user", content: [{ type: "text", text: params.text }, ...files, ...(params.images ?? [])], timestamp: Date.now(), ...(from ? { from } : {}) } as AgentMessage & { from?: Sender }];
   }
 
   /**
@@ -308,7 +373,8 @@ export function createAgentHost(io: HostIO) {
         // Only the tenant's explicit key, never provider keys from the process environment.
         streamFn: explicitKeyStream(),
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
-        convertToLlm: messages => convertToLlm(renderMessages(messages)),
+        convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
+        onPayload: payload => documents ? documentPayload(payload) : undefined,
         transformContext: (messages, signal) => contextFor(messages, signal),
         // A tenant past its spend cap stops before the next model request, after this response's tool results.
         finishTurn: async turn => {

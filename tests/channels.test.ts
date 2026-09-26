@@ -270,7 +270,8 @@ test("each sender is rate limited, and told once", async t => {
 test("a photo reaches the model as an image", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "Nice photo." }));
   const { channel, secret } = await r.createChannel({ access: { allow: ["42"] } });
-  const small = Buffer.from("small-thumbnail"), large = randomBytes(2048);
+  // A JPEG's start and frame header (5×5), then noise: inspection reads only the header.
+  const small = Buffer.from("small-thumbnail"), large = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x05, 0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]), randomBytes(2048)]);
   r.tg.files.set("photos/thumb.jpg", small);
   r.tg.files.set("photos/full.jpg", large);
   await r.deliver(channel, secret, {
@@ -281,7 +282,9 @@ test("a photo reaches the model as an image", async t => {
   assert.deepEqual(r.tg.calls.filter(entry => entry.method === "getFile").map(entry => entry.body.file_id), ["full"]);
   const content = r.model.bodies[0].messages.find((message: any) => message.role === "user").content;
   assert.ok(Array.isArray(content));
-  assert.deepEqual(content.filter((part: any) => part.type === "text").map((part: any) => part.text).at(-1), "What is this?");
+  assert.ok(content.some((part: any) => part.text === "What is this?"));
+  // Saved in the agent's workspace, then shown as it was sent.
+  assert.ok(content.some((part: any) => /^\[File \/workspace\/uploads\/[^/]+\/image-1\.jpeg \(image\/jpeg, 3 KB\)\]$/.test(part.text ?? "")));
   assert.equal(content.find((part: any) => part.type === "image_url").image_url.url, `data:image/jpeg;base64,${large.toString("base64")}`);
 });
 

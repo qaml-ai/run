@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { HttpError } from "./http.ts";
+import { FILE_LIMITS } from "./limits.ts";
 import type { FileEntry, VolumeService } from "./volumes.ts";
 
 /**
@@ -9,26 +10,7 @@ import type { FileEntry, VolumeService } from "./volumes.ts";
  * module holds what the runtime and the agent host share: limits, content types, safe
  * download headers, signed links, and the file reference the transcript keeps.
  */
-export const FILE_LIMITS = Object.freeze({
-  /** Files attached to one message, and their inline (base64) bytes in all, decoded. */
-  attachments: 20, inlineBytes: 4 * 1024 * 1024,
-  /** An image the model sees natively: Anthropic's per-image cap, and the longest side any provider takes. */
-  imageBytes: 5 * 1024 * 1024, imageSide: 8000,
-  /** A PDF the model sees natively (Anthropic's page cap; well under every provider's size cap). */
-  documentBytes: 16 * 1024 * 1024, documentPages: 100,
-  /** Across one model request: older files past these are described in text instead. */
-  requestFileBytes: 24 * 1024 * 1024, requestImages: 100,
-  /** File bytes the agent host keeps hydrated between model requests. */
-  hydratedBytes: 32 * 1024 * 1024,
-  /** Parsing untrusted files (in a worker, in a sandbox process when there are some): input, time, memory and text out. */
-  inspectBytes: 32 * 1024 * 1024, inspectMs: 10_000, inspectHeapMb: 256, inspectMemoryBytes: 512 * 1024 * 1024, extractedChars: 1_000_000,
-  /** Signed links: default and longest lifetime, in seconds. */
-  linkSeconds: 15 * 60, maxLinkSeconds: 24 * 60 * 60,
-  /** An upload's whole request may take this long (other requests get 30 s). */
-  uploadMs: 15 * 60_000,
-  /** One js_exec fs.readFile or fs.writeFile: base64 of this fits a 1 MiB tool result. */
-  scriptFileBytes: 768 * 1024,
-});
+export { FILE_LIMITS };
 
 /** A content type's essence: `type/subtype`, lowercase, without parameters. */
 export const essence = (contentType: string) => contentType.split(";")[0].trim().toLowerCase();
@@ -171,6 +153,25 @@ export function fileChars(ref: FileRef): number {
   return 200;
 }
 
+/** Why `model` is not shown a file natively, when it is an image or PDF; undefined for other files, and for ones it is shown. */
+export function unseen(ref: FileRef, model: Model<Api>): string | undefined {
+  const media = ref.media;
+  if (!media || nativeBlock(ref, model)) return undefined;
+  if (media.kind === "none") return media.reason;
+  if (media.kind === "image") return model.input.includes("image") ? `too large to view (at most ${FILE_LIMITS.imageBytes} bytes and ${FILE_LIMITS.imageSide} pixels a side)` : "this model cannot view images";
+  return supportsDocuments(model) ? `too large to view (at most ${FILE_LIMITS.documentBytes} bytes and ${FILE_LIMITS.documentPages} pages); read it for its text` : "this model cannot view PDFs; read it for its text";
+}
+
+/** A file name from a caller, safe as one path segment: no separators or control characters, not hidden, at most 200 bytes. */
+export function safeName(name: unknown, fallback = "file"): string {
+  const base = (typeof name === "string" ? name.split(/[\\/]/).pop()! : "").replace(/[\x00-\x1f\x7f]/g, "").trim().replace(/^\.+/, "");
+  if (Buffer.byteLength(base) <= 200) return base || fallback;
+  const extension = /\.[A-Za-z0-9]{1,8}$/.exec(base)?.[0] ?? "";
+  let stem = base.slice(0, base.length - extension.length);
+  while (Buffer.byteLength(stem + extension) > 200) stem = stem.slice(0, -1);
+  return stem + extension;
+}
+
 /** The text a file block becomes when it is not shown natively. */
 export function describeFile(ref: FileRef, why?: string) {
   const size = ref.size >= 1024 * 1024 ? `${(ref.size / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(ref.size / 1024)} KB`;
@@ -208,7 +209,8 @@ export type LinkGrant = { tenant: string; volume: string; path: string; method: 
  */
 export class FileLinks {
   private readonly key: Buffer;
-  readonly publicUrl: string;
+  /** Where links point: the runtime's public URL. */
+  publicUrl: string;
   constructor(secret: string, publicUrl: string) {
     this.key = createHmac("sha256", secret).update("agent-runtime:file-links:v1").digest();
     this.publicUrl = publicUrl.replace(/\/+$/, "");

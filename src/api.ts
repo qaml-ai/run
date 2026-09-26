@@ -209,9 +209,14 @@ export function api(context: ApiContext) {
     return json(c, 200, { aborted: true });
   });
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
-    const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 1024 * 1024, {}));
-    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, { id: body.requestId ?? randomUUID(), method: "prompt", params: { text: body.text, ...(body.actor !== undefined ? { actor: body.actor } : {}), ...(body.from !== undefined ? { from: body.from } : {}) } }));
+    // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
+    const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
+    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, { id: body.requestId ?? randomUUID(), method: "prompt", params: { text: body.text, ...(body.actor !== undefined ? { actor: body.actor } : {}), ...(body.from !== undefined ? { from: body.from } : {}), ...(body.files !== undefined ? { files: body.files } : {}) } }));
   });
+  route(createRoute({
+    method: "put", path: "/v1/agents/{id}/uploads/{requestId}/{name}", request: { params: agentId.extend({ requestId: z.string(), name: z.string() }), body: binary("The file's bytes, streamed") },
+    responses: { 201: reply("The saved file, in the agent's workspace under uploads/<requestId>/; attach it to that request as {path}", schema.Upload) },
+  }), async c => json(c, 201, await clients.uploadFor(c.req.param("id")!, c.var.principal.tenant, c.req.param("requestId")!, c.req.param("name")!, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>, c.req.header("content-type"))));
   route(createRoute({
     method: "patch", path: "/v1/agents/{id}/configuration", request: { params: agentId, body: content(schema.ConfigureInput) },
     responses: { 202: reply("Configuration accepted; poll its request for completion. Conversation history is preserved", schema.RequestRecord) },

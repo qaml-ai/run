@@ -1,4 +1,5 @@
 /** Node/Bun convenience entry. The portable SDK itself imports no Node modules. */
+import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { writeDurableJson } from "../shared/durable-json.ts";
@@ -21,7 +22,7 @@ export function fileJournalStore(directory: string): JournalStore {
 }
 export class AgentRuntime extends PortableAgentRuntime {
   constructor(options: RuntimeOptions = {}) {
-    super({ ...options, url: options.url ?? process.env.AGENT_URL,
+    super({ ...options, url: options.url ?? process.env.AGENT_URL, openFile: options.openFile ?? (path => openAsBlob(path)),
       apiKey: options.apiKey ?? process.env.AGENT_RUNTIME_TOKEN,
       journalStore: options.journalStore ?? fileJournalStore(options.stateDirectory ?? process.env.AGENT_CLIENT_STATE_DIR ?? ".agent-runtime/client-sdk"),
     });

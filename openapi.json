@@ -788,10 +788,81 @@
           "requestId": {
             "type": "string",
             "description": "Idempotency: retrying with the same id returns the same request"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "string",
+                      "description": "The file's bytes, base64: at most 4 MiB across a message's inline files"
+                    },
+                    "contentType": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "description": "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them"
           }
         },
         "required": [
           "text"
+        ]
+      },
+      "Upload": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Where the agent sees the file: attach it as {path}"
+          },
+          "version": {
+            "type": "number"
+          },
+          "size": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          },
+          "by": {
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "version",
+          "size",
+          "updatedAt",
+          "contentType"
         ]
       },
       "ConfigureInput": {
@@ -3209,6 +3280,69 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RequestRecord"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/uploads/{requestId}/{name}": {
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "requestId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "description": "The file's bytes, streamed",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The saved file, in the agent's workspace under uploads/<requestId>/; attach it to that request as {path}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
                 }
               }
             }

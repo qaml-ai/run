@@ -18,6 +18,28 @@ export const SANDBOX_LIMITS = Object.freeze({
  */
 export const CATALOG_LIMITS = Object.freeze({ tools: 4096, bytes: 16 * 1024 * 1024, direct: 64 });
 
+/** Files in and out of agents (files.ts, inspect.ts). */
+export const FILE_LIMITS = Object.freeze({
+  /** Files attached to one message, and their inline (base64) bytes in all, decoded. */
+  attachments: 20, inlineBytes: 4 * 1024 * 1024,
+  /** An image the model sees natively: Anthropic's per-image cap, and the longest side any provider takes. */
+  imageBytes: 5 * 1024 * 1024, imageSide: 8000,
+  /** A PDF the model sees natively (Anthropic's page cap; well under every provider's size cap). */
+  documentBytes: 16 * 1024 * 1024, documentPages: 100,
+  /** Across one model request: older files past these are described in text instead. */
+  requestFileBytes: 24 * 1024 * 1024, requestImages: 100,
+  /** File bytes the agent host keeps hydrated between model requests. */
+  hydratedBytes: 32 * 1024 * 1024,
+  /** Parsing untrusted files (in a worker, in a sandbox process when there are some): input, time, memory and text out. */
+  inspectBytes: 32 * 1024 * 1024, inspectMs: 10_000, inspectHeapMb: 256, inspectMemoryBytes: 512 * 1024 * 1024, extractedChars: 1_000_000,
+  /** Signed links: default and longest lifetime, in seconds. */
+  linkSeconds: 15 * 60, maxLinkSeconds: 24 * 60 * 60,
+  /** An upload's whole request may take this long (other requests get 30 s). */
+  uploadMs: 15 * 60_000,
+  /** One js_exec fs.readFile or fs.writeFile: base64 of this fits a 1 MiB tool result. */
+  scriptFileBytes: 768 * 1024,
+});
+
 /** Transient provider failures (overload, rate limit, 5xx, network) are retried with backoff. */
 export const DEFAULT_RETRY = Object.freeze({ maxAttempts: 3, baseDelayMs: 2_000 });
 

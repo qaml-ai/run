@@ -117,6 +117,7 @@ export class AgentSupervisor {
       if (method === "transcript") return this.transcriptRequest(handle, params);
       if (method === "spend-limit") return (await handle.bridge.spendLimit?.()) ?? null;
       if (method === "search") return this.search(handle, params);
+      if (method === "file") return this.file(handle, params);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
@@ -131,6 +132,11 @@ export class AgentSupervisor {
     const query = searchQuery(params);
     if (handle.bridge.search) return handle.bridge.search(query);
     return searchTools(handle.bridge.definitions.filter(tool => tool.exposure !== "direct"), query);
+  }
+
+  private file(handle: Handle, ref: unknown) {
+    if (!handle.bridge.file) throw new Error("Files are not available to this agent");
+    return handle.bridge.file(ref);
   }
 
   /** An agent process's transcript operations. Appends are applied before the first await, so they keep IPC order. */
@@ -154,6 +160,7 @@ export class AgentSupervisor {
       cancelTools: async () => this.cancelTools(handle),
       spendLimit: async () => handle.bridge.spendLimit?.(),
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),
+      file: ref => this.file(handle, structuredClone(ref)),
     });
     this.agents.set(id, handle);
     this.starting.delete(id);

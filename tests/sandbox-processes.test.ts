@@ -11,6 +11,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { checkSandbox, executeCode, SandboxProcess, SandboxProcesses } from "../src/codemode.ts";
 import { frames, MAX_FRAME_BYTES } from "../src/sandbox-wire.ts";
 import type { ToolBridge } from "../src/protocol.ts";
+import { inspection } from "../src/inspect.ts";
+import { bombPdf, pdfBytes, PNG } from "./file-fixtures.ts";
 
 type Context = { after: (fn: () => unknown) => void };
 
@@ -245,4 +247,19 @@ test("without sandbox processes js_exec runs in-process, unless they are require
   try { await assert.rejects(checkSandbox(), /AGENT_SANDBOX_REQUIRED=1, but no sandbox processes/); }
   finally { delete process.env.AGENT_SANDBOX_REQUIRED; }
   assert.deepEqual((await executeCode({ code: "return 1", bridge: echo })).output, ["1"]);
+});
+
+test("a sandbox process parses files for the runtime: bytes in frames, a hostile file stopped there, the process still serving", async t => {
+  const { path } = await sandboxProcess(t);
+  const target = new SandboxProcess(path);
+  // Larger than a frame: the bytes cross in several.
+  const large = Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024, 1)]);
+  assert.deepEqual(inspection(await target.inspect(large, false)), { media: { kind: "image", mimeType: "image/png", width: 2, height: 3 } });
+  assert.deepEqual(inspection(await target.inspect(pdfBytes(["Parsed in the sandbox"]), true)), { media: { kind: "pdf", pages: 1 }, text: "--- Page 1 ---\nParsed in the sandbox" });
+  assert.deepEqual(inspection(await target.inspect(await bombPdf(), true)), { media: { kind: "none", reason: "could not be read (it needs too much memory)" } });
+  assert.deepEqual(await executeCode({ code: "return 1", bridge: echo, pool: target }), { output: ["1"], truncated: false });
+  assert.equal(target.load, 0);
+  // Whatever a sandbox answers is checked: a lie becomes "could not be read".
+  const liar = await fakeSandbox(t, (message, send) => { if (message.type === "request") send({ type: "response", id: message.id, result: { media: { kind: "image", mimeType: "image/png", width: "huge", height: 1 } } }); });
+  assert.equal(inspection(await liar.inspect(PNG, false)).media.kind, "none");
 });

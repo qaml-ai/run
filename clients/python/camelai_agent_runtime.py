@@ -328,6 +328,56 @@ class Volume:
         return (await self._raw("DELETE", path, headers=None if version is None else {"If-Match": f'"{version}"'})).json()
 
 
+async def _chunks(path):
+    """A local file's bytes, a MiB at a time, so an upload never holds the whole file."""
+    with open(path, "rb") as file:
+        while chunk := await asyncio.to_thread(file.read, 1024 * 1024):
+            yield chunk
+
+
+def _error(response):
+    try:
+        return response.json().get("error") or f"HTTP {response.status_code}"
+    except ValueError:
+        return f"HTTP {response.status_code}"
+
+
+class AgentFiles:
+    """An agent's files with its own token: what it wrote in a run (an outcome lists `files`), and links to hand them on."""
+
+    def __init__(self, agent):
+        self.agent = agent
+
+    def _url(self, path):
+        return f"{self.agent.base}{self.agent.path}/files/" + "/".join(quote(part, safe="") for part in path.split("/") if part)
+
+    async def _raw(self, method, path, **options):
+        response = await self.agent.http.request(method, self._url(path), headers={"Authorization": f"Bearer {self.agent.session['token']}", **options.pop("headers", {})}, **options)
+        if not response.is_success:
+            raise AgentError(_error(response), response.status_code)
+        return response
+
+    async def list(self, *, path=None, glob=None, after=None, limit=None):
+        """Files under path (default: the first mount), in path order, a page at a time: {"files", "next"?}."""
+        query = urlencode({key: value for key, value in {"path": path, "glob": glob, "after": after, "limit": limit}.items() if value is not None})
+        return await self.agent._http(f"/files{'?' + query if query else ''}")
+
+    async def download(self, path):
+        """{"data": bytes, "content_type", "version"}"""
+        response = await self._raw("GET", path)
+        return {"data": response.content, "content_type": response.headers.get("content-type", "application/octet-stream").split(";")[0].strip(), "version": int(response.headers["etag"].strip('"'))}
+
+    async def upload(self, path, data, *, content_type=None):
+        """Write a file into a writable mount; without content_type the runtime sniffs it."""
+        body = data.encode() if isinstance(data, str) else data
+        return (await self._raw("PUT", path, content=body, headers={"Content-Type": content_type} if content_type else {}, timeout=None)).json()
+
+    async def link(self, path, *, method="GET", expires_in=None, max_bytes=None, content_type=None):
+        """A signed URL to download (GET) or upload (PUT) one file without a token: {"url", "expiresAt", ...}."""
+        body = {"path": path, "method": method, **{key: value for key, value in {"expiresIn": expires_in, "maxBytes": max_bytes, "contentType": content_type}.items() if value is not None}}
+        return await self.agent._http("/links", "POST", body, retry=False)
+
+
 class AgentClient:
     def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None):
         import re
@@ -548,11 +598,46 @@ class AgentClient:
             elif not future.done():
                 future.cancel()
 
-    async def prompt(self, text, *, actor=None, from_=None, **options):
+    async def prompt(self, text, *, actor=None, from_=None, files=None, idempotency_key=None, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
         the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
-        identity tokens) without telling the model."""
-        return await self.request("prompt", {"text": text, **({"actor": actor} if actor else {}), **({"from": from_} if from_ else {})}, **options)
+        identity tokens) without telling the model. `files` are attached: bytes, a local path (str or Path),
+        {"name", "data": bytes, "content_type"?}, or {"path"} for a file already in the agent's mounts. Each is
+        uploaded to the agent's workspace (uploads/<request>/<name>) first, then attached by path."""
+        request_id = idempotency_key or str(uuid.uuid4())
+        attached = await self._attach(request_id, files) if files else None
+        return await self.request("prompt", {"text": text, **({"files": attached} if attached else {}), **({"actor": actor} if actor else {}), **({"from": from_} if from_ else {})}, idempotency_key=request_id, **options)
+
+    async def _attach(self, request_id, files):
+        names, attached = set(), []
+        for index, file in enumerate(files):
+            if isinstance(file, dict) and set(file) == {"path"}:
+                attached.append({"path": file["path"]})
+                continue
+            content_type = None
+            if isinstance(file, (str, os.PathLike)):
+                path = Path(file)
+                name, data = path.name, _chunks(path)
+            elif isinstance(file, (bytes, bytearray, memoryview)):
+                name, data = None, bytes(file)
+            elif isinstance(file, dict) and isinstance(file.get("data"), (bytes, bytearray)):
+                name, data, content_type = file.get("name"), bytes(file["data"]), file.get("content_type")
+            else:
+                raise AgentError("A file is bytes, a local path, {\"name\", \"data\", \"content_type\"?} or {\"path\"} in the agent's mounts")
+            # Each file in a request needs its own name: they share uploads/<request>/.
+            base = name or f"attachment-{index + 1}"
+            unique, n = base, 2
+            while unique in names:
+                stem, dot, extension = base.rpartition(".")
+                unique = f"{stem}-{n}.{extension}" if dot and stem else f"{base}-{n}"
+                n += 1
+            names.add(unique)
+            response = await self.http.put(f"{self.base}{self.path}/uploads/{quote(request_id, safe='')}/{quote(unique, safe='')}", content=data, headers={
+                "Authorization": f"Bearer {self.session['token']}", **({"Content-Type": content_type} if content_type else {})}, timeout=None)
+            if not response.is_success:
+                raise AgentError(_error(response), response.status_code)
+            attached.append({"path": response.json()["path"]})
+        return attached
 
     async def execute(self, code, *, execution_timeout_ms=None, actor=None, **options):
         params = {"code": code, **({"actor": actor} if actor else {})}
@@ -588,6 +673,11 @@ class AgentClient:
 
     async def outcomes(self):
         return await self._http("/state")
+
+    @property
+    def files(self):
+        """The agent's files, at the paths it sees them (/workspace/...): list, download, upload and link."""
+        return AgentFiles(self)
 
     async def request_status(self, request_id):
         from urllib.parse import quote

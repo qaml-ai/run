@@ -4,7 +4,7 @@ import { connect } from "node:net";
 import { Rpc } from "./rpc.ts";
 import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { frames } from "./sandbox-wire.ts";
-import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
+import { FILE_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
 import { HOST_CALLS } from "./sandbox-bootstrap.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
@@ -238,7 +238,32 @@ export class SandboxProcess {
     });
     return guest;
   }
+
+  /**
+   * Parse an untrusted file here (inspect.ts): the request, then its bytes in frames of 2 MiB,
+   * answered by one response. The answer is as untrusted as the process; the caller checks it.
+   */
+  inspect(bytes: Uint8Array, text: boolean): Promise<unknown> {
+    const socket = connect(this.path);
+    this.load++;
+    const done = Promise.withResolvers<unknown>();
+    const timer = setTimeout(() => socket.destroy(new Error("the sandbox process took too long")), FILE_LIMITS.inspectMs + 2_000);
+    socket.on("error", error => done.reject(error));
+    socket.once("close", () => { this.load--; clearTimeout(timer); done.reject(new Error("the sandbox process closed the connection")); });
+    const write = frames(socket, (message: any) => {
+      if (message?.type !== "response") return void socket.destroy();
+      if (message.error !== undefined) done.reject(new Error(String(message.error).slice(0, 300))); else done.resolve(message.result);
+      socket.end();
+    });
+    try {
+      write({ type: "request", id: "inspect", method: "inspect", params: { size: bytes.length, text } });
+      for (let offset = 0; offset < bytes.length; offset += INSPECT_FRAME_BYTES) write({ type: "data", data: Buffer.from(bytes.subarray(offset, offset + INSPECT_FRAME_BYTES)).toString("base64") });
+    } catch (error) { socket.destroy(error as Error); }
+    return done.promise;
+  }
 }
+/** Bytes per frame to a sandbox process: base64 of this stays well under a frame's 4 MiB. */
+export const INSPECT_FRAME_BYTES = 2 * 1024 * 1024;
 
 /** The sandbox processes the launcher started; each execution goes to the least loaded, ties round-robin. */
 export class SandboxProcesses {
@@ -249,7 +274,10 @@ export class SandboxProcesses {
     this.processes = paths.map(path => new SandboxProcess(path));
   }
 
-  open(): Guest {
+  open(): Guest { return this.pick().open(); }
+
+  /** The least loaded process, ties round-robin. */
+  pick(): SandboxProcess {
     const count = this.processes.length;
     let pick = this.processes[this.next % count];
     for (let i = 1; i < count; i++) {
@@ -257,7 +285,7 @@ export class SandboxProcesses {
       if (candidate.load < pick.load) pick = candidate;
     }
     this.next = this.processes.indexOf(pick) + 1;
-    return pick.open();
+    return pick;
   }
 }
 

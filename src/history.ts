@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { fileChars, validFileRef } from "./files.ts";
 
 /** Imported provider messages remain native: reasoning/signatures are never reconstructed. */
 export function validateInitialMessages(messages: AgentMessage[]) {
@@ -49,14 +50,15 @@ export function recoverInterruptedTurn(messages: AgentMessage[]): AgentMessage[]
   return [...messages, ...interruptedTurnRepairs(messages)];
 }
 
-/** Approximate prompt characters for a message; an image counts like pi's estimate, not by its base64 size. */
+/** Approximate prompt characters for a message; an image counts like pi's estimate, not by its base64 size, and a file reference by what it stands for. */
 export function messageChars(message: AgentMessage): number {
-  let images = 0;
+  let extra = 0;
   const text = JSON.stringify(message, (key, value) => {
-    if (key === "data" && typeof value === "string" && value.length > 256) { images++; return ""; }
+    if (key === "data" && typeof value === "string" && value.length > 256) { extra += 4800; return ""; }
+    if (value?.type === "file" && validFileRef(value)) { extra += fileChars(value); return undefined; }
     return value;
   });
-  return text.length + images * 4800;
+  return text.length + extra;
 }
 
 /**

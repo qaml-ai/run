@@ -11,6 +11,8 @@ export interface ToolBridge {
   spendLimit?(): Promise<string | undefined> | string | undefined;
   /** Answer a `tools.search` query over the agent's code-mode tools, with the operator's rerankers. */
   search?(query: SearchQuery): Promise<SearchHit[]>;
+  /** A file reference's bytes (base64), for a model request that shows the file. */
+  file?(ref: unknown): Promise<string>;
 }
 export interface AgentConfig {
   id: string;

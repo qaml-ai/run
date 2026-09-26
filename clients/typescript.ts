@@ -69,6 +69,8 @@ export interface RuntimeOptions {
   journalStore?: JournalStore;
   /** Injectable for tests, observability, or an application's HTTP stack. */
   fetch?: typeof globalThis.fetch;
+  /** Opens a local file to attach by its path; set by the Node entry (`@camelai/agent-runtime/node`). */
+  openFile?: (path: string) => Promise<Blob>;
 }
 export interface AgentOptions {
   /** The application's tools, served to the agent as an attached MCP server. */
@@ -147,6 +149,14 @@ export interface FileLink { url: string; method: "GET" | "PUT"; path: string; ex
 /** A link's options: `expiresIn` seconds (default 900, at most 86400); for PUT, the largest upload and its content type. */
 export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBytes?: number; contentType?: string }
 export interface AgentHistory { messages: AgentMessage[] }
+/**
+ * A file to attach to a message: bytes or a Blob (a File keeps its name and type), `{ name, data,
+ * contentType? }`, a local path (Node entry), or `{ path }` for a file already in the agent's mounts.
+ * The SDK uploads each to the agent's workspace (uploads/<request>/<name>) before sending the message.
+ */
+export type Attachment = Uint8Array | Blob | string | { name?: string; data: Uint8Array | Blob; contentType?: string } | { path: string };
+/** A file in the agent's mounts, at the path the agent sees it. */
+export interface AgentFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 export interface Schedule { id: string; agent: string; text?: string; code?: string; dueAt: number; everySeconds?: number; createdAt: number }
 export interface RequestOptions { idempotencyKey?: string; timeoutMs?: number }
 /** Who sent a message: `id` is yours and the model may rely on it; the names are the sender's own. */
@@ -214,7 +224,7 @@ class Transport {
     }
   }
   /** A request with a raw body or response (volume file contents). */
-  async raw(path: string, token: string, init: { method?: string; body?: Uint8Array; headers?: Record<string, string> } = {}): Promise<Response> {
+  async raw(path: string, token: string, init: { method?: string; body?: Uint8Array | Blob; headers?: Record<string, string> } = {}): Promise<Response> {
     const response = await this.fetcher(this.base + path, { method: init.method ?? "GET", body: init.body as BodyInit | undefined, headers: { Authorization: `Bearer ${token}`, ...init.headers }, redirect: "manual" });
     await rejectRedirect(response);
     if (!response.ok) {
@@ -332,6 +342,34 @@ export function memoryJournalStore(): JournalStore {
   };
 }
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
+const encodePath = (path: string) => path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+
+/**
+ * The agent's files, at the paths it sees them (`/workspace/report.pdf`), with the agent's own
+ * token: what it wrote during a run (a run's outcome lists `files`), and links to hand them on.
+ */
+export class AgentFiles {
+  private readonly transport: Transport;
+  private readonly token: string;
+  private readonly base: string;
+  constructor(transport: Transport, token: string, base: string) { this.transport = transport; this.token = token; this.base = base; }
+  /** Files under `path` (default: the first mount), in path order, a page at a time. */
+  list(options: { path?: string; glob?: string; after?: string; limit?: number } = {}): Promise<{ files: AgentFile[]; next?: string }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`${this.base}/files${query.size ? `?${query}` : ""}`, this.token);
+  }
+  async download(path: string): Promise<{ data: Uint8Array; contentType: string; version: number }> {
+    const response = await this.transport.raw(`${this.base}/files/${encodePath(path)}`, this.token);
+    return { data: new Uint8Array(await response.arrayBuffer()), contentType: contentTypeOf(response), version: Number(response.headers.get("etag")?.replaceAll('"', "")) };
+  }
+  /** Write a file into a writable mount; without `contentType` the runtime sniffs it. */
+  async upload(path: string, data: Uint8Array | Blob | string, options: { contentType?: string } = {}): Promise<AgentFile> {
+    const body = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    return (await this.transport.raw(`${this.base}/files/${encodePath(path)}`, this.token, { method: "PUT", body, headers: options.contentType ? { "Content-Type": options.contentType } : {} })).json();
+  }
+  /** A signed URL to download (GET) or upload (PUT) one file without a token, e.g. for a browser or another service. */
+  link(path: string, options: LinkOptions = {}): Promise<FileLink> { return this.transport.json(`${this.base}/links`, this.token, "POST", { path, ...options }, false); }
+}
 
 export class AgentClient {
   readonly session: SessionCredentials;
@@ -343,6 +381,9 @@ export class AgentClient {
   private loaded?: Promise<void>;
   private saving: Promise<void> = Promise.resolve();
   private readonly options: AgentOptions;
+  private readonly openFile?: (path: string) => Promise<Blob>;
+  /** The agent's files: list, download, upload and link. */
+  readonly files: AgentFiles;
   private readonly pending = new Map<string, Pending>();
   /** Tool calls running, by JSON-RPC id, so the runtime can cancel them. */
   private readonly active = new Map<string, AbortController>();
@@ -362,6 +403,8 @@ export class AgentClient {
     this.options = options;
     this.transport = new Transport(runtime);
     this.store = runtime.journalStore ?? memoryJournalStore();
+    this.openFile = runtime.openFile;
+    this.files = new AgentFiles(this.transport, this.session.token, this.path());
   }
 
   private async load() {
@@ -568,13 +611,53 @@ export class AgentClient {
    * `from` says who sent the message: the model sees it in a block only the runtime can write, and
    * `from.id` is the turn's actor. `actor` names someone else acting (`act` in identity tokens) without telling the model.
    */
-  prompt(text: string, options?: RequestOptions & { images?: ImageContent[]; actor?: string; from?: Sender }) {
-    return this.request("prompt", { text, ...(options?.images ? { images: options.images } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.from ? { from: options.from } : {}) }, options);
+  prompt(text: string, options?: RequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender }) {
+    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}) });
+  }
+
+  /**
+   * Send a message with its files: each is uploaded to the agent's workspace under the request's
+   * id first, then attached by path. `images` (base64 blocks) are sent inline and saved as files.
+   */
+  private async message(method: "prompt" | "steer" | "followUp", text: string, options: (RequestOptions & { files?: Attachment[]; images?: ImageContent[]; from?: Sender }) | undefined, extra: Record<string, unknown> = {}) {
+    const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
+    const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
+    return this.request(method, { text, ...(files ? { files } : {}), ...(options?.images ? { images: options.images } : {}), ...extra, ...(options?.from ? { from: options.from } : {}) }, { ...options, idempotencyKey: id });
+  }
+
+  private async attach(requestId: string, files: Attachment[]): Promise<{ path: string }[]> {
+    const names = new Set<string>();
+    const attached: { path: string }[] = [];
+    for (const [index, file] of files.entries()) {
+      if (isRecord(file) && "path" in file && typeof file.path === "string" && !("data" in file)) { attached.push({ path: file.path }); continue; }
+      let data: Uint8Array | Blob, name: string | undefined, contentType: string | undefined;
+      if (typeof file === "string") {
+        if (!this.openFile) throw new AgentError("Attaching a local path needs the Node entry (@camelai/agent-runtime/node); pass bytes or a Blob instead");
+        data = await this.openFile(file);
+        name = file.split(/[\\/]/).pop();
+      } else if (file instanceof Uint8Array || file instanceof Blob) {
+        data = file;
+        name = (file as { name?: string }).name;
+        contentType = file instanceof Blob && file.type ? file.type : undefined;
+      } else {
+        const entry = file as { name?: string; data: Uint8Array | Blob; contentType?: string };
+        ({ data, name } = entry);
+        contentType = entry.contentType ?? (data instanceof Blob && data.type ? data.type : undefined);
+      }
+      // Each file in a request needs its own name: they share uploads/<request>/.
+      const base = name || `attachment-${index + 1}`;
+      let unique = base;
+      for (let n = 2; names.has(unique); n++) unique = base.replace(/(\.[^.]*)?$/, extension => `-${n}${extension}`);
+      names.add(unique);
+      const response = await this.transport.raw(this.path(`/uploads/${encodeURIComponent(requestId)}/${encodeURIComponent(unique)}`), this.session.token, { method: "PUT", body: data, headers: contentType ? { "Content-Type": contentType } : {} });
+      attached.push({ path: (await response.json()).path });
+    }
+    return attached;
   }
   history(): Promise<AgentHistory> { return this.http("/history"); }
   continue(options?: RequestOptions & { actor?: string }) { return this.request("continue", options?.actor ? { actor: options.actor } : {}, options); }
-  steer(text: string, options?: { from?: Sender }) { return this.request("steer", { text, ...(options?.from ? { from: options.from } : {}) }); }
-  followUp(text: string, options?: { from?: Sender }) { return this.request("followUp", { text, ...(options?.from ? { from: options.from } : {}) }); }
+  steer(text: string, options?: { from?: Sender; files?: Attachment[] }) { return this.message("steer", text, options); }
+  followUp(text: string, options?: { from?: Sender; files?: Attachment[] }) { return this.message("followUp", text, options); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string }) {
     const { tools, mcp, ...rest } = options;

@@ -11,6 +11,7 @@ const host = createAgentHost({
   cancelTools: () => rpc.request("cancel-tools"),
   spendLimit: async () => (await rpc.request("spend-limit")) ?? undefined,
   search: query => rpc.request("search", query),
+  file: ref => rpc.request("file", ref),
   transcript: remoteTranscript(rpc),
 });
 

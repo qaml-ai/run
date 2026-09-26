@@ -936,6 +936,143 @@ options)`, and `agent.files.link(path, options)` with a mount path.
 - Links last 15 minutes by default (`expiresIn`, at most 24 hours) and cannot be
   revoked before; the tenant must still own the volume when one is used.
 
+## Files and attachments
+
+Every file that goes into or comes out of an agent is a volume file with a
+content type. The model gets its path and, where it can take one, a native
+block (an image, or a PDF as a document); nothing large sits in the transcript.
+
+### Attaching files to a message
+
+`prompt`, `steer` and `followUp` take `files`, on every entry point:
+
+```ts
+await agent.prompt("What changed in Q3?", { files: ["./q3.pdf", screenshotBytes, new File([csv], "data.csv"), { path: "/workspace/notes.md" }] });
+```
+
+```python
+await agent.prompt("What changed in Q3?", files=[Path("q3.pdf"), screenshot_bytes, {"name": "data.csv", "data": csv}, {"path": "/workspace/notes.md"}])
+```
+
+A file is bytes, a Blob or File, `{name, data, contentType?}`, a local path
+(`@camelai/agent-runtime/node`, or a `str`/`Path` in Python), or `{path}` for
+a file already in the agent's mounts. The SDKs upload each file first, streamed,
+to `PUT /clients/:id/uploads/:requestId/:name` (REST: `PUT
+/v1/agents/:id/uploads/:requestId/:name`), then send the message with
+`files: [{path}]`. `POST /v1/agents/:id/prompt` also takes small files inline,
+`{name, data: <base64>, contentType?}`, up to 4 MiB in all per message.
+
+Upload first, then reference, is the one design for every size: bytes stream to
+storage a chunk at a time (15 minutes per upload), a retried upload rewrites the
+same path, and the message itself stays a small JSON request that is recorded
+and retried like any other. Inline base64 is only a convenience for small files
+from REST callers; multipart forms add nothing the two do not cover.
+
+- Attachments land in the agent's `/workspace` mount (else its first writable
+  mount) at `uploads/<requestId>/<name>`, so requests never collide; within one
+  request a repeated name becomes `name-2`. Names lose directories, control
+  characters and leading dots, and are cut to 200 bytes.
+- At most 20 files per message; each is at most 256 MiB (a volume's file
+  limit). A `{path}` outside the agent's mounts, a missing file, bad base64 or
+  too many inline bytes is a 400 or 413 before anything is saved.
+- `images` (base64 `{data, mimeType}` blocks, as channels and older SDKs send
+  them) still works: each is saved as `uploads/<requestId>/image-<n>.<ext>` and
+  attached like any other file.
+
+### What the model sees
+
+The user message is the text, then per file a line such as
+`[File /workspace/uploads/r1/q3.pdf (application/pdf, 2.1 MB)]`, followed by a
+native block when the model takes the file: an image block for PNG, JPEG, GIF
+and WebP on models with image input, and a document for PDFs where the provider
+takes them. Anything else is only named, and the model reads it with its file
+tools. A file that could be shown but is not says why, e.g. `this model cannot
+view PDFs; read it for its text`.
+
+| | Native | Limits |
+| --- | --- | --- |
+| Images (PNG, JPEG, GIF, WebP) | models whose catalog input includes `image` | 5 MiB and 8,000 px a side each, as they are (never re-encoded) |
+| PDFs | Anthropic, Google, OpenAI Responses, and OpenRouter (chat completions) models with image input | 16 MiB and 100 pages each |
+| Per model request | | 24 MiB and 100 files shown; older files past that are named only |
+
+Pi's catalog declares only text and image input, so which APIs take documents is
+the runtime's own data (`supportsDocuments` in `src/files.ts`). Pi carries a PDF
+as an image block of type `application/pdf`, and the request payload is
+rewritten to the provider's document block: Anthropic's `document`, OpenAI
+Responses' `input_file`, chat completions' `file`; Google takes the PDF as
+`inlineData` unchanged.
+
+### References in the transcript
+
+The transcript stores a reference, never bytes:
+
+```ts
+type FileRef = {
+  type: "file"; path: string;            // as the agent saw it, e.g. /workspace/uploads/r1/q3.pdf
+  volume: string; version: number;       // the volume file it was
+  size: number; contentType: string;
+  chunks: string[];                      // its content: content-addressed chunks, never rewritten
+  media?: { kind: "image"; mimeType: string; width: number; height: number } | { kind: "pdf"; pages: number } | { kind: "none"; reason: string };
+};
+```
+
+The chunk list pins the content, so a file deleted or overwritten after it was
+attached still reads as it was (chunks are never garbage-collected yet; see
+[Volumes](#volumes)). The agent host hydrates references into native blocks
+each time it builds a model request, fetching the bytes through its supervisor
+(an agent process has no storage access) and keeping up to 32 MiB of them
+between requests. The same references always produce the same request, so the
+provider's cached prefix holds. Request records keep references too, so a queued
+prompt's journal entry is small. Context estimates count what a reference stands
+for (an image like one of pi's, a PDF at about 3,000 tokens a page), not its JSON,
+so compaction triggers as it would for the bytes.
+
+### Parsing untrusted files
+
+Inspecting an image's header or a PDF (page count, and text for models that
+cannot read PDFs) parses untrusted input, so it never runs on the runtime's
+main thread, which holds secrets and database credentials. With sandbox
+processes (production) the bytes go over the sandbox socket in frames of 2 MiB,
+and the sandbox process (its own uid, empty environment, no sockets, seccomp)
+parses them on a worker thread; an exploit reaches nothing, and a crash takes
+down only that process, which the launcher restarts. Without sandbox processes
+(development) the worker runs in the runtime process. Either way the worker has
+a 256 MiB V8 heap, 10 seconds, and a ceiling of 512 MiB on its process's
+resident memory, checked every 20 ms: pdf.js inflates streams into
+ArrayBuffers, which heap limits do not count, so a 400 KB PDF that inflates to
+400 MB is stopped by the ceiling. Answers are rebuilt from checked fields
+(`inspection` in `src/inspect.ts`). PDFs are parsed with
+[unpdf](https://github.com/unjs/unpdf) (pdf.js, pure JavaScript, no native
+addons, `isEvalSupported: false`). Images are only measured: their bytes go to
+the provider as they were uploaded.
+
+### Files out
+
+An application reads what its agent made with the agent's own token, by the
+paths the agent sees:
+
+- `agent.files.list({ path?, glob?, after?, limit? })`: `GET /clients/:id/files?path=/workspace/out`
+- `agent.files.download(path)`: `GET /clients/:id/files/<path>`, `{data, contentType, version}`
+- `agent.files.upload(path, data, { contentType? })`: `PUT /clients/:id/files/<path>` (writable mounts)
+- `agent.files.link(path, { method?, expiresIn?, maxBytes?, contentType? })`:
+  `POST /clients/:id/links`, a [signed link](#signed-links) for a browser or another service
+
+### Primitives for runtime features
+
+Channels, tools and the console build on these:
+
+- `volumes.put(tenant, volumeId, path, bytes | stream, { contentType?, ifMatch?, by?, limit? })`
+  saves a file from any node, sniffing its type when none is given.
+- `clients.upload(session, requestId, name, source, contentType?)` (or
+  `uploadFor(agent, tenant, ...)`) saves an attachment where the agent's
+  attachments go and returns its path; a prompt then carries `files: [{path}]`.
+- `fileRef(volumes, tenant, volumeId, shownPath, entry)` (`src/inspect.ts`)
+  makes the transcript's reference, inspecting the file in the sandbox.
+- `links.sign({ tenant, volume, path, method, expiresIn?, maxBytes?, contentType? })`
+  (`FileLinks` in `src/files.ts`) returns `{url, expiresAt, ...}`.
+- `downloadHeaders(contentType, name)` and `fileResponse(volumes, tenant, entry, range?)`
+  serve a file safely from the runtime's origin.
+
 ## Billing
 
 Tenants created by console sign-in pay from **prepaid credit**, like OpenRouter;

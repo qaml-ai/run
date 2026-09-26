@@ -1,15 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { AgentError, AgentRuntime, memoryJournalStore } from "../clients/node.ts";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { VolumeService } from "../src/volumes.ts";
 import { declaredType, downloadHeaders, fileResponse, sniffContentType } from "../src/files.ts";
 import { testDatabase } from "./database.ts";
-import { OPERATOR, runtime } from "./runtime-server.ts";
+import { bombPdf, pdfBytes, PNG } from "./file-fixtures.ts";
+import { contextTokens } from "../src/compaction.ts";
+import { messageChars } from "../src/history.ts";
+import { inspect, inspection } from "../src/inspect.ts";
+import { OPERATOR, runtime, until } from "./runtime-server.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
-const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from("IHDR"), Buffer.from([0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0, 0, 0])]);
 
 async function service(t: Context) {
   const { db } = await testDatabase();
@@ -164,4 +170,128 @@ test("an upload streams to storage a chunk at a time: a file far larger than the
   assert.ok(peak - before < 96 * 1024 * 1024, `the server grew by ${Math.round((peak - before) / 1024 / 1024)} MiB for a ${size / 1024 / 1024} MiB upload`);
   const head = await fetch(`${server.base}/v1/volumes/${volume}/files/big.bin`, { headers: { Authorization: `Bearer ${OPERATOR}`, Range: "bytes=-3" } });
   assert.deepEqual([...Buffer.from(await head.arrayBuffer())], [7, 7, 7]);
+});
+
+test("attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively", async t => {
+  const server = await runtime(t, () => ({ role: "assistant", content: "seen", usage: { prompt_tokens: 5000, completion_tokens: 7 } }));
+  const agent = (await server.call("/v1/agents", { body: { name: "reader" } })).json.id;
+  const auth = { Authorization: `Bearer ${OPERATOR}` };
+  const PDF = pdfBytes(["Quarterly report"]);
+  const uploaded = await (await fetch(`${server.base}/v1/agents/${agent}/uploads/turn-1/report.pdf`, { method: "PUT", body: PDF, headers: auth })).json();
+  assert.equal(uploaded.path, "/workspace/uploads/turn-1/report.pdf");
+  assert.equal(uploaded.contentType, "application/pdf");
+  const bad = async (files: unknown, pattern: RegExp) => {
+    const response = await server.call(`/v1/agents/${agent}/prompt`, { body: { text: "x", files } });
+    assert.ok(response.status === 400 || response.status === 413, `${response.status} ${response.text}`);
+    assert.match(response.json.error, pattern);
+  };
+  await bad(Array.from({ length: 21 }, () => ({ path: uploaded.path })), /At most 20 files/);
+  await bad([{ name: "a", data: "not base64!" }], /\{path\}.*\{name, data/);
+  await bad([{ path: "/etc/passwd" }], /not inside a mount/);
+  await bad([{ path: "/workspace/missing.png" }], /does not exist/);
+  await bad([{ name: "big.bin", data: Buffer.alloc(4 * 1024 * 1024 + 3).toString("base64") }], /Inline files are limited/);
+
+  const accepted = await server.call(`/v1/agents/${agent}/prompt`, { body: { text: "What are these?", requestId: "turn-1", files: [{ path: uploaded.path }, { name: "../../etc/shot.png", data: PNG.toString("base64") }, { name: "shot.png", data: PNG.toString("base64") }] } });
+  assert.equal(accepted.status, 202, accepted.text);
+  await until(async () => (await server.call(`/v1/agents/${agent}/requests/turn-1`)).json.state === "completed", "the turn");
+  // Names are sanitized, and collide only within a request.
+  const listed = (await server.call(`/v1/volumes/${(await server.call(`/v1/agents/${agent}/mounts`)).json[0].volumeId}/files?prefix=/uploads/turn-1`)).json.files;
+  assert.deepEqual(listed.map((file: any) => [file.path, file.contentType]), [["/uploads/turn-1/report.pdf", "application/pdf"], ["/uploads/turn-1/shot-2.png", "image/png"], ["/uploads/turn-1/shot.png", "image/png"]]);
+
+  // The model got the text, a line per file, and native blocks: the image, and the PDF as a document (OpenRouter takes files).
+  const user = server.model.bodies.at(-1).messages.find((message: any) => message.role === "user");
+  assert.equal(user.content[0].text, "What are these?");
+  assert.match(user.content[1].text, /^\[File \/workspace\/uploads\/turn-1\/report\.pdf \(application\/pdf, 1 KB\)\]$/);
+  assert.deepEqual(user.content[2], { type: "file", file: { filename: "document.pdf", file_data: `data:application/pdf;base64,${PDF.toString("base64")}` } });
+  assert.match(user.content[3].text, /shot\.png \(image\/png/);
+  assert.deepEqual(user.content[4], { type: "image_url", image_url: { url: `data:image/png;base64,${PNG.toString("base64")}` } });
+
+  // The transcript holds references (volume, path, version, type and chunks), never the bytes.
+  const history = (await server.call(`/v1/agents/${agent}/history`)).json;
+  const stored = history.messages.find((message: any) => message.role === "user").content;
+  assert.deepEqual(stored.slice(1).map((block: any) => [block.type, block.path, block.contentType, block.media]), [
+    ["file", "/workspace/uploads/turn-1/report.pdf", "application/pdf", { kind: "pdf", pages: 1 }],
+    ["file", "/workspace/uploads/turn-1/shot.png", "image/png", { kind: "image", mimeType: "image/png", width: 2, height: 3 }],
+    ["file", "/workspace/uploads/turn-1/shot-2.png", "image/png", { kind: "image", mimeType: "image/png", width: 2, height: 3 }],
+  ]);
+  assert.ok(stored.every((block: any) => block.type === "text" || (block.version > 0 && block.chunks.length === 1 && block.volume.startsWith("vol_"))));
+  assert.ok(!JSON.stringify(history).includes(PNG.toString("base64")) && !JSON.stringify(history).includes(PDF.toString("base64").slice(0, 40)), "no base64 in the transcript");
+  const requests = (await server.call(`/v1/agents/${agent}`)).json.requests;
+  assert.ok(!JSON.stringify(requests).includes(PNG.toString("base64")));
+  // Billing is what the provider reported for the one request: files add no model calls and no usage of their own.
+  assert.equal(server.model.bodies.length, 1);
+  const { totals } = (await server.call("/v1/usage")).json;
+  assert.deepEqual([totals.responses, totals.input, totals.output], [1, 5000, 7]);
+});
+
+test("context estimates count what file references stand for, not their JSON", () => {
+  const ref = (media: object, size = 1000) => ({ type: "file", path: "/workspace/a", volume: `vol_${"a".repeat(24)}`, version: 1, size, contentType: "application/pdf", chunks: Array.from({ length: 40 }, () => "b".repeat(64)), media });
+  const message = (block: object) => ({ role: "user", content: [{ type: "text", text: "see" }, block], timestamp: 0 }) as any;
+  const pdf = message(ref({ kind: "pdf", pages: 10 }));
+  assert.ok(contextTokens([pdf]) >= 30_000, "ten pages at about 3,000 tokens each");
+  assert.ok(messageChars(pdf) >= 120_000 && messageChars(pdf) < 121_000, "and not the chunk list");
+  assert.ok(contextTokens([message(ref({ kind: "image", mimeType: "image/png", width: 1, height: 1 }))]) >= 1200);
+  assert.ok(contextTokens([message(ref({ kind: "none", reason: "x" }, 10_000_000))]) < 200, "a file that is only named costs its line");
+  // After a response that reported usage, only later messages' files are added.
+  const answered = { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 40_000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 40_010 }, stopReason: "stop", timestamp: 0 } as any;
+  const tokens = contextTokens([pdf, answered]);
+  assert.ok(tokens >= 40_010 && tokens < 41_000, String(tokens));
+  assert.ok(contextTokens([pdf, answered, pdf]) >= 70_000);
+});
+
+test("the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached", async t => {
+  const server = await runtime(t, () => ({ role: "assistant", content: "seen" }));
+  const client = new AgentRuntime({ url: server.base, apiKey: OPERATOR, journalStore: memoryJournalStore() });
+  const agent = await client.createAgent({ tools: {} });
+  t.after(() => agent.close());
+  const local = join(server.root, "notes.txt");
+  writeFileSync(local, "local notes");
+  const pdf = pdfBytes(["Invoice 42"]);
+  await agent.files.upload("/workspace/in/earlier.png", PNG);
+  const result = await agent.prompt("Look", { idempotencyKey: "with-files", files: [PNG, new Blob([pdf], { type: "application/pdf" }), local, { path: "/workspace/in/earlier.png" }, { name: "data.csv", data: new TextEncoder().encode("a,b"), contentType: "text/csv" }] });
+  assert.equal(result.reply, "seen");
+  const listing = await agent.files.list({ path: "/workspace/uploads/with-files" });
+  assert.deepEqual(listing.files.map(file => [file.path, file.contentType]), [
+    ["/workspace/uploads/with-files/attachment-1", "image/png"], ["/workspace/uploads/with-files/attachment-2", "application/pdf"],
+    ["/workspace/uploads/with-files/data.csv", "text/csv"], ["/workspace/uploads/with-files/notes.txt", "text/plain"],
+  ]);
+  const first = server.model.bodies.at(-1).messages.find((message: any) => message.role === "user").content;
+  assert.equal(first.filter((part: any) => part.type === "image_url").length, 2);
+  assert.equal(first.filter((part: any) => part.type === "file").length, 1);
+  assert.ok(first.some((part: any) => part.text?.startsWith("[File /workspace/uploads/with-files/notes.txt (text/plain")));
+
+  // The attached files change afterwards: the earlier message still carries what was attached.
+  const volume = (await client.mounts(agent.session.id))[0].volumeId;
+  await client.volume(volume).remove("/uploads/with-files/attachment-1");
+  await agent.files.upload("/workspace/in/earlier.png", Buffer.concat([PNG, Buffer.from("changed")]));
+  await agent.prompt("Again");
+  const replayed = server.model.bodies.at(-1).messages.find((message: any) => message.role === "user").content.filter((part: any) => part.type === "image_url").map((part: any) => part.image_url.url);
+  assert.deepEqual(replayed, [`data:image/png;base64,${PNG.toString("base64")}`, `data:image/png;base64,${PNG.toString("base64")}`]);
+  assert.deepEqual(JSON.stringify(server.model.bodies.at(-2).messages.slice(0, 2)), JSON.stringify(server.model.bodies.at(-1).messages.slice(0, 2)), "the same references give the same request: the cached prefix holds");
+
+  // Files out: download and a signed link, with the agent's token only.
+  const downloaded = await agent.files.download("/workspace/uploads/with-files/data.csv");
+  assert.deepEqual([new TextDecoder().decode(downloaded.data), downloaded.contentType], ["a,b", "text/csv"]);
+  const link = await agent.files.link("/workspace/uploads/with-files/data.csv");
+  assert.equal(link.path, "/workspace/uploads/with-files/data.csv");
+  assert.equal(await (await fetch(link.url.replace("https://agents.example.test", server.base))).text(), "a,b");
+  await assert.rejects(agent.files.link("/elsewhere/x"), (error: AgentError) => error.status === 400);
+  await assert.rejects(agent.prompt("x", { files: [{ path: "/workspace/nope" }] }), (error: AgentError) => error.status === 400 && /does not exist/.test(error.message));
+});
+
+test("parsing a hostile file stops at its limits on a worker: the runtime's thread neither crashes nor stalls", async () => {
+  const bomb = await bombPdf();
+  let ticks = 0;
+  const ticker = setInterval(() => ticks++, 10);
+  const started = Date.now();
+  const found = await inspect(bomb, true);
+  clearInterval(ticker);
+  assert.deepEqual(found, { media: { kind: "none", reason: "could not be read (it needs too much memory)" } });
+  assert.ok(ticks >= (Date.now() - started) / 10 / 3, `the event loop kept running (${ticks} ticks in ${Date.now() - started} ms)`);
+  // Garbage is only unreadable, and whatever a worker answers is checked.
+  assert.equal((await inspect(Buffer.from("%PDF-1.4 but nothing else"))).media.kind, "none");
+  assert.deepEqual(inspection({ media: { kind: "image", mimeType: "text/html", width: 1, height: 1 } }), { media: { kind: "none", reason: "could not be read" } });
+  assert.deepEqual(inspection({ media: { kind: "pdf", pages: -1 } }).media.kind, "none");
+  const text = await inspect(pdfBytes(["First page", "Second page"]), true);
+  assert.deepEqual(text, { media: { kind: "pdf", pages: 2 }, text: "--- Page 1 ---\nFirst page\n\n--- Page 2 ---\nSecond page" });
 });

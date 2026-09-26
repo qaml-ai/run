@@ -306,7 +306,7 @@ const clients = new ClientSessions(supervisor, {
   spendLimit: tenant => accounts.runLimit(tenant),
   rerankers,
   creditLimit: tenant => accounts.billing.creditLimit(tenant),
-  db, storage, prefix: "client-sessions/", ownership, volumes,
+  db, storage, prefix: "client-sessions/", ownership, volumes, links,
   get scheduler() { return scheduler; },
   get hooks() { return channels.hooks; },
   definitionFor: async (tenant, id) => {
@@ -433,7 +433,7 @@ server.on("request", (req: IncomingMessage) => {
 });
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
-  if (!process.env.AGENT_PUBLIC_URL) signer.issuer = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  if (!process.env.AGENT_PUBLIC_URL) signer.issuer = links.publicUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
 });
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.

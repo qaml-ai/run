@@ -30,6 +30,9 @@ import { actorInput, type AgentIdentity } from "./identity.ts";
 import { senderInput } from "./sender.ts";
 import { compose, defaultExposure, describeSources, valueServer, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
+import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
+import { fileRef } from "./inspect.ts";
+import { resolve as resolveMount } from "./volume-tools.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -179,6 +182,8 @@ export interface ClientSessionOptions {
   hooks?: SessionHooks;
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
+  /** Signs links to the agent's files (`POST /clients/:id/links`, `present_file`). */
+  links?: FileLinks;
   /** A definition's current configuration, to apply to an agent made from it (`configure` with `definition`). */
   definitionFor?: (tenant: string, id: string) => Promise<DefinitionConfig>;
   /** Tools the runtime calls itself (MCP servers), from the agent's definition. */
@@ -498,6 +503,7 @@ export class ClientSessions {
           return typeof limited === "string" ? limited : limited?.message;
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...(context ? { toolCallId: context.toolCallId } : {}) }),
+        file: ref => this.fileData(session, ref),
         search: query => this.searchTools(session, query),
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
@@ -862,6 +868,44 @@ export class ClientSessions {
       return json(c, 200, { deleted: true });
     });
     app.get(`${agent}/history`, async c => json(c, 200, await this.history(c.var.session)));
+    // The agent's files by the paths it sees them at (/workspace/...), for applications holding its token.
+    app.get(`${agent}/files`, async c => {
+      const { path, glob, after, limit } = c.req.query();
+      const session = c.var.session;
+      const target = this.mounted(session, path ?? session.header.mounts?.[0]?.path ?? "/");
+      const listing = await this.options.volumes!.call(target.mount.volumeId, session.header.tenant, "list", {
+        path: target.path, ...(glob ? { glob } : {}), ...(after ? { after: this.mounted(session, after).path } : {}), ...(limit ? { limit: Number(limit) } : {}),
+      });
+      return json(c, 200, { files: listing.files.map(({ chunks: _chunks, path, ...file }: { chunks: string[]; path: string }) => ({ path: target.show(path), ...file })), ...(listing.next ? { next: target.show(listing.next) } : {}) });
+    });
+    const filePath = (c: Context) => `/${new URL(c.req.url).pathname.split("/files/").slice(1).join("/files/").split("/").map(decodeURIComponent).join("/")}`;
+    app.get(`${agent}/files/*`, async c => {
+      const session = c.var.session;
+      const target = this.mounted(session, filePath(c));
+      const entry = await this.options.volumes!.call(target.mount.volumeId, session.header.tenant, "stat", { path: target.path });
+      if (entry.type !== "file") throw new HttpError(404, `${filePath(c)} is a directory`);
+      return fileResponse(this.options.volumes!, session.header.tenant, entry, c.req.header("range"));
+    });
+    app.put(`${agent}/files/*`, async c => {
+      const session = c.var.session;
+      const target = this.mounted(session, filePath(c), true);
+      const { chunks: _chunks, path, ...entry } = await this.options.volumes!.put(session.header.tenant, target.mount.volumeId, target.path, body(c) as AsyncIterable<Uint8Array>, { contentType: c.req.header("content-type") });
+      return json(c, 201, { path: target.show(path), ...entry });
+    });
+    app.post(`${agent}/links`, async c => {
+      const session = c.var.session;
+      const input = await readJson(body(c), 4096);
+      const method = input?.method ?? "GET";
+      if (method !== "GET" && method !== "PUT") throw new HttpError(400, "method must be GET or PUT");
+      const target = this.mounted(session, input?.path, method === "PUT");
+      if (!this.options.links) throw new HttpError(404, "Links are not enabled on this runtime");
+      const contentType = input.contentType === undefined ? undefined : declaredType(input.contentType);
+      if (input.contentType !== undefined && !contentType) throw new HttpError(400, "contentType must be a specific content type");
+      const { tenant: _tenant, volume: _volume, path: _path, ...link } = this.options.links.sign({ tenant: session.header.tenant, volume: target.mount.volumeId, path: target.path, method, expiresIn: input.expiresIn, ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}), ...(contentType ? { contentType } : {}) });
+      return json(c, 201, { ...link, path: target.show(target.path) });
+    });
+    // A file for request `:request` to attach by the path this answers with; the body streams to storage.
+    app.put(`${agent}/uploads/:request/:name`, async c => json(c, 201, await this.upload(c.var.session, c.req.param("request"), c.req.param("name"), body(c) as AsyncIterable<Uint8Array>, c.req.header("content-type"))));
     app.get(`${agent}/state`, c => {
       const session = c.var.session;
       return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].map(visible) });
@@ -921,7 +965,7 @@ export class ClientSessions {
     const isRun = RUN_METHODS.includes(body.method);
     // Who is acting in a run is recorded apart from what the agent is asked to do.
     let actor: string | undefined;
-    const { actor: rawActor, ...params } = body.params;
+    let { actor: rawActor, ...params } = body.params;
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     if (params.from !== undefined && !["prompt", "steer", "followUp"].includes(body.method)) throw new HttpError(400, "from is only for messages (prompt, steer, followUp)");
     try {
@@ -937,6 +981,13 @@ export class ClientSessions {
     // Concurrent retries may have waited on the same process startup.
     const raced = existing();
     if (raced) return { status: 200, record: visible(raced) };
+    // Attached files are saved and referenced before the request is: its params keep references, never bytes.
+    if (["prompt", "steer", "followUp"].includes(body.method) && (params.files !== undefined || params.images !== undefined)) {
+      const { files, images, ...rest } = params;
+      params = { ...rest, files: await this.attach(session, body.id, files, images) };
+      const again = existing();
+      if (again) return { status: 200, record: visible(again) };
+    }
     const record = this.upsertRequest(session, {
       startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
       ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
@@ -946,6 +997,96 @@ export class ClientSessions {
     if (queued) this.enqueue(session, record, params);
     else void this.run(session, record, params);
     return { status: 202, record: visible(record) };
+  }
+
+  /**
+   * Where a request's attachments go: `uploads/<request>/<name>` in the agent's /workspace mount,
+   * else its first writable one. Requests have their own directories, so names only collide within one.
+   */
+  private uploadTarget(session: Session, requestId: string, name: string) {
+    const mounts = session.header.mounts ?? [];
+    const mount = mounts.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? mounts.find(entry => entry.mode === "rw");
+    if (!this.options.volumes || !mount) throw new HttpError(400, "Attaching files needs a writable mount, like the default /workspace");
+    if (!validId(requestId)) throw new HttpError(400, "Invalid request id");
+    return resolveMount(mounts, `${mount.path}/uploads/${requestId}/${safeName(name)}`)!;
+  }
+
+  /** Save an attachment for request `requestId` ahead of it (the SDKs upload files this way, then reference them by path). */
+  async upload(session: Session, requestId: string, name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string) {
+    const target = this.uploadTarget(session, requestId, name);
+    const { chunks: _chunks, path, ...entry } = await this.options.volumes!.put(session.header.tenant, target.mount.volumeId, target.path, source, { contentType, by: session.header.id });
+    return { path: target.show(path), ...entry };
+  }
+
+  /** A path as the agent sees it, resolved to its mount (writable, for `write`). */
+  private mounted(session: Session, path: unknown, write = false) {
+    if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
+    let target;
+    try { target = resolveMount(session.header.mounts ?? [], path); } catch (error) { throw new HttpError(400, errorText(error)); }
+    if (!target) throw new HttpError(400, "Name a path inside one of the agent's mounts");
+    if (write && target.mount.mode !== "rw") throw new HttpError(403, `${target.mount.path} is mounted read-only`);
+    return target;
+  }
+
+  /** `upload` for a tenant's agent (REST API). */
+  async uploadFor(id: string, tenant: string, requestId: string, name: string, source: AsyncIterable<Uint8Array>, contentType?: string) {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Unknown agent");
+    return this.upload(session, requestId, name, source, contentType);
+  }
+
+  /**
+   * A message's attachments as file references: files already in the agent's mounts ({path}), and
+   * small files sent inline ({name, data: base64, contentType?}, and legacy `images`), saved first.
+   * Everything is checked before anything is saved.
+   */
+  private async attach(session: Session, requestId: string, files: unknown = [], images: unknown = []): Promise<FileRef[]> {
+    if (!Array.isArray(files) || !Array.isArray(images)) throw new HttpError(400, "files must be an array");
+    const inputs = [...files, ...images.map((image, index) => ({ name: `image-${index + 1}.${String(image?.mimeType ?? "").split("/")[1] ?? "png"}`, data: image?.data, contentType: image?.mimeType }))];
+    if (inputs.length > FILE_LIMITS.attachments) throw new HttpError(400, `At most ${FILE_LIMITS.attachments} files can be attached to a message`);
+    let inline = 0;
+    const names = new Set<string>();
+    const checked = inputs.map((input, index) => {
+      if (input && typeof input === "object" && Object.keys(input).length === 1 && typeof input.path === "string") return { path: input.path as string };
+      const { name, data, contentType, ...rest } = input ?? {};
+      if (typeof data !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(data) || Object.keys(rest).length || (name !== undefined && typeof name !== "string") || (contentType !== undefined && typeof contentType !== "string")) {
+        throw new HttpError(400, "An attached file is {path} (a file in the agent's mounts) or {name, data (base64), contentType?}");
+      }
+      inline += Math.floor(data.length * 3 / 4);
+      if (inline > FILE_LIMITS.inlineBytes) throw new HttpError(413, `Inline files are limited to ${FILE_LIMITS.inlineBytes} bytes in all; upload larger ones first and attach them by path`);
+      // Two files of one name in a request become name, name-2, ...
+      const base = safeName(name, `attachment-${index + 1}`);
+      let unique = base;
+      for (let n = 2; names.has(unique); n++) unique = base.replace(/(\.[^.]*)?$/, extension => `-${n}${extension}`);
+      names.add(unique);
+      return { name: unique, data, contentType: contentType as string | undefined };
+    });
+    const volumes = this.options.volumes;
+    const mounts = session.header.mounts ?? [];
+    if (checked.length && !volumes) throw new HttpError(400, "Volumes are not enabled on this runtime");
+    const tenant = session.header.tenant;
+    const refs: FileRef[] = [];
+    for (const input of checked) {
+      if ("path" in input) {
+        let target;
+        try { target = resolveMount(mounts, input.path); } catch (error) { throw new HttpError(400, errorText(error)); }
+        if (!target) throw new HttpError(400, "Attach a file, not /");
+        const entry = await volumes!.call(target.mount.volumeId, tenant, "stat", { path: target.path }).catch(error => { throw (error as HttpError).status === 404 ? new HttpError(400, `${target.show(target.path)} does not exist`) : error; });
+        if (entry.type !== "file") throw new HttpError(400, `${target.show(target.path)} is a directory`);
+        refs.push(await fileRef(volumes!, tenant, target.mount.volumeId, target.show(entry.path), { ...entry, contentType: await volumes!.contentType(tenant, entry.path, entry) }));
+      } else {
+        const target = this.uploadTarget(session, requestId, input.name);
+        const saved = await volumes!.put(tenant, target.mount.volumeId, target.path, Buffer.from(input.data, "base64"), { contentType: input.contentType, by: session.header.id });
+        refs.push(await fileRef(volumes!, tenant, target.mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! }));
+      }
+    }
+    return refs;
+  }
+
+  /** A referenced file's bytes for the agent's model request, as base64 (only sizes a model can be shown). */
+  private async fileData(session: Session, ref: unknown) {
+    if (!validFileRef(ref) || ref.size > Math.max(FILE_LIMITS.imageBytes, FILE_LIMITS.documentBytes) || !this.options.volumes) throw new Error("Invalid file reference");
+    return (await this.options.volumes.readRange(session.header.tenant, ref, 0, ref.size)).toString("base64");
   }
 
   /** Submit a request to a tenant's agent on the tenant's behalf (REST API and console). */

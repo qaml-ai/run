@@ -38,8 +38,9 @@ export function volumeToolDefinitions(mounts: Mount[]): ToolDefinition[] {
   ];
 }
 
-type Resolved = { mount: Mount; path: string; show: (volumePath: string) => string };
-function resolve(mounts: Mount[], input: unknown): Resolved | undefined {
+/** A path as the agent sees it (`/workspace/a.md`, or relative to its first mount): its mount, its path in the volume, and how to show volume paths. */
+export type Resolved = { mount: Mount; path: string; show: (volumePath: string) => string };
+export function resolve(mounts: Mount[], input: unknown): Resolved | undefined {
   if (!mounts.length) throw new Error("This agent has no volumes mounted");
   const raw = input === undefined ? mounts[0].path : input;
   if (typeof raw !== "string") throw new Error("path must be a string");

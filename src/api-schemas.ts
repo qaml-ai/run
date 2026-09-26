@@ -158,7 +158,15 @@ export const PromptInput = z.object({
     username: z.string().optional().openapi({ description: "Handle, chosen by the sender" }),
   }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
   requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request" }),
+  files: z.array(z.union([
+    z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }) }),
+    z.strictObject({ name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a message's inline files" }), contentType: z.string().optional() }),
+  ])).optional().openapi({ description: "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them" }),
 }, { error: SEND_TEXT }).openapi("PromptInput");
+export const Upload = z.object({
+  path: z.string().openapi({ description: "Where the agent sees the file: attach it as {path}" }),
+  version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(), contentType: z.string(),
+}).openapi("Upload");
 
 // Documentation only: scheduleInput and Scheduler.create validate schedules.
 export const ScheduleInput = z.object({

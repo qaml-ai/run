@@ -6,6 +6,7 @@ import { completeSimple, streamSimple, type Api, type Model, type Models } from 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { CompactionState } from "./transcript.ts";
 import { messageChars } from "./history.ts";
+import { fileChars as charsOf, validFileRef } from "./files.ts";
 
 /**
  * Context compaction on top of pi-agent-core's compaction functions. Pi picks the
@@ -30,12 +31,22 @@ export const MAX_WORKING_CHARS = 12_000_000;
 /**
  * Tokens the context will cost: the provider's last usage report plus an estimate for
  * later messages, or pi's per-message estimate if larger. Providers that report no
- * usage (some proxies) would otherwise look empty and never compact.
+ * usage (some proxies) would otherwise look empty and never compact. Pi counts nothing
+ * for file references, so what each stands for is added (see `fileChars`).
  */
 export function contextTokens(messages: AgentMessage[]): number {
   let estimated = 0;
-  for (const message of messages) estimated += estimateTokens(message);
-  return Math.max(estimateContextTokens(messages).tokens, estimated);
+  const files = messages.map(message => Math.ceil(fileChars(message) / 4));
+  messages.forEach((message, index) => { estimated += estimateTokens(message) + files[index]; });
+  const reported = estimateContextTokens(messages);
+  const trailing = files.slice((reported.lastUsageIndex ?? -1) + 1).reduce((sum, tokens) => sum + tokens, 0);
+  return Math.max(reported.tokens + trailing, estimated);
+}
+
+/** Characters the file references in a user message or tool result stand for. */
+function fileChars(message: AgentMessage): number {
+  const content = (message as { content?: unknown }).content;
+  return Array.isArray(content) ? content.reduce((sum: number, block) => sum + (validFileRef(block) ? charsOf(block) : 0), 0) : 0;
 }
 
 /** `fixedTokens` covers what every request carries besides messages, such as the system prompt. */

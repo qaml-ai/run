@@ -8,7 +8,9 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,28 @@ sys.path.insert(0, str(ROOT / "clients" / "python"))
 from camelai_agent_runtime import AgentRuntime, ToolContext, tool
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
+
+
+PNG = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13]) + b"IHDR" + bytes([0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0, 0, 0])
+
+
+def fake_model(bodies):
+    """An OpenAI-compatible model on localhost that answers "seen" and keeps each request body."""
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for delta, finish in (({"role": "assistant", "content": "seen"}, None), ({}, "stop")):
+                self.wfile.write(f"data: {json.dumps({'id': 'fixture', 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+        def log_message(self, *_):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def database(statement):
@@ -35,12 +59,15 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         url = urlsplit(DATABASE_URL)
         # The tests run scripted code, never the model: the tenant's key is a placeholder.
         tenants = Path(self.directory.name) / "tenants.json"
-        tenants.write_text(json.dumps({"tenants": {"python": {"tokenSha256": hashlib.sha256(self.token.encode()).hexdigest(), "apiKeys": {"anthropic": "unset"}}}}))
+        tenants.write_text(json.dumps({"tenants": {"python": {"tokenSha256": hashlib.sha256(self.token.encode()).hexdigest(), "apiKeys": {"openrouter": "unset"}}}}))
+        self.bodies = []
+        self.model = fake_model(self.bodies)
         self.host = await asyncio.create_subprocess_exec(
             "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", str(ROOT / "src" / "server.ts"), stdout=asyncio.subprocess.PIPE,
             env={"PATH": os.environ["PATH"], "HOME": self.directory.name,
                  "AGENT_DATABASE_URL": urlunsplit(url._replace(query=urlencode({"options": f"-c search_path={self.schema}"}))),
                  "AGENT_DATA_DIR": self.directory.name, "AGENT_TENANTS_FILE": str(tenants), "AGENT_SESSION_SECRET": self.token, "PORT": "0",
+                 "AGENT_PROVIDER": "openrouter", "AGENT_MODEL": "openai/gpt-4o-mini", "AGENT_BASE_URL": f"http://127.0.0.1:{self.model.server_port}/v1",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
         ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))
@@ -52,6 +79,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.host.terminate()
         await asyncio.wait_for(self.host.wait(), 10)
         database(f"drop schema {self.schema} cascade")
+        self.model.shutdown()
+        self.model.server_close()
         self.directory.cleanup()
 
     async def test_annotations_reconnect_and_lost_acknowledgements(self):
@@ -143,6 +172,27 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         await volume.delete()
         self.assertNotIn(volume.id, [entry["id"] for entry in await self.runtime.list_volumes()])
 
+
+    async def test_attachments_and_the_agents_files(self):
+        agent = await self.runtime.create_agent(tools=[])
+        local = Path(self.directory.name) / "report.txt"
+        local.write_text("quarterly numbers")
+        await agent.files.upload("/workspace/in/chart.png", PNG)
+        result = await agent.prompt("Look", files=[PNG, local, {"name": "photo.png", "data": PNG, "content_type": "image/png"}, {"path": "/workspace/in/chart.png"}], idempotency_key="py-files")
+        self.assertEqual(result["reply"], "seen")
+        listing = await agent.files.list(path="/workspace/uploads/py-files")
+        self.assertEqual([(entry["path"], entry["contentType"]) for entry in listing["files"]], [
+            ("/workspace/uploads/py-files/attachment-1", "image/png"), ("/workspace/uploads/py-files/photo.png", "image/png"), ("/workspace/uploads/py-files/report.txt", "text/plain")])
+        user = next(message for message in self.bodies[-1]["messages"] if message["role"] == "user")["content"]
+        self.assertEqual(sum(1 for part in user if part.get("type") == "image_url"), 3)
+        self.assertTrue(any(part.get("text", "").startswith("[File /workspace/uploads/py-files/report.txt (text/plain") for part in user))
+        history = await agent._http("/history")
+        self.assertNotIn(__import__("base64").b64encode(PNG).decode(), json.dumps(history), "the transcript keeps references, not bytes")
+        downloaded = await agent.files.download("/workspace/uploads/py-files/report.txt")
+        self.assertEqual((downloaded["data"], downloaded["content_type"]), (b"quarterly numbers", "text/plain"))
+        link = await agent.files.link("/workspace/uploads/py-files/report.txt")
+        self.assertEqual((await self.runtime.http.get(link["url"])).content, b"quarterly numbers")
+        await agent.destroy()
 
 
 class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
