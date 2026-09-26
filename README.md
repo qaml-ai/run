@@ -663,9 +663,9 @@ take and return files without their bytes passing through the model
   characters and leading dots; unnamed content is `image-1.png`, `audio-2.wav`.
   The model gets each as a file reference, `[File <path> (<type>, <size>)]`,
   shown natively when it is an image or PDF it can view, as attached files are;
-  js_exec code gets the path, type and size, and can read the bytes by path. An
-  MCP image that cannot be saved (no writable mount) reaches the model as
-  before.
+  js_exec code gets the path, type and size, and reads the bytes with
+  `fs.readFile(path)`. An MCP image that cannot be saved (no writable mount)
+  reaches the model as before.
 - **Limits.** Saved files are volume files: they count toward the volume's
   limits and the tenant's storage. One call may save 64 MiB, and all the calls
   of one run 256 MiB (`TOOL_FILE_LIMITS` in `src/limits.ts`); past that a save
