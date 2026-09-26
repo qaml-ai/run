@@ -9,6 +9,7 @@ import { HttpError } from "./http.ts";
 import { deleteTail } from "./log-tail.ts";
 import { errorText, type ToolDefinition } from "./protocol.ts";
 import { runVolumeTool, volumeToolDefinitions, type ToolContext } from "./volume-tools.ts";
+import { declaredType, guessContentType, sniffContentType, validContentType } from "./files.ts";
 
 /**
  * Volumes: shared file trees agents mount, without POSIX. A volume is an actor
@@ -30,7 +31,8 @@ const FOLD_AFTER_RECORDS = 1024;
 const NOTIFY_DELAY_MS = 1000;
 
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
-export interface FileEntry { version: number; size: number; chunks: string[]; updatedAt: number; by?: string }
+/** `contentType` is absent on files written before content types were recorded. */
+export interface FileEntry { version: number; size: number; chunks: string[]; updatedAt: number; by?: string; contentType?: string }
 export interface Change { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }
 interface VolumeHeader { version: 1; id: string; tenant: string; name: string; createdAt: number; deleted?: number; origin?: { volume: string; snapshot?: string; seq: number } }
 interface SnapshotSummary { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
@@ -367,7 +369,7 @@ export class VolumeService {
     const entries = [...names].sort().slice(0, VOLUME_LIMITS.listing).map(name => {
       const child = path === "/" ? `/${name}` : `${path}/${name}`;
       const entry = volume.tree.files.get(child);
-      return entry ? { name, type: "file", size: entry.size, version: entry.version } : { name, type: "directory" };
+      return entry ? { name, type: "file", size: entry.size, version: entry.version, contentType: entry.contentType ?? guessContentType(name) } : { name, type: "directory" };
     });
     return { path, entries, ...(names.size > entries.length ? { truncated: true } : {}) };
   }
@@ -385,7 +387,7 @@ export class VolumeService {
       if (!passed) { passed = file === args.after; continue; }
       if (pattern && !pattern.test(single ? nameOf(file) : relativeTo(file, path))) continue;
       if (files.length === limit) return { files, next: files.at(-1)!.path };
-      files.push({ path: file, ...entry });
+      files.push({ path: file, ...entry, contentType: entry.contentType ?? guessContentType(file) });
     }
     return { files };
   }
@@ -413,12 +415,13 @@ export class VolumeService {
       if (path === "/") throw new HttpError(400, "A file needs a name");
       const chunks = args.chunks as unknown;
       if (!Number.isSafeInteger(args.size) || args.size < 0 || args.size > VOLUME_LIMITS.fileBytes || !Array.isArray(chunks) || chunks.length !== Math.ceil(args.size / CHUNK_BYTES) || !chunks.every(hash => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash))) throw new HttpError(400, "Invalid file content");
+      if (args.contentType !== undefined && !validContentType(args.contentType)) throw new HttpError(400, "Invalid content type");
       this.check(volume, path, args.ifMatch);
       const conflict = volume.tree.conflict(path);
       if (conflict) throw new HttpError(409, conflict);
       if (!volume.tree.files.has(path) && volume.tree.files.size >= VOLUME_LIMITS.files) throw new HttpError(507, `A volume holds at most ${VOLUME_LIMITS.files} files`);
       const seq = volume.seq + 1;
-      const entry: FileEntry = { version: seq, size: args.size, chunks: chunks as string[], updatedAt: Date.now(), ...(typeof args.by === "string" ? { by: args.by } : {}) };
+      const entry: FileEntry = { version: seq, size: args.size, chunks: chunks as string[], updatedAt: Date.now(), ...(typeof args.by === "string" ? { by: args.by } : {}), ...(args.contentType ? { contentType: args.contentType } : {}) };
       await this.commit(volume, { t: "put", seq, path, entry });
       return { path, ...entry };
     }
@@ -526,6 +529,29 @@ export class VolumeService {
     if (buffered) await emit(Buffer.concat(parts));
     await Promise.all(writes);
     return { chunks, size };
+  }
+
+  /**
+   * Save bytes (or a stream of them, a chunk at a time) to a path in a volume, from any node: its
+   * content type is `contentType` when that says something, else sniffed from its first bytes and
+   * name. `ifMatch` makes it conditional on a version (0: must not exist); `by` records who wrote it.
+   */
+  async put(tenant: string, id: string, path: string, source: Uint8Array | AsyncIterable<Uint8Array>, options: { contentType?: string; ifMatch?: number; by?: string; limit?: number } = {}): Promise<{ path: string } & FileEntry> {
+    let head = source instanceof Uint8Array ? Buffer.from(source.subarray(0, 512)) : Buffer.alloc(0);
+    const peek = async function* (stream: AsyncIterable<Uint8Array>) {
+      for await (const data of stream) {
+        if (head.length < 512) head = Buffer.concat([head, data.subarray(0, 512 - head.length)]);
+        yield data;
+      }
+    };
+    const stored = await this.store(tenant, source instanceof Uint8Array ? source : peek(source), options.limit);
+    const contentType = declaredType(options.contentType) ?? sniffContentType(head, path);
+    return this.call(id, tenant, "commit", { path, ...stored, contentType, ...(options.ifMatch !== undefined ? { ifMatch: options.ifMatch } : {}), ...(options.by ? { by: options.by } : {}) });
+  }
+
+  /** A file's content type: as recorded, else sniffed from its first bytes (files from before types were recorded). */
+  async contentType(tenant: string, path: string, entry: Pick<FileEntry, "size" | "chunks" | "contentType">) {
+    return entry.contentType ?? sniffContentType(await this.readRange(tenant, entry, 0, 512), path);
   }
 
   private async chunk(tenant: string, hash: string) {

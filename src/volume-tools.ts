@@ -98,6 +98,7 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
     writable(target);
     let content: string;
     let expected = args.version;
+    let contentType: string | undefined;
     if (name === "write") content = args.content;
     else {
       const entry = await file();
@@ -112,11 +113,12 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
       content = args.replaceAll ? text.split(args.old).join(args.new) : text.replace(args.old, () => args.new);
       // The rewrite is conditional on the version edited, so a write in between is not lost.
       expected = entry.version;
+      contentType = entry.contentType;
     }
-    const stored = await volumes.store(tenant, Buffer.from(content, "utf8"));
     signal.throwIfAborted();
-    const committed = await call("commit", { ...stored, ifMatch: expected, by: context.agent }).catch(error => conflict(error, shown, args.version ?? expected, name === "write" ? "Write" : "Edit"));
-    return { path: shown, version: committed.version, size: committed.size };
+    const committed = await volumes.put(tenant, target.mount.volumeId, target.path, Buffer.from(content, "utf8"), { contentType, ifMatch: expected, by: context.agent })
+      .catch(error => conflict(error, shown, args.version ?? expected, name === "write" ? "Write" : "Edit"));
+    return { path: shown, version: committed.version, size: committed.size, contentType: committed.contentType };
   }
   if (name === "ls") {
     const listing = await call("ls").catch(error => { throw (error as HttpError).status === 404 ? new Error((error as Error).message.replace(target.path, shown)) : error; });

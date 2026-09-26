@@ -33,6 +33,7 @@ import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { errorStatus, HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
+import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
@@ -260,6 +261,9 @@ const volumes = new VolumeService({
   deliver: submitAnywhere,
 });
 
+// Signed file links, under a key derived from the session secret, so every node verifies any node's links.
+const links = new FileLinks(sessionSecret, publicUrl);
+
 const FORWARDED = "x-agent-runtime-forwarded";
 
 /** Stream a request to the node that owns its actor, and stream the answer back (SSE included). */
@@ -385,7 +389,7 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
 app.route("/", channels.app);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, volumes, definitions, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, volumes, definitions, links, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
@@ -418,7 +422,15 @@ app.notFound(c => c.body(null, 404));
 app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", errorStatus(error, 400) as ContentfulStatusCode, { "Content-Type": "application/json" }));
 
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
-server.requestTimeout = 30_000;
+// A request has 30 s to arrive whole, except an upload, which streams to storage a chunk at a time
+// and may take FILE_LIMITS.uploadMs. Node's requestTimeout is one value for every request, so it is off.
+server.requestTimeout = 0;
+const UPLOAD = /^\/(?:v1\/volumes\/vol_[a-f0-9]{24}\/files\/|v1\/links\/|v1\/agents\/client_[a-f0-9]{40}\/uploads\/|clients\/client_[a-f0-9]{40}\/(?:files|uploads)\/)/;
+server.on("request", (req: IncomingMessage) => {
+  const timer = setTimeout(() => { if (!req.complete) req.socket.destroy(); }, req.method === "PUT" && UPLOAD.test(req.url ?? "") ? FILE_LIMITS.uploadMs : 30_000);
+  timer.unref();
+  req.once("close", () => clearTimeout(timer));
+});
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
   if (!process.env.AGENT_PUBLIC_URL) signer.issuer = `http://127.0.0.1:${(server.address() as { port: number }).port}`;

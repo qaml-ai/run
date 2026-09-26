@@ -17,7 +17,8 @@ import type { Definitions } from "./definitions.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
-import { normalizePath, type VolumeService } from "./volumes.ts";
+import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
+import { declaredType, fileResponse, type FileLinks } from "./files.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -37,6 +38,8 @@ export interface ApiContext {
   definitions?: Definitions;
   /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
   billingAdmins?: string[];
+  /** Signs and verifies file links (`/v1/links`). */
+  links?: FileLinks;
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
@@ -53,6 +56,8 @@ const reply = (description: string, value: z.ZodType) => ({ description, ...cont
 const failure = { default: reply("Error", schema.ApiError) };
 const agentId = z.object({ id: z.string() });
 const binary = (description: string) => ({ description, content: { "application/octet-stream": { schema: z.string().openapi({ format: "binary" }) } } });
+
+const invalid = (message: string): never => { throw new HttpError(400, message); };
 
 function parse<T extends z.ZodType>(type: T, value: unknown): z.infer<T> {
   const result = type.safeParse(value);
@@ -73,6 +78,40 @@ export function api(context: ApiContext) {
   app.openAPIRegistry.registerComponent("securitySchemes", "bearer", { type: "http", scheme: "bearer", description: "Operator or API token" });
   app.openAPIRegistry.registerComponent("securitySchemes", "console", { type: "apiKey", in: "cookie", name: "ar_session", description: "Console session; mutations also need X-Agent-Runtime-Console: 1" });
   app.doc31("/v1/openapi.json", DOCUMENT);
+
+  const volumes = () => {
+    if (!context.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
+    return context.volumes;
+  };
+  const links = () => {
+    if (!context.links) throw new HttpError(404, "Links are not enabled on this runtime");
+    return context.links;
+  };
+
+  // A signed link is its own credential, so its routes come before the check below. The grant
+  // still names a tenant, which must still own the volume.
+  const linkRoute = { request: { params: z.object({ token: z.string(), name: z.string().openapi({ description: "The file's name, for browsers; not checked" }) }) }, security: [] };
+  const granted = async (c: Context, method: "GET" | "PUT") => {
+    const grant = links().verify(c.req.param("token")!);
+    if (grant.method !== method) throw new HttpError(405, `This link is for ${grant.method}`);
+    if (!await volumes().owns(grant.volume, grant.tenant)) throw new HttpError(404, "Unknown volume");
+    return grant;
+  };
+  route(createRoute({ ...linkRoute, method: "get", path: "/v1/links/{token}/{name}", responses: { 200: binary("The file, with safe download headers"), 206: binary("The requested range") } }), async c => {
+    const grant = await granted(c, "GET");
+    const entry = await volumes().call(grant.volume, grant.tenant, "stat", { path: grant.path });
+    if (entry.type !== "file") throw new HttpError(404, `${grant.path} is a directory`);
+    return fileResponse(volumes(), grant.tenant, entry, c.req.header("range"));
+  });
+  route(createRoute({ ...linkRoute, method: "put", path: "/v1/links/{token}/{name}", request: { ...linkRoute.request, body: binary("The file's bytes, streamed; at most the link's maxBytes") }, responses: { 201: reply("The file's new version", schema.VolumeFile) } }), async c => {
+    const grant = await granted(c, "PUT");
+    const limit = Math.min(grant.maxBytes ?? VOLUME_LIMITS.fileBytes, VOLUME_LIMITS.fileBytes);
+    if (Number(c.req.header("content-length") ?? 0) > limit) throw new HttpError(413, `This link takes at most ${limit} bytes`);
+    const declared = declaredType(c.req.header("content-type"));
+    if (grant.contentType && declared && declared !== grant.contentType) throw new HttpError(415, `This link takes ${grant.contentType}`);
+    const { chunks: _chunks, ...entry } = await volumes().put(grant.tenant, grant.volume, grant.path, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>, { contentType: grant.contentType ?? declared, by: "link", limit });
+    return json(c, 201, entry);
+  });
 
   // Stripe's webhook authenticates by its signature, not a token, so it comes before the check below.
   app.post("/v1/billing/stripe/webhook", async c => {
@@ -273,10 +312,6 @@ export function api(context: ApiContext) {
   channelRoutes(route, () => context.channels);
   definitionRoutes(route, () => context);
 
-  const volumes = () => {
-    if (!context.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
-    return context.volumes;
-  };
   route(createRoute({ method: "get", path: "/v1/agents/{id}/mounts", request: { params: agentId }, responses: { 200: reply("The agent's mounts", z.array(schema.Mount)) } }),
     async c => json(c, 200, (await clients.inspect(c.req.param("id")!, c.var.principal.tenant)).mounts));
   route(createRoute({ method: "put", path: "/v1/agents/{id}/mounts", request: { params: agentId, body: content(schema.MountsInput) }, responses: { 200: reply("The agent's new mounts", z.array(schema.Mount)) } }), async c => {
@@ -315,6 +350,15 @@ export function api(context: ApiContext) {
     return json(c, 201, await target.call("fork", { name, snapshot }));
   });
   route(createRoute({
+    method: "post", path: "/v1/volumes/{id}/links", request: { params: volumeId, body: content(schema.LinkInput) },
+    responses: { 201: reply("A signed URL for one file, usable without a token until it expires", schema.Link) },
+  }), async c => {
+    const target = await volume(c);
+    const input = parse(schema.LinkInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 201, links().sign({ tenant: target.tenant, volume: target.id, path: normalizePath(input.path), method: input.method ?? "GET", expiresIn: input.expiresIn,
+      ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}), ...(input.contentType !== undefined ? { contentType: declaredType(input.contentType) ?? invalid("contentType must be a specific content type") } : {}) }));
+  });
+  route(createRoute({
     method: "get", path: "/v1/volumes/{id}/changes", request: { params: volumeId, query: z.object({ since: z.string().optional().openapi({ description: "Changes after this seq" }) }) },
     responses: { 200: reply("Recent changes, oldest first", schema.Changes) },
   }), async c => json(c, 200, await (await volume(c)).call("changes", { since: Number(c.req.query("since") ?? 0) || 0 })));
@@ -347,8 +391,7 @@ export function api(context: ApiContext) {
     const target = await volume(c);
     const path = filePath(c);
     const ifMatch = c.req.header("if-none-match") === "*" ? 0 : version(c.req.header("if-match"));
-    const stored = await volumes().store(target.tenant, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>);
-    const { chunks: _chunks, ...entry } = await target.call("commit", { path, ...stored, ...(ifMatch !== undefined ? { ifMatch } : {}) });
+    const { chunks: _chunks, ...entry } = await volumes().put(target.tenant, target.id, path, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>, { contentType: c.req.header("content-type"), ifMatch });
     return json(c, 201, entry);
   }, files);
   route(createRoute({
@@ -358,26 +401,7 @@ export function api(context: ApiContext) {
     const target = await volume(c);
     const entry = await target.call("stat", { path: filePath(c) });
     if (entry.type !== "file") throw new HttpError(404, `${entry.path} is a directory`);
-    let start = 0, end = entry.size;
-    const range = c.req.header("range");
-    if (range) {
-      const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
-      if (match && match[1]) { start = Number(match[1]); if (match[2]) end = Math.min(entry.size, Number(match[2]) + 1); }
-      else if (match && match[2]) start = Math.max(0, entry.size - Number(match[2]));
-      if (!match || (!match[1] && !match[2]) || start >= end) return c.body(null, 416, { "Content-Range": `bytes */${entry.size}` });
-    }
-    const chunks = volumes().stream(target.tenant, entry, start, end);
-    const body = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        const next = await chunks.next();
-        if (next.done) controller.close(); else controller.enqueue(new Uint8Array(next.value));
-      },
-      async cancel() { await chunks.return(undefined); },
-    });
-    return new Response(body, { status: range ? 206 : 200, headers: {
-      "Content-Type": "application/octet-stream", "Content-Length": String(end - start), ETag: `"${entry.version}"`, "Cache-Control": "no-store",
-      ...(range ? { "Content-Range": `bytes ${start}-${end - 1}/${entry.size}` } : {}),
-    } });
+    return fileResponse(volumes(), target.tenant, entry, c.req.header("range"));
   }, files);
   route(createRoute({
     method: "delete", path: "/v1/volumes/{id}/files/{path}", request: { ...file, headers: z.object({ "if-match": z.string().optional() }) },

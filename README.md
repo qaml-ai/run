@@ -894,12 +894,47 @@ its source share chunks and diverge independently. `GET /v1/volumes/:id/changes`
 lists recent changes; a mount with `notify` prompts the agent (about a second
 after changes, coalesced) when others change files under it.
 
+Every file records a content type: the upload's `Content-Type` when it says
+something specific, else one sniffed from its first bytes (PNG, JPEG, GIF, WebP,
+PDF, gzip, zip and Office formats) and then its name's extension, else
+`text/plain` for UTF-8 text or `application/octet-stream`. Listings and `ls`
+show it; files written before types were recorded are sniffed when downloaded
+(listings guess from the name). Downloads are served with it and with
+`X-Content-Type-Options: nosniff`; only types that cannot run script (plain
+text, CSV, Markdown, JSON, PDF, raster images, audio, video) are `inline`, and
+everything else (HTML, SVG, XML, unknown) is an `attachment`. Every type but PDF
+also gets `Content-Security-Policy: sandbox; default-src 'none'`, so a file
+never runs as the runtime's origin, where console sessions live. The type is a
+label: nothing security-relevant trusts it (see [Files and attachments](#files-and-attachments)).
+
+Uploads stream to storage a chunk at a time and may take 15 minutes; every other
+request still has 30 seconds to arrive.
+
 Not yet built: garbage collection of unreferenced chunks and snapshot file maps
 (deleting a file, volume or snapshot leaves them), quotas per tenant, restoring a snapshot in
 place, empty directories, renames, and durable change notifications (a crash
 during the one-second window drops that notification). Listings and snapshots
 hold a volume's file map in memory and in one blob, which suits volumes of
-up to about 100,000 files. Uploads share the server's 30-second request timeout.
+up to about 100,000 files.
+
+### Signed links
+
+`POST /v1/volumes/:id/links` with `{path, method?: "GET" | "PUT", expiresIn?,
+maxBytes?, contentType?}` returns `{url, expiresAt, ...}`: a URL that downloads
+(GET) or uploads (PUT) that one file without a token, so an app, a browser, a tool
+server or a channel can move the bytes directly. SDKs: `volume.link(path,
+options)`, and `agent.files.link(path, options)` with a mount path.
+
+- The runtime serves it (`/v1/links/<token>/<name>`): files are chunks in
+  storage, so there is no storage presign. Downloads take `Range` and get the
+  headers above; uploads stream, and are recorded with `by: "link"`.
+- The token is the grant (tenant, volume, path, method, expiry, and for uploads
+  `maxBytes`, default and at most 256 MiB, and `contentType`) with an HMAC-SHA256
+  under a key derived from `AGENT_SESSION_SECRET`, so every node verifies every
+  link and no new secret is needed. A changed grant or signature is 403, the
+  other method 405, a larger upload 413, one declaring another type 415.
+- Links last 15 minutes by default (`expiresIn`, at most 24 hours) and cannot be
+  revoked before; the tenant must still own the volume when one is used.
 
 ## Billing
 

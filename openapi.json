@@ -27,6 +27,48 @@
       }
     },
     "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "VolumeFile": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "version": {
+            "type": "number"
+          },
+          "size": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          },
+          "by": {
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string",
+            "description": "As uploaded (Content-Type), else sniffed from the file's first bytes and name"
+          }
+        },
+        "required": [
+          "path",
+          "version",
+          "size",
+          "updatedAt",
+          "contentType"
+        ]
+      },
       "Me": {
         "type": "object",
         "properties": {
@@ -53,17 +95,6 @@
           "tenant",
           "via",
           "canStoreKeys"
-        ]
-      },
-      "Error": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error"
         ]
       },
       "Provider": {
@@ -2423,6 +2454,80 @@
           }
         }
       },
+      "Link": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Send the method to it, with no Authorization header"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "PUT"
+            ]
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "volume": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "number"
+          },
+          "maxBytes": {
+            "type": "number"
+          },
+          "contentType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "method",
+          "tenant",
+          "volume",
+          "path",
+          "expiresAt"
+        ]
+      },
+      "LinkInput": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file's path in the volume"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "PUT"
+            ],
+            "description": "GET (default) downloads the file; PUT uploads it, creating or replacing it"
+          },
+          "expiresIn": {
+            "type": "integer",
+            "description": "Seconds the link works: 900 by default, at most 86400"
+          },
+          "maxBytes": {
+            "type": "integer",
+            "description": "PUT: the largest upload it takes (default and at most 256 MiB)"
+          },
+          "contentType": {
+            "type": "string",
+            "description": "PUT: the upload's content type; an upload declaring another is refused"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
       "Changes": {
         "type": "object",
         "properties": {
@@ -2495,37 +2600,126 @@
         "required": [
           "files"
         ]
-      },
-      "VolumeFile": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "version": {
-            "type": "number"
-          },
-          "size": {
-            "type": "number"
-          },
-          "updatedAt": {
-            "type": "number"
-          },
-          "by": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "version",
-          "size",
-          "updatedAt"
-        ]
       }
     },
     "parameters": {}
   },
   "paths": {
+    "/v1/links/{token}/{name}": {
+      "get": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The file's name, for browsers; not checked"
+            },
+            "required": true,
+            "description": "The file's name, for browsers; not checked",
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file, with safe download headers",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The requested range",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The file's name, for browsers; not checked"
+            },
+            "required": true,
+            "description": "The file's name, for browsers; not checked",
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "description": "The file's bytes, streamed; at most the link's maxBytes",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The file's new version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeFile"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me": {
       "get": {
         "responses": {
@@ -4353,6 +4547,51 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Volume"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/volumes/{id}/links": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "A signed URL for one file, usable without a token until it expires",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Link"
                 }
               }
             }

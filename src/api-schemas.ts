@@ -343,7 +343,22 @@ export const Volume = VolumeSummary.extend({
 }).openapi("Volume");
 export const ForkInput = z.object({ name: z.string().optional(), snapshot: z.string().optional().openapi({ description: "Fork this snapshot instead of the current state" }) }).openapi("ForkInput");
 export const Snapshot = z.object({ id: z.string(), volume: z.string(), name: z.string(), seq: z.number(), createdAt: z.number(), files: z.number(), bytes: z.number() }).openapi("Snapshot");
-export const VolumeFile = z.object({ path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional() }).openapi("VolumeFile");
+export const VolumeFile = z.object({
+  path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(),
+  contentType: z.string().openapi({ description: "As uploaded (Content-Type), else sniffed from the file's first bytes and name" }),
+}).openapi("VolumeFile");
+export const LinkInput = z.object({
+  path: z.string().openapi({ description: "The file's path in the volume" }),
+  method: z.enum(["GET", "PUT"]).optional().openapi({ description: "GET (default) downloads the file; PUT uploads it, creating or replacing it" }),
+  expiresIn: z.number().int().optional().openapi({ description: "Seconds the link works: 900 by default, at most 86400" }),
+  maxBytes: z.number().int().optional().openapi({ description: "PUT: the largest upload it takes (default and at most 256 MiB)" }),
+  contentType: z.string().optional().openapi({ description: "PUT: the upload's content type; an upload declaring another is refused" }),
+}).openapi("LinkInput");
+export const Link = z.object({
+  url: z.string().openapi({ description: "Send the method to it, with no Authorization header" }),
+  method: z.enum(["GET", "PUT"]), tenant: z.string(), volume: z.string(), path: z.string(), expiresAt: z.number(),
+  maxBytes: z.number().optional(), contentType: z.string().optional(),
+}).openapi("Link");
 export const FileList = z.object({ files: z.array(VolumeFile), next: z.string().optional().openapi({ description: "Pass as `after` for the next page" }) }).openapi("FileList");
 export const Changes = z.object({
   seq: z.number(),

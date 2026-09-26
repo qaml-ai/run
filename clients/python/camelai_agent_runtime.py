@@ -299,8 +299,9 @@ class Volume:
         query = urlencode({key: value for key, value in {"prefix": prefix, "glob": glob, "after": after, "limit": limit}.items() if value is not None})
         return await self._json(f"/files{'?' + query if query else ''}")
 
-    async def write(self, path, data, *, version=None):
-        headers = {"Content-Type": "application/octet-stream"}
+    async def write(self, path, data, *, version=None, content_type=None):
+        """Without content_type, the runtime sniffs it from the file's first bytes and name."""
+        headers = {"Content-Type": content_type or "application/octet-stream"}
         if version == 0:
             headers["If-None-Match"] = "*"
         elif version is not None:
@@ -316,6 +317,12 @@ class Volume:
 
     async def read_text(self, path):
         return (await self.read(path))[0].decode()
+
+    async def link(self, path, *, method="GET", expires_in=None, max_bytes=None, content_type=None):
+        """A signed URL to download (GET) or upload (PUT) one file without a token: {"url", "expiresAt", ...}.
+        expires_in is in seconds (default 900, at most 86400); max_bytes and content_type bound an upload."""
+        body = {"path": path, "method": method, **{key: value for key, value in {"expiresIn": expires_in, "maxBytes": max_bytes, "contentType": content_type}.items() if value is not None}}
+        return await self._json("/links", "POST", body)
 
     async def remove(self, path, *, version=None):
         return (await self._raw("DELETE", path, headers=None if version is None else {"If-Match": f'"{version}"'})).json()

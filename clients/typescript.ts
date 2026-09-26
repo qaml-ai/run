@@ -139,9 +139,13 @@ export interface ToolSource {
 }
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
 export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
-export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string }
+export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
 export interface VolumeChanges { seq: number; changes: { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }[]; gap?: boolean }
+/** A signed URL for one file: send `method` to `url` with no Authorization header, until `expiresAt`. */
+export interface FileLink { url: string; method: "GET" | "PUT"; path: string; expiresAt: number; maxBytes?: number; contentType?: string }
+/** A link's options: `expiresIn` seconds (default 900, at most 86400); for PUT, the largest upload and its content type. */
+export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBytes?: number; contentType?: string }
 export interface AgentHistory { messages: AgentMessage[] }
 export interface Schedule { id: string; agent: string; text?: string; code?: string; dueAt: number; everySeconds?: number; createdAt: number }
 export interface RequestOptions { idempotencyKey?: string; timeoutMs?: number }
@@ -165,6 +169,8 @@ function retryAfter(response: Response): number | undefined {
 const RATE_LIMIT_ATTEMPTS = 8;
 const byteLength = (value: string) => new TextEncoder().encode(value).byteLength;
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** A download's content type, without parameters (text is always UTF-8). */
+const contentTypeOf = (response: Response) => (response.headers.get("content-type") ?? "application/octet-stream").split(";")[0].trim();
 
 async function rejectRedirect(response: Response) {
   if (response.status >= 300 && response.status < 400) {
@@ -291,18 +297,21 @@ export class VolumeHandle {
     const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
     return this.transport.json(this.path(`/files${query.size ? `?${query}` : ""}`), this.token);
   }
-  async write(path: string, data: string | Uint8Array, options: { version?: number } = {}): Promise<VolumeFile> {
+  /** Without `contentType`, the runtime sniffs it from the file's first bytes and name. */
+  async write(path: string, data: string | Uint8Array, options: { version?: number; contentType?: string } = {}): Promise<VolumeFile> {
     const body = typeof data === "string" ? new TextEncoder().encode(data) : data;
-    const headers: Record<string, string> = { "Content-Type": "application/octet-stream", ...(options.version === 0 ? { "If-None-Match": "*" } : options.version !== undefined ? { "If-Match": `"${options.version}"` } : {}) };
+    const headers: Record<string, string> = { "Content-Type": options.contentType ?? "application/octet-stream", ...(options.version === 0 ? { "If-None-Match": "*" } : options.version !== undefined ? { "If-Match": `"${options.version}"` } : {}) };
     return (await this.transport.raw(this.file(path), this.token, { method: "PUT", body, headers })).json();
   }
   /** A file's bytes, or `range` of them ([start, end) in bytes). */
-  async read(path: string, options: { range?: [number, number?] } = {}): Promise<{ data: Uint8Array; version: number }> {
+  async read(path: string, options: { range?: [number, number?] } = {}): Promise<{ data: Uint8Array; version: number; contentType: string }> {
     const [start, end] = options.range ?? [];
     const response = await this.transport.raw(this.file(path), this.token, start !== undefined ? { headers: { Range: `bytes=${start}-${end !== undefined ? end - 1 : ""}` } } : {});
-    return { data: new Uint8Array(await response.arrayBuffer()), version: Number(response.headers.get("etag")?.replaceAll('"', "")) };
+    return { data: new Uint8Array(await response.arrayBuffer()), version: Number(response.headers.get("etag")?.replaceAll('"', "")), contentType: contentTypeOf(response) };
   }
   async readText(path: string) { return new TextDecoder().decode((await this.read(path)).data); }
+  /** A signed URL to download (GET) or upload (PUT) one file without a token. */
+  link(path: string, options: LinkOptions = {}): Promise<FileLink> { return this.transport.json(this.path("/links"), this.token, "POST", { path, ...options }, false); }
   async remove(path: string, options: { version?: number } = {}) {
     return (await this.transport.raw(this.file(path), this.token, { method: "DELETE", headers: options.version !== undefined ? { "If-Match": `"${options.version}"` } : {} })).json();
   }
