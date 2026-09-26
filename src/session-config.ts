@@ -20,25 +20,57 @@ export function assertTrustedEndpoint(model: AgentConfig['model'], defaultModel:
   if (!trusted.includes(target)) throw new Error(`Model endpoint ${target} is not trusted by this runtime; add it to AGENT_ALLOWED_BASE_URLS`);
 }
 
+/** What a model on a tenant's own endpoint can do, as the operator declares it. */
+export type EndpointModel = { contextWindow: number; maxTokens: number; reasoning?: boolean; input?: ('text' | 'image')[] };
+/**
+ * A tenant's own OpenAI-compatible endpoint (chat completions), named as a provider in the tenants
+ * file. Calls carry the runtime's identity token for the agent instead of a key, and cost the
+ * runtime nothing. `models` declares models Pi's catalog does not know; `compat` tunes Pi's request format.
+ */
+export type ModelEndpoint = { baseUrl: string; models?: Record<string, EndpointModel>; compat?: Record<string, unknown> };
+/** A tenant's model endpoints by provider name. */
+export type ModelEndpoints = Record<string, ModelEndpoint> | undefined;
+
+const lookup = getModel as (provider: string, id: string) => AgentConfig['model'] | undefined;
+
+/**
+ * A model on a tenant's endpoint. Its id goes to the endpoint as it is; what it can do comes from
+ * the endpoint's `models`, else from the catalog model it names (`anthropic/claude-opus-5`, as
+ * a provider and model or as OpenRouter's id), and it costs nothing.
+ */
+function endpointModel(provider: string, id: string, endpoint: ModelEndpoint): AgentConfig['model'] {
+  const slash = id.indexOf('/');
+  const known = endpoint.models?.[id] ?? (slash > 0 ? lookup(id.slice(0, slash), id.slice(slash + 1)) : undefined) ?? lookup('openrouter', id);
+  if (!known) throw new Error(`Unknown model "${provider}/${id}": declare it in the ${provider} endpoint's models, or name a model in GET /v1/models`);
+  return {
+    id, name: id, api: 'openai-completions', provider, baseUrl: endpoint.baseUrl, reasoning: known.reasoning ?? false, input: known.input ?? ['text'],
+    contextWindow: known.contextWindow, maxTokens: known.maxTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ...(endpoint.compat ? { compat: endpoint.compat } : {}),
+  } as AgentConfig['model'];
+}
+
 /**
  * Resolve a model reference like `anthropic/claude-sonnet-5` or
- * `openrouter/anthropic/claude-opus-4.8` (provider, then model id) from Pi's catalog.
- * Catalog models use their provider's published endpoint, so they are always trusted.
+ * `openrouter/anthropic/claude-opus-4.8` (provider, then model id) from Pi's catalog, or from
+ * the tenant's own `endpoints`. Catalog models use their provider's published endpoint, and
+ * endpoints are the operator's, so both are trusted.
  */
-export function resolveModel(reference: string): AgentConfig['model'] {
+export function resolveModel(reference: string, endpoints?: ModelEndpoints): AgentConfig['model'] {
   if (typeof reference !== 'string') throw new Error('model must be a "provider/model-id" string');
   const slash = reference.indexOf('/');
   if (slash <= 0 || slash === reference.length - 1) throw new Error(`Model "${reference}" must be written as "provider/model-id"; see GET /v1/models`);
-  const model = (getModel as (provider: string, id: string) => AgentConfig['model'] | undefined)(reference.slice(0, slash), reference.slice(slash + 1));
+  const provider = reference.slice(0, slash);
+  if (endpoints && Object.hasOwn(endpoints, provider)) return endpointModel(provider, reference.slice(slash + 1), endpoints[provider]);
+  const model = lookup(provider, reference.slice(slash + 1));
   if (!model) throw new Error(`Unknown model "${reference}"; see GET /v1/models`);
   return model;
 }
 
 /** Only operator-authenticated provisioning may choose a model, and only among trusted endpoints. */
-export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, allowedBaseUrls: string[] = []): SessionConfig {
+export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, allowedBaseUrls: string[] = [], endpoints?: ModelEndpoints): SessionConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid session configuration');
   if ('apiKey' in input) throw new Error('Configure credentials on the runtime host, not in agent configuration');
-  const model = typeof input.model === 'string' ? resolveModel(input.model) : input.model ?? defaultModel;
+  const model = typeof input.model === 'string' ? resolveModel(input.model, endpoints) : input.model ?? defaultModel;
   if (!model || typeof model !== 'object' || Array.isArray(model) ||
       ['id', 'name', 'api', 'provider', 'baseUrl'].some(key => typeof model[key] !== 'string' || !model[key]) ||
       typeof model.reasoning !== 'boolean' || !Array.isArray(model.input) || !model.input.every((value: unknown) => value === 'text' || value === 'image') ||
@@ -47,7 +79,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
   const url = new URL(model.baseUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Model baseUrl must be an HTTP(S) endpoint without credentials or query parameters');
   if (model.headers || model.apiKey || model.token) throw new Error('Model credentials and custom headers must be configured on the runtime host');
-  assertTrustedEndpoint(model, defaultModel, allowedBaseUrls);
+  assertTrustedEndpoint(model, defaultModel, [...allowedBaseUrls, ...Object.values(endpoints ?? {}).map(endpoint => endpoint.baseUrl)]);
   const updates = configurationUpdate({
     ...(input.systemPrompt !== undefined || defaultPrompt !== undefined ? { systemPrompt: input.systemPrompt !== undefined ? input.systemPrompt : defaultPrompt } : {}),
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
@@ -62,7 +94,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model'] } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model'] } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
   for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   // The application's attached MCP server's tools/list replaces its tools.
@@ -75,5 +107,5 @@ export function configurationUpdate(input: any): Pick<AgentConfig, 'systemPrompt
   if (input.systemPromptAppend !== undefined && (typeof input.systemPromptAppend !== 'string' || input.systemPromptAppend.length > 32000)) throw new Error('systemPromptAppend must be at most 32000 characters; empty removes it');
   if (input.thinkingLevel !== undefined && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(input.thinkingLevel)) throw new Error('Invalid thinkingLevel');
   if (input.tools !== undefined) validateDefinitions(input.tools);
-  return { ...input, ...(input.model !== undefined ? { model: resolveModel(input.model) } : {}) };
+  return { ...input, ...(input.model !== undefined ? { model: resolveModel(input.model, endpoints) } : {}) };
 }

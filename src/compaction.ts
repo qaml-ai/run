@@ -72,13 +72,15 @@ export function explicitKeyStream(): StreamFn {
 }
 
 /**
- * Pi's summarizer only needs `completeSimple`; bind the tenant's key and never the environment.
- * Every completed request is reported, so chunks and a run that fails after some are billed too.
+ * Pi's summarizer only needs `completeSimple`; bind the tenant's key (or a fresh identity token per
+ * request) and never the environment. Every completed request is reported, so chunks and a run that
+ * fails after some are billed too.
  */
-function summarizer(apiKey: string, onResponse?: (message: AssistantMessage) => void): Models {
+type ApiKey = string | (() => Promise<string>);
+function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void): Models {
   return {
     completeSimple: async (model: Model<Api>, context: any, options: any) => {
-      const response = await completeSimple(model, context, { ...options, apiKey, env: {} });
+      const response = await completeSimple(model, context, { ...options, apiKey: typeof apiKey === "string" ? apiKey : await apiKey(), env: {} });
       if (response.stopReason !== "error") onResponse?.(response);
       return response;
     },
@@ -113,7 +115,7 @@ export type CompactionOutcome = { state: CompactionState } | { skipped: string }
  */
 export async function runCompaction(options: {
   context: AgentMessage[]; offset: number; previous?: CompactionState;
-  model: Model<Api>; apiKey: string; signal?: AbortSignal;
+  model: Model<Api>; apiKey: ApiKey; signal?: AbortSignal;
   /** Keep less than usual, e.g. after the provider rejected the context as too long. */
   keepRecentTokens?: number;
   /** Each summarization response the provider completed, for billing. */

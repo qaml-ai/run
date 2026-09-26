@@ -7,7 +7,7 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { AgentSupervisor } from "./supervisor.ts";
-import { configurationUpdate } from "./session-config.ts";
+import { configurationUpdate, type ModelEndpoints } from "./session-config.ts";
 import { validateDefinitions } from "./tool-policy.ts";
 import { validateUserMessages } from "./history.ts";
 import { canonical } from "../shared/durable-json.ts";
@@ -26,7 +26,7 @@ import type { Sources, ToolSources } from "./tool-sources.ts";
 import { contentResult, type McpResult } from "./mcp-results.ts";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
-import { actorInput, type AgentIdentity } from "./identity.ts";
+import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
 import { senderInput } from "./sender.ts";
 import { callMeta, compose, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
@@ -165,6 +165,10 @@ export interface ClientSessionOptions {
   ownership?: Ownership;
   /** The provider key an agent uses, resolved per tenant at process start; never persisted. `platform` keys are not the tenant's own. */
   apiKeyFor?: (tenant: string, provider: string) => Promise<ProviderKey | string | undefined> | ProviderKey | string | undefined;
+  /** The tenant's own model endpoints (tenants file), which its agents' models may name. */
+  modelEndpoints?: (tenant: string) => ModelEndpoints;
+  /** An identity token for `audience` (the runtime's signer), for model calls to a tenant's own endpoint. */
+  modelToken?: (audience: string, claims: TokenClaims) => Promise<string>;
   /** At most this many hosted agents per tenant at once on this node (default: no per-tenant limit). */
   maxAgentsPerTenant?: number;
   /** A tenant's own limit, overriding `maxAgentsPerTenant`; read at each start, so changes apply to the next one. */
@@ -510,6 +514,7 @@ export class ClientSessions {
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
         file: ref => this.fileData(session, ref),
+        modelToken: () => this.modelToken(session),
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
       }, session.claim);
@@ -987,7 +992,7 @@ export class ClientSessions {
     const applying = body.method === "configure" && body.params.definition !== undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
-      if (body.method === "configure" && !applying) configurationUpdate(body.params);
+      if (body.method === "configure" && !applying) configurationUpdate(body.params, this.options.modelEndpoints?.(session.header.tenant));
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer", "followUp"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -1154,6 +1159,16 @@ export class ClientSessions {
     return this.options.volumes.tool(this.toolContext(session), `fs.${op}`, args, signal);
   }
 
+  /** A token for one model call to the agent's tenant's own endpoint: the claims its tool servers' tokens have, for the turn's actor. */
+  private modelToken(session: Session) {
+    const { header } = session;
+    if (!this.options.modelToken) throw new Error("This runtime cannot sign identity tokens");
+    const actor = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began)?.actor;
+    return this.options.modelToken(header.config.model.baseUrl, {
+      tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
+    });
+  }
+
   /** A referenced file's bytes for the agent's model request, as base64 (only sizes a model can be shown). */
   private async fileData(session: Session, ref: unknown) {
     if (!validFileRef(ref) || ref.size > Math.max(FILE_LIMITS.imageBytes, FILE_LIMITS.documentBytes) || !this.options.volumes) throw new Error("Invalid file reference");
@@ -1177,7 +1192,7 @@ export class ClientSessions {
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
       const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
-      const update = applied?.update ?? configurationUpdate(params);
+      const update = applied?.update ?? configurationUpdate(params, this.options.modelEndpoints?.(session.header.tenant));
       // A new model may belong to another provider: the agent needs that provider's key.
       const resolved = update.model ? await this.apiKey(session, update.model.provider) : undefined;
       const apiKey = resolved?.key;

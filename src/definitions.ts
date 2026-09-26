@@ -103,7 +103,7 @@ export class Definitions {
     if (!name) throw new HttpError(400, "A definition needs a name");
     if ((await this.db.query("select count(*) as count from definitions where tenant = $1", [tenant])).rows[0].count >= MAX_DEFINITIONS) throw new HttpError(400, `A tenant can have at most ${MAX_DEFINITIONS} definitions`);
     const id = `def_${randomBytes(10).toString("hex")}`;
-    const spec: DefinitionSpec = { ...await this.merge(id, {}, input), ...internal };
+    const spec: DefinitionSpec = { ...await this.merge(tenant, id, {}, input), ...internal };
     const now = Date.now();
     const definition: Definition = { id, tenant, name, revision: 1, spec, createdAt: now, updatedAt: now };
     await this.db.query("insert into definitions (id, tenant, name, revision, spec, created_at, updated_at) values ($1, $2, $3, $4, $5, $6, $7)",
@@ -116,7 +116,7 @@ export class Definitions {
     const current = await this.read(tenant, id);
     if (input.revision !== undefined && input.revision !== current.revision) throw new HttpError(409, `The definition is at revision ${current.revision}, not ${input.revision}`);
     if (input.name === undefined && FIELDS.every(key => input[key] === undefined)) return current;
-    const spec = await this.merge(id, current.spec, input);
+    const spec = await this.merge(tenant, id, current.spec, input);
     return this.write(current, this.name(input.name) ?? current.name, spec);
   }
 
@@ -208,7 +208,7 @@ export class Definitions {
   }
 
   /** `current` with `input`'s fields applied, checked as agent configuration is. */
-  private async merge(id: string, current: DefinitionSpec, input: DefinitionInput): Promise<DefinitionSpec> {
+  private async merge(tenant: string, id: string, current: DefinitionSpec, input: DefinitionInput): Promise<DefinitionSpec> {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "Send a definition object");
     for (const key of Object.keys(input)) if (![...FIELDS, "name", "revision", "apply"].includes(key)) throw new HttpError(400, `Unknown definition field: ${key}`);
     const spec: DefinitionSpec = { ...current };
@@ -220,7 +220,7 @@ export class Definitions {
       else if (input[key] !== undefined) (spec as Record<string, unknown>)[key] = input[key];
     }
     try {
-      if (spec.model !== undefined) resolveModel(spec.model);
+      if (spec.model !== undefined) resolveModel(spec.model, this.accounts?.tenants.modelEndpoints(tenant));
       configurationUpdate({ ...(spec.systemPrompt !== undefined ? { systemPrompt: spec.systemPrompt } : {}), ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}) });
     } catch (error) { throw new HttpError(400, errorText(error)); }
     if (spec.limits !== undefined) {

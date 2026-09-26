@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { getProviders } from "@earendil-works/pi-ai/compat";
 import { secretReader } from "./secrets.ts";
+import type { ModelEndpoint } from "./session-config.ts";
 
 /**
  * A tenant owns its operator token, its agents and its model provider keys.
@@ -21,6 +23,8 @@ export interface Tenant {
   maxMonthlyCost?: number;
   /** "prepaid": pays from credit (src/billing.ts), and may use the platform's keys. Admin tenants default to "none", unbilled. */
   billing?: "prepaid" | "none";
+  /** The tenant's own OpenAI-compatible endpoints, by the provider name its models are given under (`<name>/<model id>`). */
+  modelEndpoints?: Record<string, ModelEndpoint>;
 }
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -75,10 +79,11 @@ export class Tenants {
       if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
       if (tenant.maxMonthlyCost !== undefined && (typeof tenant.maxMonthlyCost !== "number" || !Number.isFinite(tenant.maxMonthlyCost) || tenant.maxMonthlyCost < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxMonthlyCost: a non-negative number of USD, or absent for no limit`);
       if (tenant.billing !== undefined && tenant.billing !== "prepaid" && tenant.billing !== "none") throw new Error(`Tenant ${tenant.id} has an invalid billing: "prepaid", "none", or absent for none`);
+      if (tenant.modelEndpoints !== undefined) validEndpoints(tenant.id, tenant.modelEndpoints);
       next.set(tenant.id, {
         id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}),
         ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}), ...(tenant.maxMonthlyCost !== undefined ? { maxMonthlyCost: tenant.maxMonthlyCost } : {}),
-        ...(tenant.billing ? { billing: tenant.billing } : {}),
+        ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
       });
     }
     this.byId = next;
@@ -110,6 +115,9 @@ export class Tenants {
   /** How an admin tenant is billed; undefined for tenants not in the file. */
   billing(id: string) { const tenant = this.byId.get(id); return tenant && (tenant.billing ?? "none"); }
 
+  /** The tenant's own model endpoints, if its entry has any. */
+  modelEndpoints(id: string) { return this.byId.get(id)?.modelEndpoints; }
+
   /** The platform's key for `provider`. */
   platformKey(provider: string): string | undefined { return this.platform[provider]; }
 
@@ -121,6 +129,27 @@ export class Tenants {
 
   /** The key an admin configured for agents of `tenantId` to use for `provider`. */
   apiKey(tenantId: string, provider: string): string | undefined { return this.byId.get(tenantId)?.apiKeys[provider]; }
+}
+
+function validEndpoints(tenant: string, endpoints: unknown) {
+  const bad = (message: string) => new Error(`Tenant ${tenant}: ${message}`);
+  if (!endpoints || typeof endpoints !== "object" || Array.isArray(endpoints)) throw bad("modelEndpoints must map provider names to endpoints");
+  for (const [name, endpoint] of Object.entries(endpoints) as [string, ModelEndpoint][]) {
+    if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(name) || getProviders().includes(name as never)) throw bad(`model endpoint ${name} needs a name of its own (lowercase letters, digits and dashes), not one of Pi's providers`);
+    let url: URL | undefined;
+    try { url = new URL(endpoint?.baseUrl); } catch { /* reported below */ }
+    // Plain HTTP only to this host, for development: identity tokens are bearer credentials.
+    const loopback = url && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (!url || !(url.protocol === "https:" || url.protocol === "http:" && loopback) || url.username || url.password || url.search || url.hash) throw bad(`model endpoint ${name} needs an HTTPS baseUrl without credentials or query`);
+    if (endpoint.compat !== undefined && (!endpoint.compat || typeof endpoint.compat !== "object" || Array.isArray(endpoint.compat))) throw bad(`model endpoint ${name}'s compat must be an object`);
+    if (endpoint.models !== undefined && (!endpoint.models || typeof endpoint.models !== "object" || Array.isArray(endpoint.models))) throw bad(`model endpoint ${name}'s models must map model ids to { contextWindow, maxTokens, reasoning?, input? }`);
+    for (const [id, model] of Object.entries(endpoint.models ?? {})) {
+      if (!model || !Number.isSafeInteger(model.contextWindow) || model.contextWindow < 1 || !Number.isSafeInteger(model.maxTokens) || model.maxTokens < 1 ||
+          (model.reasoning !== undefined && typeof model.reasoning !== "boolean") || (model.input !== undefined && (!Array.isArray(model.input) || !model.input.every(kind => kind === "text" || kind === "image")))) {
+        throw bad(`model ${name}/${id} is { contextWindow, maxTokens, reasoning?, input?: ["text", "image"] }`);
+      }
+    }
+  }
 }
 
 /** Tenants from AGENT_TENANTS_SECRET_ARN (the tenants file's JSON in Secrets Manager) or AGENT_TENANTS_FILE. */

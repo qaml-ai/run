@@ -61,11 +61,13 @@ export function providerInfo(id: string): ProviderInfo | undefined {
   return listProviders().find(provider => provider.id === id);
 }
 
+export const modelInfo = (model: Model<Api>): ModelInfo => ({
+  id: `${model.provider}/${model.id}`, provider: model.provider, modelId: model.id, name: model.name, api: model.api,
+  reasoning: model.reasoning, input: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
+  cost: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead, cacheWrite: model.cost.cacheWrite },
+});
+
 export function listModels(provider?: string): ModelInfo[] {
   const providers = provider ? [provider] : getProviders();
-  return providers.flatMap(id => (getProviders().includes(id as never) ? models(id) : []).map(model => ({
-    id: `${model.provider}/${model.id}`, provider: model.provider, modelId: model.id, name: model.name, api: model.api,
-    reasoning: model.reasoning, input: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
-    cost: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead, cacheWrite: model.cost.cacheWrite },
-  })));
+  return providers.flatMap(id => (getProviders().includes(id as never) ? models(id) : []).map(modelInfo));
 }

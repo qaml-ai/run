@@ -4,7 +4,7 @@ import { resolve, join, extname, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentSupervisor, type Hosting } from "./supervisor.ts";
 import { configuredModel } from "./model.ts";
-import { errorText } from "./protocol.ts";
+import { errorText, IDENTITY_KEY } from "./protocol.ts";
 import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -162,7 +162,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
-  const config = sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
+  const config = sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant));
   if (!await accounts.hasKey(tenant, config.model.provider)) {
     throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}; set one with PUT /v1/providers/${config.model.provider}/key`);
   }
@@ -298,9 +298,13 @@ const clients = new ClientSessions(supervisor, {
     return tenants.maxAgents(tenant) ?? (free === undefined ? undefined : Math.min(free, maxAgentsPerTenant));
   },
   apiKeyFor: async (tenant, provider) => {
+    // A tenant's own endpoint gets identity tokens, and its calls cost the runtime nothing.
+    if (Object.hasOwn(tenants.modelEndpoints(tenant) ?? {}, provider)) return { key: IDENTITY_KEY, platform: false };
     const resolved = await accounts.providerKey(tenant, provider);
     return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
   },
+  modelEndpoints: tenant => tenants.modelEndpoints(tenant),
+  modelToken: (audience, claims) => signer.token(audience, claims),
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
   onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
   spendLimit: tenant => accounts.runLimit(tenant),
@@ -311,7 +315,7 @@ const clients = new ClientSessions(supervisor, {
   get hooks() { return channels.hooks; },
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
-    const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
+    const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant));
     return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false }, sources: sources(spec) };
   },
   sources: toolSources,

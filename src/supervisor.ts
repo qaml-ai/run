@@ -118,6 +118,7 @@ export class AgentSupervisor {
       if (method === "spend-limit") return (await handle.bridge.spendLimit?.()) ?? null;
       if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
+      if (method === "model-token") return this.modelToken(handle);
       if (method === "fs") return this.dispatchFs(handle, params);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
@@ -142,6 +143,11 @@ export class AgentSupervisor {
     handle.calls.add(controller);
     try { return JSON.parse(jsonWithinLimit(await handle.bridge.fs(params.op, params.args, controller.signal), SANDBOX_LIMITS.resultBytes, "fs result")); }
     finally { handle.calls.delete(controller); }
+  }
+
+  private modelToken(handle: Handle) {
+    if (!handle.bridge.modelToken) throw new Error("This agent's model takes no identity token");
+    return handle.bridge.modelToken();
   }
 
   private file(handle: Handle, ref: unknown) {
@@ -171,6 +177,7 @@ export class AgentSupervisor {
       spendLimit: async () => handle.bridge.spendLimit?.(),
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),
       file: ref => this.file(handle, structuredClone(ref)),
+      modelToken: () => this.modelToken(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
     });
     this.agents.set(id, handle);

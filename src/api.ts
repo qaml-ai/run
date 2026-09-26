@@ -5,7 +5,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Accounts, Principal } from "./accounts.ts";
 import type { ClientSessions } from "./client-sessions.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
-import { listModels, listProviders, providerInfo } from "./catalog.ts";
+import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
 import { resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
@@ -173,7 +173,11 @@ export function api(context: ApiContext) {
     const available = c.req.query("available") === "true";
     const supported = new Set(listProviders().filter(entry => entry.apiKey).map(entry => entry.id));
     const keyed = await accounts.keyedProviders(c.var.principal.tenant);
-    const models = listModels(c.req.query("provider")).map(model => ({ ...model, available: supported.has(model.provider) && keyed(model.provider) }));
+    // The models declared on the tenant's own endpoints come first; they need no key.
+    const endpoints = accounts.tenants.modelEndpoints(c.var.principal.tenant) ?? {};
+    const own = Object.entries(endpoints).filter(([provider]) => [undefined, provider].includes(c.req.query("provider")))
+      .flatMap(([provider, endpoint]) => Object.keys(endpoint.models ?? {}).map(id => ({ ...modelInfo(resolveModel(`${provider}/${id}`, endpoints)), available: true })));
+    const models = [...own, ...listModels(c.req.query("provider")).map(model => ({ ...model, available: supported.has(model.provider) && keyed(model.provider) }))];
     return json(c, 200, available ? models.filter(model => model.available) : models);
   });
 
@@ -226,7 +230,7 @@ export function api(context: ApiContext) {
     // A model the agent could not call is refused now, not when the request runs.
     if (params.model !== undefined) {
       let provider: string;
-      try { provider = resolveModel(params.model).provider; } catch (error) { throw new HttpError(400, errorText(error)); }
+      try { provider = resolveModel(params.model, accounts.tenants.modelEndpoints(tenant)).provider; } catch (error) { throw new HttpError(400, errorText(error)); }
       if (!await accounts.hasKey(tenant, provider)) throw new HttpError(400, `No ${provider} API key is configured for this tenant; set one with PUT /v1/providers/${provider}/key`);
     }
     const submit = context.submit ?? clients.submit.bind(clients);

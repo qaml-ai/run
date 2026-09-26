@@ -222,7 +222,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_ECS_SERVICE`, `AGENT_ECS_CLUSTER` | the ECS service this task belongs to, for retirement (see [Deploys](#deploys)); the cluster defaults to the task's own; without the service, tasks never retire |
 | `AGENT_RETIRE_MAX_MS` | how long a retiring task keeps protection for running turns (default 21600000, 6 h) |
 | `AGENT_ECS_POLL_MS`, `AGENT_PROTECTION_IDLE_MS` | how often to check the service's deployment (default 30000), and how long without work before task protection is cleared (default 30000) |
-| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?, maxMonthlyCost?, billing?}}, platformKeys?}`), re-read on SIGHUP; see [Billing](#billing) for `billing` and `platformKeys` |
+| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?, maxMonthlyCost?, billing?, modelEndpoints?}}, platformKeys?}`), re-read on SIGHUP; see [Billing](#billing) for `billing` and `platformKeys`, and [A tenant's own model endpoint](#a-tenants-own-model-endpoint) |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, for development |
 | `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
@@ -386,6 +386,46 @@ The host provider key is only sent to trusted endpoints: the default model's,
 Pi's published endpoint for the requested provider and model, or an entry in
 `AGENT_ALLOWED_BASE_URLS` (comma-separated). Scoped credentials can only submit
 user messages; assistant and tool-result history is produced by the runtime.
+
+### A tenant's own model endpoint
+
+A tenant can have its agents' model calls go to its own OpenAI-compatible
+endpoint (chat completions), e.g. an inference proxy that checks credit per
+call, picks the provider key (its customers' own, Bedrock, a subscription) and
+meters usage. Its entry in the tenants file names the endpoint as a provider:
+
+```json
+"camel": {"tokenSha256": "…", "modelEndpoints": {"chiridion": {
+  "baseUrl": "https://camelai.com/api/agent-runtime/v1",
+  "models": {"deepseek/deepseek-v4:free": {"contextWindow": 128000, "maxTokens": 8192, "reasoning": true, "input": ["text"]}},
+  "compat": {"maxTokensField": "max_tokens"}
+}}}
+```
+
+- Agents name its models as `<provider>/<model id>`, e.g.
+  `"model": "chiridion/anthropic/claude-opus-5"`, at creation, in a definition or
+  through `PATCH /v1/agents/:id/configuration`. The endpoint gets the model id as
+  it is (`anthropic/claude-opus-5`) and Pi's chat-completions requests, streamed,
+  with tools, tool calls and reasoning (`reasoning_effort`; `compat` takes Pi's
+  `OpenAICompletionsCompat` options for an endpoint that differs).
+- What a model can do (context window, output tokens, reasoning, images) comes
+  from `models`, else from the catalog model its id names (a provider and model,
+  as `anthropic/claude-opus-5`, or an OpenRouter id). Other ids are refused.
+  `GET /v1/models` lists the declared ones.
+- Each call carries `Authorization: Bearer <identity token>`: the EdDSA JWT MCP
+  servers with `auth: {"type": "runtime"}` get (see
+  [Identity tokens](#identity-tokens-auth--type-runtime-)), with `aud` the
+  endpoint's `baseUrl` and the same claims: `tenant`, `agent`, `sub`, `act` (the
+  turn's actor), `ctx` and `definition`. It is minted for every call, compaction
+  summaries included, and lasts two minutes. Verify it against
+  `/.well-known/jwks.json`; the runtime sends no key.
+- Calls to it cost the runtime nothing, so they are counted in `/v1/usage` at
+  zero cost and never charged as platform tokens, nor toward `maxMonthlyCost`.
+  Agent time is charged as with a tenant's own key.
+- The endpoint is the operator's, trusted like `AGENT_ALLOWED_BASE_URLS`: it must
+  be HTTPS (plain HTTP only to localhost, for development), and its name cannot be
+  one of Pi's providers. Changes apply from the next tenants reload to agents
+  created or configured after it.
 
 ## Agent definitions
 

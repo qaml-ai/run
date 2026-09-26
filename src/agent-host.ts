@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { executeCode } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
+import { errorText, IDENTITY_KEY, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
 import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -33,6 +33,8 @@ export interface HostIO {
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes as base64, read by the supervisor: the agent holds no storage access. */
   file(ref: FileRef): Promise<string>;
+  /** An identity token for one call to the agent's model on its tenant's own endpoint, which the supervisor signs. */
+  modelToken(): Promise<string>;
   /** js_exec's `fs`, answered by the supervisor over the agent's mounts. */
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
 }
@@ -128,7 +130,7 @@ export function createAgentHost(io: HostIO) {
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
-        context: renderMessages(context), offset, previous: transcript.compaction, model: config.model, apiKey: config.apiKey, signal, keepRecentTokens,
+        context: renderMessages(context), offset, previous: transcript.compaction, model: config.model, apiKey: config.apiKey === IDENTITY_KEY ? () => io.modelToken() : config.apiKey, signal, keepRecentTokens,
         onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp }),
       });
       if ("skipped" in outcome) {
@@ -375,7 +377,8 @@ export function createAgentHost(io: HostIO) {
           tools, messages: [leading(tools.map(toToolDeclaration)), ...transcript.view()],
           thinkingLevel: config.thinkingLevel ?? "off",
         },
-        getApiKey: () => config.apiKey,
+        // A model on the tenant's own endpoint gets a fresh identity token for each call.
+        getApiKey: () => config.apiKey === IDENTITY_KEY ? io.modelToken() : config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment.
         streamFn: explicitKeyStream(),
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.

@@ -181,7 +181,8 @@ export class Accounts {
   async keyedProviders(tenant: string): Promise<(provider: string) => boolean> {
     const own = this.canStoreKeys && validTenant(tenant) ? new Set((await this.storedKeys(tenant)).map(key => key.provider)) : new Set<string>();
     const platform = await this.billing.mode(tenant) === "prepaid";
-    return provider => own.has(provider) || !!this.tenants.apiKey(tenant, provider) || (platform && !!this.tenants.platformKey(provider));
+    const endpoints = this.tenants.modelEndpoints(tenant) ?? {};
+    return provider => own.has(provider) || !!this.tenants.apiKey(tenant, provider) || (platform && !!this.tenants.platformKey(provider)) || Object.hasOwn(endpoints, provider);
   }
 
   async hasKey(tenant: string, provider: string) { return (await this.keyedProviders(tenant))(provider); }
