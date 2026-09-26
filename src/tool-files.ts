@@ -4,7 +4,7 @@ import { safeName, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { resolve } from "./volume-tools.ts";
+import { resolve, type ToolContext } from "./volume-tools.ts";
 import type { Mount, VolumeService } from "./volumes.ts";
 
 /**
@@ -97,7 +97,7 @@ export async function readCapped(response: Response, maxBytes: number): Promise<
  * writable /workspace mount, else the first writable one) within the call's and the run's budget.
  */
 export class ToolFiles {
-  private readonly options: { volumes: VolumeService; links?: FileLinks; tenant: string; agent: string; mounts: Mount[]; tool: string; run: { left: number } };
+  private readonly options: { volumes: VolumeService; links?: FileLinks; tenant: string; agent: string; mounts: Mount[]; tool: string; run: { left: number }; onWrite?: ToolContext["onWrite"] };
   private left = TOOL_FILE_LIMITS.callBytes;
   private directory?: string;
   private readonly names = new Set<string>();
@@ -154,7 +154,9 @@ export class ToolFiles {
     });
     this.left -= saved.size;
     run.left -= saved.size;
-    return fileRef(volumes, tenant, mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! });
+    const shown = target.show(saved.path);
+    this.options.onWrite?.({ path: shown, version: saved.version, size: saved.size, contentType: saved.contentType! });
+    return fileRef(volumes, tenant, mount.volumeId, shown, { ...saved, contentType: saved.contentType! });
   }
 }
 

@@ -116,7 +116,8 @@ test("MCP images, audio, blobs and long text are saved to the workspace, under s
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Files", mcpServers: [{ name: "files", url: mcp.url, exposure: "both" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json;
-  await r.prompt(agent.id, "make files");
+  const outcome = await r.prompt(agent.id, "make files");
+  assert.ok(outcome.outcome.result.files.some((file: any) => /^\/workspace\/tool-outputs\/files__outputs\/[a-f0-9]{8}\/image-1\.png$/.test(file.path) && file.contentType === "image/png"), "saved outputs are listed in the run's files");
   const workspace = (await r.call(`/v1/agents/${agent.id}/mounts`)).json[0].volumeId;
   const saved = await files(r.base, workspace, "/tool-outputs/files__outputs");
   const names = saved.map(file => `${file.path.split("/").pop()}:${file.contentType}`).sort();

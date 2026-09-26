@@ -18,6 +18,7 @@ import { acceptFiles, resolveFiles, savedContent, ToolFiles } from "./tool-files
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 import type { FileLinks } from "./files.ts";
 import type { Mount, VolumeService } from "./volumes.ts";
+import type { ToolContext } from "./volume-tools.ts";
 
 /**
  * Server-side tool sources: tools the runtime calls itself, configured in a
@@ -64,8 +65,8 @@ export interface OpenApiSpec {
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
 export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[] }
-/** The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal, and its mounts (for files in and out). */
-export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim; identity?: AgentIdentity; mounts?: Mount[] };
+/** The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal, its mounts (for files in and out), and who hears of files saved. */
+export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim; identity?: AgentIdentity; mounts?: Mount[]; onWrite?: ToolContext["onWrite"] };
 
 const SERVER_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -296,7 +297,7 @@ export class ToolSources {
       const volumes = this.options.volumes;
       if (!volumes || !context.mounts?.length) return undefined;
       if (!id || id !== run.id) run = { id, left: TOOL_FILE_LIMITS.runBytes };
-      return new ToolFiles({ volumes, links: this.options.links, tenant: context.tenant, agent: context.agent, mounts: context.mounts, tool, run });
+      return new ToolFiles({ volumes, links: this.options.links, tenant: context.tenant, agent: context.agent, mounts: context.mounts, tool, run, onWrite: context.onWrite });
     };
     return {
       // Only saved outputs: remote servers' own file references are dropped (savedContent).
