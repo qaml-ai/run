@@ -1,12 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AgentError, AgentRuntime, memoryJournalStore } from "../clients/node.ts";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
-import { VolumeService } from "../src/volumes.ts";
+import { CHUNK_BYTES, VolumeService } from "../src/volumes.ts";
 import { declaredType, downloadHeaders, fileResponse, sniffContentType } from "../src/files.ts";
 import { testDatabase } from "./database.ts";
 import { bombPdf, pdfBytes, PNG } from "./file-fixtures.ts";
@@ -144,33 +143,50 @@ test("signed links: bound to tenant, volume, path, method, expiry, size and cont
   assert.equal((await fetch(local(get.url))).status, 404);
 });
 
-test("an upload streams to storage a chunk at a time: a file far larger than the memory it uses", async t => {
+test("an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage", async t => {
+  // Structural, not process memory (which load makes noisy): every byte the source yields is
+  // counted, as is every byte storage has taken, and the gap between them is what is held.
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }));
+  let produced = 0, stored = 0, ahead = 0;
+  const writeBlob = storage.writeBlob.bind(storage);
+  storage.writeBlob = async (key, data) => { await new Promise(resolve => setImmediate(resolve)); await writeBlob(key, data); stored += data.length; };
+  const volumes = new VolumeService({ db, storage });
+  t.after(() => volumes.close());
+  const { id } = await volumes.create("acme");
+  const size = 64 * 1024 * 1024;
+  const piece = Buffer.alloc(64 * 1024, 7);
+  const source = (async function* () {
+    while (produced < size) {
+      produced += piece.length;
+      ahead = Math.max(ahead, produced - stored);
+      yield piece;
+    }
+  })();
+  const file = await volumes.put("acme", id, "/big.bin", source);
+  assert.equal(file.size, size);
+  assert.equal(file.chunks.length, size / CHUNK_BYTES);
+  // At most four chunk writes in flight, plus the chunk being filled.
+  assert.ok(ahead <= 6 * CHUNK_BYTES, `the source got ${Math.round(ahead / CHUNK_BYTES)} MiB ahead of storage for a ${size / CHUNK_BYTES} MiB file`);
+
+  // The same stream end to end over HTTP, through an upload link.
   const server = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const volume = (await server.call("/v1/volumes", { body: { name: "big" } })).json.id;
   const put = (await server.call(`/v1/volumes/${volume}/links`, { body: { path: "/big.bin", method: "PUT" } })).json;
-  const rss = async () => Number((await new Promise<string>((resolve, reject) => execFile("ps", ["-o", "rss=", "-p", String(server.child.pid)], (error, out) => error ? reject(error) : resolve(out)))).trim()) * 1024;
-  const before = await rss();
-  let peak = before;
-  const sampling = setInterval(() => void rss().then(value => { peak = Math.max(peak, value); }, () => {}), 25);
-  const size = 256 * 1024 * 1024;
-  const piece = Buffer.alloc(64 * 1024, 7);
+  let sent = 0;
   const body = new ReadableStream<Uint8Array>({
-    sent: 0,
     pull(controller) {
-      if ((this as any).sent >= size) return controller.close();
-      (this as any).sent += piece.length;
+      if (sent >= size) return controller.close();
+      sent += piece.length;
       controller.enqueue(piece);
     },
-  } as UnderlyingDefaultSource<Uint8Array> & { sent: number });
+  });
   const response = await fetch(put.url.replace("https://agents.example.test", server.base), { method: "PUT", body, duplex: "half" } as RequestInit);
-  clearInterval(sampling);
-  const file = await response.json();
-  assert.equal(response.status, 201, JSON.stringify(file));
-  assert.equal(file.size, size);
-  assert.equal(file.chunks, undefined);
-  assert.ok(peak - before < size / 2, `the server grew by ${Math.round((peak - before) / 1024 / 1024)} MiB for a ${size / 1024 / 1024} MiB upload`);
-  const head = await fetch(`${server.base}/v1/volumes/${volume}/files/big.bin`, { headers: { Authorization: `Bearer ${OPERATOR}`, Range: "bytes=-3" } });
-  assert.deepEqual([...Buffer.from(await head.arrayBuffer())], [7, 7, 7]);
+  const uploaded = await response.json();
+  assert.equal(response.status, 201, JSON.stringify(uploaded));
+  assert.equal(uploaded.size, size);
+  const tail = await fetch(`${server.base}/v1/volumes/${volume}/files/big.bin`, { headers: { Authorization: `Bearer ${OPERATOR}`, Range: "bytes=-3" } });
+  assert.deepEqual([...Buffer.from(await tail.arrayBuffer())], [7, 7, 7]);
 });
 
 test("attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively", async t => {
