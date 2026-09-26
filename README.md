@@ -805,8 +805,8 @@ only masked values.
   in constant time). Deleting the channel removes the webhook. `/start` gets the
   channel's `greeting` without a model call.
 - **Slack.** Create an app with the bot scopes `app_mentions:read`, `chat:write`,
-  `im:history`, `channels:history` (and `groups:history` for private channels)
-  and `files:read`, and install it. Slack has no API to set an app's event URL,
+  `im:history`, `channels:history` (and `groups:history` for private channels),
+  `files:read` (attachments in) and `files:write` (files out), and install it. Slack has no API to set an app's event URL,
   so paste the channel's `webhookUrl` into Event Subscriptions and subscribe to
   `app_mention`, `message.im` and `message.channels`. Deliveries must carry a
   valid `X-Slack-Signature` from the signing secret, at most five minutes old; the
@@ -815,7 +815,8 @@ only masked values.
   same message sent as both `app_mention` and `message` is handled once. Slack has
   no typing indicator for bots.
 - **Discord.** Create an application, add a bot, and invite it with View
-  Channel, Send Messages, Send Messages in Threads and Read Message History.
+  Channel, Send Messages, Send Messages in Threads, Attach Files and Read
+  Message History.
   There is no webhook for ordinary messages: each Discord channel is an actor (`gateway:<id>` in `actor_owners`) and the node
   that holds it keeps the Gateway connection, with heartbeats, resume after a
   dropped link, and a fresh identify when the session is lost. Every node's
@@ -842,16 +843,38 @@ What all three share:
   channel has a daily turn cap (`limits.turnsPerDay`, default 1000).
 - Each message carries its sender as `from` (see [Who sent a message](#who-sent-a-message-from)), and tool calls carry a runtime-set `origin`
   (`{channel, conversationId, sender}`, `context.origin` in the SDKs) that
-  tools can authorize against. Images reach the model (up to 750 KB each).
+  tools can authorize against.
+- Attachments of any type (Telegram photos, documents, audio, voice notes,
+  videos and animations; Slack files; Discord attachments) are streamed into the
+  agent's workspace at `uploads/<requestId>/<name>` and the prompt refers to
+  them by path (`files: [{path}]`), as in [Attaching files](#attaching-files-to-a-message).
+  Up to 10 files and 25 MiB each (20 MB on Telegram, the most a bot may
+  download), 100 MiB per message. Downloads go only to the service's file host
+  (Slack's with the bot token, Discord's CDN, Telegram's file API), never follow
+  redirects, and have 60 seconds each. A file too large or that fails to
+  download is left out, and the prompt says so: `(file big.zip too large, not
+  attached)`. A message with only files reads `(sent a file)`.
 - The turn's final answer is sent back when the turn ends, split to the
   service's limit (4,096 characters on Telegram, 4,000 on Slack, 2,000 on
   Discord), with a typing indicator meanwhile where the service has one. Channel
-  agents also get a `send_message` tool for updates mid-turn.
+  agents also get a `send_message` tool for updates mid-turn, which takes
+  `files` too: paths in the agent's mounts, each checked and pinned to its
+  current version when the tool is called.
+- Files the turn presents (`present_file`, the run's `result.presented`) follow
+  the reply's text, each with its caption: on Telegram images (JPEG, PNG, WebP,
+  up to 10 MB) as photos and anything else as documents (up to 50 MB); on Slack
+  through the external upload (`files.getUploadURLExternal`, the bytes, then
+  `files.completeUploadExternal` into the thread; up to 100 MiB); on Discord as
+  a multipart attachment (up to 10 MiB, the limit in servers without boosts). A
+  file over the service's limit is sent as a [signed link](#signed-links) that
+  works for 24 hours, the longest a link may last.
 - A message is recorded in Postgres before it is acknowledged, and duplicates
   (provider retries, a Gateway resume) are dropped by message id for seven days.
   Replies go through a durable outbox: a failed send is retried with backoff by
   any node, a claim means one node sends each message, and a permanent failure
-  (the bot was removed from the chat) is not retried.
+  (the bot was removed from the chat) is not retried. Each part of the text and
+  each file is a step recorded as it is sent, so a retry resumes after the last
+  one sent rather than sending the reply again.
 
 `AGENT_TELEGRAM_API_URL`, `AGENT_SLACK_API_URL` and `AGENT_DISCORD_API_URL`
 override the services' API endpoints (tests use local fakes).
@@ -978,7 +1001,7 @@ from REST callers; multipart forms add nothing the two do not cover.
 - At most 20 files per message; each is at most 256 MiB (a volume's file
   limit). A `{path}` outside the agent's mounts, a missing file, bad base64 or
   too many inline bytes is a 400 or 413 before anything is saved.
-- `images` (base64 `{data, mimeType}` blocks, as channels and older SDKs send
+- `images` (base64 `{data, mimeType}` blocks, as older SDKs send
   them) still works: each is saved as `uploads/<requestId>/image-<n>.<ext>` and
   attached like any other file.
 
@@ -1107,8 +1130,10 @@ Channels, tools and the console build on these:
 - `volumes.put(tenant, volumeId, path, bytes | stream, { contentType?, ifMatch?, by?, limit? })`
   saves a file from any node, sniffing its type when none is given.
 - `clients.upload(session, requestId, name, source, contentType?)` (or
-  `uploadFor(agent, tenant, ...)`) saves an attachment where the agent's
-  attachments go and returns its path; a prompt then carries `files: [{path}]`.
+  `uploadFor(agent, tenant, ...)`, from any node) saves an attachment where the
+  agent's attachments go and returns its path; a prompt then carries `files: [{path}]`.
+- `clients.fileFor(agent, tenant, path)` and `clients.linkFor(agent, tenant, path, expiresIn?)`
+  give a file in the agent's mounts as a reference, or a signed download link, from any node.
 - `fileRef(volumes, tenant, volumeId, shownPath, entry)` (`src/inspect.ts`)
   makes the transcript's reference, inspecting the file in the sandbox.
 - `links.sign({ tenant, volume, path, method, expiresIn?, maxBytes?, contentType? })`

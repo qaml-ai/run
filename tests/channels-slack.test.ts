@@ -9,6 +9,7 @@ import { Definitions } from "../src/definitions.ts";
 import { Channels } from "../src/channels.ts";
 import { slack } from "../src/channels-slack.ts";
 import { testDatabase } from "./database.ts";
+import { memoryFiles, requestBody } from "./channel-files.ts";
 
 type T = { after(fn: () => Promise<void> | void): void };
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -31,29 +32,43 @@ async function until<V>(check: () => V | Promise<V>, what: string, timeoutMs = 1
 async function fakeSlack(t: T) {
   const calls: { method: string; body: any }[] = [];
   const downloads: string[] = [];
+  /** Files on the fake file host, by path; anything else there is a 404. */
+  const hosted = new Map<string, { data: Buffer; type: string }>([["/files/cat.png", { data: PNG, type: "image/png" }]]);
+  const uploads = new Map<string, Buffer>();
   const server = createServer(async (req, res) => {
-    let text = "";
-    for await (const chunk of req) text += chunk;
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
     const answer = (value: object, status = 200) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(value));
     if (req.url!.startsWith("/files/")) {
       downloads.push(req.headers.authorization ?? "");
       if (req.headers.authorization !== `Bearer ${BOT_TOKEN}`) { res.writeHead(200, { "Content-Type": "text/html" }).end("<html>sign in</html>"); return; }
-      res.writeHead(200, { "Content-Type": "image/png" }).end(PNG);
+      const file = hosted.get(req.url!);
+      if (!file) { res.writeHead(404).end(); return; }
+      res.writeHead(200, { "Content-Type": file.type }).end(file.data);
       return;
     }
+    // The upload URL takes the bytes without the token.
+    if (req.url!.startsWith("/upload/")) { uploads.set(req.url!.slice("/upload/".length), raw); res.writeHead(200).end("OK"); return; }
     if (req.headers.authorization !== `Bearer ${BOT_TOKEN}`) return answer({ ok: false, error: "invalid_auth" });
     const method = req.url!.slice(1);
-    const body = text ? JSON.parse(text) : {};
+    const body = await requestBody(req, raw);
     calls.push({ method, body });
     if (method === "auth.test") return answer({ ok: true, user_id: "UBOT", user: "fixture_bot", team_id: "T1", team: "Fixture" });
+    if (method === "files.getUploadURLExternal") {
+      if (!req.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) return answer({ ok: false, error: "invalid_arguments" });
+      const id = `F${calls.length}`;
+      return answer({ ok: true, upload_url: `${url}/upload/${id}`, file_id: id });
+    }
     if (method === "chat.postMessage" && body.channel === "CGONE") return answer({ ok: false, error: "channel_not_found" });
     return answer({ ok: true });
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => { server.closeAllConnections(); server.close(); });
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   return {
-    url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, calls, downloads,
+    url, calls, downloads, hosted, uploads,
     posts: () => calls.filter(call => call.method === "chat.postMessage").map(call => call.body),
   };
 }
@@ -62,17 +77,21 @@ async function setup(t: T) {
   const api = await fakeSlack(t);
   const { db } = await testDatabase();
   const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
-  const prompts: { agent: string; text: string; from?: unknown; images: number }[] = [];
+  const prompts: { agent: string; text: string; from?: unknown; files?: { path: string }[] }[] = [];
+  const workspace = memoryFiles();
+  /** Files the next turn presents. */
+  const presenting: unknown[] = [];
   const channels: Channels = new Channels({
-    db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test",
+    db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test", files: workspace.files,
     providers: { slack: slack({ apiUrl: api.url }) },
     createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), agentId: (_tenant, key) => `client_${sha(key).slice(0, 40)}`, live: async () => true,
     // Each prompt's turn ends at once, answering with what it was asked.
     submit: async (agent, tenant, request) => {
-      const params = request.params as { text: string; from?: unknown; images?: unknown[] };
-      prompts.push({ agent, text: params.text, from: params.from, images: params.images?.length ?? 0 });
+      const params = request.params as { text: string; from?: unknown; files?: { path: string }[] };
+      prompts.push({ agent, text: params.text, from: params.from, ...(params.files ? { files: params.files } : {}) });
+      const presented = presenting.splice(0);
       setImmediate(() => channels.hooks.runEnded!({ id: agent, tenant }, {
-        id: request.id, method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: `re: ${params.text.split("\n").at(-1)} <ok> & done` } },
+        id: request.id, method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: `re: ${params.text.split("\n").at(-1)} <ok> & done`, presented } },
       }));
       return { id: request.id, method: "prompt", fingerprint: "", state: "running" };
     },
@@ -88,7 +107,7 @@ async function setup(t: T) {
     });
   };
   const event = (fields: Record<string, unknown>) => post({ type: "event_callback", event_id: `Ev${randomBytes(4).toString("hex")}`, event: { user: "U_ADA", ...fields } });
-  return { api, db, channels, channel, prompts, post, event };
+  return { api, db, channels, channel, prompts, post, event, workspace, presenting };
 }
 
 test("a Slack channel checks its credentials, keeps them sealed, and gives the URL to paste into the app", async t => {
@@ -155,19 +174,65 @@ test("a mention starts a thread with its own agent; replies in it continue; DMs 
   assert.deepEqual(conversations, ["C1-100.0001", "D1"]);
 });
 
-test("Slack images are fetched with the bot token from Slack's file host only", async t => {
+test("Slack files of any type are fetched with the bot token from Slack's file host only, into the agent's workspace", async t => {
   const r = await setup(t);
+  const pdf = Buffer.from("%PDF-1.4 fixture");
+  r.api.hosted.set("/files/doc.pdf", { data: pdf, type: "application/pdf" });
   await r.event({
     type: "message", subtype: "file_share", channel_type: "im", channel: "D1", ts: "1.0001", text: "look",
     files: [
-      { mimetype: "image/png", size: PNG.length, url_private: `${r.api.url}/files/cat.png` },
-      { mimetype: "image/png", size: PNG.length, url_private: "https://attacker.example/steal.png" },
-      { mimetype: "application/pdf", size: 10, url_private: `${r.api.url}/files/doc.pdf` },
+      { name: "cat.png", mimetype: "image/png", size: PNG.length, url_private: `${r.api.url}/files/cat.png` },
+      { name: "doc.pdf", mimetype: "application/pdf", size: pdf.length, url_private_download: `${r.api.url}/files/doc.pdf` },
+      { name: "steal.png", mimetype: "image/png", size: PNG.length, url_private: "https://attacker.example/steal.png" },
+      { name: "huge.mov", mimetype: "video/quicktime", size: 30 * 1024 * 1024, url_private: `${r.api.url}/files/huge.mov` },
+      { name: "gone.txt", mimetype: "text/plain", size: 5, url_private: `${r.api.url}/files/gone.txt` },
+      { name: "hidden.txt", mode: "hidden_by_limit" },
     ],
   });
   await until(() => r.prompts.length === 1, "the prompt");
-  assert.equal(r.prompts[0].images, 1);
-  assert.deepEqual(r.api.downloads, [`Bearer ${BOT_TOKEN}`]);
+  const [prompt] = r.prompts;
+  const item = `in_${sha(`${r.channel.id}:D1:1.0001`).slice(0, 40)}`;
+  assert.deepEqual(prompt.files, [{ path: `/workspace/uploads/${item}/cat.png` }, { path: `/workspace/uploads/${item}/doc.pdf` }]);
+  assert.deepEqual(r.workspace.saved.get(`/workspace/uploads/${item}/doc.pdf`), { data: pdf, contentType: "application/pdf" });
+  assert.equal(prompt.text, [
+    "look", "(file steal.png could not be downloaded, not attached)", "(file huge.mov too large, not attached)",
+    "(file gone.txt could not be downloaded, not attached)", "(file hidden.txt could not be downloaded, not attached)",
+  ].join("\n"));
+  assert.ok(!JSON.stringify(prompt).includes(PNG.toString("base64")), "no bytes in the prompt");
+  // The token went only to Slack's host: the two files, and the one it no longer has.
+  assert.deepEqual(r.api.downloads, [`Bearer ${BOT_TOKEN}`, `Bearer ${BOT_TOKEN}`, `Bearer ${BOT_TOKEN}`]);
+});
+
+test("a file without a message is a prompt of its own, and a sign-in page is not taken for the file", async t => {
+  const r = await setup(t);
+  r.api.hosted.set("/files/notes.txt", { data: Buffer.from("<html>sign in</html>"), type: "text/html" });
+  await r.event({ type: "message", subtype: "file_share", channel_type: "im", channel: "D1", ts: "2.0001", text: "", files: [{ name: "cat.png", mimetype: "image/png", url_private: `${r.api.url}/files/cat.png` }] });
+  await until(() => r.prompts.length === 1, "the prompt");
+  assert.equal(r.prompts[0].text, "(sent a file)");
+  await r.event({ type: "message", subtype: "file_share", channel_type: "im", channel: "D1", ts: "3.0001", text: "", files: [{ name: "notes.txt", mimetype: "text/plain", url_private: `${r.api.url}/files/notes.txt` }] });
+  await until(() => r.prompts.length === 2, "the second prompt");
+  assert.equal(r.prompts[1].text, "(file notes.txt could not be downloaded, not attached)");
+  assert.equal(r.prompts[1].files, undefined);
+});
+
+test("presented files go to the thread after the reply through Slack's external upload, and past the limit as a link", async t => {
+  const r = await setup(t);
+  const chart = r.workspace.present("/workspace/chart.png", PNG, "image/png", { caption: "The chart" });
+  const huge = r.workspace.present("/workspace/dump.csv", Buffer.from("a,b\n"), "text/csv", { size: 200 * 1024 * 1024 });
+  r.presenting.push(chart, huge);
+  await r.event({ type: "app_mention", channel: "C1", ts: "100.0001", text: "<@UBOT> chart please" });
+  await until(() => r.api.calls.filter(call => call.method === "chat.postMessage").length === 2, "the reply and the link");
+  const methods = r.api.calls.map(call => call.method).filter(method => method !== "auth.test");
+  assert.deepEqual(methods, ["chat.postMessage", "files.getUploadURLExternal", "files.completeUploadExternal", "chat.postMessage"]);
+  const [asked, completed] = [r.api.calls.find(call => call.method === "files.getUploadURLExternal")!, r.api.calls.find(call => call.method === "files.completeUploadExternal")!];
+  assert.deepEqual(asked.body, { filename: "chart.png", length: String(PNG.length) });
+  const id = completed.body.files[0].id;
+  assert.deepEqual(completed.body, { files: [{ id, title: "chart.png" }], channel_id: "C1", thread_ts: "100.0001", initial_comment: "The chart" });
+  assert.deepEqual(r.api.uploads.get(id), PNG);
+  const link = r.api.posts()[1];
+  assert.equal(link.thread_ts, "100.0001");
+  assert.match(link.text, /^dump\.csv \(200\.0 MB, too large to send here; the link works for 24 hours\): https:\/\/agents\.example\.test\/v1\/links\/fixture\/workspace\/dump\.csv$/);
+  await until(async () => (await r.db.query("select count(*)::int as count from channel_items")).rows[0].count === 0, "the item done");
 });
 
 test("a Slack send to a channel that is gone is not retried", async t => {

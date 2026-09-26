@@ -17,6 +17,7 @@ import { LostClaim, Ownership } from "../src/ownership.ts";
 import { telegram } from "../src/channels-telegram.ts";
 import pg from "pg";
 import { testDatabase } from "./database.ts";
+import { memoryFiles, requestBody } from "./channel-files.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
@@ -47,13 +48,14 @@ async function listen(t: T, handler: Parameters<typeof createServer>[1]) {
 /** A local stand-in for the Telegram Bot API; the real one is never called. */
 async function fakeTelegram(t: T) {
   const calls: { method: string; body: any }[] = [];
+  /** Files bots may download, by file_id; getFile answers for others too, and their download is a 404. */
   const files = new Map<string, Buffer>();
-  // `holdSends` keeps each sendMessage waiting until the test answers it with a status.
-  const state = { failSends: 0, holdSends: false, held: [] as { body: any; release(status: number): void }[] };
+  // `holdSends` keeps each sendMessage waiting until the test answers it with a status; `failFiles` fails that many file sends.
+  const state = { failSends: 0, failFiles: 0, holdSends: false, held: [] as { body: any; release(status: number): void }[] };
   const url = await listen(t, async (req, res) => {
-    let text = "";
-    for await (const chunk of req) text += chunk;
-    const file = /^\/file\/bot([^/]+)\/(.+)$/.exec(req.url!);
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const file = /^\/file\/bot([^/]+)\/files\/(.+)$/.exec(req.url!);
     if (file) {
       const data = file[1] === BOT_TOKEN && files.get(file[2]);
       if (!data) { res.writeHead(404).end(); return; }
@@ -64,7 +66,12 @@ async function fakeTelegram(t: T) {
     const answer = (status: number, value: object) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(value));
     if (!match || match[1] !== BOT_TOKEN) return answer(401, { ok: false, error_code: 401, description: "Unauthorized" });
     const method = match[2];
-    const body = text ? JSON.parse(text) : {};
+    const body = await requestBody(req, Buffer.concat(chunks));
+    if ((method === "sendPhoto" || method === "sendDocument") && state.failFiles > 0) {
+      state.failFiles--;
+      calls.push({ method: `${method}:failed`, body });
+      return answer(502, { ok: false, error_code: 502, description: "Bad Gateway" });
+    }
     if (method === "sendMessage" && state.holdSends) {
       const status = await new Promise<number>(release => state.held.push({ body, release }));
       if (status !== 200) {
@@ -77,15 +84,22 @@ async function fakeTelegram(t: T) {
       calls.push({ method: "sendMessage:failed", body });
       return answer(502, { ok: false, error_code: 502, description: "Bad Gateway" });
     }
+    if (method === "sendPhoto" && body.photo.name.startsWith("wide")) {
+      calls.push({ method: "sendPhoto:rejected", body });
+      return answer(400, { ok: false, error_code: 400, description: "Bad Request: PHOTO_INVALID_DIMENSIONS" });
+    }
     calls.push({ method, body });
     if (method === "getMe") return answer(200, { ok: true, result: { id: 123456789, is_bot: true, username: "fixture_bot" } });
-    if (method === "getFile") return answer(200, { ok: true, result: { file_id: body.file_id, file_size: files.get(`photos/${body.file_id}.jpg`)?.length, file_path: `photos/${body.file_id}.jpg` } });
+    if (method === "getFile") return answer(200, { ok: true, result: { file_id: body.file_id, file_size: files.get(body.file_id)?.length, file_path: `files/${body.file_id}` } });
     return answer(200, { ok: true, result: true });
   });
   return {
     url, calls, files, state,
     sent: (chat?: string | number) => calls.filter(call => call.method === "sendMessage" && (chat === undefined || String(call.body.chat_id) === String(chat))).map(call => call.body.text as string),
     count: (method: string) => calls.filter(call => call.method === method).length,
+    /** Files sent to a chat, in order: the method, name, caption and bytes. */
+    sentFiles: (chat: string | number) => calls.filter(call => (call.method === "sendPhoto" || call.method === "sendDocument") && call.body.chat_id === String(chat))
+      .map(call => { const file = call.body.photo ?? call.body.document; return { method: call.method, name: file.name, caption: call.body.caption, data: file.data.toString() }; }),
   };
 }
 
@@ -272,8 +286,8 @@ test("a photo reaches the model as an image", async t => {
   const { channel, secret } = await r.createChannel({ access: { allow: ["42"] } });
   // A JPEG's start and frame header (5×5), then noise: inspection reads only the header.
   const small = Buffer.from("small-thumbnail"), large = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x05, 0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]), randomBytes(2048)]);
-  r.tg.files.set("photos/thumb.jpg", small);
-  r.tg.files.set("photos/full.jpg", large);
+  r.tg.files.set("thumb", small);
+  r.tg.files.set("full", large);
   await r.deliver(channel, secret, {
     from: ada, chat: { id: ada.id, type: "private" }, caption: "What is this?",
     photo: [{ file_id: "thumb", file_unique_id: "t", width: 90, height: 90, file_size: small.length }, { file_id: "full", file_unique_id: "f", width: 1280, height: 1280, file_size: large.length }],
@@ -284,8 +298,100 @@ test("a photo reaches the model as an image", async t => {
   assert.ok(Array.isArray(content));
   assert.ok(content.some((part: any) => part.text === "What is this?"));
   // Saved in the agent's workspace, then shown as it was sent.
-  assert.ok(content.some((part: any) => /^\[File \/workspace\/uploads\/[^/]+\/image-1\.jpeg \(image\/jpeg, 3 KB\)\]$/.test(part.text ?? "")));
+  assert.ok(content.some((part: any) => /^\[File \/workspace\/uploads\/[^/]+\/photo\.jpg \(image\/jpeg, 3 KB\)\]$/.test(part.text ?? "")));
   assert.equal(content.find((part: any) => part.type === "image_url").image_url.url, `data:image/jpeg;base64,${large.toString("base64")}`);
+});
+
+test("every kind of Telegram attachment is saved to the agent's workspace and attached by path; ones too large or failing are noted", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "Got it." }));
+  const { channel, secret } = await r.createChannel({ access: { allow: ["42"] } });
+  const cases: [Record<string, unknown>, string][] = [
+    [{ document: { file_id: "doc", file_name: "report.csv", mime_type: "text/csv", file_size: 10 } }, "report.csv (text/csv"],
+    [{ audio: { file_id: "aud", file_name: "song.mp3", mime_type: "audio/mpeg" } }, "song.mp3 (audio/mpeg"],
+    [{ voice: { file_id: "voi", mime_type: "audio/ogg" } }, "voice.ogg (audio/ogg"],
+    [{ video: { file_id: "vid", mime_type: "video/mp4" } }, "video.mp4 (video/mp4"],
+    // An animation comes with a copy of itself as a document: it is one file.
+    [{ animation: { file_id: "ani", file_name: "cat.mp4", mime_type: "video/mp4" }, document: { file_id: "ani", file_name: "cat.mp4", mime_type: "video/mp4" } }, "cat.mp4 (video/mp4"],
+  ];
+  for (const [index, [attachment, shown]] of cases.entries()) {
+    const id = Object.values(attachment)[0] as { file_id: string };
+    r.tg.files.set(id.file_id, Buffer.from(`${id.file_id} bytes`));
+    await r.deliver(channel, secret, { from: ada, chat: { id: ada.id, type: "private" }, ...attachment });
+    await until(() => r.tg.sent(ada.id).length === index + 1, `the reply to ${shown}`);
+    const user = lastUser(r.model.bodies[index]);
+    assert.equal(user.match(/\[File /g)?.length, 1, "one file per message");
+    assert.ok(new RegExp(`\\[File /workspace/uploads/in_[a-f0-9]{40}/${shown.replace(/[.()]/g, "\\$&")}, 1 KB\\)\\]`).test(user), user);
+    assert.ok(user.includes("(sent a file)"));
+  }
+  // The bytes are in the agent's workspace volume.
+  const [agent] = (await r.call("/v1/agents")).json;
+  const [mount] = (await r.call(`/v1/agents/${agent.id}/mounts`)).json;
+  const path = /\/workspace(\/uploads\/[^ ]+\/report\.csv)/.exec(lastUser(r.model.bodies[0]))![1];
+  assert.equal((await r.call(`/v1/volumes/${mount.volumeId}/files${path}`)).text, "doc bytes");
+
+  // Over Telegram's 20 MB download limit, and a file Telegram cannot serve: noted, not attached.
+  await r.deliver(channel, secret, { from: ada, chat: { id: ada.id, type: "private" }, caption: "the big one", document: { file_id: "big", file_name: "big.zip", file_size: 21_000_000 } });
+  await until(() => r.tg.sent(ada.id).length === cases.length + 1, "the reply to the big file");
+  assert.ok(lastUser(r.model.bodies.at(-1)).endsWith("the big one\n(file big.zip too large, not attached)"));
+  await r.deliver(channel, secret, { from: ada, chat: { id: ada.id, type: "private" }, document: { file_id: "lost", file_name: "lost.txt" } });
+  await until(() => r.tg.sent(ada.id).length === cases.length + 2, "the reply to the lost file");
+  assert.ok(lastUser(r.model.bodies.at(-1)).endsWith("\n(file lost.txt could not be downloaded, not attached)"));
+  assert.ok(!r.model.bodies.at(-1).messages.some((message: any) => JSON.stringify(message).includes("[File /workspace/uploads/in_") && JSON.stringify(message).includes("lost.txt")));
+});
+
+test("presented files follow the reply: images as photos, others as documents, too large as links; a retry resends nothing already sent", async t => {
+  const tg = await fakeTelegram(t);
+  const { db } = await testDatabase();
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
+  const workspace = memoryFiles();
+  const channels = new Channels({
+    db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test", retryBaseMs: 50, files: workspace.files,
+    providers: { telegram: telegram({ apiUrl: tg.url }) },
+    createAgent: async () => { throw new Error("unused"); }, agentId: () => "unused", live: async () => true, submit: async () => { throw new Error("unused"); },
+  });
+  const channel = await channels.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
+  await db.query("insert into channel_agents (agent, channel, tenant, conversation) values ('client_x', $1, 'default', '42')", [channel.id]);
+  const presented = [
+    workspace.present("/workspace/chart.png", Buffer.from("png bytes"), "image/png", { caption: "The chart" }),
+    workspace.present("/workspace/data.csv", Buffer.from("a,b\n1,2\n"), "text/csv"),
+    workspace.present("/workspace/wide.png", Buffer.from("wide bytes"), "image/png"),
+    workspace.present("/workspace/movie.mp4", Buffer.from("mp4"), "video/mp4", { size: 60_000_000 }),
+  ];
+  // The first file send fails; the retry resumes with it, not with the text before it.
+  tg.state.failFiles = 1;
+  channels.hooks.runEnded!({ id: "client_x", tenant: "default" }, { id: "schedule-1", method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: "Here are your files.", presented } } });
+  await until(() => tg.count("sendPhoto:failed") === 1, "the failed send");
+  await until(async () => { await channels.scan(); return tg.sent("42").length === 2; }, "the rest, retried");
+  assert.deepEqual(tg.sent("42"), ["Here are your files.", "movie.mp4 (57.2 MB, too large to send here; the link works for 24 hours): https://agents.example.test/v1/links/fixture/workspace/movie.mp4"]);
+  assert.deepEqual(tg.sentFiles("42"), [
+    { method: "sendPhoto", name: "chart.png", caption: "The chart", data: "png bytes" },
+    { method: "sendDocument", name: "data.csv", caption: undefined, data: "a,b\n1,2\n" },
+    // Telegram would not take it as a photo.
+    { method: "sendDocument", name: "wide.png", caption: undefined, data: "wide bytes" },
+  ]);
+  const order = tg.calls.map(call => call.method).filter(method => method.startsWith("send"));
+  assert.deepEqual(order, ["sendMessage", "sendPhoto:failed", "sendPhoto", "sendDocument", "sendPhoto:rejected", "sendDocument", "sendMessage"]);
+  assert.equal((await db.query("select count(*) as count from channel_items")).rows[0].count, 0);
+});
+
+test("send_message sends files from the agent's mounts, and refuses paths outside them", async t => {
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x05, 0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]), randomBytes(64)]);
+  const r = await runtime(t, (body, index) => {
+    const photo = /\[File (\/workspace\/uploads\/[^ ]+\/photo\.jpg) /.exec(lastUser(body))?.[1];
+    const send = (args: object) => ({ role: "assistant", tool_calls: [{ index: 0, id: `call_${index}`, type: "function", function: { name: "send_message", arguments: JSON.stringify(args) } }] });
+    if (index === 0) return send({ text: "Trying", files: ["/workspace/nope.txt"] });
+    if (index === 1) return send({ text: "Here it is", files: [photo] });
+    return { role: "assistant", content: "Done." };
+  });
+  const { channel, secret } = await r.createChannel({ access: { allow: ["42"] } });
+  r.tg.files.set("pic", jpeg);
+  await r.deliver(channel, secret, { from: ada, chat: { id: ada.id, type: "private" }, caption: "send it back", photo: [{ file_id: "pic", file_unique_id: "p", width: 5, height: 5, file_size: jpeg.length }] });
+  await until(() => r.tg.sent(ada.id).includes("Done."), "the final reply");
+  assert.match(r.model.bodies[1].messages.find((message: any) => message.role === "tool").content, /does not exist/);
+  assert.deepEqual(r.tg.sent(ada.id), ["Here it is", "Done."]);
+  assert.deepEqual(r.tg.sentFiles(ada.id), [{ method: "sendPhoto", name: "photo.jpg", caption: undefined, data: jpeg.toString() }]);
+  const order = r.tg.calls.map(call => call.method).filter(method => method === "sendMessage" || method === "sendPhoto");
+  assert.deepEqual(order, ["sendMessage", "sendPhoto", "sendMessage"]);
 });
 
 test("send_message reaches the chat mid-turn, and tools see who is asking", async t => {

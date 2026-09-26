@@ -1,10 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { ImageContent } from "@earendil-works/pi-ai";
 import { HttpError } from "./http.ts";
-import { SendError, type ChannelProvider, type Inbound } from "./channels.ts";
+import { fetchFile, SendError, type ChannelProvider, type Inbound } from "./channels.ts";
 
-/** Images above this are skipped: they travel inside the prompt request and the agent's journal. */
-const MAX_IMAGE_BYTES = 750_000;
+/** Slack takes files up to 1 GB; the runtime sends up to this (read into memory), and a link past it. */
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
 /** Slack's own limit for how old a signed request may be. */
 const MAX_SKEW_S = 5 * 60;
 /** Errors worth retrying; any other `ok: false` (channel_not_found, not_in_channel, invalid_auth…) will not change. */
@@ -27,7 +26,8 @@ const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "
  * gives its bot token and signing secret; Slack has no API to set an app's event
  * URL, so the tenant pastes the channel's `webhookUrl` into Event Subscriptions and
  * subscribes to `app_mention`, `message.im` and (for replies in threads without a
- * mention) `message.channels`. `apiUrl` is configurable so tests run against a fake.
+ * mention) `message.channels`. Attachments need the `files:read` scope and sending
+ * files `files:write`. `apiUrl` is configurable so tests run against a fake.
  */
 export function slack(options: { apiUrl?: string } = {}): ChannelProvider {
   const base = (options.apiUrl ?? "https://slack.com/api").replace(/\/+$/, "");
@@ -41,10 +41,12 @@ export function slack(options: { apiUrl?: string } = {}): ChannelProvider {
     if (typeof value !== "string" || !/^[a-f0-9]{16,128}$/.test(value)) throw new HttpError(400, "Send credentials.signingSecret: the app's Signing Secret, from Basic Information");
     return value;
   };
-  async function call(credentials: Record<string, string>, method: string, body: Record<string, unknown> = {}) {
+  // Most methods take JSON; files.getUploadURLExternal takes only form fields.
+  async function call(credentials: Record<string, string>, method: string, body: Record<string, unknown> | URLSearchParams = {}) {
+    const form = body instanceof URLSearchParams;
     const response = await fetch(`${base}/${method}`, {
-      method: "POST", headers: { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${token(credentials)}` },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+      method: "POST", headers: { "Content-Type": form ? "application/x-www-form-urlencoded" : "application/json; charset=utf-8", Authorization: `Bearer ${token(credentials)}` },
+      body: form ? body : JSON.stringify(body), signal: AbortSignal.timeout(15_000),
     }).catch(error => { throw new SendError(`Slack ${method} failed: ${error instanceof Error ? error.name : "network error"}`, false); });
     const answer = await response.json().catch(() => ({})) as { ok?: boolean; error?: string; [key: string]: unknown };
     if (response.ok && answer.ok) return answer;
@@ -98,35 +100,43 @@ export function slack(options: { apiUrl?: string } = {}): ChannelProvider {
         continuation = true;
       } else return undefined;
       const text = (typeof event.text === "string" ? event.text : "").replace(/^\s*<@[A-Z0-9]+>\s*/, "").trim();
-      const images = (Array.isArray(event.files) ? event.files : [])
-        .filter((file: any) => typeof file?.mimetype === "string" && file.mimetype.startsWith("image/") && typeof file.url_private === "string" && (file.size ?? 0) <= MAX_IMAGE_BYTES)
-        .map((file: any) => String(file.url_private));
-      if (!text && !images.length) return undefined;
+      // A file without a URL (hidden by the workspace's plan, or deleted) fails to download, and the agent is told.
+      const files = (Array.isArray(event.files) ? event.files : []).filter((file: any) => file && typeof file === "object").map((file: any) => ({
+        id: String(file.url_private_download ?? file.url_private ?? ""), name: typeof file.name === "string" ? file.name : "file",
+        ...(typeof file.size === "number" ? { size: file.size } : {}), ...(typeof file.mimetype === "string" ? { contentType: file.mimetype } : {}),
+      }));
+      if (!text && !files.length) return undefined;
       return {
         conversationId,
         // Not the event id: a mention in a thread arrives as both app_mention and message, and must count once.
         messageId: `${event.channel}:${event.ts}`,
-        sender: { id: event.user }, text, images,
+        sender: { id: event.user }, text, files,
         ...(continuation ? { continuation } : {}),
       };
     },
-    async images(credentials, references) {
-      const images: ImageContent[] = [];
-      for (const url of references) {
-        // The bot token goes with the download: only ever to Slack's file host.
-        if (!url.startsWith("https://files.slack.com/") && !url.startsWith(`${base}/`)) continue;
-        const response = await fetch(url, { headers: { Authorization: `Bearer ${token(credentials)}` }, redirect: "error", signal: AbortSignal.timeout(30_000) });
-        if (!response.ok) throw new Error(`Slack file download failed: HTTP ${response.status}`);
-        const mimeType = response.headers.get("content-type")?.split(";")[0] ?? "";
-        const data = Buffer.from(await response.arrayBuffer());
-        // Without files:read Slack answers with its sign-in page instead of the file.
-        if (!mimeType.startsWith("image/") || data.length > MAX_IMAGE_BYTES) continue;
-        images.push({ type: "image", data: data.toString("base64"), mimeType });
-      }
-      return images;
+    async download(credentials, file) {
+      // The bot token goes with the download: only ever to Slack's file host.
+      if (!file.id.startsWith("https://files.slack.com/") && !file.id.startsWith(`${base}/`)) throw new Error("Not a Slack file URL");
+      const download = await fetchFile(file.id, { Authorization: `Bearer ${token(credentials)}` });
+      // Without files:read Slack answers with its sign-in page instead of the file.
+      if (download.contentType === "text/html" && file.contentType !== "text/html") throw new Error("Slack answered with a sign-in page: does the app have files:read?");
+      return download;
     },
     async send(credentials, conversationId, text) {
       await call(credentials, "chat.postMessage", { ...target(conversationId), text: escape(text), unfurl_links: false, unfurl_media: false });
+    },
+    maxFileBytes: MAX_FILE_BYTES,
+    // Slack's external upload: ask for an upload URL, post the bytes there, then share the file into the conversation.
+    async sendFile(credentials, conversationId, file, caption) {
+      const { upload_url, file_id } = await call(credentials, "files.getUploadURLExternal", new URLSearchParams({ filename: file.name, length: String(file.size) }));
+      if (typeof upload_url !== "string" || !/^https?:\/\//.test(upload_url)) throw new SendError("Slack gave no upload URL", false);
+      const uploaded = await fetch(upload_url, { method: "POST", body: await file.blob(), redirect: "error", signal: AbortSignal.timeout(120_000) })
+        .catch(error => { throw new SendError(`Slack file upload failed: ${error instanceof Error ? error.name : "network error"}`, false); });
+      if (!uploaded.ok) throw new SendError(`Slack file upload failed: HTTP ${uploaded.status}`, false);
+      const { channel, thread_ts } = target(conversationId);
+      await call(credentials, "files.completeUploadExternal", {
+        files: [{ id: file_id, title: file.name }], channel_id: channel, ...(thread_ts ? { thread_ts } : {}), ...(caption ? { initial_comment: caption } : {}),
+      });
     },
     // Bots have no typing indicator in Slack.
   };

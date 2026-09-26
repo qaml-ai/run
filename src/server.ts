@@ -337,6 +337,12 @@ const channels = new Channels({
   agentId: (tenant, key) => clients.agentId(tenant, key),
   live: (agent, tenant) => clients.owns(agent, tenant),
   submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
+  files: {
+    upload: (agent, tenant, requestId, name, source, contentType) => clients.uploadFor(agent, tenant, requestId, name, source, contentType),
+    ref: (agent, tenant, path) => clients.fileFor(agent, tenant, path),
+    read: (tenant, ref) => volumes.stream(tenant, ref),
+    link: async (agent, tenant, path) => (await clients.linkFor(agent, tenant, path, FILE_LIMITS.maxLinkSeconds)).url,
+  },
   ...(process.env.AGENT_CHANNEL_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_CHANNEL_RETRY_MS) } : {}),
 });
 channels.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));

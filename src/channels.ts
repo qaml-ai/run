@@ -1,6 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Hono } from "hono";
-import type { ImageContent } from "@earendil-works/pi-ai";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { AgentRef, SessionHooks } from "./client-sessions.ts";
 import type { ToolDefinition } from "./protocol.ts";
@@ -12,6 +11,7 @@ import type { RequestRecord } from "../shared/client-protocol.ts";
 import { PreconditionFailed } from "../shared/storage.ts";
 import { transaction, type Db } from "./db.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
+import { validFileRef, type FileRef } from "./files.ts";
 
 /**
  * Channels let people talk to agents through messaging services. Each external
@@ -31,6 +31,10 @@ import { underClaim, type Claim, type Ownership } from "./ownership.ts";
  * Items move received → submitted → sending by writes conditional on their
  * revision, and whoever holds an item's claim is the only node advancing it, so a
  * reply is sent once.
+ *
+ * Attachments are streamed into the agent's workspace and the prompt refers to them by
+ * path; files the agent presents (or sends with send_message) go out after the reply's
+ * text, each a step of the item's durable progress, so a retry resumes after the last one sent.
  */
 export interface Sender { id: string; username?: string; name?: string }
 export interface Inbound {
@@ -38,12 +42,16 @@ export interface Inbound {
   /** The provider's id for this message, unique within the channel; retries repeat it. */
   messageId: string;
   sender: Sender; text: string;
-  /** Provider references to images, fetched when the message is processed. */
-  images: string[];
+  /** Attachments, fetched when the message is processed. */
+  files: InboundFile[];
   command?: "start";
   /** Only handled when the conversation already has an agent: a reply in a thread that does not mention the bot. */
   continuation?: boolean;
 }
+/** An attachment: `id` is the provider's reference to fetch it by; `size` and `contentType` as the service declares them. */
+export interface InboundFile { id: string; name: string; size?: number; contentType?: string }
+/** A file going out, read from its volume (a chunk at a time) when it is sent: at most the service's `maxFileBytes`. */
+export interface OutboundFile { name: string; contentType: string; size: number; blob(): Promise<Blob> }
 type Credentials = Record<string, string>;
 /**
  * What the core needs from a messaging service; everything provider-specific lives behind it.
@@ -63,8 +71,14 @@ export interface ChannelProvider {
   parse?(body: unknown): Inbound | undefined;
   /** Hold a connection that delivers the channel's messages, reconnecting on its own, until closed. */
   connect?(credentials: Credentials, handlers: GatewayHandlers): Gateway;
-  images(credentials: Credentials, references: string[]): Promise<ImageContent[]>;
+  /** An attachment's bytes, from the service's own file host only. */
+  download(credentials: Credentials, file: InboundFile): Promise<{ body: AsyncIterable<Uint8Array>; contentType?: string }>;
+  /** The largest attachment a bot may download, when the service caps it below CHANNEL_FILE_LIMITS.fileBytes. */
+  readonly maxDownloadBytes?: number;
   send(credentials: Credentials, conversationId: string, text: string): Promise<void>;
+  sendFile(credentials: Credentials, conversationId: string, file: OutboundFile, caption?: string): Promise<void>;
+  /** The largest file the service takes from a bot; larger ones are sent as a link. */
+  readonly maxFileBytes: number;
   /** Show that a reply is coming; a service without an indicator leaves it out. */
   typing?(credentials: Credentials, conversationId: string): Promise<void>;
   /** How often the indicator is refreshed while a turn runs (default 4 s). */
@@ -110,18 +124,29 @@ type Item = {
   /** Not before this time: the next retry or re-check. */
   due: number;
   inbound?: Inbound;
-  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; images?: ImageContent[] };
-  text?: string; sent?: number; attempts?: number;
+  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; files?: { path: string }[] };
+  /** What to send: the text's parts, then each file; `sent` counts the steps done. */
+  text?: string; files?: Presented[]; sent?: number; attempts?: number;
 };
+/** A file for the conversation, as `present_file` or send_message gave it. */
+type Presented = FileRef & { caption?: string };
 /** An item as last written; the next write is conditional on its revision. */
 type Held = { item: Item; revision: number };
 
 export const SEND_MESSAGE: ToolDefinition = {
   name: "send_message",
-  description: "Send a message to the person you are talking with right away, before your final reply: for progress updates during long work. Your final reply is sent automatically; do not repeat it here.",
-  parameters: { type: "object", required: ["text"], properties: { text: { type: "string", minLength: 1, maxLength: 16_000 } }, additionalProperties: false },
+  description: "Send a message to the person you are talking with right away, before your final reply: for progress updates during long work, or files. Your final reply is sent automatically; do not repeat it here.",
+  parameters: { type: "object", properties: {
+    text: { type: "string", maxLength: 16_000 },
+    files: { type: "array", maxItems: 10, items: { type: "string" }, description: "Paths of files in your mounts to send, e.g. /workspace/report.pdf" },
+  }, additionalProperties: false },
   exposure: "direct",
 };
+/**
+ * Attachments a message brings in, saved to the agent's workspace: at most `files` of them,
+ * each at most `fileBytes` and `messageBytes` in all, each downloaded within `downloadMs`.
+ */
+export const CHANNEL_FILE_LIMITS = Object.freeze({ files: 10, fileBytes: 25 * 1024 * 1024, messageBytes: 100 * 1024 * 1024, downloadMs: 60_000 });
 const DEFAULT_LIMITS = { perSenderPerMinute: 10, turnsPerDay: 1_000 };
 const DEFAULT_GREETING = "Hi! Send me a message to get started.";
 const FAILED_REPLY = "Sorry, something went wrong while answering. Please try again.";
@@ -138,6 +163,15 @@ const MAX_REPLY = 32_000;
 const TYPING_MS = 4_000;
 /** How long a gateway whose credentials were rejected waits before trying again. */
 const GATEWAY_RETRY_MS = 5 * 60_000;
+
+/** Fetch an attachment from a service's file host: never redirected (a token may go with it), within a time limit. */
+export async function fetchFile(url: string, headers: Record<string, string> = {}) {
+  const response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(CHANNEL_FILE_LIMITS.downloadMs) });
+  if (!response.ok || !response.body) throw new Error(`Download failed: HTTP ${response.status}`);
+  return { body: response.body as AsyncIterable<Uint8Array>, contentType: response.headers.get("content-type")?.split(";")[0] };
+}
+/** A file's size for people. */
+export const sizeText = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const held = (row: any): Held => ({ item: { ...row.item, due: row.due }, revision: row.revision });
@@ -170,7 +204,18 @@ export interface ChannelsOptions {
   live(agent: string, tenant: string): Promise<boolean>;
   /** Submit a request to an agent on whichever node serves it. */
   submit(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }): Promise<RequestRecord>;
+  /** Files in and out of agents' volumes; without it attachments are noted but not saved, and files are not sent. */
+  files?: ChannelFiles;
   retryBaseMs?: number;
+}
+export interface ChannelFiles {
+  /** Save an attachment for request `requestId` in the agent's workspace. */
+  upload(agent: string, tenant: string, requestId: string, name: string, source: AsyncIterable<Uint8Array>, contentType?: string): Promise<{ path: string }>;
+  /** A file in the agent's mounts, as a reference; rejects paths outside them. */
+  ref(agent: string, tenant: string, path: string): Promise<FileRef>;
+  read(tenant: string, ref: FileRef): AsyncIterable<Uint8Array>;
+  /** A download link to a file in the agent's mounts, lasting as long as links may. */
+  link(agent: string, tenant: string, path: string): Promise<string>;
 }
 
 export class Channels {
@@ -517,8 +562,7 @@ export class Channels {
     const { credentials } = this.secrets(channel);
     void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
     const agent = await this.agentFor(channel, item.conversationId, inbound.sender);
-    const images = inbound.images.length ? await this.provider(channel.type).images(credentials, inbound.images) : [];
-    const prompt = this.prompt(channel, inbound, images);
+    const prompt = this.prompt(channel, inbound, await this.attach(channel, credentials, agent, item.id, inbound.files ?? []));
     // Submitted before submitting: the turn may end (and its reply be settled) before submit returns.
     const next = await this.save(current, { state: "submitted", agent, prompt, due: Date.now() + RECHECK_MS }, false);
     try { await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: prompt }); }
@@ -528,11 +572,48 @@ export class Channels {
     }
   }
 
+  /**
+   * Stream a message's attachments into the agent's workspace, for request `requestId`. One that
+   * is too large or fails to download is left out, with a note for the agent saying so. A retry
+   * (another node retaking the item) saves the same paths again.
+   */
+  private async attach(channel: Channel, credentials: Credentials, agent: string, requestId: string, inbound: InboundFile[]) {
+    const provider = this.provider(channel.type);
+    const files: { path: string }[] = [], notes: string[] = [], names = new Set<string>();
+    let total = 0;
+    for (const [index, file] of inbound.entries()) {
+      const limit = Math.min(CHANNEL_FILE_LIMITS.fileBytes, provider.maxDownloadBytes ?? Infinity, CHANNEL_FILE_LIMITS.messageBytes - total);
+      if (index >= CHANNEL_FILE_LIMITS.files || !this.options.files) { notes.push(`(file ${file.name} not attached)`); continue; }
+      if ((file.size ?? 0) > limit) { notes.push(`(file ${file.name} too large, not attached)`); continue; }
+      // Two attachments of one name become name, name-2, ...
+      let name = file.name;
+      for (let n = 2; names.has(name); n++) name = file.name.replace(/(\.[^.]*)?$/, extension => `-${n}${extension}`);
+      names.add(name);
+      let size = 0;
+      try {
+        const { body, contentType } = await provider.download(credentials, file);
+        const counted = async function* () {
+          for await (const chunk of body) {
+            if ((size += chunk.length) > limit) throw new Error("too large");
+            yield chunk;
+          }
+        };
+        files.push({ path: (await this.options.files.upload(agent, channel.tenant, requestId, name, counted(), file.contentType ?? contentType)).path });
+        total += size;
+      } catch (error) {
+        console.error(JSON.stringify({ type: "channel_attachment_failed", channel: channel.id, request: requestId, error: errorText(error) }));
+        notes.push(size > limit ? `(file ${file.name} too large, not attached)` : `(file ${file.name} could not be downloaded, not attached)`);
+      }
+    }
+    return { files, notes };
+  }
+
   /** The message, and who sent it: the runtime shows the model the sender apart from what they wrote. */
-  private prompt(channel: Channel, inbound: Inbound, images: ImageContent[]) {
+  private prompt(channel: Channel, inbound: Inbound, { files, notes }: { files: { path: string }[]; notes: string[] }) {
     const { id, name, username } = inbound.sender;
     const from = { id: `${channel.type}:${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}) };
-    return { text: inbound.text || (images.length ? "(sent a photo)" : ""), from, ...(images.length ? { images } : {}) };
+    const text = [inbound.text, ...notes].filter(Boolean).join("\n") || (files.length === 1 ? "(sent a file)" : files.length ? `(sent ${files.length} files)` : "");
+    return { text, from, ...(files.length ? { files } : {}) };
   }
 
   /** A submitted message whose turn end this runtime did not see: ask again (idempotently) how it went. */
@@ -546,17 +627,21 @@ export class Channels {
       throw error;
     }
     if (record.state !== "completed") { await this.save(current, { due: Date.now() + RECHECK_MS }, false); return; }
-    const text = replyText(record);
-    if (!text) return this.finish(current);
-    await this.deliver(channel, await this.save(current, { state: "sending", text, sent: 0, attempts: 0 }));
+    const reply = replyOf(record);
+    if (!reply.text && !reply.files.length) return this.finish(current);
+    await this.deliver(channel, await this.save(current, { state: "sending", ...reply, sent: 0, attempts: 0 }));
   }
 
   private async deliver(channel: Channel, current: Held) {
     const provider = this.provider(channel.type);
-    const parts = chunks(current.item.text ?? "", provider.maxMessageLength);
     const { credentials } = this.secrets(channel);
-    for (let index = current.item.sent ?? 0; index < parts.length; index++) {
-      try { await provider.send(credentials, current.item.conversationId, parts[index]); }
+    const item = current.item;
+    const steps = [
+      ...chunks(item.text ?? "", provider.maxMessageLength).map(part => () => provider.send(credentials, item.conversationId, part)),
+      ...(item.files ?? []).map(file => () => this.sendFile(provider, credentials, item, file)),
+    ];
+    for (let index = item.sent ?? 0; index < steps.length; index++) {
+      try { await steps[index](); }
       catch (error) {
         const attempts = (current.item.attempts ?? 0) + 1;
         const permanent = error instanceof SendError && error.permanent;
@@ -572,15 +657,33 @@ export class Channels {
     await this.finish(current);
   }
 
+  /** Send a file, or a link to it when the service will not take one its size. */
+  private async sendFile(provider: ChannelProvider, credentials: Credentials, item: Item, file: Presented) {
+    const files = this.options.files;
+    const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+    const caption = file.caption?.slice(0, 1000);
+    if (files && file.size <= provider.maxFileBytes) {
+      const blob = async () => {
+        const parts: Uint8Array[] = [];
+        for await (const part of files.read(item.tenant, file)) parts.push(part);
+        return new Blob(parts as BlobPart[], { type: file.contentType });
+      };
+      return provider.sendFile(credentials, item.conversationId, { name, contentType: file.contentType, size: file.size, blob }, caption);
+    }
+    const link = files && item.agent ? await files.link(item.agent, item.tenant, file.path).catch(() => undefined) : undefined;
+    const text = link ? `${name} (${sizeText(file.size)}, too large to send here; the link works for 24 hours): ${link}` : `(${name} could not be sent)`;
+    await provider.send(credentials, item.conversationId, caption ? `${caption}\n${text}` : text);
+  }
+
   /**
    * Queue an agent's message to its conversation and try to send it now. Queued under
    * the agent's claim, so a node that lost the agent mid-turn sends nothing more for it.
    */
-  private async enqueue(agent: AgentRef, binding: Binding, id: string, text: string) {
+  private async enqueue(agent: AgentRef, binding: Binding, id: string, text: string, files: Presented[] = []) {
     const now = Date.now();
     const created = await underClaim(this.db, agent.claim, sql => this.insert(sql, {
       id, channel: binding.channel, tenant: binding.tenant, conversationId: binding.conversationId, createdAt: now,
-      state: "sending", text, sent: 0, attempts: 0, due: now,
+      state: "sending", agent: agent.id, text, ...(files.length ? { files } : {}), sent: 0, attempts: 0, due: now,
     }));
     if (!created) return;
     const channel = await this.read(binding.channel);
@@ -665,8 +768,13 @@ export class Channels {
       const binding = await this.binding(agent.id);
       return binding && valueServer([SEND_MESSAGE], async ({ args }) => {
         const text = typeof args.text === "string" ? args.text.trim() : "";
-        if (!text) throw new Error("send_message needs text");
-        await this.enqueue(agent, binding, `msg_${randomUUID().replaceAll("-", "")}`, text);
+        const paths = Array.isArray(args.files) ? args.files.map(String) : [];
+        if (!text && !paths.length) throw new Error("send_message needs text or files");
+        const files = this.options.files;
+        if (paths.length && !files) throw new Error("This runtime cannot send files");
+        // Each must be a file in the agent's mounts; its reference pins the version sent.
+        const refs = await Promise.all(paths.map(path => files!.ref(agent.id, agent.tenant, path)));
+        await this.enqueue(agent, binding, `msg_${randomUUID().replaceAll("-", "")}`, text, refs);
         return { sent: true };
       });
     },
@@ -691,19 +799,20 @@ export class Channels {
   private async settle(agent: AgentRef, record: RequestRecord) {
     const binding = await this.binding(agent.id);
     if (!binding) return;
-    const text = replyText(record);
+    const reply = replyOf(record);
+    const empty = !reply.text && !reply.files.length;
     if (!record.id.startsWith("in_")) {
       // Turns not started by a message (schedules, the API) reply to the conversation too.
-      if (text) await this.enqueue(agent, binding, `out_${sha(`${agent.id}:${record.id}`).slice(0, 40)}`, text);
+      if (!empty) await this.enqueue(agent, binding, `out_${sha(`${agent.id}:${record.id}`).slice(0, 40)}`, reply.text, reply.files);
       return;
     }
     for (let attempt = 0; attempt < 10; attempt++) {
       const row = (await this.db.query("select item, due, revision from channel_items where id = $1", [record.id])).rows[0];
       const stored = row && held(row);
       if (!stored || stored.item.state !== "submitted" || stored.item.agent !== agent.id) return;
-      if (!text) return this.finish(stored);
+      if (empty) return this.finish(stored);
       let next: Held;
-      try { next = await this.save(stored, { state: "sending", text, sent: 0, attempts: 0, due: Date.now() }, true); }
+      try { next = await this.save(stored, { state: "sending", ...reply, sent: 0, attempts: 0, due: Date.now() }, true); }
       catch (error) { if (error instanceof PreconditionFailed) continue; throw error; }
       const channel = await this.read(binding.channel);
       if (!channel) return this.finish(next);
@@ -712,11 +821,11 @@ export class Channels {
   }
 }
 
-/** What a finished prompt says back: the final answer, or an apology when the turn failed. */
-function replyText(record: RequestRecord) {
+/** What a finished prompt says back: the final answer and the files it presented, or an apology when the turn failed. */
+function replyOf(record: RequestRecord): { text: string; files: Presented[] } {
   const outcome = record.outcome;
-  if (!outcome || outcome.error !== undefined) return FAILED_REPLY;
-  const result = outcome.result as { reply?: string; error?: string | null } | undefined;
-  if (result?.error) return FAILED_REPLY;
-  return result?.reply ?? "";
+  const result = outcome?.result as { reply?: string; error?: string | null; presented?: unknown[] } | undefined;
+  if (!outcome || outcome.error !== undefined || result?.error) return { text: FAILED_REPLY, files: [] };
+  const files = (Array.isArray(result?.presented) ? result.presented : []).filter(validFileRef) as Presented[];
+  return { text: result?.reply ?? "", files };
 }

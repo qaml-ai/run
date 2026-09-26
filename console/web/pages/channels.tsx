@@ -26,7 +26,7 @@ const TYPES: Record<ChannelType, { label: string; help: string; fields: { key: s
   },
   slack: {
     label: "Slack",
-    help: "Each thread where someone @mentions the app, and each DM, gets its own agent. Create a Slack app with the bot scopes app_mentions:read, chat:write, im:history, channels:history and files:read, install it, and paste its bot token and signing secret. Then paste the webhook URL into the app's Event Subscriptions and subscribe to app_mention, message.im and message.channels.",
+    help: "Each thread where someone @mentions the app, and each DM, gets its own agent. Create a Slack app with the bot scopes app_mentions:read, chat:write, im:history, channels:history, files:read and files:write, install it, and paste its bot token and signing secret. Then paste the webhook URL into the app's Event Subscriptions and subscribe to app_mention, message.im and message.channels.",
     fields: [{ key: "botToken", label: "Bot token", placeholder: "xoxb-…" }, { key: "signingSecret", label: "Signing secret", placeholder: "From Basic Information" }],
     senders: "Member IDs: U0123ABCD",
   },
@@ -141,8 +141,8 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
   );
 }
 
-/** View Channel, Send Messages, Read Message History and Send Messages in Threads. */
-const DISCORD_PERMISSIONS = (1n << 10n | 1n << 11n | 1n << 16n | 1n << 38n).toString();
+/** View Channel, Send Messages, Attach Files, Read Message History and Send Messages in Threads. */
+const DISCORD_PERMISSIONS = (1n << 10n | 1n << 11n | 1n << 15n | 1n << 16n | 1n << 38n).toString();
 
 function DiscordHelp({ channel }: { channel: Channel }) {
   return <div className="rounded border p-3 text-sm space-y-2">

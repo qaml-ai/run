@@ -1,11 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
-import type { ImageContent } from "@earendil-works/pi-ai";
 import { HttpError } from "./http.ts";
-import { SendError, type ChannelProvider, type Inbound } from "./channels.ts";
+import { fetchFile, SendError, type ChannelProvider, type Inbound, type InboundFile } from "./channels.ts";
 
-/** Photos above this are skipped: they travel inside the prompt request and the agent's journal. */
-const MAX_IMAGE_BYTES = 750_000;
-const MIME: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" };
+/** Bot API limits: bots download files up to 20 MB, and send photos up to 10 MB and other files up to 50 MB. */
+const MAX_DOWNLOAD_BYTES = 20 * 1000 * 1000;
+const MAX_PHOTO_BYTES = 10 * 1000 * 1000;
+const MAX_FILE_BYTES = 50 * 1000 * 1000;
+const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
+/** Attachments besides photos, each one file with its own `file_id` (an animation repeats itself as `document`). */
+const KINDS = ["document", "audio", "voice", "video", "animation"];
 
 /** Telegram bots through the Bot API. `apiUrl` is configurable so tests run against a fake. */
 export function telegram(options: { apiUrl?: string } = {}): ChannelProvider {
@@ -16,9 +19,10 @@ export function telegram(options: { apiUrl?: string } = {}): ChannelProvider {
     return value;
   };
   // The token is part of the URL: errors name the method, never the URL.
-  async function call(credentials: Record<string, string>, method: string, body: Record<string, unknown> = {}) {
+  async function call(credentials: Record<string, string>, method: string, body: Record<string, unknown> | FormData = {}) {
+    const form = body instanceof FormData;
     const response = await fetch(`${base}/bot${token(credentials)}/${method}`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+      method: "POST", ...(form ? { body } : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), signal: AbortSignal.timeout(form ? 120_000 : 15_000),
     }).catch(error => { throw new SendError(`Telegram ${method} failed: ${error instanceof Error ? error.name : "network error"}`, false); });
     const answer = await response.json().catch(() => ({})) as { ok?: boolean; result?: any; description?: string; parameters?: { retry_after?: number } };
     if (answer.ok) return answer.result;
@@ -52,32 +56,47 @@ export function telegram(options: { apiUrl?: string } = {}): ChannelProvider {
       const message = update?.message;
       if (!message?.chat || !message.from || message.from.is_bot || typeof update.update_id !== "number") return undefined;
       const text = typeof message.text === "string" ? message.text : typeof message.caption === "string" ? message.caption : "";
-      // Telegram sends each photo in several sizes, smallest first: take the largest that fits.
-      const photo = Array.isArray(message.photo) ? message.photo.filter((size: any) => (size.file_size ?? 0) <= MAX_IMAGE_BYTES).at(-1) : undefined;
-      if (!text && !photo) return undefined;
+      const files: InboundFile[] = [];
+      const add = (file: any, name: string, contentType?: string) => {
+        if (typeof file?.file_id !== "string" || files.some(entry => entry.id === file.file_id)) return;
+        files.push({ id: file.file_id, name, ...(typeof file.file_size === "number" ? { size: file.file_size } : {}), ...(contentType ? { contentType } : {}) });
+      };
+      // Telegram sends each photo in several sizes, smallest first: take the largest.
+      if (Array.isArray(message.photo)) add(message.photo.at(-1), "photo.jpg", "image/jpeg");
+      for (const kind of KINDS) {
+        const file = message[kind], type = typeof file?.mime_type === "string" ? file.mime_type : undefined;
+        add(file, typeof file?.file_name === "string" ? file.file_name : `${kind}${type ? `.${type.split("/")[1]}` : ""}`, type);
+      }
+      if (!text && !files.length) return undefined;
       const name = [message.from.first_name, message.from.last_name].filter(value => typeof value === "string").join(" ");
       return {
         conversationId: String(message.chat.id), messageId: `${message.chat.id}:${message.message_id}`,
         sender: { id: String(message.from.id), ...(message.from.username ? { username: String(message.from.username) } : {}), ...(name ? { name } : {}) },
-        text, images: photo ? [String(photo.file_id)] : [],
+        text, files,
         ...(/^\/start(@\w+)?(\s|$)/.test(text) ? { command: "start" as const } : {}),
       };
     },
-    async images(credentials, references) {
-      const images: ImageContent[] = [];
-      for (const fileId of references) {
-        const file = await call(credentials, "getFile", { file_id: fileId });
-        if (!file?.file_path || (file.file_size ?? 0) > MAX_IMAGE_BYTES) continue;
-        const response = await fetch(`${base}/file/bot${token(credentials)}/${file.file_path}`, { signal: AbortSignal.timeout(30_000) });
-        if (!response.ok) throw new Error(`Telegram file download failed: HTTP ${response.status}`);
-        const data = Buffer.from(await response.arrayBuffer());
-        if (data.length > MAX_IMAGE_BYTES) continue;
-        const extension = String(file.file_path).split(".").pop()!.toLowerCase();
-        images.push({ type: "image", data: data.toString("base64"), mimeType: MIME[extension] ?? "image/jpeg" });
-      }
-      return images;
+    maxDownloadBytes: MAX_DOWNLOAD_BYTES,
+    async download(credentials, file) {
+      const found = await call(credentials, "getFile", { file_id: file.id });
+      if (typeof found?.file_path !== "string") throw new Error("Telegram getFile gave no path");
+      return fetchFile(`${base}/file/bot${token(credentials)}/${found.file_path}`);
     },
     async send(credentials, conversationId, text) { await call(credentials, "sendMessage", { chat_id: conversationId, text }); },
+    maxFileBytes: MAX_FILE_BYTES,
+    // Images Telegram can show go as photos (a photo it will not take, by its dimensions, goes as a document); the rest as documents.
+    async sendFile(credentials, conversationId, file, caption) {
+      const data = await file.blob();
+      const as = async (method: "sendPhoto" | "sendDocument") => {
+        const form = new FormData();
+        form.set("chat_id", conversationId);
+        if (caption) form.set("caption", caption.slice(0, 1024));
+        form.set(method === "sendPhoto" ? "photo" : "document", data, file.name);
+        await call(credentials, method, form);
+      };
+      if (!PHOTO_TYPES.includes(file.contentType) || file.size > MAX_PHOTO_BYTES) return as("sendDocument");
+      await as("sendPhoto").catch(error => { if (error instanceof SendError && error.permanent) return as("sendDocument"); throw error; });
+    },
     async typing(credentials, conversationId) { await call(credentials, "sendChatAction", { chat_id: conversationId, action: "typing" }); },
   };
 }

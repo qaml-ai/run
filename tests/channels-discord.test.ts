@@ -11,6 +11,7 @@ import { Channels } from "../src/channels.ts";
 import { Ownership } from "../src/ownership.ts";
 import { discord, parseMessage } from "../src/channels-discord.ts";
 import { testDatabase } from "./database.ts";
+import { memoryFiles, requestBody } from "./channel-files.ts";
 
 type T = { after(fn: () => Promise<void> | void): void };
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -34,12 +35,17 @@ async function fakeDiscord(t: T) {
   /** Every gateway payload a client sent, by connection. */
   const received: { socket: WebSocket; op: number; d: any }[] = [];
   const state = { closeOnIdentify: 0 as number, sessions: 0, hello: true, ready: true };
+  /** Attachments on the fake CDN, by path; signed URLs need no token. */
+  const cdn = new Map<string, { data: Buffer; type: string }>();
   const server = createServer(async (req, res) => {
-    let text = "";
-    for await (const chunk of req) text += chunk;
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
     const answer = (status: number, value?: object) => value ? res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(value)) : res.writeHead(status).end();
+    const attachment = cdn.get(req.url!);
+    if (attachment) { res.writeHead(200, { "Content-Type": attachment.type }).end(attachment.data); return; }
     if (req.headers.authorization !== `Bot ${BOT_TOKEN}`) return answer(401, { message: "401: Unauthorized", code: 0 });
-    const body = text ? JSON.parse(text) : undefined;
+    const body = raw.length ? await requestBody(req, raw) : undefined;
     calls.push({ method: req.method!, path: req.url!, body });
     if (req.url === "/users/@me") return answer(200, { id: BOT_ID, username: "fixture_bot", bot: true });
     if (req.url === "/gateway/bot") return answer(200, { url: gatewayUrl });
@@ -73,7 +79,7 @@ async function fakeDiscord(t: T) {
   t.after(async () => { for (const socket of wss.clients) socket.terminate(); wss.close(); server.closeAllConnections(); server.close(); });
   const identified = () => received.filter(entry => entry.op === 2);
   return {
-    url: `http://127.0.0.1:${port}`, calls, received, state, sockets, identified,
+    url: `http://127.0.0.1:${port}`, calls, received, state, sockets, identified, cdn,
     /** Push a message to whichever connection has identified, as Discord would. */
     message: (d: Record<string, unknown>) => {
       const ready = [...sockets].filter(socket => received.some(entry => entry.socket === socket && (entry.op === 2 || entry.op === 6)));
@@ -87,23 +93,28 @@ async function fakeDiscord(t: T) {
 async function node(t: T, api: { url: string }, db: Awaited<ReturnType<typeof testDatabase>>["db"], secretsKey: string, name: string) {
   const ownership = new Ownership(db, { node: name, ttlMs: 60_000 });
   await ownership.start();
-  const prompts: { agent: string; text: string; from?: unknown }[] = [];
+  const prompts: { agent: string; text: string; from?: unknown; files?: { path: string }[] }[] = [];
+  const workspace = memoryFiles();
+  /** Files the next turn presents. */
+  const presenting: unknown[] = [];
   const channels: Channels = new Channels({
+    files: workspace.files,
     db, definitions: new Definitions({ db }), accounts: new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey }),
     node: name, publicUrl: "https://agents.example.test", ownership,
     providers: { discord: discord({ apiUrl: api.url }) },
     createAgent: async (_tenant, _params, key) => ({ id: `client_${sha(key).slice(0, 40)}` }), agentId: (_tenant, key) => `client_${sha(key).slice(0, 40)}`, live: async () => true,
     submit: async (agent, tenant, request) => {
-      const { text, from } = request.params as { text: string; from?: unknown };
-      prompts.push({ agent, text, from });
+      const { text, from, files } = request.params as { text: string; from?: unknown; files?: { path: string }[] };
+      prompts.push({ agent, text, from, ...(files ? { files } : {}) });
+      const presented = presenting.splice(0);
       setImmediate(() => channels.hooks.runEnded!({ id: agent, tenant }, {
-        id: request.id, method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: `re: ${text.split("\n").at(-1)} @everyone` } },
+        id: request.id, method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: `re: ${text.split("\n").at(-1)} @everyone`, presented } },
       }));
       return { id: request.id, method: "prompt", fingerprint: "", state: "running" };
     },
   });
   t.after(async () => { channels.stop(); await ownership.close().catch(() => {}); });
-  return { channels, ownership, prompts };
+  return { channels, ownership, prompts, workspace, presenting };
 }
 
 const ada = { id: "111", username: "ada", global_name: "Ada" };
@@ -204,11 +215,47 @@ test("Discord messages that are not for the bot are ignored", () => {
   assert.equal(parseMessage({ ...base, content: `<@${BOT_ID}>` , mentions: [{ id: BOT_ID }], guild_id: "9" }, BOT_ID), undefined, "a bare mention has nothing to answer");
   const reply = parseMessage({ ...base, type: 19, guild_id: "9", content: `<@!${BOT_ID}> hi`, mentions: [{ id: BOT_ID }] }, BOT_ID);
   assert.equal(reply?.text, "hi");
-  const photo = parseMessage({ ...base, content: "", attachments: [
-    { content_type: "image/png", size: 100, url: "https://cdn.discordapp.com/attachments/1/2/a.png" },
-    { content_type: "image/png", size: 5_000_000, url: "https://cdn.discordapp.com/attachments/1/2/big.png" },
+  const attached = parseMessage({ ...base, content: "", attachments: [
+    { filename: "a.png", content_type: "image/png", size: 100, url: "https://cdn.discordapp.com/attachments/1/2/a.png" },
+    { filename: "notes.zip", size: 5_000_000, url: "https://cdn.discordapp.com/attachments/1/2/notes.zip" },
+    { filename: "broken" },
   ] }, BOT_ID);
-  assert.deepEqual(photo?.images, ["https://cdn.discordapp.com/attachments/1/2/a.png"]);
+  assert.deepEqual(attached?.files, [
+    { id: "https://cdn.discordapp.com/attachments/1/2/a.png", name: "a.png", size: 100, contentType: "image/png" },
+    { id: "https://cdn.discordapp.com/attachments/1/2/notes.zip", name: "notes.zip", size: 5_000_000 },
+  ]);
+});
+
+test("Discord attachments are fetched from the CDN into the agent's workspace; presented files go back as attachments, or links past the limit", async t => {
+  const api = await fakeDiscord(t);
+  const { db } = await testDatabase();
+  const a = await node(t, api, db, randomBytes(32).toString("hex"), "a");
+  const channel = await a.channels.create("default", { type: "discord", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
+  await a.channels.scan();
+  await until(() => api.identified().length === 1, "identify");
+  await until(() => api.received.some(entry => entry.op === 2 && api.sockets.has(entry.socket)), "ready");
+  const zip = Buffer.from("PK\x03\x04 fixture");
+  api.cdn.set("/attachments/1/notes.zip", { data: zip, type: "application/zip" });
+  const report = a.workspace.present("/workspace/report.pdf", Buffer.from("%PDF-1.4 report"), "application/pdf", { caption: "Your report" });
+  const video = a.workspace.present("/workspace/demo.mp4", Buffer.from("mp4"), "video/mp4", { size: 11 * 1024 * 1024 });
+  a.presenting.push(report, video);
+  api.message({ id: "9001", channel_id: "2001", author: ada, content: "", attachments: [
+    { filename: "notes.zip", size: zip.length, url: `${api.url}/attachments/1/notes.zip` },
+    { filename: "elsewhere.png", size: 10, url: "https://evil.example/elsewhere.png" },
+    { filename: "missing.txt", size: 10, url: `${api.url}/attachments/1/missing.txt` },
+    { filename: "big.iso", size: 26 * 1024 * 1024, url: `${api.url}/attachments/1/big.iso` },
+  ] });
+  await until(() => api.sent("2001").length === 3, "the reply, the file and the link");
+  const item = `in_${sha(`${channel.id}:9001`).slice(0, 40)}`;
+  assert.deepEqual(a.prompts[0].files, [{ path: `/workspace/uploads/${item}/notes.zip` }]);
+  assert.deepEqual(a.workspace.saved.get(`/workspace/uploads/${item}/notes.zip`)?.data, zip);
+  assert.equal(a.prompts[0].text, ["(file elsewhere.png could not be downloaded, not attached)", "(file missing.txt could not be downloaded, not attached)", "(file big.iso too large, not attached)"].join("\n"));
+
+  const [reply, file, link] = api.sent("2001");
+  assert.equal(reply.content, "re: (file big.iso too large, not attached) @everyone");
+  assert.deepEqual(JSON.parse(file.payload_json), { content: "Your report", allowed_mentions: { parse: [] }, attachments: [{ id: 0, filename: "report.pdf" }] });
+  assert.deepEqual({ ...file["files[0]"], data: file["files[0]"].data.toString() }, { name: "report.pdf", type: "application/pdf", data: "%PDF-1.4 report" });
+  assert.match(link.content, /^demo\.mp4 \(11\.0 MB, too large to send here; the link works for 24 hours\): https:\/\/agents\.example\.test\/v1\/links\/fixture\/workspace\/demo\.mp4$/);
 });
 
 for (const stage of ["hello", "ready"] as const) {

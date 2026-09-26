@@ -1,9 +1,8 @@
-import type { ImageContent } from "@earendil-works/pi-ai";
 import { HttpError } from "./http.ts";
-import { SendError, type ChannelProvider, type Gateway, type GatewayHandlers, type Inbound } from "./channels.ts";
+import { fetchFile, SendError, type ChannelProvider, type Gateway, type GatewayHandlers, type Inbound } from "./channels.ts";
 
-/** Images above this are skipped: they travel inside the prompt request and the agent's journal. */
-const MAX_IMAGE_BYTES = 750_000;
+/** Discord's attachment limit in servers without boosts (and DMs without Nitro): larger files are sent as a link. */
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
 /**
  * Guild messages and direct messages. Without the privileged MESSAGE_CONTENT intent
  * Discord still gives the text of DMs and of messages that mention the bot, which
@@ -28,16 +27,17 @@ export function parseMessage(message: any, botId: string, ignored?: (reason: str
   const mentioned = Array.isArray(message.mentions) && message.mentions.some((user: any) => user?.id === botId);
   if (!direct && !mentioned) return skip(message.mention_roles?.length ? "role_mention_without_bot_mention" : "not_mentioned");
   const text = String(message.content ?? "").replaceAll(`<@${botId}>`, "").replaceAll(`<@!${botId}>`, "").trim();
-  const images = (Array.isArray(message.attachments) ? message.attachments : [])
-    .filter((file: any) => typeof file?.content_type === "string" && file.content_type.startsWith("image/") && typeof file.url === "string" && (file.size ?? 0) <= MAX_IMAGE_BYTES)
-    .map((file: any) => String(file.url));
-  if (!text && !images.length) return skip("empty_message");
+  const files = (Array.isArray(message.attachments) ? message.attachments : []).filter((file: any) => typeof file?.url === "string").map((file: any) => ({
+    id: file.url, name: typeof file.filename === "string" ? file.filename : "file",
+    ...(typeof file.size === "number" ? { size: file.size } : {}), ...(typeof file.content_type === "string" ? { contentType: file.content_type } : {}),
+  }));
+  if (!text && !files.length) return skip("empty_message");
   const author = message.author;
   return {
     // A DM, a channel, or a thread: each is a Discord channel, and each gets its own agent.
     conversationId: message.channel_id, messageId: message.id,
     sender: { id: String(author.id), ...(author.username ? { username: String(author.username) } : {}), ...(author.global_name ? { name: String(author.global_name) } : {}) },
-    text, images,
+    text, files,
   };
 }
 
@@ -45,8 +45,8 @@ export function parseMessage(message: any, botId: string, ignored?: (reason: str
  * Discord bots. Messages arrive over the Gateway, a WebSocket the channels core
  * keeps open on one node; replies go out through the REST API. The tenant creates
  * an application, adds a bot, gives its token, and invites it with View Channel,
- * Send Messages, Send Messages in Threads and Read Message History (the console's
- * invite link asks for these). `apiUrl` is configurable so tests run against a fake.
+ * Send Messages, Send Messages in Threads, Attach Files and Read Message History (the
+ * console's invite link asks for these). `apiUrl` is configurable so tests run against a fake.
  */
 export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number } = {}): ChannelProvider {
   const base = (options.apiUrl ?? "https://discord.com/api/v10").replace(/\/+$/, "");
@@ -55,10 +55,11 @@ export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number 
     if (typeof value !== "string" || !/^[A-Za-z0-9_.-]{50,100}$/.test(value)) throw new HttpError(400, "Send credentials.botToken: the bot's token, from the Developer Portal's Bot page");
     return value;
   };
-  async function call(credentials: Record<string, string>, method: "GET" | "POST", path: string, body?: Record<string, unknown>) {
+  async function call(credentials: Record<string, string>, method: "GET" | "POST", path: string, body?: Record<string, unknown> | FormData) {
+    const form = body instanceof FormData;
     const response = await fetch(`${base}${path}`, {
-      method, headers: { Authorization: `Bot ${token(credentials)}`, ...(body ? { "Content-Type": "application/json" } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15_000),
+      method, headers: { Authorization: `Bot ${token(credentials)}`, ...(body && !form ? { "Content-Type": "application/json" } : {}) },
+      ...(body ? { body: form ? body : JSON.stringify(body) } : {}), signal: AbortSignal.timeout(form ? 120_000 : 15_000),
     }).catch(error => { throw new SendError(`Discord ${method} ${path.split("/")[1]} failed: ${error instanceof Error ? error.name : "network error"}`, false); });
     if (response.status === 204) return {};
     const answer = await response.json().catch(() => ({})) as any;
@@ -228,23 +229,21 @@ export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number 
     },
     async teardown() {},
     connect,
-    async images(_credentials, references) {
-      const images: ImageContent[] = [];
-      for (const url of references) {
-        // Attachment links are signed and need no token; fetch only from Discord's CDN.
-        if (!/^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\//.test(url) && !url.startsWith(`${base}/`)) continue;
-        const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
-        if (!response.ok) throw new Error(`Discord attachment download failed: HTTP ${response.status}`);
-        const mimeType = response.headers.get("content-type")?.split(";")[0] ?? "";
-        const data = Buffer.from(await response.arrayBuffer());
-        if (!mimeType.startsWith("image/") || data.length > MAX_IMAGE_BYTES) continue;
-        images.push({ type: "image", data: data.toString("base64"), mimeType });
-      }
-      return images;
+    async download(_credentials, file) {
+      // Attachment links are signed and need no token; fetch only from Discord's CDN.
+      if (!/^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\//.test(file.id) && !file.id.startsWith(`${base}/`)) throw new Error("Not a Discord CDN URL");
+      return fetchFile(file.id);
     },
     async send(credentials, conversationId, content) {
       // The agent's text never pings @everyone, roles or users.
       await call(credentials, "POST", `/channels/${conversationId}/messages`, { content, allowed_mentions: { parse: [] } });
+    },
+    maxFileBytes: MAX_FILE_BYTES,
+    async sendFile(credentials, conversationId, file, caption) {
+      const form = new FormData();
+      form.set("payload_json", JSON.stringify({ content: caption?.slice(0, 2000) ?? "", allowed_mentions: { parse: [] }, attachments: [{ id: 0, filename: file.name }] }));
+      form.set("files[0]", await file.blob(), file.name);
+      await call(credentials, "POST", `/channels/${conversationId}/messages`, form);
     },
     async typing(credentials, conversationId) { await call(credentials, "POST", `/channels/${conversationId}/typing`); },
   };

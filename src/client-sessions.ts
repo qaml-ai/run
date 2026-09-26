@@ -1033,7 +1033,7 @@ export class ClientSessions {
    * Where a request's attachments go: `uploads/<request>/<name>` in the agent's /workspace mount,
    * else its first writable one. Requests have their own directories, so names only collide within one.
    */
-  private uploadTarget(session: Session, requestId: string, name: string) {
+  private uploadTarget(session: Pick<Session, "header">, requestId: string, name: string) {
     const mounts = session.header.mounts ?? [];
     const mount = mounts.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? mounts.find(entry => entry.mode === "rw");
     if (!this.options.volumes || !mount) throw new HttpError(400, "Attaching files needs a writable mount, like the default /workspace");
@@ -1042,14 +1042,14 @@ export class ClientSessions {
   }
 
   /** Save an attachment for request `requestId` ahead of it (the SDKs upload files this way, then reference them by path). */
-  async upload(session: Session, requestId: string, name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string) {
+  async upload(session: Pick<Session, "header">, requestId: string, name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string) {
     const target = this.uploadTarget(session, requestId, name);
     const { chunks: _chunks, path, ...entry } = await this.options.volumes!.put(session.header.tenant, target.mount.volumeId, target.path, source, { contentType, by: session.header.id });
     return { path: target.show(path), ...entry };
   }
 
   /** A path as the agent sees it, resolved to its mount (writable, for `write`). */
-  private mounted(session: Session, path: unknown, write = false) {
+  private mounted(session: Pick<Session, "header">, path: unknown, write = false) {
     if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
     let target;
     try { target = resolveMount(session.header.mounts ?? [], path); } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -1058,11 +1058,42 @@ export class ClientSessions {
     return target;
   }
 
-  /** `upload` for a tenant's agent (REST API). */
+  /** `upload` for a tenant's agent (REST API, channels). */
   async uploadFor(id: string, tenant: string, requestId: string, name: string, source: AsyncIterable<Uint8Array>, contentType?: string) {
-    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
-    if (!session) throw new HttpError(404, "Unknown agent");
-    return this.upload(session, requestId, name, source, contentType);
+    return this.upload(await this.headerFor(id, tenant), requestId, name, source, contentType);
+  }
+
+  /** A file in a tenant's agent's mounts, as a reference (channels' send_message). */
+  async fileFor(id: string, tenant: string, path: string) {
+    return this.pathRef(await this.headerFor(id, tenant), path);
+  }
+
+  /** A signed download link to a file in a tenant's agent's mounts. */
+  async linkFor(id: string, tenant: string, path: string, expiresIn?: number) {
+    const session = await this.headerFor(id, tenant);
+    const target = this.mounted(session, path);
+    if (!this.options.links) throw new HttpError(404, "Links are not enabled on this runtime");
+    return this.options.links.sign({ tenant, volume: target.mount.volumeId, path: target.path, method: "GET", expiresIn });
+  }
+
+  /** What file work needs of an agent (its mounts), on any node: files are volumes, which any node reaches. */
+  private async headerFor(id: string, tenant: string): Promise<Pick<Session, "header">> {
+    const header = (await this.owns(id, tenant)) ? this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value : undefined;
+    if (!header || header.purged) throw new HttpError(404, "Unknown agent");
+    return { header };
+  }
+
+  /** A file already in the agent's mounts, as a reference. */
+  private async pathRef(session: Pick<Session, "header">, path: string): Promise<FileRef> {
+    const volumes = this.options.volumes;
+    if (!volumes) throw new HttpError(400, "Volumes are not enabled on this runtime");
+    const tenant = session.header.tenant;
+    let target;
+    try { target = resolveMount(session.header.mounts ?? [], path); } catch (error) { throw new HttpError(400, errorText(error)); }
+    if (!target) throw new HttpError(400, "Attach a file, not /");
+    const entry = await volumes.call(target.mount.volumeId, tenant, "stat", { path: target.path }).catch(error => { throw (error as HttpError).status === 404 ? new HttpError(400, `${target.show(target.path)} does not exist`) : error; });
+    if (entry.type !== "file") throw new HttpError(400, `${target.show(target.path)} is a directory`);
+    return fileRef(volumes, tenant, target.mount.volumeId, target.show(entry.path), { ...entry, contentType: await volumes.contentType(tenant, entry.path, entry) });
   }
 
   /**
@@ -1092,19 +1123,12 @@ export class ClientSessions {
       return { name: unique, data, contentType: contentType as string | undefined };
     });
     const volumes = this.options.volumes;
-    const mounts = session.header.mounts ?? [];
     if (checked.length && !volumes) throw new HttpError(400, "Volumes are not enabled on this runtime");
     const tenant = session.header.tenant;
     const refs: FileRef[] = [];
     for (const input of checked) {
-      if ("path" in input) {
-        let target;
-        try { target = resolveMount(mounts, input.path); } catch (error) { throw new HttpError(400, errorText(error)); }
-        if (!target) throw new HttpError(400, "Attach a file, not /");
-        const entry = await volumes!.call(target.mount.volumeId, tenant, "stat", { path: target.path }).catch(error => { throw (error as HttpError).status === 404 ? new HttpError(400, `${target.show(target.path)} does not exist`) : error; });
-        if (entry.type !== "file") throw new HttpError(400, `${target.show(target.path)} is a directory`);
-        refs.push(await fileRef(volumes!, tenant, target.mount.volumeId, target.show(entry.path), { ...entry, contentType: await volumes!.contentType(tenant, entry.path, entry) }));
-      } else {
+      if ("path" in input) refs.push(await this.pathRef(session, input.path as string));
+      else {
         const target = this.uploadTarget(session, requestId, input.name);
         const saved = await volumes!.put(tenant, target.mount.volumeId, target.path, Buffer.from(input.data, "base64"), { contentType: input.contentType, by: session.header.id });
         refs.push(await fileRef(volumes!, tenant, target.mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! }));
