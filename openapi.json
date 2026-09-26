@@ -363,7 +363,7 @@
         "properties": {
           "definition": {
             "type": "string",
-            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model and thinkingLevel given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend"
+            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend"
           },
           "name": {
             "type": "string"
@@ -398,6 +398,10 @@
           "initialMessages": {
             "type": "array",
             "items": {}
+          },
+          "fileTools": {
+            "type": "boolean",
+            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
           },
           "ttlSeconds": {
             "type": [
@@ -505,6 +509,13 @@
               },
               "systemPromptAppend": {
                 "type": "string"
+              },
+              "fileTools": {
+                "type": "boolean",
+                "enum": [
+                  false
+                ],
+                "description": "Present when the model gets no file tools but present_file"
               },
               "cursor": {
                 "type": "number"
@@ -1684,6 +1695,10 @@
               "max"
             ]
           },
+          "fileTools": {
+            "type": "boolean",
+            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
+          },
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
           },
@@ -1951,6 +1966,10 @@
               "xhigh",
               "max"
             ]
+          },
+          "fileTools": {
+            "type": "boolean",
+            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
           },
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
@@ -2283,6 +2302,13 @@
               "max",
               null
             ]
+          },
+          "fileTools": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
           },
           "limits": {
             "allOf": [

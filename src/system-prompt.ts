@@ -14,7 +14,6 @@ Tools:
 - Return or log only what you need to read (counts, totals, a few rows), not whole datasets or files.
 - Executions start fresh: variables are gone afterwards, files are not. Carry data to a later execution in a file.
 - Finding tools in js_exec: tools.search("refund an invoice") returns the best matches as { name, description, input }, input being the arguments' signature; tools.search(query, { namespace, limit }) narrows or widens it, tools.namespaces() lists namespaces (what precedes "__" in a tool's name) and tools.describe(name) gives a full schema. When a match is clear, search and call in one execution. If nothing fits, search again in other words; never invent tools.
-- The file tools (read, write, edit, ls, glob, grep) are for looking at and changing files yourself; fs in js_exec is for code that works on their contents.
 
 Files:
 - Attached files are named in the message by path, type and size, text files with their first lines.
@@ -45,12 +44,14 @@ export function applicationInstructions(applicationPrompt?: string, append?: str
  * tools and js_exec's limits. Nothing per turn, so it changes only with the configuration and the
  * cached prompt prefix holds.
  */
-export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" | "tools">): string {
+export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" | "tools" | "fileTools">): string {
   const mounts = config.mounts ?? [];
   const writable = mounts.find(mount => mount.path === "/workspace" && mount.mode === "rw") ?? mounts.find(mount => mount.mode === "rw");
   const files = !mounts.length ? "Files: none are mounted, so fs and the file tools are unavailable."
     : `Files: ${mounts.map(mount => `${mount.path} (${mount.mode === "ro" ? "read-only" : "read-write"})`).join(", ")}; relative paths resolve against ${mounts[0].path}.` +
-      (writable ? ` Attachments are saved under ${writable.path}/uploads/<request>/ and files that tools return under ${writable.path}/tool-outputs/; keep scratch data under ${writable.path}/tmp/.` : "");
+      (writable ? ` Attachments are saved under ${writable.path}/uploads/<request>/ and files that tools return under ${writable.path}/tool-outputs/; keep scratch data under ${writable.path}/tmp/.` : "") +
+      (config.fileTools === false ? " Work on them with fs in js_exec; the application's own tools may reach other files."
+        : " The file tools (read, write, edit, ls, glob, grep) are for looking at and changing files yourself; fs in js_exec is for code that works on their contents.");
   const images = config.model.input.includes("image");
   const sight = images && supportsDocuments(config.model) ? "You see images and PDFs: attached ones and ones you read are shown to you, so never decode their bytes in code."
     : images ? "You see images (attached ones and ones you read are shown to you, so never decode their bytes in code), but not PDFs: read a PDF for its text."
@@ -74,7 +75,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
  * The context's first system message: the runtime's instructions, then the application's and a
  * summary of the environment as named sections. Rendered, they are joined by blank lines.
  */
-export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools">, tools: Tool[]): SystemMessage {
+export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools" | "fileTools">, tools: Tool[]): SystemMessage {
   return {
     role: "system", content: runtimeInstructions, timestamp: 0,
     sections: { [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config) },

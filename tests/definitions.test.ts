@@ -8,7 +8,7 @@ import { AgentRuntime } from "../clients/typescript.ts";
 import { Definitions } from "../src/definitions.ts";
 import { migrate } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
-import { OTHER_OPERATOR, runtime, until } from "./runtime-server.ts";
+import { OTHER_OPERATOR, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
 
 const lookup = { name: "lookup", description: "Look something up", parameters: { type: "object", properties: { key: { type: "string" } } }, exposure: "direct" };
 const systemText = (body: any) => body.messages.find((message: any) => message.role === "system" || message.role === "developer")?.content as string;
@@ -139,6 +139,33 @@ test("an agent's own model, thinking level and prompt addition survive applying 
   assert.equal((await r.call(`/v1/agents/${other}`)).json.model, "openrouter/anthropic/claude-sonnet-5");
   const thinking = async (id: string) => (await r.db.query("select header->'config'->>'thinkingLevel' as level from agents where id = $1", [id])).rows[0].level;
   assert.deepEqual([await thinking(agent), await thinking(other)], ["off", "high"]);
+});
+
+test("fileTools: false leaves the model present_file alone, with the mounts still open to fs in js_exec", async t => {
+  const r = await runtime(t, (_body, index) => [
+    toolCall("js_exec", { code: "await fs.writeFile('/workspace/notes.md', 'hi'); return await fs.readFile('/workspace/notes.md', { encoding: 'utf8' });" }),
+  ][index] ?? { role: "assistant", content: "ok" });
+  const direct = (body: any) => body.tools.map((tool: any) => tool.function.name).sort();
+  const definition = (await r.call("/v1/definitions", { body: { name: "Own files", fileTools: false } })).json;
+  assert.equal(definition.fileTools, false);
+  assert.equal((await r.call("/v1/definitions", { body: { name: "x", fileTools: "no" } })).status, 400);
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  assert.equal((await r.call(`/v1/agents/${agent}`)).json.fileTools, false);
+  await r.prompt(agent, "take notes");
+  assert.deepEqual(direct(r.model.bodies[0]), ["js_exec", "present_file"]);
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /hi/, "fs still reaches the workspace");
+  assert.match(systemText(r.model.bodies[0]), /Work on them with fs in js_exec/);
+  assert.doesNotMatch(systemText(r.model.bodies[0]), /The file tools \(read/);
+
+  // Applying the definition without it brings the file tools back, but not to an agent that chose to go without.
+  const own = (await r.call("/v1/agents", { body: { definition: definition.id, fileTools: false } })).json.id;
+  await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { fileTools: null, apply: "all" } });
+  await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((entry: any) => entry.revision === 2), "the apply");
+  await r.prompt(agent, "again");
+  assert.deepEqual(direct(r.model.bodies.at(-1)), ["edit", "glob", "grep", "js_exec", "ls", "present_file", "read", "write"]);
+  assert.match(systemText(r.model.bodies.at(-1)) + JSON.stringify(r.model.bodies.at(-1).messages), /The file tools \(read/);
+  await r.prompt(own, "hello");
+  assert.deepEqual(direct(r.model.bodies.at(-1)), ["js_exec", "present_file"]);
 });
 
 test("the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async t => {

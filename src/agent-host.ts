@@ -422,6 +422,7 @@ export function createAgentHost(io: HostIO) {
       if (busy) throw new Error("Agent is busy");
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt;
       if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
+      if (params.fileTools !== undefined) config.fileTools = params.fileTools;
       if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; }
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;

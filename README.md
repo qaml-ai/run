@@ -409,8 +409,8 @@ leaves alone:
 ```
 
 - `model` and `thinkingLevel` given at creation, or later through
-  `PATCH /v1/agents/:id/configuration`, are the agent's own: an apply changes
-  every other field and keeps them.
+  `PATCH /v1/agents/:id/configuration`, and `fileTools` given at creation, are
+  the agent's own: an apply changes every other field and keeps them.
 - `systemPromptAppend` is text the model reads after the definition's prompt
   (after the runtime's default prompt without one), e.g. per-conversation
   context. An apply replaces the prompt and keeps the addition; configuring
@@ -1202,6 +1202,14 @@ file (1 MiB of base64 with its path, a tool result's limit); `fs.writeFile`'s
 argument may be that large, while other tool calls keep 128 KiB. Larger files
 are read in windows with `tools.read({ path, offset, encoding: "base64" })`.
 
+An application with file tools of its own can leave the runtime's out, so the
+model does not see two sets: `"fileTools": false` in a definition, or when
+creating an agent (the agent's choice then survives applying its definition).
+The model and js_exec's `tools` then have no read, write, edit, ls, glob or
+grep; `present_file` stays, and the mounts stay open to `fs`, attachments and
+tool outputs. The environment section of the prompt says to work on files with
+`fs`, and `GET /v1/agents/:id` shows `"fileTools": false`.
+
 ### Files out
 
 An agent's output files are volume files. A run's outcome (`prompt`,
@@ -1214,7 +1222,7 @@ An agent's output files are volume files. A run's outcome (`prompt`,
   `caption`. Each is also a `file_presented` event on the agent's stream as soon
   as it is presented, with a signed download `url` (15 minutes) and `expiresAt`.
 
-`present_file` comes with the file tools. It is the explicit way for the model
+`present_file` comes with the file tools, and stays without them (`fileTools: false`). It is the explicit way for the model
 to give someone a file ("here is your chart"), where `files` lists every write,
 scratch files included. A runtime feature finds presented files in
 `record.outcome.result.presented` at `runEnded`, as it finds `reply`: a

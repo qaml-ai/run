@@ -54,7 +54,8 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
     ...(input.systemPromptAppend !== undefined ? { systemPromptAppend: input.systemPromptAppend } : {}),
   });
   if (input.initialMessages !== undefined) validateInitialMessages(input.initialMessages);
-  return { model, ...updates, ...(input.initialMessages !== undefined ? { initialMessages: input.initialMessages } : {}) };
+  if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
+  return { model, ...updates, ...(input.fileTools === false ? { fileTools: false } : {}), ...(input.initialMessages !== undefined ? { initialMessages: input.initialMessages } : {}) };
 }
 
 /**

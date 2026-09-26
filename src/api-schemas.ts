@@ -72,7 +72,7 @@ export const Mount = z.object({
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
 export const AgentInput = z.object({
-  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model and thinkingLevel given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
+  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
   name: z.string().optional(),
   type: z.string().optional(),
   model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
@@ -80,6 +80,7 @@ export const AgentInput = z.object({
   systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt, e.g. per-conversation context. The agent's own: applying its definition replaces the prompt and keeps this" }),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
   initialMessages: z.array(z.unknown()).optional(),
+  fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400." }),
   mounts: z.array(Mount).optional().openapi({ description: "Volumes for the agent's file tools; default: a new workspace volume at /workspace" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
@@ -144,6 +145,7 @@ export const AgentDetail = AgentSummary.extend({
   mounts: z.array(Mount),
   systemPrompt: z.string(),
   systemPromptAppend: z.string().optional(),
+  fileTools: z.literal(false).optional().openapi({ description: "Present when the model gets no file tools but present_file" }),
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
   requests: z.array(RequestRecord),
@@ -261,6 +263,7 @@ const definitionFields = {
   model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().trim().min(1).max(32_000),
   thinkingLevel: ThinkingLevel,
+  fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }),
   limits: DefinitionLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
   builtins: z.array(z.enum(["web_fetch", "web_search", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups" }),

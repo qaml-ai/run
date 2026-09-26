@@ -28,6 +28,8 @@ export interface DefinitionSpec {
   mcpServers?: McpServerSpec[];
   /** OpenAPI specs whose operations the runtime calls; credentials sealed. */
   openApi?: OpenApiSpec[];
+  /** false: agents get no file tools but present_file; their mounts stay open to fs in js_exec. */
+  fileTools?: boolean;
   /** Built-in tools to enable: web_fetch, web_search, schedule. */
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
@@ -45,9 +47,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["model", "systemPrompt", "thinkingLevel", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi"] as const;
+const FIELDS = ["model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "fileTools"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
@@ -185,10 +187,10 @@ export class Definitions {
     const ttlSeconds = params.ttlSeconds !== undefined ? params.ttlSeconds : spec.limits?.ttlSeconds;
     const mounts = params.mounts !== undefined ? params.mounts : spec.mounts;
     const overrides = OVERRIDES.filter(key => params[key] !== undefined);
-    const own = (key: "model" | "systemPrompt" | "thinkingLevel") => params[key] ?? spec[key];
+    const own = (key: "model" | "systemPrompt" | "thinkingLevel" | "fileTools") => params[key] ?? spec[key];
     return {
       params: {
-        ...Object.fromEntries((["model", "systemPrompt", "thinkingLevel"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
+        ...Object.fromEntries((["model", "systemPrompt", "thinkingLevel", "fileTools"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
         tools: params.tools ?? [], name: params.name ?? definition.name, ...(params.type !== undefined ? { type: params.type } : {}),
         ...(ttlSeconds !== undefined ? { ttlSeconds } : {}), ...(mounts !== undefined ? { mounts } : {}),
         ...Object.fromEntries(["initialMessages", "systemPromptAppend"].filter(key => params[key] !== undefined).map(key => [key, params[key]])),
@@ -225,6 +227,7 @@ export class Definitions {
       if (!spec.limits || typeof spec.limits !== "object" || Object.keys(spec.limits).some(key => key !== "ttlSeconds")) throw new HttpError(400, "limits is { ttlSeconds }");
       validTtl(spec.limits.ttlSeconds);
     }
+    if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
     if (spec.builtins !== undefined && (!Array.isArray(spec.builtins) || new Set(spec.builtins).size !== spec.builtins.length || spec.builtins.some(name => !Object.hasOwn(BUILTINS, name)))) {
       throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);

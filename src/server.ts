@@ -312,7 +312,7 @@ const clients = new ClientSessions(supervisor, {
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
     const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls);
-    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off" }, sources: sources(spec) };
+    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false }, sources: sources(spec) };
   },
   sources: toolSources,
 });

@@ -155,7 +155,7 @@ test("the prompt summarizes the agent's environment from its configuration, and 
   const system = (body: any) => body.messages[0].content as string;
   assert.equal(system(requests[0]).slice(system(requests[0]).indexOf("Your environment:")), [
     "Your environment:",
-    "- Files: /workspace (read-write), /shared (read-only); relative paths resolve against /workspace. Attachments are saved under /workspace/uploads/<request>/ and files that tools return under /workspace/tool-outputs/; keep scratch data under /workspace/tmp/.",
+    "- Files: /workspace (read-write), /shared (read-only); relative paths resolve against /workspace. Attachments are saved under /workspace/uploads/<request>/ and files that tools return under /workspace/tool-outputs/; keep scratch data under /workspace/tmp/. The file tools (read, write, edit, ls, glob, grep) are for looking at and changing files yourself; fs in js_exec is for code that works on their contents.",
     "- You cannot see images or PDFs: read a PDF for its text.",
     "- Tools declared to you: lookup.",
     "- Tools only in js_exec: 3, in 1 without a namespace, crm (2); find them with tools.search.",

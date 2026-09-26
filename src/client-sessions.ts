@@ -198,7 +198,7 @@ export interface ClientSessionOptions {
   rerankers?: Reranker[];
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
-export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel">; sources?: Sources };
+export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools">; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
@@ -532,7 +532,7 @@ export class ClientSessions {
    * send_message), the application's attached server, file tools over its mounts, then its
    * definition's built-ins, OpenAPI specs and remote MCP servers.
    */
-  private async servers(session: Session, tools = session.header.definitions, sources = session.header.sources): Promise<ToolServer[]> {
+  private async servers(session: Session, tools = session.header.definitions, sources = session.header.sources, fileTools = session.header.config.fileTools): Promise<ToolServer[]> {
     const header = session.header;
     const tenant = header.tenant;
     const agent: AgentRef = { id: header.id, tenant, claim: session.claim };
@@ -543,7 +543,7 @@ export class ClientSessions {
     return [
       ...feature ? [view("channel", feature)] : [],
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
-      ...volumes && header.mounts?.length ? [view("files", fileServer(volumes.definitions(), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
+      ...volumes && header.mounts?.length ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
       ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
     ];
   }
@@ -574,8 +574,8 @@ export class ClientSessions {
   }
 
   /** The agent's tools from its servers (see `servers`). Records the route, and the servers for `toolSources`. */
-  private async toolset(session: Session, tools = session.header.definitions, sources = session.header.sources) {
-    const servers = await this.servers(session, tools, sources);
+  private async toolset(session: Session, tools = session.header.definitions, sources = session.header.sources, fileTools = session.header.config.fileTools) {
+    const servers = await this.servers(session, tools, sources, fileTools);
     const { tools: definitions, route } = await compose(servers);
     session.route = route;
     session.servers = servers;
@@ -765,7 +765,8 @@ export class ClientSessions {
     if (!metadata || !session) throw new HttpError(404, "Agent not found");
     const definition = session.header.definition && { id: session.header.definition.id, revision: session.header.definition.revision };
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
-      ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}), mounts: session.header.mounts ?? [],
+      ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
+      ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [],
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
@@ -1185,7 +1186,7 @@ export class ClientSessions {
       const result = live ? await this.supervisor.request(id, "configure", {
         ...update, ...apiKey ? { apiKey } : {},
         // Replacing the application's tools keeps the runtime's own.
-        ...update.tools ? { tools: await this.toolset(session, update.tools, applied ? applied.sources : session.header.sources) } : {},
+        ...update.tools ? { tools: await this.toolset(session, update.tools, applied ? applied.sources : session.header.sources, "fileTools" in update ? update.fileTools : session.header.config.fileTools) } : {},
       }) : { configured: true };
       const { tools, ...config } = update;
       if (resolved && live) session.platformKey = resolved.platform;
@@ -1196,7 +1197,7 @@ export class ClientSessions {
         if (applied.sources) session.header.sources = applied.sources; else delete session.header.sources;
       } else if (session.header.definition) {
         // A model or thinking level configured directly is the agent's own from then on.
-        const overrides = new Set([...session.header.overrides ?? [], ...OVERRIDES.filter(key => update[key] !== undefined)]);
+        const overrides = new Set([...session.header.overrides ?? [], ...OVERRIDES.filter(key => (update as Record<string, unknown>)[key] !== undefined)]);
         if (overrides.size) session.header.overrides = [...overrides];
       }
       await this.writeHeader(session);
