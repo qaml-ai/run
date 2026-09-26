@@ -1,6 +1,6 @@
 import { StrictMode, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, Wallet } from "lucide-react";
+import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ import { TokensPage } from "@/pages/tokens";
 import { UsagePage } from "@/pages/usage";
 import { BillingPage } from "@/pages/billing";
 import { QuickstartPage } from "@/pages/quickstart";
+import { VolumePage, VolumesPage } from "@/pages/volumes";
 import "./style.css";
 
 const dark = matchMedia("(prefers-color-scheme: dark)");
@@ -31,6 +32,7 @@ const NAV = [
   { to: "agents", label: "Agents", icon: Bot },
   { to: "definitions", label: "Definitions", icon: FileCog },
   { to: "channels", label: "Channels", icon: MessageCircle },
+  { to: "volumes", label: "Volumes", icon: HardDrive },
   { to: "models", label: "Models & keys", icon: Boxes },
   { to: "tokens", label: "API tokens", icon: KeyRound },
   { to: "usage", label: "Usage", icon: BarChart3 },
@@ -45,6 +47,7 @@ function App() {
   if (!me.data) return <SignIn onSignedIn={() => void me.reload()} />;
   const [section, ...rest] = path.split("/");
   const page = section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
+    : section === "volumes" ? (rest[0] ? <VolumePage id={rest[0]} /> : <VolumesPage />)
     : section === "definitions" ? <DefinitionsPage />
     : section === "channels" ? <ChannelsPage />
     : section === "models" ? <ModelsPage me={me.data} />

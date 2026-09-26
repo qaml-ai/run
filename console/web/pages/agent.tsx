@@ -1,43 +1,70 @@
-import { useState, type FormEvent } from "react";
-import { ArrowLeft, Braces, Loader2, RefreshCw, Send, Square, Trash2, Wrench } from "lucide-react";
+import { useRef, useState, type FormEvent } from "react";
+import { ArrowLeft, Braces, Loader2, Paperclip, RefreshCw, Send, Square, Trash2, Wrench, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmButton, CopyButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type AgentDetail, type RequestRecord, type ToolSource } from "@/lib/api";
+import { FileBrowser, FileCard } from "@/components/files";
+import { api, formatBytes, formatTime, putFile, useApi, type AgentDetail, type FileRef, type Mount, type RequestRecord, type RunFiles, type ToolSource } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
 import { AgentStatus } from "@/pages/agents";
 
-type Part = { type: string; text?: string; thinking?: string; name?: string; arguments?: unknown; id?: string };
-type Message = { role: string; content: string | Part[]; toolName?: string; isError?: boolean; timestamp?: number; stopReason?: string; errorMessage?: string };
+type Part = { type: string; text?: string; thinking?: string; name?: string; arguments?: any; id?: string };
+type Message = { role: string; content: string | Part[]; toolName?: string; toolCallId?: string; isError?: boolean; timestamp?: number; stopReason?: string; errorMessage?: string };
 const parts = (content: Message["content"]): Part[] => typeof content === "string" ? [{ type: "text", text: content }] : content ?? [];
 const text = (content: Message["content"]) => parts(content).filter(part => part.type === "text").map(part => part.text).join("\n");
 
-function Conversation({ messages }: { messages: Message[] }) {
+/** Where a path the agent saw lives: the deepest mount containing it (of `volume`, when known). */
+function locate(mounts: Mount[] | undefined, shown: string, volume?: string) {
+  const mount = (mounts ?? []).filter(mount => (!volume || mount.volumeId === volume) && (shown === mount.path || shown.startsWith(`${mount.path}/`)))
+    .sort((a, b) => b.path.length - a.path.length)[0];
+  return mount && { volume: mount.volumeId, path: `${(mount.subpath ?? "").replace(/\/$/, "")}${shown.slice(mount.path.length)}` || "/" };
+}
+
+/** A transcript's file reference, or a run's file, as a card with a thumbnail and a download. */
+function RefCard({ mounts, file, caption }: { mounts?: Mount[]; file: Pick<FileRef, "path" | "contentType" | "size"> & { volume?: string }; caption?: string }) {
+  const place = locate(mounts, file.path, file.volume);
+  return <FileCard volume={place?.volume} path={place?.path} shown={file.path} contentType={file.contentType} size={file.size} caption={caption && <span className="whitespace-pre-wrap">{caption}</span>} />;
+}
+const files = (content: Message["content"]) => parts(content).filter(part => part.type === "file") as unknown as FileRef[];
+const json = (value: string) => { try { return JSON.parse(value); } catch { return undefined; } };
+
+function Conversation({ messages, mounts }: { messages: Message[]; mounts?: Mount[] }) {
   if (!messages.length) return <EmptyState icon={<Send />} title="No messages yet">Prompts sent by your app, or from the “Try it” tab, appear here.</EmptyState>;
+  // present_file's result names the file's type and size; its call has the caption.
+  const presented = new Map(messages.filter(message => message.role === "toolResult" && message.toolName === "present_file" && !message.isError)
+    .map(message => [message.toolCallId, json(text(message.content))]));
   return (
     <div className="flex flex-col gap-3">
       {messages.map((message, index) => {
         if (message.role === "user") return (
-          <div key={index} className="bg-muted ml-auto max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap">{text(message.content) || "(image)"}</div>
+          <div key={index} className="ml-auto flex max-w-[85%] flex-col items-end gap-2">
+            {text(message.content) && <div className="bg-muted rounded-lg px-3 py-2 text-sm whitespace-pre-wrap">{text(message.content)}</div>}
+            {files(message.content).map((file, fileIndex) => <RefCard key={fileIndex} mounts={mounts} file={file} />)}
+          </div>
         );
-        if (message.role === "toolResult") return (
+        if (message.role === "toolResult") return message.toolName === "present_file" && !message.isError ? null : (
           <details key={index} className="rounded-md border px-3 py-2 text-xs">
             <summary className="text-muted-foreground cursor-pointer">
               Result of <span className="font-mono">{message.toolName}</span>{message.isError && <Badge variant="destructive" className="ml-2">error</Badge>}
+              {files(message.content).length > 0 && <Badge variant="outline" className="ml-2">{files(message.content).length} files</Badge>}
             </summary>
             <pre className="mt-2 max-h-80 overflow-auto font-mono whitespace-pre-wrap">{text(message.content)}</pre>
+            <div className="mt-2 flex flex-col gap-2">{files(message.content).map((file, fileIndex) => <RefCard key={fileIndex} mounts={mounts} file={file} />)}</div>
           </details>
         );
         return (
           <div key={index} className="flex max-w-[85%] flex-col gap-2 text-sm">
             {parts(message.content).map((part, partIndex) => part.type === "text" ? <p key={partIndex} className="whitespace-pre-wrap">{part.text}</p>
               : part.type === "thinking" ? <p key={partIndex} className="text-muted-foreground text-xs italic whitespace-pre-wrap">{part.thinking}</p>
-              : part.type === "toolCall" ? (
+              : part.type === "toolCall" && part.name === "present_file" && presented.get(part.id) ? (
+                <RefCard key={partIndex} mounts={mounts} file={presented.get(part.id)} caption={part.arguments?.caption} />
+              ) : part.type === "toolCall" ? (
                 <div key={partIndex} className="bg-muted/50 flex items-start gap-2 rounded-md border px-3 py-2 font-mono text-xs">
                   <Wrench className="mt-0.5 size-3.5 shrink-0" />
                   <span className="break-all">{part.name}({JSON.stringify(part.arguments)})</span>
@@ -51,7 +78,22 @@ function Conversation({ messages }: { messages: Message[] }) {
   );
 }
 
-function Requests({ requests }: { requests: RequestRecord[] }) {
+/** Files a run handed over (with captions), and the paths it wrote. */
+function RunOutputs({ mounts, result }: { mounts?: Mount[]; result?: RunFiles }) {
+  if (!result?.presented?.length && !result?.files?.length) return null;
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      {result.presented?.map(file => <RefCard key={file.path} mounts={mounts} file={file} caption={file.caption} />)}
+      {!!result.files?.length && (
+        <details className="text-xs"><summary className="text-muted-foreground cursor-pointer">Wrote {result.files.length} files</summary>
+          <ul className="mt-1 font-mono">{result.files.map(file => <li key={file.path}>{file.path} <span className="text-muted-foreground">({formatBytes(file.size)}, v{file.version})</span></li>)}</ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function Requests({ requests, mounts }: { requests: RequestRecord[]; mounts?: Mount[] }) {
   if (!requests.length) return <p className="text-muted-foreground text-sm">No requests recorded since this agent was last loaded.</p>;
   return (
     <div className="rounded-lg border">
@@ -60,7 +102,10 @@ function Requests({ requests }: { requests: RequestRecord[] }) {
         <TableBody>
           {[...requests].reverse().map(request => (
             <TableRow key={request.id}>
-              <TableCell><span className="font-medium">{request.method}</span><div className="text-muted-foreground max-w-md truncate text-xs">{request.prompt}</div></TableCell>
+              <TableCell>
+                <span className="font-medium">{request.method}</span><div className="text-muted-foreground max-w-md truncate text-xs">{request.prompt}</div>
+                <RunOutputs mounts={mounts} result={request.outcome?.result as RunFiles | undefined} />
+              </TableCell>
               <TableCell className="text-muted-foreground text-xs">{formatTime(request.startedAt)}</TableCell>
               <TableCell>
                 {request.state === "running" ? <Badge variant="secondary"><Loader2 className="animate-spin" />running</Badge>
@@ -77,14 +122,29 @@ function Requests({ requests }: { requests: RequestRecord[] }) {
 
 function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
   const [draft, setDraft] = useState("");
+  const [attached, setAttached] = useState<File[]>([]);
+  const [progress, setProgress] = useState<number>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const input = useRef<HTMLInputElement>(null);
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true); setError(undefined);
     try {
-      const request = await api<RequestRecord>(`/v1/agents/${agentId}/prompt`, { body: { text: draft } });
-      setDraft("");
+      // Attachments are uploaded first, under the request's id, then sent as {path} references.
+      const requestId = crypto.randomUUID();
+      const total = attached.reduce((sum, file) => sum + file.size, 0) || 1;
+      let done = 0;
+      const files: { path: string }[] = [];
+      for (const file of attached) {
+        setProgress(done / total);
+        const saved = await putFile(`/v1/agents/${agentId}/uploads/${requestId}/${encodeURIComponent(file.name)}`, file, fraction => setProgress((done + fraction * file.size) / total));
+        files.push({ path: saved.path });
+        done += file.size;
+      }
+      setProgress(undefined);
+      const request = await api<RequestRecord>(`/v1/agents/${agentId}/prompt`, { body: { text: draft, requestId, ...(files.length ? { files } : {}) } });
+      setDraft(""); setAttached([]);
       for (let settled = request; settled.state === "running";) {
         await new Promise(resolve => setTimeout(resolve, 1000));
         settled = await api<RequestRecord>(`/v1/agents/${agentId}/requests/${request.id}`);
@@ -93,7 +153,7 @@ function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
       }
       onDone();
     } catch (caught) { setError((caught as Error).message); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setProgress(undefined); }
   }
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
@@ -102,7 +162,21 @@ function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
       </p>
       <ErrorAlert error={error} title="The prompt failed" />
       <Textarea rows={4} value={draft} onChange={event => setDraft(event.target.value)} placeholder="Ask the agent something…" />
-      <div><Button type="submit" disabled={!draft.trim() || busy}>{busy ? <Loader2 className="animate-spin" /> : <Send />}Send</Button></div>
+      {attached.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {attached.map((file, index) => (
+            <Badge key={index} variant="secondary" className="gap-1">{file.name} · {formatBytes(file.size)}
+              <button type="button" aria-label={`Remove ${file.name}`} disabled={busy} onClick={() => setAttached(attached.filter((_, at) => at !== index))}><X className="size-3" /></button>
+            </Badge>
+          ))}
+        </div>
+      )}
+      {progress !== undefined && <Progress value={progress * 100} />}
+      <input ref={input} type="file" multiple hidden onChange={event => { setAttached([...attached, ...event.target.files ?? []]); event.target.value = ""; }} />
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" disabled={busy} onClick={() => input.current?.click()}><Paperclip />Attach</Button>
+        <Button type="submit" disabled={!draft.trim() || busy}>{busy ? <Loader2 className="animate-spin" /> : <Send />}Send</Button>
+      </div>
     </form>
   );
 }
@@ -182,6 +256,25 @@ function ToolSources({ agentId, sources }: { agentId: string; sources: ToolSourc
   );
 }
 
+/** The agent's mounts, and a browser for each: the workspace first. */
+function Files({ mounts = [] }: { mounts?: Mount[] }) {
+  const sorted = [...mounts].sort((a, b) => Number(b.path === "/workspace") - Number(a.path === "/workspace"));
+  if (!sorted.length) return <p className="text-muted-foreground text-sm">This agent has no mounts.</p>;
+  return (
+    <div className="flex flex-col gap-4">
+      {sorted.map(mount => (
+        <FileBrowser key={mount.path} volume={mount.volumeId} root={mount.subpath || "/"} title={
+          <span className="inline-flex flex-wrap items-center gap-2">
+            <span className="font-mono">{mount.path}</span>
+            <Badge variant="outline">{mount.mode === "ro" ? "read-only" : "read-write"}</Badge>
+            <Link to={`volumes/${mount.volumeId}`} className="text-muted-foreground font-mono text-xs font-normal underline">{mount.volumeId}</Link>
+          </span>
+        } />
+      ))}
+    </div>
+  );
+}
+
 export function AgentPage({ id }: { id: string }) {
   const agent = useApi<AgentDetail>(`/v1/agents/${id}`, 5_000);
   const history = useApi<{ messages: Message[] }>(`/v1/agents/${id}/history`, agent.data?.running ? 3_000 : undefined);
@@ -208,11 +301,13 @@ export function AgentPage({ id }: { id: string }) {
           <TabsTrigger value="conversation">Conversation</TabsTrigger>
           <TabsTrigger value="requests">Requests</TabsTrigger>
           <TabsTrigger value="try">Try it</TabsTrigger>
+          <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="config">Configuration</TabsTrigger>
         </TabsList>
-        <TabsContent value="conversation" className="pt-4"><ErrorAlert error={history.error} />{history.data ? <Conversation messages={history.data.messages} /> : <Skeleton className="h-40 w-full" />}</TabsContent>
-        <TabsContent value="requests" className="pt-4"><Requests requests={data.requests} /></TabsContent>
+        <TabsContent value="conversation" className="pt-4"><ErrorAlert error={history.error} />{history.data ? <Conversation messages={history.data.messages} mounts={data.mounts} /> : <Skeleton className="h-40 w-full" />}</TabsContent>
+        <TabsContent value="requests" className="pt-4"><Requests requests={data.requests} mounts={data.mounts} /></TabsContent>
         <TabsContent value="try" className="pt-4"><TryIt agentId={id} onDone={() => { void history.reload(); void agent.reload(); }} /></TabsContent>
+        <TabsContent value="files" className="pt-4"><Files mounts={data.mounts} /></TabsContent>
         <TabsContent value="config" className="grid gap-4 pt-4 lg:grid-cols-2">
           <Card>
             <CardHeader><CardTitle>System prompt</CardTitle></CardHeader>

@@ -65,7 +65,7 @@ export interface ToolSource {
 }
 export interface AgentDetail extends AgentSummary {
   definition?: { id: string; revision: number };
-  tools: { name: string; description: string }[]; toolSources: ToolSource[]; systemPrompt: string; requests: RequestRecord[];
+  tools: { name: string; description: string }[]; toolSources: ToolSource[]; systemPrompt: string; requests: RequestRecord[]; mounts?: Mount[];
 }
 export interface ApiToken { id: string; name: string; prefix: string; createdAt: number }
 export interface Usage {
@@ -102,3 +102,46 @@ export interface Channel {
   access: { public: boolean; allow: string[] }; limits: { perSenderPerMinute: number; turnsPerDay: number };
   greeting?: string; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
 }
+
+export interface VolumeSummary { id: string; name: string; createdAt: number }
+export interface Volume extends VolumeSummary { seq: number; files: number; bytes: number; origin?: { volume: string; snapshot?: string; seq: number } }
+export interface Snapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
+export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
+export interface FileLink { url: string; method: "GET" | "PUT"; volume: string; path: string; expiresAt: number; maxBytes?: number; contentType?: string }
+export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
+/** A file in the transcript: `path` is where the agent saw it, `volume` the volume it was in. */
+export interface FileRef {
+  type: "file"; path: string; volume: string; version: number; size: number; contentType: string;
+  media?: { kind: "image"; mimeType: string; width: number; height: number } | { kind: "pdf"; pages: number } | { kind: "none"; reason: string };
+}
+/** What a run's outcome adds to its result: files written (paths as the agent saw them), and those handed over with present_file. */
+export interface RunFiles { files?: { path: string; version: number; size: number; contentType: string }[]; presented?: (FileRef & { caption?: string })[] }
+
+/** A volume file's path as a URL path, each segment encoded. */
+export const filePath = (path: string) => path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+export const signLink = (volume: string, path: string) => api<FileLink>(`/v1/volumes/${volume}/links`, { body: { path } });
+
+/** PUT a file with upload progress, which fetch cannot report. */
+export function putFile(url: string, file: Blob, onProgress?: (fraction: number) => void): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", url);
+    request.setRequestHeader("X-Agent-Runtime-Console", "1");
+    if (file.type) request.setRequestHeader("Content-Type", file.type);
+    request.upload.onprogress = event => { if (event.lengthComputable) onProgress?.(event.loaded / event.total); };
+    request.onload = () => {
+      let value: any; try { value = JSON.parse(request.responseText); } catch { value = undefined; }
+      if (request.status >= 200 && request.status < 300) resolve(value);
+      else reject(new ApiError(request.status, value?.error ?? `HTTP ${request.status}`));
+    };
+    request.onerror = () => reject(new ApiError(0, "The upload failed"));
+    request.send(file);
+  });
+}
+
+export const formatBytes = (value: number) => {
+  const units = ["B", "KB", "MB", "GB"];
+  let index = 0;
+  for (; value >= 1024 && index < units.length - 1; index++) value /= 1024;
+  return `${index ? value.toFixed(1) : value} ${units[index]}`;
+};
