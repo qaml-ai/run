@@ -1828,8 +1828,8 @@
           "timeoutMs": {
             "type": "integer",
             "minimum": 1000,
-            "maximum": 600000,
-            "description": "Per call; default 60000"
+            "maximum": 1200000,
+            "description": "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all"
           },
           "audience": {
             "type": "string",
@@ -1904,7 +1904,7 @@
           "timeoutMs": {
             "type": "integer",
             "minimum": 1000,
-            "maximum": 300000,
+            "maximum": 1200000,
             "description": "Per call; default 30000"
           },
           "audience": {
@@ -2082,8 +2082,8 @@
           "timeoutMs": {
             "type": "integer",
             "minimum": 1000,
-            "maximum": 600000,
-            "description": "Per call; default 60000"
+            "maximum": 1200000,
+            "description": "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all"
           },
           "audience": {
             "type": "string",
@@ -2182,7 +2182,7 @@
           "timeoutMs": {
             "type": "integer",
             "minimum": 1000,
-            "maximum": 300000,
+            "maximum": 1200000,
             "description": "Per call; default 30000"
           },
           "audience": {

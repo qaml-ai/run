@@ -615,7 +615,13 @@ reconfiguration, not at a refresh.
   directly: past that, `both` tools from later sources are reached from js_exec only.
 - Calls from the model and from js_exec go through the same path as every tool.
   Arguments are checked against the schema, the result is capped at 1 MiB of
-  JSON, and each call has a timeout (`timeoutMs`, default 60 s). Text reaches the
+  JSON, and each call has a timeout (`timeoutMs`, default 60 s, at most 20
+  minutes). The timeout limits silence: each progress notification the server
+  sends for the call restarts it, up to 20 minutes in all, so a long deploy that
+  reports progress is not cut off. A call from js_exec also ends with its
+  execution (120 s at most), so expose long tools directly. A turn waiting on a
+  long call keeps its task protected on ECS; a node that drains meanwhile
+  (`AGENT_DRAIN_TIMEOUT_MS`) hands the turn on with that call's outcome unknown. Text reaches the
   model as it is; images, audio, embedded blobs and text resources over 64 KiB are
   saved to the workspace and reach it as files (below). A `resource_link` stays a
   link (`Resource: <name> <uri>`): the model can `web_fetch` it. `isError` becomes
@@ -669,7 +675,7 @@ every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   keeps the operations it has.
 - Requests go to `baseUrl`, by default the spec's first server (its variables at
   their defaults, resolved against the spec's URL), through the outbound guard
-  with no redirects, `timeoutMs` (default 30 s) and a 1 MiB cap on text and JSON
+  with no redirects, `timeoutMs` (default 30 s, at most 20 minutes) and a 1 MiB cap on text and JSON
   responses (64 MiB on files).
   `headers` and `auth` are sealed as for MCP servers and sent to that origin only.
 - A 2xx answer is the result: its JSON, else its text, else (any other content

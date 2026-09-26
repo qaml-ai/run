@@ -33,6 +33,8 @@ const IDLE_MS = 10 * 60_000;
 const MAX_CONNECTIONS = 256;
 const MAX_TOOLS = 512;
 const CONNECT_TIMEOUT_MS = 15_000;
+/** The longest `timeoutMs` a tool source may set, and the longest an MCP call that keeps reporting progress may take. */
+export const MAX_TIMEOUT_MS = 1_200_000;
 
 export class McpConnections {
   private readonly outbound: Outbound;
@@ -68,7 +70,9 @@ export class McpConnections {
   private fetcher(server: McpServer): FetchLike {
     return async (url, init) => this.outbound.fetch(url, {
       ...init as RequestInit, secrets: server.token ? { ...server.headers, Authorization: `Bearer ${await server.token()}` } : server.headers,
-      timeoutMs: CONNECT_TIMEOUT_MS, maxBytes: 8 * 1024 * 1024,
+      // Each MCP request has its own timeout, and a server answering in JSON sends its headers only with a
+      // tool's answer: this only bounds a response that never starts. Closing the connection aborts it.
+      timeoutMs: MAX_TIMEOUT_MS, maxBytes: 8 * 1024 * 1024,
       // A response may be an event stream carrying the answer (or the server's notifications): only its start is timed.
       stream: true,
     });
@@ -119,10 +123,16 @@ export class McpConnections {
     return this.connections.get(this.key(tenant, server))?.tools;
   }
 
-  /** Call a tool; `onProgress` hears the progress the server reports for it (the call gets a progressToken). */
-  async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, timeoutMs: number, meta?: Record<string, unknown>, onProgress?: (progress: Progress) => void) {
+  /**
+   * Call a tool. It may go `timeoutMs` without an answer; each progress notification the server
+   * sends for it (the call carries a progressToken) restarts that wait, up to `maxTotalMs` in all.
+   * `onProgress` hears each.
+   */
+  async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, { timeoutMs, maxTotalMs }: { timeoutMs: number; maxTotalMs: number }, meta?: Record<string, unknown>, onProgress?: (progress: Progress) => void) {
     const connection = this.connection(tenant, server);
-    return this.retrying(connection, client => client.callTool({ name, arguments: args, ...(meta && Object.keys(meta).length ? { _meta: meta } : {}) }, undefined, { signal, timeout: timeoutMs, maxTotalTimeout: timeoutMs, ...(onProgress ? { onprogress: onProgress } : {}) }));
+    return this.retrying(connection, client => client.callTool({ name, arguments: args, ...(meta && Object.keys(meta).length ? { _meta: meta } : {}) }, undefined, {
+      signal, timeout: timeoutMs, maxTotalTimeout: Math.max(timeoutMs, maxTotalMs), resetTimeoutOnProgress: true, onprogress: progress => onProgress?.(progress),
+    }));
   }
 
   /**

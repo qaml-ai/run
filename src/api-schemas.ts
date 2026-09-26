@@ -223,7 +223,7 @@ const mcpServerFields = {
   allowTools: z.array(z.string()).max(512).optional().openapi({ description: "Only these of its tools" }),
   denyTools: z.array(z.string()).max(512).optional().openapi({ description: "None of these of its tools" }),
   exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its tools: directly, from js_exec (the default), or both" }),
-  timeoutMs: z.number().int().min(1_000).max(600_000).optional().openapi({ description: "Per call; default 60000" }),
+  timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all" }),
   audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)" }),
 };
 const McpServerInput = z.object({
@@ -237,7 +237,7 @@ const openApiFields = {
   allowTools: z.array(z.string()).max(1024).optional().openapi({ description: "Only these operations (by operationId); at most 1024 in all" }),
   denyTools: z.array(z.string()).max(4096).optional().openapi({ description: "None of these operations" }),
   exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its operations: directly, from js_exec (the default), or both" }),
-  timeoutMs: z.number().int().min(1_000).max(300_000).optional().openapi({ description: "Per call; default 30000" }),
+  timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "Per call; default 30000" }),
   audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)" }),
 };
 const OpenApiInput = z.object({

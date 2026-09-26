@@ -261,3 +261,13 @@ test("tool servers get the model's call id, js_exec's too, and the actor; their 
     ["call_code", "js_exec", "Uploading", { type: "progress", tool: "camel__deploy", innerCallId: "call_code:1", progress: 2, total: 3, message: "Uploading" }],
   ]);
 });
+
+test("a call that keeps reporting progress outlasts its timeout, which limits only silence", async t => {
+  // Each step takes longer than half the timeout; together they take over twice it.
+  const server = await progressServer(t, 700);
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("camel__deploy", {}) : { role: "assistant", content: "done" }, LOCAL);
+  assert.equal((await r.call("/v1/definitions", { body: { name: "Too long", mcpServers: [{ name: "camel", url: server.url, timeoutMs: 1_200_001 }] } })).status, 400);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Camel", mcpServers: [{ name: "camel", url: server.url, exposure: "direct", timeoutMs: 1_000 }] } })).json;
+  await r.prompt((await r.call("/v1/agents", { body: { definition: definition.id } })).json.id, "deploy");
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /deployed/);
+});

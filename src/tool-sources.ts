@@ -3,7 +3,7 @@ import type { Accounts, Sealed } from "./accounts.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { HttpError } from "./http.ts";
-import type { McpConnections, McpServer } from "./mcp.ts";
+import { MAX_TIMEOUT_MS, type McpConnections, type McpServer } from "./mcp.ts";
 import type { Outbound } from "./outbound.ts";
 import type { Claim } from "./ownership.ts";
 import type { Scheduler } from "./scheduler.ts";
@@ -133,7 +133,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
     let checked: URL;
     try { checked = context.outbound.check(url); } catch (error) { throw bad(`MCP server ${name}: ${errorText(error)}`); }
     if (exposure !== undefined && !["direct", "codemode", "both"].includes(exposure)) throw bad("exposure is direct, codemode or both");
-    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 600_000)) throw bad("timeoutMs is an integer from 1000 to 600000");
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > MAX_TIMEOUT_MS)) throw bad(`timeoutMs is an integer from 1000 to ${MAX_TIMEOUT_MS}`);
     const spec: McpServerSpec = {
       name, url: checked.toString(), ...(allowTools !== undefined ? { allowTools: strings(allowTools, "allowTools", 512) } : {}),
       ...(denyTools !== undefined ? { denyTools: strings(denyTools, "denyTools", 512) } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
@@ -157,7 +157,7 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
     if (names.has(name)) throw bad(`Two OpenAPI sources are named ${name}`);
     names.add(name);
     if (exposure !== undefined && !["direct", "codemode", "both"].includes(exposure)) throw bad("exposure is direct, codemode or both");
-    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 300_000)) throw bad("timeoutMs is an integer from 1000 to 300000");
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > MAX_TIMEOUT_MS)) throw bad(`timeoutMs is an integer from 1000 to ${MAX_TIMEOUT_MS}`);
     const allow = strings(allowTools, "allowTools", MAX_OPERATIONS), deny = strings(denyTools, "denyTools", 4_096);
     const fail = (error: unknown): never => { throw bad(`OpenAPI source ${name}: ${errorText(error)}`); };
     const kept = previous?.find(other => other.name === name);
@@ -356,7 +356,7 @@ export class ToolSources {
         const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
         const resolved = await resolveFiles(args, tool.inputSchema, callFiles) as Record<string, unknown>;
-        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, callMeta({ toolCallId, innerCallId, origin, actor }), onProgress)) as McpResult;
+        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTotalMs: MAX_TIMEOUT_MS }, callMeta({ toolCallId, innerCallId, origin, actor }), onProgress)) as McpResult;
         return savedContent(result, callFiles);
       },
     };
