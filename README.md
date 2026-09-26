@@ -680,6 +680,9 @@ reconfiguration, not at a refresh.
   crowd the model's context. The same default applies to OpenAPI sources and an
   application's attached server. At most 64 tools are declared to the model
   directly: past that, `both` tools from later sources are reached from js_exec only.
+  A server can set a tool's own exposure in `tools/list` with
+  `_meta["agent-runtime/exposure"]`, which beats the source's, so its important
+  tools keep their direct slots; a tool that needs approval is always direct.
 - Calls from the model and from js_exec go through the same path as every tool.
   Arguments are checked against the schema, the result is capped at 1 MiB of
   JSON, and each call has a timeout (`timeoutMs`, default 60 s, at most 20

@@ -6,7 +6,7 @@ import { lastUser, listen, OPERATOR, runtime, toolCall, toolResults, until, type
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
 /** A stateless MCP server answering in JSON: each tool is (arguments, params) => result, or { error } for a JSON-RPC error. It records each call's params and credentials. */
-async function rawMcp(t: T, tools: Record<string, { annotations?: object; call: (args: any, params: any) => object }>) {
+async function rawMcp(t: T, tools: Record<string, { annotations?: object; _meta?: object; call: (args: any, params: any) => object }>) {
   const calls: { params: any; authorization?: string }[] = [];
   const url = await listen(t, async (req, res) => {
     let text = "";
@@ -16,7 +16,7 @@ async function rawMcp(t: T, tools: Record<string, { annotations?: object; call: 
     if (message.id === undefined) { res.writeHead(202).end(); return; }
     const reply = (result: object) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     if (message.method === "initialize") return reply({ protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "raw", version: "1" } });
-    if (message.method === "tools/list") return reply({ tools: Object.entries(tools).map(([name, tool]) => ({ name, description: name, inputSchema: { type: "object", properties: { id: { type: "string" } } }, ...(tool.annotations ? { annotations: tool.annotations } : {}) })) });
+    if (message.method === "tools/list") return reply({ tools: Object.entries(tools).map(([name, tool]) => ({ name, description: name, inputSchema: { type: "object", properties: { id: { type: "string" } } }, ...(tool.annotations ? { annotations: tool.annotations } : {}), ...(tool._meta ? { _meta: tool._meta } : {}) })) });
     if (message.method === "tools/call") {
       calls.push({ params: message.params, authorization: req.headers.authorization });
       const result = tools[message.params.name].call(message.params.arguments, message.params) as { error?: object };
@@ -283,4 +283,15 @@ test("an application answers with onInput, from its SDK", async t => {
   assert.equal(seen[0].detail.tool, "wipe");
   assert.equal(seen[0].detail.source, "application");
   assert.deepEqual((await agent.inputs())[0].answer?.by, { via: "agent", actor: "ops" });
+});
+
+test("a remote MCP tool sets its own exposure in _meta, over its source's; an approval still makes it direct", async t => {
+  const plain = { call: () => ({ content: [{ type: "text", text: "ok" }] }) };
+  const exposure = (value: string) => ({ ...plain, _meta: { "agent-runtime/exposure": value } });
+  const server = await rawMcp(t, { key: exposure("direct"), hidden: exposure("codemode"), gated: exposure("codemode"), plain });
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Exposed", mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { tools: { gated: "always" } } }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const tools = Object.fromEntries((await r.call(`/v1/agents/${agent}`)).json.toolSources.find((source: any) => source.name === "s").tools.map((tool: any) => [tool.name, tool.exposure]));
+  assert.deepEqual(tools, { s__key: "direct", s__hidden: "codemode", s__gated: "direct", s__plain: "codemode" });
 });

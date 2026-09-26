@@ -299,9 +299,11 @@ export class ToolSources {
 
   /** An MCP server's tools as the model sees them: those the definition offers, named `<server>__<tool>`. */
   private definitions(spec: McpServerSpec, tools: Tool[]) {
+    // A tool's own exposure (its `_meta`, as attached servers set it) beats the source's; one that asks for approval is direct.
+    const own = (tool: Tool) => { const exposure = tool._meta?.["agent-runtime/exposure"]; return ["direct", "codemode", "both"].includes(exposure as string) ? { exposure: exposure as Exposure } : {}; };
     return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => gated({
       name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
-      parameters: acceptFiles(tool.inputSchema),
+      parameters: acceptFiles(tool.inputSchema), ...own(tool),
     }, needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true))), spec.exposure);
   }
 
