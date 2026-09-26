@@ -11,6 +11,10 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["httpx==0.28.1"]
 
+[project.optional-dependencies]
+# serve_tools, verify_runtime_token and TestRuntime check Ed25519 signatures.
+server = ["cryptography>=42"]
+
 [project.urls]
 Homepage = "https://agents.camelai.dev"
 

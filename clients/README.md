@@ -122,6 +122,78 @@ failure is an MCP error result, which the model sees and which throws in code.
 `callId`, `toolCallId` and `origin` reach the server's handlers as
 `_meta["agent-runtime/…"]`.
 
+## Serving tools to many users
+
+When one server answers tools for many users' agents, serve them over HTTP and
+let the runtime say who each call is for. A definition names the server with
+`auth: { type: "runtime" }`; the runtime then signs a short-lived token for every
+request, naming the agent's `subject` and `context` (set when you create it) and
+the turn's actor (a prompt's `actor`, or its `from.id`). `serveTools` verifies it
+and hands each call an `identity`:
+
+```ts
+import { schema, tool } from "@camelai/agent-runtime";
+import { serveTools } from "@camelai/agent-runtime/server";
+
+const tools = {
+  list_todos: tool({
+    description: "The current user's to-dos", input: schema.Object({}),
+    execute: (_args, { identity }) => db.todos({ user: identity!.user, team: identity!.context.team }),
+  }),
+};
+// A fetch handler: Workers, Bun and Deno serve it as is; Node with nodeListener from "@camelai/agent-runtime/node".
+export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev" }) };
+```
+
+```ts
+await runtime.createDefinition({ name: "Todos", mcpServers: [{ name: "todos", url: "https://todos.example.com/mcp", auth: { type: "runtime" } }] });
+const agent = await runtime.createAgent({ definition: id, subject: "team-acme", context: { team: "acme" }, tools: {} });
+await agent.prompt("What's on my plate?", { from: { id: "alice", name: "Alice" } }); // identity.user is "alice"
+```
+
+- `identity` is `{ user, subject, actor?, tenant, agent, definition?, context, origin? }`.
+  Authorize as `user`: the turn's actor, else the agent's subject. It comes from
+  the verified token, never from the model's arguments.
+- Requests without a valid token for this server get a 401: signature (the
+  runtime's published Ed25519 keys), issuer, audience (by default the request's
+  URL, else `audience`), and expiry are all checked. The server keeps no sessions.
+- The same `tools` work attached (`createAgent({ tools })`): the runtime sends
+  the same identity with each call over the agent's connection, so tools can
+  move between attached and served without changes.
+- It serves MCP's protected-resource metadata
+  (`/.well-known/oauth-protected-resource/<path>`) naming the runtime, whose own
+  metadata is at `/.well-known/oauth-authorization-server`.
+- Built with the MCP SDK or Cloudflare's `createMcpHandler` instead? Verify with
+  `runtimeAuth(request, { runtime })`, pass the result as the request's `auth`
+  (or `authContext`), and read `runtimeIdentity(extra)` in a tool handler.
+  `verifyRuntimeToken(token, { runtime, audience })` checks a token on its own.
+- Test authorization without a runtime: `testRuntime()` from
+  `@camelai/agent-runtime/testing` signs tokens with a key of its own.
+
+```ts
+const rt = await testRuntime();
+const handler = serveTools(tools, rt.options);
+const result = await rt.callTool(handler, "https://app.test/mcp", "list_todos", {}, { subject: "alice", context: { team: "acme" } });
+```
+
+In Python (`pip install cryptography` for token checks), `serve_tools` is an
+ASGI app, and a tool's `context.identity` is a `RuntimeIdentity`:
+
+```python
+from camelai_agent_runtime import ToolContext, serve_tools, tool
+
+@tool
+async def list_todos(context: ToolContext) -> dict:
+    """The current user's to-dos"""
+    return {"todos": db.todos(user=context.identity.user, team=context.identity.context["team"])}
+
+app = serve_tools([list_todos], runtime="https://agents.camelai.dev")  # uvicorn, or mount in FastAPI
+```
+
+`verify_runtime_token(token, runtime=..., audience=...)` and `TestRuntime()` match
+the TypeScript helpers. [examples/team-todos.ts](../examples/team-todos.ts) runs
+the whole pattern against a runtime.
+
 ## Agent identity and Studio
 
 `name` identifies an individual agent; `type` groups agents in Studio. For example,

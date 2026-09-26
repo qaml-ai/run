@@ -1,5 +1,6 @@
 """Run with: python3 tests/python_sdk.py (requires httpx)."""
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -13,9 +14,11 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
+import httpx
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_agent_runtime import AgentRuntime, ToolContext, tool
+from camelai_agent_runtime import AgentRuntime, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -193,6 +196,85 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         link = await agent.files.link("/workspace/uploads/py-files/report.txt")
         self.assertEqual((await self.runtime.http.get(link["url"])).content, b"quarterly numbers")
         await agent.destroy()
+
+
+TODOS = [{"owner": "alice", "team": "acme", "text": "ship it"}, {"owner": "bob", "team": "acme", "text": "review it"}, {"owner": "alice", "team": "other", "text": "not this team"}]
+
+
+@tool
+async def list_todos(context: ToolContext) -> dict:
+    """The current user's to-dos"""
+    who = context.identity
+    return {"todos": [todo["text"] for todo in TODOS if todo["owner"] == who.user and todo["team"] == who.context.get("team")]}
+
+
+@tool
+async def whoami(context: ToolContext) -> dict:
+    """Who is asking"""
+    who = context.identity
+    return {"user": who.user, "subject": who.subject, "actor": who.actor, "tenant": who.tenant, "agent": who.agent, "context": who.context, "origin": context.origin}
+
+
+class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
+    """serve_tools and verify_runtime_token, against TestRuntime: no runtime needed."""
+    APP = "https://app.test/mcp"
+
+    async def asyncSetUp(self):
+        self.runtime = TestRuntime()
+        self.app = serve_tools([list_todos, whoami], **self.runtime.options)
+
+    async def asyncTearDown(self):
+        await self.runtime.http.aclose()
+
+    async def test_each_call_is_answered_as_the_user_the_token_names(self):
+        call = lambda name, **who: self.runtime.call_tool(self.app, self.APP, name, {}, **who)
+        self.assertEqual((await call("list_todos", subject="alice", context={"team": "acme"}))["structuredContent"], {"todos": ["ship it"]})
+        self.assertEqual((await call("list_todos", subject="team-acme", actor="bob", context={"team": "acme"}))["structuredContent"], {"todos": ["review it"]})
+        me = (await call("whoami", subject="alice", actor="bob", tenant="t1", agent="client_1", context={"team": "acme"}, origin={"channel": "slack"}))["structuredContent"]
+        self.assertEqual(me, {"user": "bob", "subject": "alice", "actor": "bob", "tenant": "t1", "agent": "client_1", "context": {"team": "acme"}, "origin": {"channel": "slack"}})
+        listed = (await self.runtime.post(self.app, self.APP, [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, {"jsonrpc": "2.0", "method": "notifications/initialized"}], subject="alice")).json()
+        self.assertEqual([entry["name"] for entry in listed[0]["result"]["tools"]], ["list_todos", "whoami"])
+        self.assertEqual((await self.runtime.post(self.app, self.APP, {"jsonrpc": "2.0", "method": "notifications/initialized"}, subject="alice")).status_code, 202)
+
+    async def test_anything_but_the_runtimes_token_for_this_server_is_refused(self):
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_todos", "arguments": {}}}
+        stranger = TestRuntime()
+        forged = self.runtime.token(self.APP, subject="alice")
+        head, body, signature = forged.split(".")
+        claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        tampered = base64.urlsafe_b64encode(json.dumps({**claims, "sub": "bob"}).encode()).rstrip(b"=").decode()
+        cases = [
+            ("", "No bearer token"),
+            (self.runtime.token("https://other.test/mcp", subject="alice"), "Token is for another server"),
+            (self.runtime.token(self.APP, subject="alice", expires_in=-120), "Token has expired"),
+            (stranger.token(self.APP, subject="alice"), "Token signed with a key the runtime does not publish"),
+            (f"{head}.{tampered}.{signature}", "Token signature does not verify"),
+            (self.runtime.token(self.APP, subject="alice", claims={"iss": "https://evil.test"}), "Token is from another issuer"),
+            (self.runtime.token(self.APP, subject="alice", header={"alg": "none"}), "Token is not an EdDSA token with a key id"),
+            ("not-a-token", "Malformed token"),
+        ]
+        for token, error in cases:
+            response = await self.runtime.post(self.app, self.APP, call, token=token)
+            self.assertEqual(response.status_code, 401, error)
+            self.assertEqual(response.json()["error"], error)
+            self.assertEqual(response.headers["www-authenticate"], 'Bearer error="invalid_token", resource_metadata="https://app.test/.well-known/oauth-protected-resource/mcp"')
+        await stranger.http.aclose()
+        with self.assertRaises(RuntimeTokenError):
+            await verify_runtime_token("not-a-token", audience=self.APP, **self.runtime.options)
+        identity = await verify_runtime_token(self.runtime.token("https://app.test/mcp/", actor="bob"), audience=self.APP, **self.runtime.options)
+        self.assertEqual(identity.user, "bob")
+
+    async def test_protected_resource_metadata_and_post_only(self):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app)) as client:
+            metadata = (await client.get("https://app.test/.well-known/oauth-protected-resource/mcp")).json()
+            self.assertEqual(metadata, {"resource": self.APP, "authorization_servers": [self.runtime.url], "bearer_methods_supported": ["header"], "resource_name": "agent-runtime-tools"})
+            self.assertEqual((await client.get(self.APP)).status_code, 405)
+
+    async def test_attached_calls_carry_the_identity_the_runtime_sent(self):
+        meta = {"agent-runtime/callId": "c1", "agent-runtime/identity": {"tenant": "t1", "agent": "client_1", "sub": "team-acme", "act": "alice", "ctx": {"team": "acme"}}}
+        answer = await _answer_mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_todos", "arguments": {}, "_meta": meta}},
+                                   {"list_todos": list_todos}, lambda given: _tool_context(given, "1"))
+        self.assertEqual(answer["result"]["structuredContent"], {"todos": ["ship it"]})
 
 
 class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):

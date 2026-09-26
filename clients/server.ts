@@ -1,0 +1,178 @@
+/**
+ * Serving tools to agents from your own server, for many users at once. The runtime calls a tool
+ * source with `auth: { type: "runtime" }` with a token it signs for each request, naming the agent,
+ * whom it acts for and who is acting; these helpers verify it and hand your tools the identity.
+ * Portable: fetch-style handlers and WebCrypto (Ed25519), so it runs on Workers, Node 22+, Bun and Deno.
+ *
+ *   export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev" }) };
+ */
+import { answerMcp, identityFromClaims, toolContext, toolServer, type RuntimeIdentity, type ToolServer, type Tools } from "./typescript.ts";
+export type { RuntimeIdentity };
+
+export interface VerifyOptions {
+  /** The runtime's URL (e.g. https://agents.camelai.dev): its keys are at /.well-known/jwks.json. */
+  runtime: string;
+  /** The issuer tokens must name; the runtime's URL by default. */
+  issuer?: string;
+  /** What tokens must be for: your server's URL as the runtime calls it (a definition's `url`, or its `audience`). */
+  audience: string | string[];
+  /** Fetches the runtime's keys; `testRuntime()` supplies one. */
+  fetch?: typeof globalThis.fetch;
+  /** Seconds of clock skew allowed (default 30). */
+  clockTolerance?: number;
+}
+
+/** A token that is missing, malformed, unsigned by the runtime, for another server, or expired. */
+export class RuntimeTokenError extends Error {
+  constructor(message: string) { super(message); this.name = "RuntimeTokenError"; }
+}
+
+const trim = (url: string) => url.replace(/\/+$/, "");
+const decoder = new TextDecoder();
+function base64url(text: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(text.length / 4) * 4, "="));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+const part = (text: string) => { try { return JSON.parse(decoder.decode(base64url(text))); } catch { throw new RuntimeTokenError("Malformed token"); } };
+
+/**
+ * The runtime's public keys, per fetch function and JWKS URL: kept five minutes, and fetched again for a
+ * key id not seen (a rotated key), at most every 10 seconds so a stream of bad tokens cannot flood the runtime.
+ */
+type KeySet = { keys: Map<string, CryptoKey>; fetched: number; loading?: Promise<void> };
+const keySets = new WeakMap<typeof globalThis.fetch, Map<string, KeySet>>();
+async function publicKey(url: string, kid: string, fetcher: typeof globalThis.fetch): Promise<CryptoKey> {
+  let sets = keySets.get(fetcher);
+  if (!sets) keySets.set(fetcher, sets = new Map());
+  let set = sets.get(url);
+  if (!set) sets.set(url, set = { keys: new Map(), fetched: 0 });
+  const age = Date.now() - set.fetched;
+  if (age > 300_000 || (!set.keys.has(kid) && age > 10_000)) {
+    set.loading ??= (async () => {
+      const response = await fetcher(url, { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new RuntimeTokenError(`Could not read the runtime's keys (${url}: HTTP ${response.status})`);
+      const body = await response.json() as { keys?: Record<string, any>[] };
+      const keys = new Map<string, CryptoKey>();
+      for (const jwk of body.keys ?? []) {
+        if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.kid !== "string") continue;
+        keys.set(jwk.kid, await crypto.subtle.importKey("jwk", { kty: "OKP", crv: "Ed25519", x: jwk.x }, { name: "Ed25519" }, false, ["verify"]));
+      }
+      set!.keys = keys;
+      set!.fetched = Date.now();
+    })().finally(() => { set!.loading = undefined; });
+    await set.loading;
+  }
+  const key = set.keys.get(kid);
+  if (!key) throw new RuntimeTokenError("Token signed with a key the runtime does not publish");
+  return key;
+}
+
+/**
+ * Verify an identity token and return who the call is for. Checks the signature against the runtime's
+ * published Ed25519 keys (EdDSA only), the issuer, that the audience is yours, and the times.
+ */
+export async function verifyRuntimeToken(token: string, options: VerifyOptions): Promise<RuntimeIdentity & { claims: Record<string, unknown> }> {
+  const pieces = token.split(".");
+  if (pieces.length !== 3) throw new RuntimeTokenError("Malformed token");
+  const header = part(pieces[0]);
+  if (header.alg !== "EdDSA" || typeof header.kid !== "string") throw new RuntimeTokenError("Token is not an EdDSA token with a key id");
+  const runtime = trim(options.runtime);
+  const key = await publicKey(`${runtime}/.well-known/jwks.json`, header.kid, options.fetch ?? globalThis.fetch);
+  const valid = await crypto.subtle.verify({ name: "Ed25519" }, key, base64url(pieces[2]), new TextEncoder().encode(`${pieces[0]}.${pieces[1]}`));
+  if (!valid) throw new RuntimeTokenError("Token signature does not verify");
+  const claims = part(pieces[1]);
+  const now = Math.floor(Date.now() / 1000), skew = options.clockTolerance ?? 30;
+  if (claims.iss !== trim(options.issuer ?? runtime)) throw new RuntimeTokenError("Token is from another issuer");
+  const audiences = new Set((Array.isArray(options.audience) ? options.audience : [options.audience]).map(trim));
+  if (![claims.aud].flat().some(audience => typeof audience === "string" && audiences.has(trim(audience)))) throw new RuntimeTokenError("Token is for another server");
+  if (typeof claims.exp !== "number" || claims.exp + skew < now) throw new RuntimeTokenError("Token has expired");
+  if (typeof claims.nbf === "number" && claims.nbf - skew > now) throw new RuntimeTokenError("Token is not valid yet");
+  if (typeof claims.iat === "number" && claims.iat - skew > now) throw new RuntimeTokenError("Token is issued in the future");
+  return { ...identityFromClaims(claims), claims };
+}
+
+/** A request's bearer token, if it has one. */
+export function bearerToken(request: Request): string | undefined {
+  const match = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "");
+  return match?.[1];
+}
+
+/** Your server's URL as the runtime calls it, from a request: its origin and path, without query. */
+const requestAudience = (request: Request) => { const url = new URL(request.url); return `${url.origin}${url.pathname}`; };
+
+/**
+ * For servers built with the MCP SDK (or Cloudflare's `createMcpHandler`): verify the request's
+ * token and return MCP's `AuthInfo`, with the identity in `extra.identity` (the token's claims in `extra.claims`). Pass it as the request's
+ * `auth` (`transport.handleRequest(Object.assign(req, { auth }), ...)`, or `createMcpHandler(server,
+ * { authContext })`), and a tool handler reads `runtimeIdentity(extra)`.
+ */
+export async function runtimeAuth(request: Request, options: Omit<VerifyOptions, "audience"> & { audience?: string | string[] }) {
+  const token = bearerToken(request);
+  if (!token) throw new RuntimeTokenError("No bearer token");
+  const { claims, ...identity } = await verifyRuntimeToken(token, { ...options, audience: options.audience ?? requestAudience(request) });
+  return { token, clientId: identity.agent, scopes: [] as string[], expiresAt: claims.exp as number, extra: { identity: identity as RuntimeIdentity, claims } };
+}
+
+/** The identity `runtimeAuth` put in an MCP SDK tool handler's `extra`. */
+export function runtimeIdentity(extra: { authInfo?: { extra?: Record<string, unknown> } } | undefined): RuntimeIdentity | undefined {
+  return extra?.authInfo?.extra?.identity as RuntimeIdentity | undefined;
+}
+
+export interface ServeOptions extends Omit<VerifyOptions, "audience"> {
+  /** What tokens must be for; by default the request's URL (origin and path), which is what the runtime signs for unless your definition sets `audience`. */
+  audience?: string | string[];
+  /** Serve MCP's protected-resource metadata (RFC 9728) naming the runtime as the issuer; on by default. */
+  metadata?: boolean;
+  /** The name and version `initialize` reports. */
+  serverInfo?: { name: string; version: string };
+}
+
+/**
+ * Serve tools (`tool({...})` definitions, or any `ToolServer`) as a stateless MCP server over
+ * Streamable HTTP, for the runtime to call with its identity tokens: a fetch handler
+ * (`(Request) => Promise<Response>`). Every call's context carries the verified `identity`;
+ * requests without a valid token get a 401. The same tools can be attached to an agent instead.
+ */
+export function serveTools(tools: Tools | ToolServer, options: ServeOptions): (request: Request) => Promise<Response> {
+  const server: ToolServer = typeof (tools as ToolServer).listTools === "function" && typeof (tools as ToolServer).callTool === "function" ? tools as ToolServer : toolServer(tools as Tools);
+  const issuer = trim(options.issuer ?? options.runtime);
+  const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
+  const WELL_KNOWN = "/.well-known/oauth-protected-resource";
+  return async request => {
+    const url = new URL(request.url);
+    // RFC 9728: the metadata for https://host/mcp is at https://host/.well-known/oauth-protected-resource/mcp.
+    if (options.metadata !== false && request.method === "GET" && url.pathname.startsWith(WELL_KNOWN)) {
+      const resource = `${url.origin}${url.pathname.slice(WELL_KNOWN.length) || "/"}`;
+      return json(200, { resource, authorization_servers: [issuer], bearer_methods_supported: ["header"], resource_name: options.serverInfo?.name ?? "agent-runtime tools" });
+    }
+    if (request.method !== "POST") return json(405, { error: "Use POST: this MCP server is stateless and has no event stream" }, { Allow: "POST" });
+    let identity: RuntimeIdentity;
+    try {
+      const token = bearerToken(request);
+      if (!token) throw new RuntimeTokenError("No bearer token");
+      const { claims: _claims, ...verified } = await verifyRuntimeToken(token, { ...options, audience: options.audience ?? requestAudience(request) });
+      identity = verified;
+    } catch (error) {
+      if (!(error instanceof RuntimeTokenError)) throw error;
+      const metadata = options.metadata !== false ? `, resource_metadata="${url.origin}${WELL_KNOWN}${url.pathname === "/" ? "" : url.pathname}"` : "";
+      return json(401, { error: error.message }, { "WWW-Authenticate": `Bearer error="invalid_token"${metadata}` });
+    }
+    let body: unknown;
+    try { body = await request.json(); }
+    catch { return json(400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
+    const messages = Array.isArray(body) ? body : [body];
+    const answers = await Promise.all(messages.map(async (message: any) => {
+      if (!message || typeof message.method !== "string") return message && "id" in message ? { jsonrpc: "2.0", id: message.id ?? null, error: { code: -32600, message: "Invalid request" } } : undefined;
+      if (message.id === undefined) return undefined;
+      const answer = await answerMcp(message, server, params => toolContext(params._meta && typeof params._meta === "object" ? params._meta : {}, String(message.id), request.signal, identity), options.serverInfo);
+      return { jsonrpc: "2.0", id: message.id, ...answer };
+    }));
+    const replies = answers.filter(answer => answer !== undefined);
+    // Only notifications: accepted, nothing to answer.
+    if (!replies.length) return new Response(null, { status: 202 });
+    return json(200, Array.isArray(body) ? replies : replies[0]);
+  };
+}

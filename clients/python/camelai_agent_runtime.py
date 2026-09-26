@@ -1,6 +1,7 @@
 """Hosted agents over SSE + HTTP, with local tool functions and replay receipts."""
 import asyncio
-from dataclasses import dataclass
+import base64
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import inspect
@@ -27,10 +28,42 @@ class AgentError(RuntimeError):
 
 
 @dataclass
+class RuntimeIdentity:
+    """Who a tool call is for, as the runtime says: from its signed identity token when tools are served
+    over HTTP (serve_tools), or from the call itself when they are attached. Authorize as `user`."""
+    # Who is acting: the turn's actor (a prompt's actor, or its from id), else the agent's subject.
+    user: str
+    # Whom the agent acts for (create_agent(subject=...)); the agent's id if none.
+    subject: str
+    tenant: str
+    agent: str
+    # Claims the agent's creator attached (create_agent(context=...)).
+    context: dict = field(default_factory=dict)
+    actor: str | None = None
+    definition: str | None = None
+    origin: dict | None = None
+    # A verified token's full claims (serve_tools, verify_runtime_token).
+    claims: dict | None = field(default=None, repr=False, compare=False)
+
+
+def identity_from_claims(claims):
+    """A runtime identity from its claims: a verified token's payload, or an attached call's _meta."""
+    text = lambda value: value if isinstance(value, str) and value else None
+    agent = text(claims.get("agent")) or ""
+    subject = text(claims.get("sub")) or agent
+    actor = text(claims.get("act"))
+    return RuntimeIdentity(user=actor or subject, subject=subject, tenant=text(claims.get("tenant")) or "", agent=agent,
+                           context=claims["ctx"] if isinstance(claims.get("ctx"), dict) else {}, actor=actor,
+                           definition=text(claims.get("definition")), origin=claims["origin"] if isinstance(claims.get("origin"), dict) else None)
+
+
+@dataclass
 class ToolContext:
     call_id: str
     # Set by the runtime, e.g. {"channel", "conversationId", "sender"} for a turn a channel message started.
     origin: dict | None = None
+    # Who the call is for: always set by serve_tools; set for attached tools by runtimes that send it.
+    identity: RuntimeIdentity | None = None
 
 
 @dataclass
@@ -79,6 +112,49 @@ def tool(function=None, *, name=None, description=None):
         return Tool(name or fn.__name__, description or inspect.getdoc(fn) or fn.__name__,
                     {"type": "object", "properties": properties, "required": required, "additionalProperties": False}, fn, with_context)
     return decorate(function) if function else decorate
+
+
+def _tool_context(meta, fallback_id, identity=None):
+    """A call's context from its _meta, with the identity the runtime sent (or `identity`, from a verified token)."""
+    sent = identity_from_claims(meta["agent-runtime/identity"]) if isinstance(meta.get("agent-runtime/identity"), dict) else None
+    who = identity or sent
+    origin = meta.get("agent-runtime/origin") if isinstance(meta.get("agent-runtime/origin"), dict) else (who.origin if who else None)
+    return ToolContext(call_id=meta.get("agent-runtime/callId") or fallback_id, origin=origin, identity=who)
+
+
+async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sdk-python"):
+    """Answer one MCP JSON-RPC request as a tool server: initialize, ping, tools/list and tools/call.
+    Both an attached agent and serve_tools use it."""
+    method, params = message.get("method"), message.get("params") or {}
+    if method == "initialize":
+        return {"result": {"protocolVersion": params.get("protocolVersion") or "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": server_name, "version": "1.0.0"}}}
+    if method == "ping":
+        return {"result": {}}
+    if method == "tools/list":
+        return {"result": {"tools": [item.mcp_tool() for item in tools.values()]}}
+    if method != "tools/call":
+        return {"error": {"code": -32601, "message": f"Unknown method {method}"}}
+    try:
+        definition = tools.get(params.get("name"))
+        if definition is None:
+            raise ValueError(f"Unknown tool {params.get('name')}")
+        args = dict(params.get("arguments") or {})
+        if definition.with_context:
+            args["context"] = context_for(params.get("_meta") or {})
+        try:
+            answer = _call_tool_result(await definition.function(**args))
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # The tool's own failure is an MCP error result: the model sees it.
+            answer = {"content": [{"type": "text", "text": str(error)[:2048]}], "isError": True}
+        if len(json.dumps(answer).encode()) > 1024 * 1024:
+            raise ValueError("Tool result too large")
+        return {"result": answer}
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        return {"error": {"code": -32603, "message": str(error)[:2048]}}
 
 
 def _origin(url):
@@ -542,37 +618,13 @@ class AgentClient:
             await _http(self.http, self.base, self.path + "/mcp", self.session["token"], "POST", {"jsonrpc": "2.0", "id": message["id"], **answer},
                         headers={"X-Agent-Connection": connection or ""})
 
-        if method == "initialize":
-            return await reply({"result": {"protocolVersion": params.get("protocolVersion"), "capabilities": {"tools": {}}, "serverInfo": {"name": "agent-runtime-sdk-python", "version": "1.0.0"}}})
-        if method == "ping":
-            return await reply({"result": {}})
-        if method == "tools/list":
-            return await reply({"result": {"tools": [item.mcp_tool() for item in self.tools.values()]}})
-        if method != "tools/call":
-            return await reply({"error": {"code": -32601, "message": f"Unknown method {method}"}})
-        key, meta = str(message["id"]), params.get("_meta") or {}
-        self.active[key] = asyncio.current_task()
+        key = str(message["id"])
+        if method == "tools/call":
+            self.active[key] = asyncio.current_task()
         try:
-            definition = self.tools.get(params.get("name"))
-            if definition is None:
-                raise ValueError(f"Unknown tool {params.get('name')}")
-            args = dict(params.get("arguments") or {})
-            if definition.with_context:
-                args["context"] = ToolContext(call_id=meta.get("agent-runtime/callId", key), origin=meta.get("agent-runtime/origin"))
-            try:
-                answer = _call_tool_result(await definition.function(**args))
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                # The tool's own failure is an MCP error result: the model sees it.
-                answer = {"content": [{"type": "text", "text": str(error)[:2048]}], "isError": True}
-            if len(json.dumps(answer).encode()) > 1024 * 1024:
-                raise ValueError("Tool result too large")
-            await reply({"result": answer})
+            await reply(await _answer_mcp(message, self.tools, lambda meta: _tool_context(meta, key)))
         except asyncio.CancelledError:
             pass
-        except Exception as error:
-            await reply({"error": {"code": -32603, "message": str(error)[:2048]}})
         finally:
             self.active.pop(key, None)
 
@@ -711,3 +763,220 @@ class AgentClient:
 
     async def __aexit__(self, *_):
         await self.close()
+
+
+# Serving tools to agents from your own server ------------------------------------------------------
+# The runtime calls a tool source with auth {"type": "runtime"} with a token it signs for each request.
+# verify_runtime_token checks it; serve_tools is an ASGI app that serves tools to the runtime and hands
+# each call the verified identity. They need the `cryptography` package (pip install cryptography).
+
+
+class RuntimeTokenError(Exception):
+    """A token that is missing, malformed, unsigned by the runtime, for another server, or expired."""
+
+
+def _b64decode(text):
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _b64encode(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _part(text):
+    try:
+        return json.loads(_b64decode(text))
+    except Exception:
+        raise RuntimeTokenError("Malformed token") from None
+
+
+# The runtime's public keys, per HTTP client and JWKS URL: kept five minutes, and fetched again for a
+# key id not seen (a rotated key), at most every 10 seconds.
+_key_sets = {}
+
+
+async def _public_key(url, kid, http):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    import time
+    cache = _key_sets.setdefault((id(http), url), {"keys": {}, "fetched": 0.0, "http": http})
+    age = time.monotonic() - cache["fetched"]
+    if age > 300 or (kid not in cache["keys"] and age > 10):
+        client = http or httpx.AsyncClient(timeout=10)
+        try:
+            response = await client.get(url, headers={"Accept": "application/json"})
+        finally:
+            if http is None:
+                await client.aclose()
+        if response.status_code != 200:
+            raise RuntimeTokenError(f"Could not read the runtime's keys ({url}: HTTP {response.status_code})")
+        keys = {}
+        for jwk in response.json().get("keys", []):
+            if jwk.get("kty") == "OKP" and jwk.get("crv") == "Ed25519" and isinstance(jwk.get("kid"), str):
+                keys[jwk["kid"]] = Ed25519PublicKey.from_public_bytes(_b64decode(jwk["x"]))
+        cache.update(keys=keys, fetched=time.monotonic())
+    key = cache["keys"].get(kid)
+    if key is None:
+        raise RuntimeTokenError("Token signed with a key the runtime does not publish")
+    return key
+
+
+async def verify_runtime_token(token, *, runtime, audience, issuer=None, http=None, clock_tolerance=30):
+    """Verify an identity token and return who the call is for (a RuntimeIdentity, with the token's
+    claims): the signature against the runtime's published Ed25519 keys (EdDSA only), the issuer,
+    that the audience is yours (a string or a list), and the times."""
+    import time
+    from cryptography.exceptions import InvalidSignature
+    pieces = token.split(".")
+    if len(pieces) != 3:
+        raise RuntimeTokenError("Malformed token")
+    header = _part(pieces[0])
+    if header.get("alg") != "EdDSA" or not isinstance(header.get("kid"), str):
+        raise RuntimeTokenError("Token is not an EdDSA token with a key id")
+    runtime = runtime.rstrip("/")
+    key = await _public_key(f"{runtime}/.well-known/jwks.json", header["kid"], http)
+    try:
+        key.verify(_b64decode(pieces[2]), f"{pieces[0]}.{pieces[1]}".encode())
+    except (InvalidSignature, ValueError):
+        raise RuntimeTokenError("Token signature does not verify") from None
+    claims = _part(pieces[1])
+    now = time.time()
+    if claims.get("iss") != (issuer or runtime).rstrip("/"):
+        raise RuntimeTokenError("Token is from another issuer")
+    wanted = {value.rstrip("/") for value in ([audience] if isinstance(audience, str) else audience)}
+    given = claims.get("aud")
+    if not any(isinstance(value, str) and value.rstrip("/") in wanted for value in (given if isinstance(given, list) else [given])):
+        raise RuntimeTokenError("Token is for another server")
+    if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] + clock_tolerance < now:
+        raise RuntimeTokenError("Token has expired")
+    if isinstance(claims.get("nbf"), (int, float)) and claims["nbf"] - clock_tolerance > now:
+        raise RuntimeTokenError("Token is not valid yet")
+    if isinstance(claims.get("iat"), (int, float)) and claims["iat"] - clock_tolerance > now:
+        raise RuntimeTokenError("Token is issued in the future")
+    identity = identity_from_claims(claims)
+    identity.claims = claims
+    return identity
+
+
+def serve_tools(tools, *, runtime, audience=None, issuer=None, metadata=True, http=None, server_name="agent-runtime-tools"):
+    """Serve tools (@tool functions, a list or a dict) as a stateless MCP server over Streamable HTTP for
+    the runtime to call with its identity tokens: an ASGI app (mount it in FastAPI or Starlette, or run it
+    with uvicorn). Every call's ToolContext carries the verified identity; requests without a valid token
+    get a 401. `audience` is your server's URL as the runtime calls it; by default the request's URL."""
+    table = tools if isinstance(tools, dict) else {item.name: item for item in tools}
+    issuer = (issuer or runtime).rstrip("/")
+    well_known = "/.well-known/oauth-protected-resource"
+
+    async def app(scope, receive, send):
+        if scope["type"] == "lifespan":
+            while True:
+                event = await receive()
+                if event["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif event["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        if scope["type"] != "http":
+            return
+        headers = {name.decode().lower(): value.decode() for name, value in scope.get("headers", [])}
+        host = headers.get("host", "localhost")
+        path = scope.get("root_path", "") + scope["path"]
+        origin = f"{scope.get('scheme', 'http')}://{host}"
+
+        async def respond(status, body=None, extra=()):
+            data = b"" if body is None else json.dumps(body).encode()
+            response_headers = [(b"content-type", b"application/json")] if body is not None else []
+            await send({"type": "http.response.start", "status": status, "headers": response_headers + [(name.encode(), value.encode()) for name, value in extra]})
+            await send({"type": "http.response.body", "body": data})
+
+        if metadata and scope["method"] == "GET" and scope["path"].startswith(well_known):
+            resource = origin + (scope["path"][len(well_known):] or "/")
+            return await respond(200, {"resource": resource, "authorization_servers": [issuer], "bearer_methods_supported": ["header"], "resource_name": server_name})
+        if scope["method"] != "POST":
+            return await respond(405, {"error": "Use POST: this MCP server is stateless and has no event stream"}, [("allow", "POST")])
+        body = b""
+        while True:
+            event = await receive()
+            body += event.get("body", b"")
+            if not event.get("more_body"):
+                break
+        try:
+            match = headers.get("authorization", "").split(" ", 1)
+            if len(match) != 2 or match[0].lower() != "bearer" or not match[1].strip():
+                raise RuntimeTokenError("No bearer token")
+            identity = await verify_runtime_token(match[1].strip(), runtime=runtime, audience=audience or f"{origin}{path}", issuer=issuer, http=http)
+        except RuntimeTokenError as error:
+            challenge = 'Bearer error="invalid_token"' + (f', resource_metadata="{origin}{well_known}{"" if path == "/" else path}"' if metadata else "")
+            return await respond(401, {"error": str(error)}, [("www-authenticate", challenge)])
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return await respond(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+        messages = payload if isinstance(payload, list) else [payload]
+        replies = []
+        for message in messages:
+            if not isinstance(message, dict) or not isinstance(message.get("method"), str):
+                if isinstance(message, dict) and "id" in message:
+                    replies.append({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32600, "message": "Invalid request"}})
+                continue
+            if "id" not in message:
+                continue
+            key = str(message["id"])
+            answer = await _answer_mcp(message, table, lambda meta, key=key: _tool_context(meta, key, identity), server_name)
+            replies.append({"jsonrpc": "2.0", "id": message["id"], **answer})
+        if not replies:
+            return await respond(202)
+        return await respond(200, replies if isinstance(payload, list) else replies[0])
+
+    return app
+
+
+class TestRuntime:
+    """Test a tool server's authorization without a runtime: signs identity tokens with a key of its
+    own, and serves that key to serve_tools / verify_runtime_token through `http`.
+
+        runtime = TestRuntime()
+        app = serve_tools(tools, **runtime.options)
+        result = await runtime.call_tool(app, "https://app.test/mcp", "list_todos", {}, subject="alice")
+    """
+    __test__ = False  # Not a test case, whatever collects tests.
+
+    def __init__(self, url="https://runtime.test"):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+        self.url = url.rstrip("/")
+        self.kid = str(uuid.uuid4())
+        self.key = Ed25519PrivateKey.generate()
+        public = self.key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        self.jwk = {"kty": "OKP", "crv": "Ed25519", "x": _b64encode(public), "kid": self.kid, "alg": "EdDSA", "use": "sig"}
+        jwks = f"{self.url}/.well-known/jwks.json"
+        self.http = httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"keys": [self.jwk]}) if str(request.url) == jwks else httpx.Response(404)))
+        self.options = {"runtime": self.url, "http": self.http}
+
+    def token(self, audience, *, subject=None, actor=None, tenant="test", agent="client_test", definition=None, context=None, origin=None,
+              expires_in=120, claims=None, header=None):
+        """A token for `audience` as the runtime would sign it; `claims` and `header` override, to test rejections."""
+        import time
+        now = int(time.time())
+        payload = {"iss": self.url, "aud": audience, "sub": subject or agent, "tenant": tenant, "agent": agent, "iat": now, "exp": now + expires_in, "jti": str(uuid.uuid4())}
+        payload.update({key: value for key, value in (("definition", definition), ("ctx", context), ("act", actor), ("origin", origin)) if value is not None})
+        payload.update(claims or {})
+        signed = f"{_b64encode(json.dumps({'alg': 'EdDSA', 'kid': self.kid, 'typ': 'JWT', **(header or {})}).encode())}.{_b64encode(json.dumps(payload).encode())}"
+        return f"{signed}.{_b64encode(self.key.sign(signed.encode()))}"
+
+    async def post(self, app, url, message, token=None, **identity):
+        """POST a JSON-RPC message to an ASGI app at `url`, with a token for `identity` (or `token`; "" for none)."""
+        token = self.token(url, **identity) if token is None else token
+        headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {token}"} if token else {})}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+            return await client.post(url, json=message, headers=headers)
+
+    async def call_tool(self, app, url, name, arguments, **identity):
+        """Call one tool through an ASGI app as `identity`: its CallToolResult, or the error raised."""
+        response = await self.post(app, url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}, **identity)
+        body = response.json()
+        if response.status_code != 200:
+            raise RuntimeError(f"HTTP {response.status_code}: {body.get('error')}")
+        if "error" in body:
+            raise RuntimeError(body["error"]["message"])
+        return body["result"]

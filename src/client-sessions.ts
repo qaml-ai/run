@@ -1336,7 +1336,18 @@ export class ClientSessions {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
     const timeout = this.options.toolTimeoutMs ?? 15_000;
-    const _meta = { "agent-runtime/callId": randomUUID(), ...(toolCallId ? { "agent-runtime/toolCallId": toolCallId } : {}), ...(origin ? { "agent-runtime/origin": origin } : {}), ...(actor ? { "agent-runtime/actor": actor } : {}) };
+    // Who the call is for, as an identity token would say (the same claims): the connection is the
+    // application's own, so it needs no signature, and a tool reads it the same way either way.
+    const header = session.header;
+    const identity = {
+      tenant: header.tenant, agent: header.id, sub: header.identity?.subject ?? header.id,
+      ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
+      ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}),
+    };
+    const _meta = {
+      "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity,
+      ...(toolCallId ? { "agent-runtime/toolCallId": toolCallId } : {}), ...(origin ? { "agent-runtime/origin": origin } : {}), ...(actor ? { "agent-runtime/actor": actor } : {}),
+    };
     session.inflight++;
     try {
       return await attached.client.callTool({ name, arguments: args, _meta }, undefined, { signal, timeout, maxTotalTimeout: timeout }) as McpResult;

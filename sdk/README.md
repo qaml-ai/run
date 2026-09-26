@@ -69,6 +69,26 @@ import { fromMcpServer } from "@camelai/agent-runtime/mcp";
 const agent = await runtime.createAgent({ name: "Inventory planner", mcp: await fromMcpServer(server) });
 ```
 
+Serving tools to many users' agents from one server? `serveTools` from
+`@camelai/agent-runtime/server` serves the same `tools` over HTTP and verifies the
+runtime's signed identity token on every call, so each tool knows who it is for:
+
+```ts
+import { serveTools } from "@camelai/agent-runtime/server";
+
+const tools = {
+  list_todos: tool({
+    description: "The current user's to-dos", input: schema.Object({}),
+    execute: (_args, { identity }) => db.todos(identity!.user, identity!.context.team),
+  }),
+};
+export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev" }) };
+```
+
+Name it in a definition with `mcpServers: [{ name: "todos", url, auth: { type: "runtime" } }]`,
+create agents with a `subject` and `context`, and prompt with `from` or `actor`.
+`testRuntime()` from `@camelai/agent-runtime/testing` signs tokens for tests.
+
 Switch models between turns with `await agent.configure({ model: "openai/gpt-5.2" })`;
 the history carries over. Your tenant needs a key for that provider.
 
