@@ -22,6 +22,8 @@ export interface AgentConfig {
   model: Model<Api>;
   apiKey?: string;
   systemPrompt?: string;
+  /** Text after the system prompt, the agent's own: a definition's apply replaces the prompt and keeps this. */
+  systemPromptAppend?: string;
   tools: ToolDefinition[];
   /** Where the agent's volumes are mounted, for its prompt's summary of its environment. */
   mounts?: { path: string; mode: "ro" | "rw" }[];

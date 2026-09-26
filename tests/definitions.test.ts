@@ -61,9 +61,7 @@ test("agents are made from a definition, record its revision, and take a new one
   assert.equal(detail.name, "Support");
   assert.equal(detail.systemPrompt, "You are support v1.");
   assert.deepEqual(detail.tools, [], "application tools come only from an attached server");
-  for (const key of ["model", "systemPrompt", "thinkingLevel"]) {
-    assert.equal((await r.call("/v1/agents", { body: { definition: definition.id, [key]: key === "model" ? "anthropic/claude-sonnet-5" : key === "thinkingLevel" ? "low" : "x" } })).status, 400, key);
-  }
+  assert.equal((await r.call("/v1/agents", { body: { definition: definition.id, systemPrompt: "x" } })).status, 400, "the prompt is the definition's");
   assert.equal((await r.call("/v1/agents", { body: { definition: "def_00000000000000000000" } })).status, 404);
   await r.prompt(first, "hello");
   assert.match(systemText(r.model.bodies.at(-1)), /You are support v1\./);
@@ -101,6 +99,46 @@ test("agents are made from a definition, record its revision, and take a new one
   // Deleting the definition leaves its agents as they are.
   assert.equal((await r.call(`/v1/definitions/${definition.id}`, { method: "DELETE" })).status, 200);
   assert.equal((await r.prompt(first, "still here")).outcome.result.reply, "ok");
+});
+
+test("an agent's own model, thinking level and prompt addition survive applying its definition", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const definition = (await r.call("/v1/definitions", { body: { name: "Threads", systemPrompt: "You are camel v1.", thinkingLevel: "high" } })).json;
+  const created = await r.call("/v1/agents", { body: { definition: definition.id, thinkingLevel: "off", systemPromptAppend: "Thread: thr_1" } });
+  assert.equal(created.status, 201, created.text);
+  const agent = created.json.id;
+  const other = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  for (const body of [{ systemPromptAppend: 5 }, { systemPromptAppend: "x".repeat(32_001) }]) {
+    assert.equal((await r.call("/v1/agents", { body: { definition: definition.id, ...body } })).status, 400, JSON.stringify(body));
+  }
+  await r.prompt(agent, "hello");
+  assert.match(systemText(r.model.bodies.at(-1)), /You are camel v1\.\n\nThread: thr_1/);
+
+  // A model configured directly is the agent's own too.
+  const configured = await r.call(`/v1/agents/${agent}/configuration`, { method: "PATCH", body: { model: "openrouter/openai/gpt-6-luna" } });
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/${configured.json.id}`)).json.state === "completed", "the model change");
+  await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { systemPrompt: "You are camel v2.", apply: "all" } });
+  await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((entry: any) => entry.revision === 2), "the apply");
+  let detail = (await r.call(`/v1/agents/${agent}`)).json;
+  assert.equal(detail.systemPrompt, "You are camel v2.");
+  assert.equal(detail.systemPromptAppend, "Thread: thr_1");
+  assert.equal((await r.call(`/v1/agents/${other}`)).json.systemPromptAppend, undefined);
+
+  // The addition can change with the conversation.
+  await r.call(`/v1/agents/${other}/configuration`, { method: "PATCH", body: { requestId: "append", systemPromptAppend: "Thread: thr_2" } });
+  await until(async () => (await r.call(`/v1/agents/${other}`)).json.systemPromptAppend === "Thread: thr_2", "the addition");
+  await r.prompt(other, "hello");
+  assert.match(systemText(r.model.bodies.at(-1)), /You are camel v2\.\n\nThread: thr_2/);
+
+  // A new model in the definition reaches the agents that did not choose their own.
+  await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { model: "openrouter/anthropic/claude-sonnet-5", apply: "all" } });
+  await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((entry: any) => entry.revision === 3), "the second apply");
+  detail = (await r.call(`/v1/agents/${agent}`)).json;
+  assert.equal(detail.model, "openrouter/openai/gpt-6-luna");
+  assert.equal(detail.systemPromptAppend, "Thread: thr_1");
+  assert.equal((await r.call(`/v1/agents/${other}`)).json.model, "openrouter/anthropic/claude-sonnet-5");
+  const thinking = async (id: string) => (await r.db.query("select header->'config'->>'thinkingLevel' as level from agents where id = $1", [id])).rows[0].level;
+  assert.deepEqual([await thinking(agent), await thinking(other)], ["off", "high"]);
 });
 
 test("the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async t => {

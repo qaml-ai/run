@@ -21,7 +21,7 @@ import { VolumeService, type Mount } from "./volumes.ts";
 import { databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
-import type { DefinitionRef } from "./definitions.ts";
+import { OVERRIDES, type DefinitionRef } from "./definitions.ts";
 import type { Sources, ToolSources } from "./tool-sources.ts";
 import { contentResult, type McpResult } from "./mcp-results.ts";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
@@ -55,6 +55,8 @@ interface SessionHeader {
   definition?: DefinitionRef;
   /** That revision's server-side tool sources, their secrets sealed under the definition. */
   sources?: Sources;
+  /** Configuration the agent set itself (model, thinkingLevel), which applying its definition leaves. */
+  overrides?: string[];
   /** Who the agent acts for, and context for its tool servers: set at creation by the tenant, never by the agent. */
   identity?: AgentIdentity;
 }
@@ -617,7 +619,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; sources?: Sources }, identity?: AgentIdentity): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -664,7 +666,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(identity ? { identity } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -757,7 +759,8 @@ export class ClientSessions {
     const session = metadata && await this.load(id);
     if (!metadata || !session) throw new HttpError(404, "Agent not found");
     const definition = session.header.definition && { id: session.header.definition.id, revision: session.header.definition.revision };
-    return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "", mounts: session.header.mounts ?? [],
+    return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
+      ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}), mounts: session.header.mounts ?? [],
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
@@ -1186,6 +1189,10 @@ export class ClientSessions {
       if (applied) {
         session.header.definition = applied.definition;
         if (applied.sources) session.header.sources = applied.sources; else delete session.header.sources;
+      } else if (session.header.definition) {
+        // A model or thinking level configured directly is the agent's own from then on.
+        const overrides = new Set([...session.header.overrides ?? [], ...OVERRIDES.filter(key => update[key] !== undefined)]);
+        if (overrides.size) session.header.overrides = [...overrides];
       }
       await this.writeHeader(session);
       return result;
@@ -1206,8 +1213,9 @@ export class ClientSessions {
     const current = session.header.definition;
     if (!current) throw new Error("This agent was not made from a definition");
     const resolved = await this.options.definitionFor!(session.header.tenant, current.id);
-    // The attached server's tools stay; the tools list is rebuilt with the definition's sources.
-    return { update: { ...resolved.config, tools: session.header.definitions }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };
+    // The attached server's tools stay, as does the agent's own configuration; the tools list is rebuilt with the definition's sources.
+    const config = Object.fromEntries(Object.entries(resolved.config).filter(([key]) => !session.header.overrides?.includes(key))) as Partial<DefinitionConfig["config"]>;
+    return { update: { ...config, tools: session.header.definitions }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };
   }
 
   /** Finish a run whose node was lost: continue its turn, or take the answer it had already reached. */

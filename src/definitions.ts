@@ -46,6 +46,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
 const FIELDS = ["model", "systemPrompt", "thinkingLevel", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi"] as const;
+/** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
+export const OVERRIDES = ["model", "thinkingLevel"] as const;
+const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 /** The server-side tool sources an agent takes from a definition, if it has any. */
@@ -168,28 +171,31 @@ export class Definitions {
   /**
    * The parameters to create an agent from `params.definition`: the definition's, with
    * the per-agent fields given alongside it (name, type, ttlSeconds, mounts, its attached
-   * server's tools, initialMessages). `provision` identifies the request for idempotency, whatever the
-   * definition's revision.
+   * server's tools, initialMessages). `model` and `thinkingLevel` given here are the agent's
+   * own (`overrides`): applying the definition later leaves them. `systemPromptAppend` follows
+   * the definition's prompt, whatever revision it takes. `provision` identifies the request for
+   * idempotency, whatever the definition's revision.
    */
-  async provision(tenant: string, params: any): Promise<{ params: AgentParams; ref: DefinitionRef; provision: unknown; sources?: Sources }> {
+  async provision(tenant: string, params: any): Promise<{ params: AgentParams; ref: DefinitionRef; provision: unknown; overrides: string[]; sources?: Sources }> {
     if (typeof params.definition !== "string") throw new HttpError(400, "definition must be a definition id");
-    for (const key of ["model", "systemPrompt", "thinkingLevel"]) if (params[key] !== undefined) throw new HttpError(400, `${key} comes from the definition; change the definition instead`);
+    if (params.systemPrompt !== undefined) throw new HttpError(400, "systemPrompt comes from the definition; add to it with systemPromptAppend, or change the definition");
     const definition = await this.read(tenant, params.definition);
     const { spec } = definition;
     validTtl(params.ttlSeconds);
     const ttlSeconds = params.ttlSeconds !== undefined ? params.ttlSeconds : spec.limits?.ttlSeconds;
     const mounts = params.mounts !== undefined ? params.mounts : spec.mounts;
+    const overrides = OVERRIDES.filter(key => params[key] !== undefined);
+    const own = (key: "model" | "systemPrompt" | "thinkingLevel") => params[key] ?? spec[key];
     return {
       params: {
-        ...(spec.model !== undefined ? { model: spec.model } : {}), ...(spec.systemPrompt !== undefined ? { systemPrompt: spec.systemPrompt } : {}),
-        ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}), tools: params.tools ?? [],
-        name: params.name ?? definition.name, ...(params.type !== undefined ? { type: params.type } : {}),
+        ...Object.fromEntries((["model", "systemPrompt", "thinkingLevel"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
+        tools: params.tools ?? [], name: params.name ?? definition.name, ...(params.type !== undefined ? { type: params.type } : {}),
         ...(ttlSeconds !== undefined ? { ttlSeconds } : {}), ...(mounts !== undefined ? { mounts } : {}),
-        ...(params.initialMessages !== undefined ? { initialMessages: params.initialMessages } : {}),
+        ...Object.fromEntries(["initialMessages", "systemPromptAppend"].filter(key => params[key] !== undefined).map(key => [key, params[key]])),
       },
-      ref: { id: definition.id, revision: definition.revision },
+      ref: { id: definition.id, revision: definition.revision }, overrides,
       ...(sources(spec) ? { sources: sources(spec) } : {}),
-      provision: { definition: definition.id, ...Object.fromEntries(["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages"].filter(key => params[key] !== undefined).map(key => [key, params[key]])) },
+      provision: { definition: definition.id, ...Object.fromEntries([...PROVISION_FIELDS, ...OVERRIDES].filter(key => params[key] !== undefined).map(key => [key, params[key]])) },
     };
   }
 

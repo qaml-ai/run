@@ -363,7 +363,7 @@
         "properties": {
           "definition": {
             "type": "string",
-            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults"
+            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model and thinkingLevel given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend"
           },
           "name": {
             "type": "string"
@@ -377,6 +377,11 @@
           },
           "systemPrompt": {
             "type": "string"
+          },
+          "systemPromptAppend": {
+            "type": "string",
+            "maxLength": 32000,
+            "description": "Text after the system prompt, e.g. per-conversation context. The agent's own: applying its definition replaces the prompt and keeps this"
           },
           "thinkingLevel": {
             "type": "string",
@@ -496,6 +501,9 @@
                 }
               },
               "systemPrompt": {
+                "type": "string"
+              },
+              "systemPromptAppend": {
                 "type": "string"
               },
               "cursor": {
@@ -881,6 +889,11 @@
             "minLength": 1,
             "maxLength": 32000
           },
+          "systemPromptAppend": {
+            "type": "string",
+            "maxLength": 32000,
+            "description": "Text after the system prompt; empty removes it"
+          },
           "thinkingLevel": {
             "type": "string",
             "enum": [
@@ -894,7 +907,8 @@
             ]
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it"
       },
       "Schedule": {
         "type": "object",

@@ -72,11 +72,12 @@ export const Mount = z.object({
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
 export const AgentInput = z.object({
-  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults" }),
+  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model and thinkingLevel given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
   name: z.string().optional(),
   type: z.string().optional(),
   model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().optional(),
+  systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt, e.g. per-conversation context. The agent's own: applying its definition replaces the prompt and keeps this" }),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
   initialMessages: z.array(z.unknown()).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400." }),
@@ -142,6 +143,7 @@ export const AgentDetail = AgentSummary.extend({
   toolSources: z.array(ToolSource).openapi({ description: "Every source of the agent's tools, in order of precedence, and what each offers the model" }),
   mounts: z.array(Mount),
   systemPrompt: z.string(),
+  systemPromptAppend: z.string().optional(),
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
   requests: z.array(RequestRecord),
@@ -302,8 +304,9 @@ export const ConfigureInput = z.object({
   requestId: z.string().min(1).optional(),
   model: z.string().optional().openapi({ description: "Model id from GET /v1/models" }),
   systemPrompt: z.string().min(1).max(32_000).optional(),
+  systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt; empty removes it" }),
   thinkingLevel: ThinkingLevel.optional(),
-}).strict().refine(input => input.model !== undefined || input.systemPrompt !== undefined || input.thinkingLevel !== undefined, "Give at least one configuration field").openapi("ConfigureInput");
+}).strict().refine(input => input.model !== undefined || input.systemPrompt !== undefined || input.systemPromptAppend !== undefined || input.thinkingLevel !== undefined, "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
 
 const ChannelAccess = z.object({
   public: z.boolean().optional().openapi({ description: "Let anyone message the channel; off by default" }),

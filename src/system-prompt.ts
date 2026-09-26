@@ -35,8 +35,9 @@ export const INSTRUCTIONS = "instructions";
 /** The section summarizing the agent's environment, generated from its configuration. */
 export const ENVIRONMENT = "environment";
 
-export function applicationInstructions(applicationPrompt?: string): string {
-  return applicationPrompt ?? "You are a helpful application assistant. Keep responses concise and useful.";
+export function applicationInstructions(applicationPrompt?: string, append?: string): string {
+  const prompt = applicationPrompt ?? "You are a helpful application assistant. Keep responses concise and useful.";
+  return append ? `${prompt}\n\n${append}` : prompt;
 }
 
 /**
@@ -73,10 +74,10 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
  * The context's first system message: the runtime's instructions, then the application's and a
  * summary of the environment as named sections. Rendered, they are joined by blank lines.
  */
-export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "mounts" | "model" | "tools">, tools: Tool[]): SystemMessage {
+export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools">, tools: Tool[]): SystemMessage {
   return {
     role: "system", content: runtimeInstructions, timestamp: 0,
-    sections: { [INSTRUCTIONS]: applicationInstructions(config.systemPrompt), [ENVIRONMENT]: environmentSummary(config) },
+    sections: { [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config) },
     ...(tools.length ? { toolsAdded: tools } : {}),
   };
 }

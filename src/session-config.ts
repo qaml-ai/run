@@ -51,6 +51,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
   const updates = configurationUpdate({
     ...(input.systemPrompt !== undefined || defaultPrompt !== undefined ? { systemPrompt: input.systemPrompt !== undefined ? input.systemPrompt : defaultPrompt } : {}),
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
+    ...(input.systemPromptAppend !== undefined ? { systemPromptAppend: input.systemPromptAppend } : {}),
   });
   if (input.initialMessages !== undefined) validateInitialMessages(input.initialMessages);
   return { model, ...updates, ...(input.initialMessages !== undefined ? { initialMessages: input.initialMessages } : {}) };
@@ -60,9 +61,9 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any): Pick<AgentConfig, 'systemPrompt' | 'thinkingLevel'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model'] } {
+export function configurationUpdate(input: any): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model'] } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'thinkingLevel', 'mcp', 'model'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   // The application's attached MCP server's tools/list replaces its tools.
   if (input.mcp !== undefined) {
     const { mcp, ...rest } = input;
@@ -70,6 +71,7 @@ export function configurationUpdate(input: any): Pick<AgentConfig, 'systemPrompt
   }
   if (input.model !== undefined && typeof input.model !== 'string') throw new Error('model must be a "provider/model-id" string');
   if (input.systemPrompt !== undefined && (typeof input.systemPrompt !== 'string' || !input.systemPrompt.trim() || input.systemPrompt.length > 32000)) throw new Error('systemPrompt must contain 1–32000 characters');
+  if (input.systemPromptAppend !== undefined && (typeof input.systemPromptAppend !== 'string' || input.systemPromptAppend.length > 32000)) throw new Error('systemPromptAppend must be at most 32000 characters; empty removes it');
   if (input.thinkingLevel !== undefined && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(input.thinkingLevel)) throw new Error('Invalid thinkingLevel');
   if (input.tools !== undefined) validateDefinitions(input.tools);
   return { ...input, ...(input.model !== undefined ? { model: resolveModel(input.model) } : {}) };

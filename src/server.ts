@@ -169,7 +169,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
-    made && { definition: made.ref, provision: made.provision, sources: made.sources }, identity);
+    made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity);
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };

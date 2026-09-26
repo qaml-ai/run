@@ -400,6 +400,26 @@ definition supplies the model, prompt, thinking level and tool sources; `name`,
 `type`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
 its defaults, and an SDK app's tools are added as its attached server.
 
+An agent can also have configuration of its own, which applying its definition
+leaves alone:
+
+```json
+{"definition": "def_…", "model": "anthropic/claude-opus-5", "thinkingLevel": "low",
+ "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
+```
+
+- `model` and `thinkingLevel` given at creation, or later through
+  `PATCH /v1/agents/:id/configuration`, are the agent's own: an apply changes
+  every other field and keeps them.
+- `systemPromptAppend` is text the model reads after the definition's prompt
+  (after the runtime's default prompt without one), e.g. per-conversation
+  context. An apply replaces the prompt and keeps the addition; configuring
+  `systemPromptAppend` changes it, and `""` removes it. Agents not made from a
+  definition can have one too.
+- `systemPrompt` cannot be given with a definition: the definition owns the
+  prompt, so an apply would silently replace it. A `systemPrompt` configured
+  on one agent later lasts until the next apply.
+
 Every change is a new revision (`PATCH` replaces the fields given; `null`
 removes one; `revision` makes it conditional). An agent records the definition
 and revision it was made from (`definition` in `GET /v1/agents/:id`), and keeps
@@ -419,7 +439,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt` or `thinkingLevel` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend` or `thinkingLevel` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration

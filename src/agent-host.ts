@@ -105,7 +105,7 @@ export function createAgentHost(io: HostIO) {
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     const current = getCurrentSystemMessage(messages)?.sections ?? {};
-    const wanted = { [INSTRUCTIONS]: applicationInstructions(config.systemPrompt), [ENVIRONMENT]: environmentSummary(config) };
+    const wanted = { [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config) };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => current[name] !== text));
     if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return Promise.resolve();
     const change: SystemMessage = {
@@ -419,11 +419,12 @@ export function createAgentHost(io: HostIO) {
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt;
+      if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
       if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; }
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
       if (params.tools !== undefined) { config.tools = params.tools; agent.state.tools = [agent.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools)]; }
-      if (params.systemPrompt !== undefined || params.tools !== undefined || params.model !== undefined) await declareConfiguration();
+      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Full history comes from the log; memory holds only the working set.
