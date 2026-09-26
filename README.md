@@ -785,7 +785,17 @@ request. Nothing per user is stored anywhere, and there is no shared secret.
 - Tokens are EdDSA (Ed25519). The public keys are at
   `/.well-known/jwks.json` (keys have `kid`; cache for minutes); the private key
   is sealed with `AGENT_SECRETS_KEY` in `signing_keys` and made on first use.
-- To verify, in a Worker or Node (`jose`):
+- `/.well-known/oauth-authorization-server` is OAuth metadata (RFC 8414)
+  naming the issuer and its keys, as MCP's authorization spec reads it; the
+  runtime issues tokens only to itself, so it lists no endpoints.
+- Attached tool calls carry the same claims, unsigned (the connection is the
+  application's own), as `_meta["agent-runtime/identity"]`, so a tool reads who
+  it is for the same way whether it is attached or served.
+- The SDKs verify tokens and serve tools with them: `serveTools` and
+  `verifyRuntimeToken` (`@camelai/agent-runtime/server`), `serve_tools` and
+  `verify_runtime_token` in Python, with a signer for tests (see the
+  [SDK guide](clients/README.md#serving-tools-to-many-users)). By hand, in a
+  Worker or Node (`jose`):
 
 ```ts
 const jwks = createRemoteJWKSet(new URL("https://agents.camelai.dev/.well-known/jwks.json"));

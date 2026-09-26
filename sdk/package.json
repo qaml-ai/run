@@ -28,6 +28,14 @@
     "./mcp": {
       "types": "./dist/clients/mcp.d.ts",
       "default": "./dist/clients/mcp.js"
+    },
+    "./server": {
+      "types": "./dist/clients/server.d.ts",
+      "default": "./dist/clients/server.js"
+    },
+    "./testing": {
+      "types": "./dist/clients/testing.d.ts",
+      "default": "./dist/clients/testing.js"
     }
   },
   "files": [

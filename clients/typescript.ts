@@ -6,10 +6,45 @@ import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type S
 export { Type as schema };
 export type { SessionCredentials, SessionState };
 
+/**
+ * Who a tool call is for, as the runtime says: from its signed identity token when the tools are
+ * served over HTTP (`serveTools`), or from the call itself when they are attached to the agent.
+ * Authorize as `user`, within `tenant` and `context`.
+ */
+export interface RuntimeIdentity {
+  /** Who is acting: the turn's actor (a prompt's `actor`, or its `from.id`), else the agent's subject. */
+  user: string;
+  /** Whom the agent acts for, as its creator set it (`createAgent({ subject })`); the agent's id if none. */
+  subject: string;
+  /** Who is acting in this turn, if the prompt named someone. */
+  actor?: string;
+  /** The runtime tenant that owns the agent. */
+  tenant: string;
+  agent: string;
+  definition?: string;
+  /** Claims the agent's creator attached (`createAgent({ context })`), e.g. `{ org, workspace }`. */
+  context: Record<string, unknown>;
+  /** Where the turn came from, e.g. `{ channel, conversationId, sender }` for a channel message. */
+  origin?: Record<string, unknown>;
+}
+/** A runtime identity from its claims (a verified token's payload, or an attached call's `_meta`). */
+export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity {
+  const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
+  const agent = text(claims.agent) ?? "";
+  const subject = text(claims.sub) ?? agent;
+  const actor = text(claims.act);
+  return {
+    user: actor ?? subject, subject, ...(actor ? { actor } : {}), tenant: text(claims.tenant) ?? "", agent,
+    ...(text(claims.definition) ? { definition: claims.definition } : {}),
+    context: isRecord(claims.ctx) ? claims.ctx : {}, ...(isRecord(claims.origin) ? { origin: claims.origin } : {}),
+  };
+}
 export interface ToolContext {
   signal: AbortSignal; callId: string; toolCallId?: string;
   /** Set by the runtime, e.g. `{ channel, conversationId, sender }` for a turn a channel message started. */
   origin?: Record<string, unknown>;
+  /** Who the call is for: always set by `serveTools`; set for attached tools by runtimes that send it. */
+  identity?: RuntimeIdentity;
 }
 export interface Tool<T = any> {
   description: string;
@@ -38,7 +73,41 @@ export interface ToolServer {
   callTool(name: string, args: Record<string, unknown>, context: ToolContext): Promise<CallToolResult>;
 }
 const META = "agent-runtime/";
-const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
+
+/** A call's context from its `_meta`: ids, origin, and the identity the runtime sent (or `identity`, from a verified token). */
+export function toolContext(meta: Record<string, any>, fallbackId: string, signal: AbortSignal, identity?: RuntimeIdentity): ToolContext {
+  const sent = isRecord(meta[`${META}identity`]) ? identityFromClaims(meta[`${META}identity`]) : undefined;
+  const who = identity ?? sent;
+  const origin = isRecord(meta[`${META}origin`]) ? meta[`${META}origin`] : who?.origin;
+  return {
+    callId: typeof meta[`${META}callId`] === "string" ? meta[`${META}callId`] : fallbackId, signal,
+    ...(typeof meta[`${META}toolCallId`] === "string" ? { toolCallId: meta[`${META}toolCallId`] } : {}),
+    ...(origin ? { origin } : {}), ...(who ? { identity: who } : {}),
+  };
+}
+
+/**
+ * Answer one MCP JSON-RPC request as a tool server: initialize, ping, tools/list and tools/call.
+ * Both an attached server (answering over the agent's connection) and `serveTools` (over HTTP) use it.
+ */
+export async function answerMcp(
+  message: Record<string, any>, server: ToolServer, context: (params: Record<string, any>) => ToolContext,
+  info: { name: string; version: string } = { name: "agent-runtime-sdk", version: "1.0.0" },
+): Promise<{ result: unknown } | { error: { code: number; message: string } }> {
+  const params = isRecord(message.params) ? message.params : {};
+  if (message.method === "initialize") return { result: { protocolVersion: typeof params.protocolVersion === "string" ? params.protocolVersion : "2025-06-18", capabilities: { tools: {} }, serverInfo: info } };
+  if (message.method === "ping") return { result: {} };
+  if (message.method === "tools/list") return { result: { tools: await server.listTools() } };
+  if (message.method !== "tools/call") return { error: { code: -32601, message: `Unknown method ${message.method}` } };
+  try {
+    const result = await server.callTool(String(params.name), isRecord(params.arguments) ? params.arguments : {}, context(params));
+    if (!isRecord(result) || !Array.isArray(result.content) || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
+    return { result };
+  } catch (error) {
+    return { error: { code: -32603, message: String(error).slice(0, 2048) } };
+  }
+}
 /** `tool({...})` definitions as an attached MCP server: JSON results become a text block (and structured content for objects). */
 export function toolServer(tools: Tools): ToolServer {
   return {
@@ -544,26 +613,12 @@ export class AgentClient {
       return;
     }
     const connection = this.connection;
-    const reply = (answer: { result: unknown } | { error: { code: number; message: string } }) =>
-      this.transport.json(this.path("/mcp"), this.session.token, "POST", { jsonrpc: "2.0", id: message.id, ...answer }, true, { "X-Agent-Connection": connection ?? "" });
-    const params = message.params ?? {};
-    if (message.method === "initialize") return reply({ result: { protocolVersion: params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "agent-runtime-sdk", version: "1.0.0" } } });
-    if (message.method === "ping") return reply({ result: {} });
-    if (message.method === "tools/list") return reply({ result: { tools: await this.server.listTools() } });
-    if (message.method !== "tools/call") return reply({ error: { code: -32601, message: `Unknown method ${message.method}` } });
-    const controller = new AbortController();
     const key = String(message.id);
-    this.active.set(key, controller);
-    const meta = params._meta ?? {};
+    const controller = new AbortController();
+    if (message.method === "tools/call") this.active.set(key, controller);
     try {
-      const result = await this.server.callTool(params.name, params.arguments ?? {}, {
-        callId: meta["agent-runtime/callId"] ?? key, signal: controller.signal,
-        ...(meta["agent-runtime/toolCallId"] ? { toolCallId: meta["agent-runtime/toolCallId"] } : {}), ...(meta["agent-runtime/origin"] ? { origin: meta["agent-runtime/origin"] } : {}),
-      });
-      if (!isRecord(result) || !Array.isArray(result.content) || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("The MCP server must answer with a bounded CallToolResult");
-      await reply({ result });
-    } catch (error) {
-      await reply({ error: { code: -32603, message: String(error).slice(0, 2048) } });
+      const answer = await answerMcp(message, this.server, params => toolContext(isRecord(params._meta) ? params._meta : {}, key, controller.signal));
+      await this.transport.json(this.path("/mcp"), this.session.token, "POST", { jsonrpc: "2.0", id: message.id, ...answer }, true, { "X-Agent-Connection": connection ?? "" });
     } finally { this.active.delete(key); }
   }
 

@@ -353,6 +353,13 @@ const app = new Hono<Env>();
 // node stays healthy (ECS replaces tasks that fail it, protected or not) and hands new work to its peers instead.
 // The runtime's public signing keys: tool servers verify its identity tokens with them.
 app.get("/.well-known/jwks.json", async c => c.json(await signer.jwks(), 200, { "Cache-Control": "public, max-age=300" }));
+// OAuth authorization server metadata (RFC 8414), as MCP's authorization spec reads it: the issuer of
+// identity tokens and where its keys are, so a tool server that names the runtime in its protected-resource
+// metadata can verify them with standard OAuth tooling. The runtime issues tokens only to itself: no endpoints.
+app.get("/.well-known/oauth-authorization-server", c => c.json({
+  issuer: signer.issuer, jwks_uri: `${signer.issuer}/.well-known/jwks.json`,
+  response_types_supported: [], grant_types_supported: [], token_endpoint_auth_methods_supported: [], code_challenge_methods_supported: [],
+}, 200, { "Cache-Control": "public, max-age=300" }));
 app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
 // Every 503 is worth retrying (capacity, an actor moving, this node draining), and so is a 429 (a
 // tenant at its agent quota, or an agent with too many queued requests) once work finishes; say when.
