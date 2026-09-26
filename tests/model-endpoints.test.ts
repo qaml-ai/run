@@ -116,6 +116,11 @@ test("a tenant endpoint's reasoning signatures go back with the conversation, af
   await r.prompt(agent, "And 6 times 8?");
   assert.deepEqual(replayed(endpoint.bodies[2]).reasoning_details, [signature]);
 
+  // The reasoning is visible in the history, and the response's usage has its parts.
+  const first = (await r.call(`/v1/agents/${agent}/history`)).json.messages.find((message: any) => message.role === "assistant");
+  assert.deepEqual(first.content.filter((block: any) => block.type === "thinking").map((block: any) => block.thinking), ["Let me compute."]);
+  assert.deepEqual([first.usage.cacheRead, first.usage.cacheWrite, first.usage.reasoning], [600, 200, 30]);
+
   const usage = (await r.call("/v1/usage")).json;
   const row = usage.days.find((entry: any) => entry.model === "chiridion/claude-sonnet-5");
   assert.deepEqual([row.input, row.cacheRead, row.cacheWrite, row.cost], [100, 600, 200, 0]);
