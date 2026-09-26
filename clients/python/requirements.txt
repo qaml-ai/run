@@ -1,1 +1,3 @@
 httpx==0.28.1
+# serve_tools, verify_runtime_token and TestRuntime (the `server` extra).
+cryptography==46.0.0
