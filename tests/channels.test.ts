@@ -374,6 +374,26 @@ test("presented files follow the reply: images as photos, others as documents, t
   assert.equal((await db.query("select count(*) as count from channel_items")).rows[0].count, 0);
 });
 
+test("files the agent presents reach the chat after its reply", async t => {
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+  const call = (name: string, args: object, index: number) => ({ role: "assistant", tool_calls: [{ index: 0, id: `call_${index}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+  const r = await runtime(t, (_body, index) => [
+    call("write", { path: "/workspace/out/chart.png", content: png.toString("base64"), encoding: "base64", contentType: "image/png" }, index),
+    call("write", { path: "/workspace/out/data.csv", content: "a,b\n1,2\n" }, index),
+    call("present_file", { path: "/workspace/out/chart.png", caption: "Q3 chart" }, index),
+    call("present_file", { path: "/workspace/out/data.csv" }, index),
+  ][index] ?? { role: "assistant", content: "Here you go." });
+  const { channel, secret } = await r.createChannel({ access: { allow: ["42"] } });
+  await r.deliver(channel, secret, from(ada, "chart please"));
+  await until(() => r.tg.sentFiles(ada.id).length === 2, "the files");
+  assert.deepEqual(r.tg.sent(ada.id), ["Here you go."]);
+  assert.deepEqual(r.tg.sentFiles(ada.id), [
+    { method: "sendPhoto", name: "chart.png", caption: "Q3 chart", data: png.toString() },
+    { method: "sendDocument", name: "data.csv", caption: undefined, data: "a,b\n1,2\n" },
+  ]);
+  assert.deepEqual(r.tg.calls.map(entry => entry.method).filter(method => /^send(Message|Photo|Document)/.test(method)), ["sendMessage", "sendPhoto", "sendDocument"]);
+});
+
 test("send_message sends files from the agent's mounts, and refuses paths outside them", async t => {
   const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x05, 0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]), randomBytes(64)]);
   const r = await runtime(t, (body, index) => {

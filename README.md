@@ -1110,9 +1110,9 @@ An agent's output files are volume files. A run's outcome (`prompt`,
 
 `present_file` comes with the file tools. It is the explicit way for the model
 to give someone a file ("here is your chart"), where `files` lists every write,
-scratch files included. A runtime feature such as a channel finds presented
-files in `record.outcome.result.presented` at `runEnded`, as it finds `reply`
-(channels do not send them yet).
+scratch files included. A runtime feature finds presented files in
+`record.outcome.result.presented` at `runEnded`, as it finds `reply`: a
+[channel](#channels) sends them to the conversation after the reply.
 
 An application reads what its agent made with the agent's own token, by the
 paths the agent sees:
