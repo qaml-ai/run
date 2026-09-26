@@ -244,3 +244,43 @@ test("an attached tool asks with ctx.confirm and ctx.ask: the call runs again wi
   assert.deepEqual(deleted, ["shop: retired"]);
   assert.equal(runs, 3, "the code before each ask ran again on every retry");
 });
+
+test("inputs from parallel calls are one suspension: answered together, all or none, and listed in the tenant's inbox", async t => {
+  const call = (id: string, question: string, index: number) => ({ index, id, type: "function", function: { name: "ask_user", arguments: JSON.stringify({ questions: [{ question, header: "Q", options: [{ label: "A" }, { label: "B" }] }] }) } });
+  const r = await runtime(t, (body, index) => index === 0 ? { role: "assistant", tool_calls: [call("call_1", "First?", 0), call("call_2", "Second?", 1)] }
+    : { role: "assistant", content: toolResults(body).map((result: string) => Object.values(JSON.parse(result).answers)[0]).join("+") });
+  const agent = await asker(r);
+  const inputs = (await r.prompt(agent, "Ask me twice")).outcome.result.inputs.sort((a: any, b: any) => a.message.localeCompare(b.message));
+  assert.deepEqual(inputs.map((input: any) => input.message), ["First?", "Second?"]);
+  assert.deepEqual((await r.call("/v1/inputs?state=pending")).json.map((input: any) => input.id).sort(), inputs.map((input: any) => input.id).sort());
+
+  const answers = (second: string) => ({ answers: [
+    { id: inputs[0].id, action: "accept", content: { answers: { "First?": "A" } } },
+    { id: inputs[1].id, action: "accept", content: { answers: { "Second?": second } } },
+  ] });
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs`, { body: answers("C") })).status, 400);
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs?state=pending`)).json.length, 2, "nothing was recorded");
+  const answered = await r.call(`/v1/agents/${agent}/inputs`, { body: answers("B") });
+  assert.equal(answered.status, 202, answered.text);
+  assert.equal(answered.json.requests.length, 1);
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs`, { body: answers("B") })).status, 200, "a retry is safe");
+  const resumed = await until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${answered.json.requests[0].id}`)).json; return record.state === "completed" && record; }, "the resume");
+  assert.equal(resumed.outcome.result.reply, "A+B");
+  assert.deepEqual((await r.call("/v1/inputs?state=pending")).json, []);
+});
+
+test("an application answers with onInput, from its SDK", async t => {
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("wipe", { disk: "d1" }) : { role: "assistant", content: toolResults(body).at(-1) });
+  const wiped: string[] = [];
+  const seen: any[] = [];
+  const tools = { wipe: tool({ description: "Wipe a disk", input: schema.Object({ disk: schema.String() }), needsApproval: true, execute: ({ disk }) => { wiped.push(disk); return { wiped: disk }; } }) };
+  const agent = await new AgentRuntime({ url: r.base, apiKey: OPERATOR, journalStore: memoryJournalStore() }).createAgent({ tools, onInput: input => { seen.push(input); return { action: "accept", actor: "ops" }; } });
+  t.after(() => agent.close());
+  const suspended = await agent.prompt("Wipe d1", { timeoutMs: 30_000 });
+  assert.equal(suspended.stopped, "input_required");
+  await until(() => r.model.bodies.length === 2, "the resumed turn");
+  assert.deepEqual(wiped, ["d1"]);
+  assert.equal(seen[0].detail.tool, "wipe");
+  assert.equal(seen[0].detail.source, "application");
+  assert.deepEqual((await agent.inputs())[0].answer?.by, { via: "agent", actor: "ops" });
+});

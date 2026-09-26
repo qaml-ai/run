@@ -204,9 +204,30 @@ export interface AgentOptions {
   /** Or an MCP server of the application's own (see `clients/mcp.ts` for MCP SDK servers). */
   mcp?: ToolServer;
   onEvent?: (event: any, requestId?: string) => unknown | Promise<unknown>;
+  /**
+   * A question, approval or setup step the agent's turn now waits on. Return an answer to give it
+   * at once, or nothing to answer later with `agent.answer` (from any process, via connectAgent).
+   */
+  onInput?: (input: AgentInput, requestId?: string) => InputAnswer | void | Promise<InputAnswer | void>;
   onConnection?: (connected: boolean) => void;
   onError?: (error: Error) => void;
 }
+/**
+ * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
+ * `inputs`): the model's questions (ask_user), approvals, and a tool's form or URL step.
+ */
+export interface AgentInput {
+  id: string; agent: string; requestId: string; toolCallId: string;
+  kind: "question" | "approval" | "form" | "url"; message: string;
+  /** question: { questions }; approval: { tool, source, arguments, argumentsHash }; form: { requestedSchema }; url: { url, origin }. */
+  detail: Record<string, any>;
+  responders: { audience?: string[] };
+  state: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
+  answer?: { action: string; content?: unknown; by: Record<string, unknown>; at: number };
+  createdAt: number; expiresAt: number;
+}
+/** An answer. `content`: for a question, { answers: { "<question>": "<label>" | ["<label>"] | "<own words>" } }; for a form, its fields. `from`/`actor`: who answers, checked against who may. */
+export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
   idempotencyKey?: string;
@@ -433,6 +454,8 @@ export class AgentRuntime {
    * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
    * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
    */
+  /** Inputs waiting on someone across all the tenant's agents (`pending` ones, say), newest first. */
+  inbox(state?: AgentInput["state"]): Promise<AgentInput[]> { return this.transport.json(`/v1/inputs${state ? `?state=${state}` : ""}`, this.operator()); }
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {
     const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
     return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;
@@ -671,7 +694,14 @@ export class AgentClient {
 
   private async receive(event: ClientEvent) {
     if (event.type === "response") this.settle(event.id, event.outcome);
-    else if (event.type === "event") await this.options.onEvent?.(event.event, event.requestId);
+    else if (event.type === "event") {
+      await this.options.onEvent?.(event.event, event.requestId);
+      const onInput = this.options.onInput;
+      if (onInput && event.event?.type === "input_required") void (async () => {
+        const answer = await onInput(event.event.input, event.requestId);
+        if (answer) await this.answer(event.event.input.id, answer);
+      })().catch(error => this.report(error));
+    }
   }
   private settle(id: string, value: Outcome) {
     const waiter = this.pending.get(id);
@@ -834,6 +864,10 @@ export class AgentClient {
   status() { return this.request("status"); }
   abort() { return this.request("abort"); }
   requestStatus(id: string) { return this.http(`/requests/${encodeURIComponent(id)}`); }
+  /** Answer an input the agent waits on. `request` is the run resuming its turn, once its last input is answered. */
+  answer(inputId: string, answer: InputAnswer): Promise<{ input: AgentInput; request: any | null }> { return this.http(`/inputs/${encodeURIComponent(inputId)}`, "POST", answer); }
+  /** The agent's inputs, newest first: `pending` ones, say. */
+  inputs(state?: AgentInput["state"]): Promise<AgentInput[]> { return this.http(`/inputs${state ? `?state=${state}` : ""}`); }
   outcomes(): Promise<SessionState> { return this.http("/state"); }
 
   async close() {

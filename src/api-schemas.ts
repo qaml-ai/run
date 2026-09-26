@@ -138,6 +138,8 @@ export const AnswerInput = z.object({
   from: Sender.optional().openapi({ description: "Who is answering, in your app: checked against the input's audience and approvers (403)" }),
   actor: z.string().optional().openapi({ description: "Who is answering (a user id in your app), when not from.id" }),
 }).openapi("AnswerInput");
+export const AnswerInputs = z.object({ answers: z.array(AnswerInput.extend({ id: z.string() })).min(1).max(100) }).openapi("AnswerInputs");
+export const AnsweredAll = z.object({ inputs: z.array(Input), requests: z.array(RequestRecord).openapi({ description: "The runs resuming turns whose last input these answers settled" }) }).openapi("AnsweredAll");
 export const Answered = z.object({ input: Input, request: RequestRecord.nullable().openapi({ description: "The run resuming the turn, once the suspension's last input settled; poll it like a prompt" }) }).openapi("Answered");
 
 

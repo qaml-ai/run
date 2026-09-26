@@ -26,15 +26,18 @@ DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:te
 PNG = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13]) + b"IHDR" + bytes([0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0, 0, 0])
 
 
-def fake_model(bodies):
-    """An OpenAI-compatible model on localhost that answers "seen" and keeps each request body."""
+def fake_model(bodies, script=None):
+    """An OpenAI-compatible model on localhost that answers with `script`'s deltas in turn, then "seen", and keeps each request body."""
+    script = script if script is not None else []
+
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            for delta, finish in (({"role": "assistant", "content": "seen"}, None), ({}, "stop")):
+            delta = script.pop(0) if script else {"role": "assistant", "content": "seen"}
+            for delta, finish in ((delta, None), ({}, "tool_calls" if "tool_calls" in delta else "stop")):
                 self.wfile.write(f"data: {json.dumps({'id': 'fixture', 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
 
@@ -63,8 +66,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         # The tests run scripted code, never the model: the tenant's key is a placeholder.
         tenants = Path(self.directory.name) / "tenants.json"
         tenants.write_text(json.dumps({"tenants": {"python": {"tokenSha256": hashlib.sha256(self.token.encode()).hexdigest(), "apiKeys": {"openrouter": "unset"}}}}))
-        self.bodies = []
-        self.model = fake_model(self.bodies)
+        self.bodies, self.script = [], []
+        self.model = fake_model(self.bodies, self.script)
         self.host = await asyncio.create_subprocess_exec(
             "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", str(ROOT / "src" / "server.ts"), stdout=asyncio.subprocess.PIPE,
             env={"PATH": os.environ["PATH"], "HOME": self.directory.name,
@@ -85,6 +88,35 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.model.shutdown()
         self.model.server_close()
         self.directory.cleanup()
+
+    async def test_an_approval_answered_by_on_input_resumes_the_turn(self):
+        wiped = []
+
+        @tool(needs_approval=True)
+        async def wipe(disk: str):
+            """Wipe a disk"""
+            wiped.append(disk)
+            return {"wiped": disk}
+
+        seen = []
+
+        def approve(input):
+            seen.append(input)
+            return {"action": "accept", "actor": "ops"}
+
+        self.script.append({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_wipe", "type": "function", "function": {"name": "wipe", "arguments": json.dumps({"disk": "d1"})}}]})
+        agent = await self.runtime.create_agent(tools=[wipe], on_input=approve)
+        suspended = await agent.prompt("Wipe d1")
+        self.assertEqual(suspended["stopped"], "input_required")
+        for _ in range(200):
+            if wiped and len(self.bodies) == 2:
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(wiped, ["d1"])
+        self.assertEqual(seen[0]["kind"], "approval")
+        self.assertEqual(seen[0]["detail"]["arguments"], json.dumps({"disk": "d1"}, separators=(",", ":")))
+        self.assertEqual((await agent.inputs())[0]["answer"]["by"], {"via": "agent", "actor": "ops"})
+        self.assertEqual(await agent.inputs(state="pending"), [])
 
     async def test_annotations_reconnect_and_lost_acknowledgements(self):
         writes = []

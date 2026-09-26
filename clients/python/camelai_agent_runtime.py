@@ -312,7 +312,7 @@ class AgentRuntime:
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, on_input=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -329,10 +329,12 @@ class AgentRuntime:
             body["ttlSeconds"] = ttl_seconds
         session = await _http(self.http, self.base, "/client-sessions", self.api_key, "POST", body,
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
-        return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error)
+        return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input)
 
-    async def connect_agent(self, session, *, tools, on_event=None, on_error=None):
-        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error)
+    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None):
+        """`on_input(input)` hears each question, approval or setup step the agent's turn now waits on: return an
+        answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer()."""
+        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error, on_input)
         self.agents.append(agent)
         try:
             await agent.connect()
@@ -380,6 +382,10 @@ class AgentRuntime:
     async def set_mounts(self, agent_id, mounts):
         """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
         return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator(), "PUT", {"mounts": mounts}, retry=False)
+
+    async def inbox(self, *, state=None):
+        """Inputs waiting on someone across all the tenant's agents (state="pending", say), newest first."""
+        return await _http(self.http, self.base, "/v1/inputs" + (f"?state={state}" if state else ""), self._operator())
 
     async def tool_sources(self, agent_id, *, schemas=False, refresh=False):
         """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
@@ -534,14 +540,14 @@ class AgentClient:
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
-    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None):
+    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None, on_input=None):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
         self.base = _origin(base)
         self.session = {key: session[key] for key in ("id", "token", "expiresAt")}
         self.tools = {item.name: item for item in tools}
-        self.on_event, self.on_error = on_event, on_error
+        self.on_event, self.on_error, self.on_input = on_event, on_error, on_input
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.path = f"/clients/{session['id']}"
         self.journal_path = Path(state_directory or os.environ.get("AGENT_CLIENT_STATE_DIR", ".agent-runtime/client-sdk")) / f"{session['id']}.json"
@@ -654,8 +660,18 @@ class AgentClient:
     def _receive(self, event):
         if event["type"] == "response":
             self._settle(event["id"], event["outcome"])
-        elif event["type"] == "event" and self.on_event:
-            self.on_event(event["event"])
+        elif event["type"] == "event":
+            if self.on_event:
+                self.on_event(event["event"])
+            if self.on_input and event["event"].get("type") == "input_required":
+                self._track(asyncio.ensure_future(self._input(event["event"]["input"])))
+
+    async def _input(self, input):
+        answer = self.on_input(input)
+        if inspect.isawaitable(answer):
+            answer = await answer
+        if answer:
+            await self.answer(input["id"], **answer)
 
     def _settle(self, request_id, value):
         future = self.pending.pop(request_id, None)
@@ -821,6 +837,20 @@ class AgentClient:
     def files(self):
         """The agent's files, at the paths it sees them (/workspace/...): list, download, upload and link."""
         return AgentFiles(self)
+
+    async def answer(self, input_id, *, action, content=None, actor=None, **sender):
+        """Answer an input the agent waits on: action is accept, decline or cancel. `content`: for a question,
+        {"answers": {"<question>": "<label>" | ["<label>"] | "<own words>"}}; for a form, its fields. `from` (as
+        from_) or `actor` names who answers, checked against who may. Returns {input, request}: request is the
+        run resuming the turn once its last input is answered."""
+        from urllib.parse import quote
+        who = sender.get("from_") or sender.get("from")
+        body = {"action": action, **({"content": content} if content is not None else {}), **({"actor": actor} if actor else {}), **({"from": who} if who else {})}
+        return await self._http(f"/inputs/{quote(input_id, safe='')}", "POST", body)
+
+    async def inputs(self, *, state=None):
+        """The agent's inputs, newest first: state="pending", say."""
+        return await self._http("/inputs" + (f"?state={state}" if state else ""))
 
     async def request_status(self, request_id):
         from urllib.parse import quote

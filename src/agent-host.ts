@@ -513,11 +513,14 @@ export function createAgentHost(io: HostIO) {
    */
   type Settled = { content: unknown[]; isError?: boolean; details?: unknown };
   async function settle(calls: { toolCallId: string; result?: Settled; retry?: boolean }[], signal: AbortSignal) {
-    const wanted = calls.filter(call => transcript.awaiting.includes(call.toolCallId));
+    // In the order the model made the calls.
+    const made = transcript.context.flatMap(message => message.role === "assistant" ? message.content : []).filter(part => part.type === "toolCall") as ToolCall[];
+    const position = (id: string) => made.findIndex(part => part.id === id);
+    const wanted = calls.filter(call => transcript.awaiting.includes(call.toolCallId)).sort((a, b) => position(a.toolCallId) - position(b.toolCallId));
     const retried = wanted.filter(call => call.retry).map(call => call.toolCallId);
     if (retried.length) await transcript.await(retried, true);
     for (const call of wanted) {
-      const toolCall = transcript.context.flatMap(message => message.role === "assistant" ? message.content : []).find(part => part.type === "toolCall" && part.id === call.toolCallId) as ToolCall | undefined;
+      const toolCall = made.find(part => part.id === call.toolCallId);
       let result = call.result;
       if (!result) {
         const tool = agent!.state.tools.find(entry => entry.name === toolCall?.name && entry.name !== "js_exec");

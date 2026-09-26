@@ -3,7 +3,7 @@ import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Accounts, Principal } from "./accounts.ts";
-import type { ClientSessions } from "./client-sessions.ts";
+import { answerList, type ClientSessions } from "./client-sessions.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
 import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
 import { resolveModel } from "./session-config.ts";
@@ -252,9 +252,18 @@ export function api(context: ApiContext) {
     method: "post", path: "/v1/agents/{id}/inputs/{inputId}", request: { params: agentId.extend({ inputId: z.string() }), body: content(schema.AnswerInput) },
     responses: { 202: reply("The answer is recorded", schema.Answered), 200: reply("The same answer was recorded before", schema.Answered), 409: reply("The input had already settled otherwise", schema.ApiError) },
   }), async c => {
-    const { status, ...answered } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, c.req.param("inputId")!, await readJson(c.req.raw.body, 256 * 1024, {}));
+    const { status, inputs, requests } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, [{ id: c.req.param("inputId")!, body: await readJson(c.req.raw.body, 256 * 1024, {}) }]);
+    return json(c, status, { input: inputs[0], request: requests[0] ?? null });
+  });
+  route(createRoute({
+    method: "post", path: "/v1/agents/{id}/inputs", request: { params: agentId, body: content(schema.AnswerInputs) },
+    responses: { 202: reply("Every answer is recorded, or none is", schema.AnsweredAll), 200: reply("The same answers were recorded before", schema.AnsweredAll), 409: reply("An input had already settled otherwise", schema.ApiError) },
+  }), async c => {
+    const { status, ...answered } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, answerList(await readJson(c.req.raw.body, 1024 * 1024, {})));
     return json(c, status, answered);
   });
+  route(createRoute({ method: "get", path: "/v1/inputs", request: { query: inputState }, responses: { 200: reply("The tenant's human inputs across its agents, newest first: what waits on someone", z.array(schema.Input)) } }),
+    async c => json(c, 200, await clients.inbox(c.var.principal.tenant, c.req.query("state"))));
 
   const scheduler = () => {
     if (!context.scheduler) throw new HttpError(404, "Unknown agent route");

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Sealed } from "./accounts.ts";
-import type { Db } from "./db.ts";
+import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { underClaim, type Claim } from "./ownership.ts";
 import { canonical } from "../shared/durable-json.ts";
@@ -260,9 +260,25 @@ export class Inputs {
   }
 
   /** Settle a pending input, once: undefined when it had already settled (or does not exist). */
-  async settle(id: string, answer: Answer, state: InputState = FINAL[answer.action]): Promise<InputRow | undefined> {
-    const updated = (await this.db.query("update agent_inputs set state = $2, answer = $3 where id = $1 and state = 'pending' returning *", [id, state, JSON.stringify(answer)])).rows[0];
+  async settle(id: string, answer: Answer, state: InputState = FINAL[answer.action], sql: Sql = this.db): Promise<InputRow | undefined> {
+    const updated = (await sql.query("update agent_inputs set state = $2, answer = $3 where id = $1 and state = 'pending' returning *", [id, state, JSON.stringify(answer)])).rows[0];
     return updated && row(updated);
+  }
+
+  /** Settle several pending inputs, all or none: undefined when any had already settled. */
+  async settleAll(answers: { id: string; answer: Answer }[]): Promise<InputRow[] | undefined> {
+    const taken = new Error("An input had already settled");
+    try {
+      return await transaction(this.db, async sql => {
+        const settled: InputRow[] = [];
+        for (const { id, answer } of answers) {
+          const done = await this.settle(id, answer, undefined, sql);
+          if (!done) throw taken;
+          settled.push(done);
+        }
+        return settled;
+      });
+    } catch (error) { if (error === taken) return undefined; throw error; }
   }
 
   /** Claim pending inputs past their expiry, a batch at a time; a claim left by a crashed node lapses after a minute. */
