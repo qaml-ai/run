@@ -7,6 +7,7 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { canonical } from "../shared/durable-json.ts";
 import { errorText } from "./protocol.ts";
 import type { Outbound } from "./outbound.ts";
+import type { Progress } from "./tool-servers.ts";
 
 /**
  * Remote MCP servers as a tool source. Connections are made lazily, one per tenant
@@ -118,9 +119,10 @@ export class McpConnections {
     return this.connections.get(this.key(tenant, server))?.tools;
   }
 
-  async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, timeoutMs: number, meta?: Record<string, unknown>) {
+  /** Call a tool; `onProgress` hears the progress the server reports for it (the call gets a progressToken). */
+  async call(tenant: string, server: McpServer, name: string, args: Record<string, unknown>, signal: AbortSignal, timeoutMs: number, meta?: Record<string, unknown>, onProgress?: (progress: Progress) => void) {
     const connection = this.connection(tenant, server);
-    return this.retrying(connection, client => client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) }, undefined, { signal, timeout: timeoutMs, maxTotalTimeout: timeoutMs }));
+    return this.retrying(connection, client => client.callTool({ name, arguments: args, ...(meta && Object.keys(meta).length ? { _meta: meta } : {}) }, undefined, { signal, timeout: timeoutMs, maxTotalTimeout: timeoutMs, ...(onProgress ? { onprogress: onProgress } : {}) }));
   }
 
   /**

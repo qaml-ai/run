@@ -4,9 +4,11 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "../shared/client-protocol.ts";
 export type { ToolDefinition };
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
+/** Which model tool call a tool call belongs to: its own, or for a call from js_exec, the js_exec call's and the call's id within it. */
+export type CallContext = { toolCallId: string; innerCallId?: string };
 export interface ToolBridge {
   definitions: ToolDefinition[];
-  call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: { toolCallId: string }): Promise<unknown>;
+  call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: CallContext): Promise<unknown>;
   /** Why the agent's tenant may not spend more on models, if it has reached a limit. */
   spendLimit?(): Promise<string | undefined> | string | undefined;
   /** Answer a `tools.search` query over the agent's code-mode tools, with the operator's rerankers. */

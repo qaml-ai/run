@@ -210,3 +210,54 @@ test("a server that only speaks the older SSE transport is reached through it", 
   await r.prompt((await r.call("/v1/agents", { body: { definition: definition.id } })).json.id, "ping it");
   assert.match(toolResults(r.model.bodies[1]).at(-1), /pong/);
 });
+
+/** A stateless MCP server whose `deploy` reports progress twice before answering; `metas` collects each call's _meta. */
+async function progressServer(t: T, delayMs = 0) {
+  const metas: any[] = [];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const server = new McpServer({ name: "camel", version: "1.0.0" });
+    server.registerTool("deploy", { description: "Deploy the app" }, async extra => {
+      metas.push(extra._meta);
+      for (const [progress, message] of [[1, "Building"], [2, "Uploading"]] as const) {
+        await sleep(delayMs);
+        await extra.sendNotification({ method: "notifications/progress", params: { progressToken: extra._meta!.progressToken!, progress, total: 3, message } });
+      }
+      await sleep(delayMs);
+      return { content: [{ type: "text", text: "deployed" }] };
+    });
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on("close", () => { void transport.close(); void server.close(); });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, text ? JSON.parse(text) : undefined);
+  });
+  return { url: `${url}/mcp`, metas };
+}
+
+test("tool servers get the model's call id, js_exec's too, and the actor; their progress reaches the event stream", async t => {
+  const server = await progressServer(t);
+  const r = await runtime(t, (_body, index) => [
+    toolCall("camel__deploy", {}, "call_direct"),
+    toolCall("js_exec", { code: "return await tools.camel__deploy({});" }, "call_code"),
+  ][index] ?? { role: "assistant", content: "done" }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Camel", mcpServers: [{ name: "camel", url: server.url, exposure: "both" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "deploy", actor: "u_7" } });
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/${accepted.json.id}`)).json.state === "completed", "the turn");
+  assert.match(toolResults(r.model.bodies[2]).at(-1), /deployed/);
+
+  const ids = (meta: any) => ({ toolCallId: meta["agent-runtime/toolCallId"], innerCallId: meta["agent-runtime/innerCallId"], actor: meta["agent-runtime/actor"], progress: meta.progressToken !== undefined });
+  assert.deepEqual(server.metas.map(ids), [
+    { toolCallId: "call_direct", innerCallId: undefined, actor: "u_7", progress: true },
+    { toolCallId: "call_code", innerCallId: "call_code:1", actor: "u_7", progress: true },
+  ]);
+  const updates = (await r.call(`/v1/agents/${agent}`)).json.events.map((entry: any) => entry.data)
+    .filter((data: any) => data.event?.type === "tool_execution_update" && data.event.partialResult.details?.type === "progress").map((data: any) => data.event);
+  assert.deepEqual(updates.map((event: any) => [event.toolCallId, event.toolName, event.partialResult.content[0].text, event.partialResult.details]), [
+    ["call_direct", "camel__deploy", "Building", { type: "progress", tool: "camel__deploy", progress: 1, total: 3, message: "Building" }],
+    ["call_direct", "camel__deploy", "Uploading", { type: "progress", tool: "camel__deploy", progress: 2, total: 3, message: "Uploading" }],
+    ["call_code", "js_exec", "Building", { type: "progress", tool: "camel__deploy", innerCallId: "call_code:1", progress: 1, total: 3, message: "Building" }],
+    ["call_code", "js_exec", "Uploading", { type: "progress", tool: "camel__deploy", innerCallId: "call_code:1", progress: 2, total: 3, message: "Uploading" }],
+  ]);
+});

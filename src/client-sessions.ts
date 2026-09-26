@@ -28,7 +28,7 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity } from "./identity.ts";
 import { senderInput } from "./sender.ts";
-import { compose, defaultExposure, describeSources, fileServer, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { callMeta, compose, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
@@ -508,7 +508,7 @@ export class ClientSessions {
           const limited = await this.options.spendLimit?.(session.header.tenant);
           return typeof limited === "string" ? limited : limited?.message;
         },
-        call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...(context ? { toolCallId: context.toolCallId } : {}) }),
+        call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
         file: ref => this.fileData(session, ref),
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
@@ -606,7 +606,12 @@ export class ClientSessions {
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
     const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
     await this.beforeEffect(session);
-    return contentResult(await server.call({ ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}) }), server.returnsFiles);
+    // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code).
+    const onProgress = call.toolCallId ? ({ progress, total, message }: Progress) => this.publish(session, { type: "event", requestId: request?.id ?? "", event: {
+      type: "tool_execution_update", toolCallId: call.toolCallId, toolName: call.innerCallId ? "js_exec" : call.name,
+      partialResult: { content: [{ type: "text", text: message ?? `${progress}${total !== undefined ? `/${total}` : ""}` }], details: { type: "progress", tool: call.name, ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), progress, ...(total !== undefined ? { total } : {}), ...(message !== undefined ? { message } : {}) } },
+    } }) : undefined;
+    return contentResult(await server.call({ ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}) }), server.returnsFiles);
   }
 
   /** The id of the agent `create` makes for a tenant's idempotency key. */
@@ -1340,7 +1345,7 @@ export class ClientSessions {
     });
   }
 
-  private async callAttached(session: Session, { name, args, signal, toolCallId, origin, actor }: ToolCall): Promise<McpResult> {
+  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, origin, actor, onProgress }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
     const timeout = this.options.toolTimeoutMs ?? 15_000;
@@ -1353,12 +1358,11 @@ export class ClientSessions {
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}),
     };
     const _meta = {
-      "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity,
-      ...(toolCallId ? { "agent-runtime/toolCallId": toolCallId } : {}), ...(origin ? { "agent-runtime/origin": origin } : {}), ...(actor ? { "agent-runtime/actor": actor } : {}),
+      "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity, ...callMeta({ toolCallId, innerCallId, origin, actor }),
     };
     session.inflight++;
     try {
-      return await attached.client.callTool({ name, arguments: args, _meta }, undefined, { signal, timeout, maxTotalTimeout: timeout }) as McpResult;
+      return await attached.client.callTool({ name, arguments: args, _meta }, undefined, { signal, timeout, maxTotalTimeout: timeout, ...(onProgress ? { onprogress: onProgress } : {}) }) as McpResult;
     } catch (error) {
       if (!signal.aborted && error instanceof McpError && [ErrorCode.ConnectionClosed, ErrorCode.RequestTimeout].includes(error.code)) {
         throw new Error(`${error.message}, after the call was sent to the application. Its outcome is unknown: it may or may not have taken effect.`);

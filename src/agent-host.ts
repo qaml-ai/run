@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { executeCode } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, type AgentConfig, type ToolBridge } from "./protocol.ts";
+import { errorText, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
 import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -22,7 +22,7 @@ import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validF
 export interface HostIO {
   emit(event: unknown): void;
   /** Dispatch an application tool through the supervisor, which validates and limits it. */
-  tool(name: string, args: Record<string, unknown>, toolCallId?: string): Promise<any>;
+  tool(name: string, args: Record<string, unknown>, call?: CallContext): Promise<any>;
   /** Abort the application tool calls this agent has in flight. */
   cancelTools(): Promise<unknown>;
   /** Why the tenant may not spend more on models (a reached cap), if so. */
@@ -166,12 +166,14 @@ export function createAgentHost(io: HostIO) {
     return [system, ...bounded];
   }
 
-  function bridge(signal: AbortSignal): ToolBridge {
+  /** The tools code can call; `toolCallId` is the js_exec call running it, if the model made one. */
+  function bridge(signal: AbortSignal, toolCallId?: string): ToolBridge {
+    let calls = 0;
     return {
       definitions: config.tools.filter(tool => tool.exposure !== "direct"),
       call: async (name, args) => {
         signal.throwIfAborted();
-        const value = await io.tool(name, args);
+        const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}` } : undefined);
         // MCP tools answer with content; code gets their data.
         return config.tools.find(tool => tool.name === name)?.resultFormat === "content" ? scriptValue(value) : value;
       },
@@ -186,7 +188,7 @@ export function createAgentHost(io: HostIO) {
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
         execute: async (toolCallId, args, signal) => {
           signal?.throwIfAborted();
-          const value = await io.tool(tool.name, args as Record<string, unknown>, toolCallId);
+          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId });
           signal?.throwIfAborted();
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
@@ -356,7 +358,7 @@ export function createAgentHost(io: HostIO) {
         execute: async (id, args, signal, onUpdate) => {
           try {
             const result = await executeCode({
-              ...codeRequest(args), bridge: bridge(signal ?? new AbortController().signal), signal,
+              ...codeRequest(args), bridge: bridge(signal ?? new AbortController().signal, id), signal,
               onEvent: event => {
                 io.emit({ type: "codemode", toolCallId: id, event });
                 onUpdate?.({ content: [{ type: "text", text: JSON.stringify(event) }], details: event });

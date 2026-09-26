@@ -7,7 +7,7 @@ import type { TranscriptRecord } from "./transcript.ts";
 const rpc = parentRpc();
 const host = createAgentHost({
   emit: event => rpc.send({ type: "event", event }),
-  tool: (name, args, toolCallId) => rpc.request("tool", { name, args, ...(toolCallId ? { toolCallId } : {}) }),
+  tool: (name, args, call) => rpc.request("tool", { name, args, ...call }),
   cancelTools: () => rpc.request("cancel-tools"),
   spendLimit: async () => (await rpc.request("spend-limit")) ?? undefined,
   search: query => rpc.request("search", query),

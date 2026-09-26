@@ -5,11 +5,25 @@ import { CATALOG_LIMITS } from "./limits.ts";
 import { validFileRef } from "./files.ts";
 
 /**
- * A tool call as a server gets it; `toolCallId` is the model's id for the call, `run` the id of the
+ * A tool call as a server gets it; `toolCallId` is the model's id for the call (for a call from
+ * js_exec, the js_exec call's, and `innerCallId` this call's within it), `run` the id of the
  * run it is made in, `origin` where the turn came from (a channel and its sender), and `actor` who
  * the application said is acting in it: set by the runtime, never by the model, so tools can authorize.
+ * `onProgress` hears the server's progress notifications for the call.
  */
-export type ToolCall = { name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; run?: string; origin?: Record<string, unknown>; actor?: string };
+export type ToolCall = {
+  name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; innerCallId?: string; run?: string; origin?: Record<string, unknown>; actor?: string;
+  onProgress?: (progress: Progress) => void;
+};
+/** What a tool server is told about a call in its `_meta`: the call's ids, where its turn came from and who acts in it. */
+export function callMeta({ toolCallId, innerCallId, origin, actor }: Pick<ToolCall, "toolCallId" | "innerCallId" | "origin" | "actor">) {
+  return {
+    ...(toolCallId ? { "agent-runtime/toolCallId": toolCallId } : {}), ...(innerCallId ? { "agent-runtime/innerCallId": innerCallId } : {}),
+    ...(origin ? { "agent-runtime/origin": origin } : {}), ...(actor ? { "agent-runtime/actor": actor } : {}),
+  };
+}
+/** An MCP `notifications/progress`: `progress` rises, `total` if known, `message` for people. */
+export type Progress = { progress: number; total?: number; message?: string };
 
 /**
  * The one interface every source of an agent's tools answers through, shaped like MCP's

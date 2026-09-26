@@ -119,8 +119,10 @@ The same server can run remotely later, as a definition's `mcpServers` entry,
 without changing its tools. Code in `js_exec` gets a tool's data: its
 `structuredContent`, or its one text block (parsed when it is JSON). A tool's own
 failure is an MCP error result, which the model sees and which throws in code.
-`callId`, `toolCallId` and `origin` reach the server's handlers as
-`_meta["agent-runtime/…"]`.
+`callId`, `toolCallId` (for a call from js_exec, the js_exec call's, with
+`innerCallId`), `actor` and `origin` reach the server's handlers as
+`_meta["agent-runtime/…"]`, and progress it reports for a call
+(`notifications/progress`) reaches the agent's events as a `tool_execution_update`.
 
 ## Serving tools to many users
 

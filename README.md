@@ -475,8 +475,12 @@ result: the model gets its content (text, images and saved files) and `isError`;
 it is JSON, or its one file as `{type: "file", path, contentType, size}`), and a
 tool error throws. Files go in and out of the definition's sources by path, not
 through the model (see [Files through tool calls](#files-through-tool-calls)). Each call gets the turn's `origin` (a
-channel, its conversation and sender) so tools can authorize: MCP servers as
-`_meta["agent-runtime/origin"]`. Only the attached server needs its application
+channel, its conversation and sender) and `actor` so tools can authorize, and the
+model's tool call id, so an application can match a call to the tool call it
+shows: MCP servers as `_meta["agent-runtime/origin"]`, `["agent-runtime/actor"]`
+and `["agent-runtime/toolCallId"]`. A call from js_exec carries the js_exec call's
+`toolCallId` and its own `["agent-runtime/innerCallId"]` (`<toolCallId>:<n>`, the
+nth call of that execution). Only the attached server needs its application
 connected; the rest suit channel agents and anything scheduled. An HTTP API gets
 its tools from its OpenAPI spec, or from a remote MCP server.
 
@@ -618,6 +622,19 @@ reconfiguration, not at a refresh.
   a tool error, and `structuredContent` is kept as the result's `details`.
 - A server that cannot be reached when an agent starts contributes no tools
   that time (logged as `mcp_tools_unavailable`); the agent starts anyway.
+- Each call carries a `progressToken`. The server's `notifications/progress`
+  for it reach the agent's event stream as updates of the model's tool call,
+  in the shape js_exec's own updates have, so an application can show a long
+  deploy as it goes (the attached server's progress arrives the same way):
+
+  ```json
+  {"type": "tool_execution_update", "toolCallId": "call_1", "toolName": "camel__deploy",
+   "partialResult": {"content": [{"type": "text", "text": "Building"}],
+     "details": {"type": "progress", "tool": "camel__deploy", "progress": 1, "total": 3, "message": "Building"}}}
+  ```
+
+  For a call from js_exec, `toolCallId` is the js_exec call's, `toolName` is
+  `js_exec`, and `details` adds `innerCallId`.
 
 ### OpenAPI specs
 

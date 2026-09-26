@@ -2,7 +2,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { childProcess, type Rpc } from "./rpc.ts";
-import type { AgentConfig, ToolBridge } from "./protocol.ts";
+import type { AgentConfig, CallContext, ToolBridge } from "./protocol.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
@@ -68,12 +68,12 @@ export class AgentSupervisor {
   }
 
   /** Validate and dispatch an agent's application tool call, with the same limits in either hosting mode. */
-  private async dispatchTool(handle: Handle, params: { name: string; args: unknown; toolCallId?: string }) {
+  private async dispatchTool(handle: Handle, params: { name: string; args: unknown } & Partial<CallContext>) {
     const checked = validateToolCall(handle.bridge.definitions, params.name, params.args);
     const controller = new AbortController();
     handle.calls.add(controller);
     try {
-      const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId } : undefined);
+      const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId, ...(params.innerCallId ? { innerCallId: params.innerCallId } : {}) } : undefined);
       controller.signal.throwIfAborted();
       return JSON.parse(jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result"));
     }
@@ -166,7 +166,7 @@ export class AgentSupervisor {
       transcript,
       // Copies keep the agent from sharing objects with the supervisor, as IPC would.
       emit: event => { for (const listener of handle.listeners) listener(structuredClone(event)); },
-      tool: (name, args, toolCallId) => this.dispatchTool(handle, { name, args: structuredClone(args), toolCallId }),
+      tool: (name, args, call) => this.dispatchTool(handle, { name, args: structuredClone(args), ...call }),
       cancelTools: async () => this.cancelTools(handle),
       spendLimit: async () => handle.bridge.spendLimit?.(),
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),

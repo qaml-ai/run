@@ -11,7 +11,7 @@ import type { WebSearch } from "./web-search.ts";
 import type { WebRender } from "./web-render.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { defaultExposure, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { callMeta, defaultExposure, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
 import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, type Operation } from "./openapi.ts";
 import { acceptFiles, resolveFiles, savedContent, ToolFiles } from "./tool-files.ts";
@@ -333,7 +333,7 @@ export class ToolSources {
           ...mcp,
         ];
       },
-      call: async ({ name, args, signal, origin, actor, run: runId }) => {
+      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, onProgress }) => {
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}) };
         const callFiles = files(name, runId);
         if (builtins.includes(name)) {
@@ -356,7 +356,7 @@ export class ToolSources {
         const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
         const resolved = await resolveFiles(args, tool.inputSchema, callFiles) as Record<string, unknown>;
-        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, origin && { "agent-runtime/origin": origin })) as McpResult;
+        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, callMeta({ toolCallId, innerCallId, origin, actor }), onProgress)) as McpResult;
         return savedContent(result, callFiles);
       },
     };
