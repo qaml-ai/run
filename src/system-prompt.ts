@@ -67,6 +67,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
     `- ${sight}`,
     `- Tools declared to you: ${direct.length ? direct.join(", ") : "none"}.`,
     `- Tools only in js_exec: ${hidden.length ? `${hidden.length}, in ${namespaces.join(", ")}; find them with tools.search` : "none"}.`,
+    ...config.tools.some(tool => tool.name === "ask_user") ? ["- When you are blocked on a choice only the user can make, ask them with ask_user; your turn pauses until they answer. Don't ask what you can find out yourself."] : [],
     `- js_exec limits per execution: ${SANDBOX_LIMITS.cpuMs / 1000} s of CPU, ${SANDBOX_LIMITS.heapBytes / 1024 / 1024} MB of memory, ${SANDBOX_LIMITS.timeoutMs / 1000} s (timeoutMs, up to ${SANDBOX_LIMITS.maxTimeoutMs / 1000} s), ${SANDBOX_LIMITS.toolCalls} tool calls, ${SANDBOX_LIMITS.outputCharacters.toLocaleString("en-US")} output characters. QuickJS interprets slowly: process large data in one pass.`,
   ].join("\n");
 }

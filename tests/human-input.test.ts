@@ -27,6 +27,8 @@ test("ask_user suspends the turn; the answer, after the agent unloaded, resumes 
   assert.deepEqual(input.detail.questions[0].options.map((option: any) => option.label), ["EU", "US"]);
   assert.ok(input.expiresAt - Date.now() > 6 * 86_400_000, "inputs wait 7 days by default");
   assert.equal(r.model.bodies.length, 1, "the model is not called while the turn waits");
+  const system = r.model.bodies[0].messages.find((message: any) => message.role === "system" || message.role === "developer").content;
+  assert.match(system, /ask them with ask_user; your turn pauses until they answer/);
 
   // Nothing runs while it waits: the agent unloads, and the transcript holds the call open with no result.
   await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop");
