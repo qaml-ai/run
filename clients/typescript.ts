@@ -140,6 +140,8 @@ export interface RuntimeOptions {
   fetch?: typeof globalThis.fetch;
   /** Opens a local file to attach by its path; set by the Node entry (`@camelai/agent-runtime/node`). */
   openFile?: (path: string) => Promise<Blob>;
+  /** How often a request still waiting for its result asks for its status, in case the result's event was lost. Default 30 s. */
+  pollMs?: number;
 }
 export interface AgentOptions {
   /** The application's tools, served to the agent as an attached MCP server. */
@@ -292,15 +294,41 @@ class Transport {
       }
     }
   }
-  /** A request with a raw body or response (volume file contents). */
+  /**
+   * A request with a raw body or response (file contents). It fails once nothing arrives for 30 s
+   * (an upload has the runtime's 15 minutes to be sent), so a stalled transfer never hangs its caller.
+   */
   async raw(path: string, token: string, init: { method?: string; body?: Uint8Array | Blob; headers?: Record<string, string> } = {}): Promise<Response> {
-    const response = await this.fetcher(this.base + path, { method: init.method ?? "GET", body: init.body as BodyInit | undefined, headers: { Authorization: `Bearer ${token}`, ...init.headers }, redirect: "manual" });
-    await rejectRedirect(response);
-    if (!response.ok) {
-      const value = await response.json().catch(() => ({})) as any;
-      throw new AgentError(value.error ?? `HTTP ${response.status}`, response.status);
+    // A 503 (the agent is moving, a node draining) was refused before anything happened; a read may be retried after anything.
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.transfer(path, token, init); }
+      catch (error) {
+        const status = error instanceof AgentError ? error.status : 500;
+        if (attempt >= 3 || !(status === 503 || (status >= 500 && (init.method ?? "GET") === "GET"))) throw error;
+        await pause((error as AgentError).retryAfterMs ?? 100 * 2 ** attempt);
+      }
     }
-    return response;
+  }
+  private async transfer(path: string, token: string, init: { method?: string; body?: Uint8Array | Blob; headers?: Record<string, string> }): Promise<Response> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const wait = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => controller.abort(new AgentError("File transfer stalled")), ms); };
+    wait(init.body === undefined ? 30_000 : 15 * 60_000);
+    try {
+      const response = await this.fetcher(this.base + path, { method: init.method ?? "GET", body: init.body as BodyInit | undefined, headers: { Authorization: `Bearer ${token}`, ...init.headers }, redirect: "manual", signal: controller.signal });
+      await rejectRedirect(response);
+      if (!response.ok) {
+        const value = await response.json().catch(() => ({})) as any;
+        throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response) });
+      }
+      if (!response.body) { clearTimeout(timer); return response; }
+      wait(30_000);
+      const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, stream) { wait(30_000); stream.enqueue(chunk); },
+        flush() { clearTimeout(timer); },
+      }));
+      return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+    } catch (error) { clearTimeout(timer); throw error; }
   }
 }
 
@@ -451,6 +479,7 @@ export class AgentClient {
   private saving: Promise<void> = Promise.resolve();
   private readonly options: AgentOptions;
   private readonly openFile?: (path: string) => Promise<Blob>;
+  private readonly pollMs: number;
   /** The agent's files: list, download, upload and link. */
   readonly files: AgentFiles;
   private readonly pending = new Map<string, Pending>();
@@ -473,6 +502,7 @@ export class AgentClient {
     this.transport = new Transport(runtime);
     this.store = runtime.journalStore ?? memoryJournalStore();
     this.openFile = runtime.openFile;
+    this.pollMs = runtime.pollMs ?? 30_000;
     this.files = new AgentFiles(this.transport, this.session.token, this.path());
   }
 
@@ -595,6 +625,15 @@ export class AgentClient {
     if ("error" in value) waiter.reject(new AgentError(value.error ?? "Unknown failure", 0, id)); else waiter.resolve(value.result);
   }
 
+  /**
+   * A request's result arrives as an event; a reconnect also settles from /state. As a last resort,
+   * ask for its status now and then, so an event lost on the way can never strand the caller.
+   */
+  private async outcome(id: string, result: Promise<any>) {
+    const poll = setInterval(() => void this.requestStatus(id).then(record => { if (record.outcome) this.settle(id, record.outcome); }, () => {}), this.pollMs);
+    try { return await result; } finally { clearInterval(poll); }
+  }
+
   private async sync(): Promise<SessionState> {
     const state = await this.outcomes();
     for (const request of state.requests) if (request.outcome) this.settle(request.id, request.outcome);
@@ -638,7 +677,7 @@ export class AgentClient {
     try {
       const record = await this.http("/requests", "POST", { id, method, params });
       if (record.outcome) this.settle(id, record.outcome);
-      return await deferred.promise;
+      return await this.outcome(id, deferred.promise);
     } catch (error) {
       if (error instanceof AgentError) { error.requestId ??= id; throw error; }
       throw new AgentError(String(error), 0, id);
@@ -658,7 +697,7 @@ export class AgentClient {
     try {
       const record = await this.requestStatus(id);
       if (record.outcome) this.settle(id, record.outcome);
-      return await deferred.promise;
+      return await this.outcome(id, deferred.promise);
     } finally { clearTimeout(timer); this.pending.delete(id); }
   }
 

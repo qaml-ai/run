@@ -165,3 +165,19 @@ test("the SDK retries 429s, honouring Retry-After, even for requests it does not
   await assert.rejects(refusing.listVolumes(), (error: any) => error.status === 429 && error.retryAfterMs === 0);
   assert.equal(attempts, 8);
 });
+
+test("a file transfer that stalls fails instead of hanging its caller", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const runtime = new AgentRuntime({ apiKey: "operator", fetch: async (_input, init) => new Response(new ReadableStream({
+    start(stream) {
+      stream.enqueue(new TextEncoder().encode("part of the file"));
+      init!.signal!.addEventListener("abort", () => stream.error(init!.signal!.reason));
+    },
+  }), { headers: { ETag: '"1"', "Content-Length": "1000" } }) });
+  const read = runtime.volume(`vol_${"c".repeat(24)}`).read("report.md");
+  read.catch(() => {});
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(30_000);
+  await assert.rejects(read, /File transfer stalled/);
+});

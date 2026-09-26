@@ -338,7 +338,11 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
 Streamed events (token deltas, tool progress) are kept in a bounded in-memory
 buffer for SSE replay. After a host restart a client's cursor falls outside the
 buffer, it receives `REPLAY_GAP`, and it recovers durable state from `/state`
-and `/history`. The session header (a row in `agents`) is rewritten only when
+and `/history`. A result never depends on its event arriving: the SDKs also
+settle requests from `/state` on every reconnect, and a request still waiting
+asks for its own status every 30 s (`pollMs`; Python `poll_interval`), so a
+result lost with a connection, or across a deploy, still reaches its caller.
+The session header (a row in `agents`) is rewritten only when
 configuration or metadata changes.
 
 If the runtime dies mid-turn, the next owner resumes the turn (see

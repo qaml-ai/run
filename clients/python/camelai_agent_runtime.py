@@ -196,6 +196,8 @@ def _retry_after(response):
 
 # A 429 (quota, or an agent's queue is full) was refused before anything happened, so any request may be retried after it.
 _RATE_LIMIT_ATTEMPTS = 8
+# httpx times each read and write, so a stalled transfer fails; an upload may wait longer while the runtime stores it.
+_UPLOAD_TIMEOUT = 60
 
 
 async def _http(client, base, path, token, method="GET", body=None, retry=True, headers=None):
@@ -226,6 +228,20 @@ async def _http(client, base, path, token, method="GET", body=None, retry=True, 
             hinted = error.retry_after if isinstance(error, AgentError) else None
             await asyncio.sleep(hinted + random.random() * min(1.0, backoff) if hinted is not None else backoff)
             attempt += 1
+
+
+async def _transfer(client, method, url, **options):
+    """A file request. A 503 (the agent is moving, a node draining) was refused before anything happened;
+    a read may be retried after any server error or a lost connection."""
+    for attempt in range(4):
+        try:
+            response = await client.request(method, url, **options)
+            if attempt == 3 or not (response.status_code == 503 or (response.status_code >= 500 and method == "GET")):
+                return response
+        except httpx.TransportError:
+            if attempt == 3 or method != "GET":
+                raise
+        await asyncio.sleep(0.1 * 2 ** attempt)
 
 
 class AgentRuntime:
@@ -339,7 +355,7 @@ class Volume:
         return f"{self.runtime.base}/v1/volumes/{self.id}/files/" + "/".join(quote(part, safe="") for part in path.split("/") if part)
 
     async def _raw(self, method, path, content=None, headers=None):
-        response = await self.runtime.http.request(method, self._file(path), content=content, headers={
+        response = await _transfer(self.runtime.http, method, self._file(path), content=content, headers={
             "Authorization": f"Bearer {self.runtime._operator()}", **(headers or {})})
         if not response.is_success:
             try:
@@ -428,7 +444,7 @@ class AgentFiles:
         return f"{self.agent.base}{self.agent.path}/files/" + "/".join(quote(part, safe="") for part in path.split("/") if part)
 
     async def _raw(self, method, path, **options):
-        response = await self.agent.http.request(method, self._url(path), headers={"Authorization": f"Bearer {self.agent.session['token']}", **options.pop("headers", {})}, **options)
+        response = await _transfer(self.agent.http, method, self._url(path), headers={"Authorization": f"Bearer {self.agent.session['token']}", **options.pop("headers", {})}, **options)
         if not response.is_success:
             raise AgentError(_error(response), response.status_code)
         return response
@@ -446,7 +462,7 @@ class AgentFiles:
     async def upload(self, path, data, *, content_type=None):
         """Write a file into a writable mount; without content_type the runtime sniffs it."""
         body = data.encode() if isinstance(data, str) else data
-        return (await self._raw("PUT", path, content=body, headers={"Content-Type": content_type} if content_type else {}, timeout=None)).json()
+        return (await self._raw("PUT", path, content=body, headers={"Content-Type": content_type} if content_type else {}, timeout=_UPLOAD_TIMEOUT)).json()
 
     async def link(self, path, *, method="GET", expires_in=None, max_bytes=None, content_type=None):
         """A signed URL to download (GET) or upload (PUT) one file without a token: {"url", "expiresAt", ...}."""
@@ -455,6 +471,9 @@ class AgentFiles:
 
 
 class AgentClient:
+    # How often a request still waiting for its result asks for its status, in case the result's event was lost.
+    poll_interval = 30
+
     def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
@@ -586,6 +605,18 @@ class AgentClient:
             else:
                 future.set_result(value.get("result"))
 
+    async def _outcome(self, request_id, future):
+        """A request's result arrives as an event; a reconnect also settles from /state. As a last resort,
+        ask for its status now and then, so an event lost on the way can never strand the caller."""
+        while not (await asyncio.wait({future}, timeout=self.poll_interval))[0]:
+            try:
+                record = await self.request_status(request_id)
+            except Exception:
+                continue
+            if "outcome" in record:
+                self._settle(request_id, record["outcome"])
+        return future.result()
+
     async def _sync(self):
         state = await self.outcomes()
         for request in state["requests"]:
@@ -640,7 +671,7 @@ class AgentClient:
             record = await self._http("/requests", "POST", {"id": request_id, "method": method, "params": params or {}})
             if "outcome" in record:
                 self._settle(request_id, record["outcome"])
-            return await asyncio.wait_for(future, timeout)
+            return await asyncio.wait_for(self._outcome(request_id, future), timeout)
         except TimeoutError as error:
             raise AgentError("Request timed out; inspect request_status() or reuse the same idempotency_key", request_id=request_id) from error
         finally:
@@ -685,7 +716,7 @@ class AgentClient:
                 n += 1
             names.add(unique)
             response = await self.http.put(f"{self.base}{self.path}/uploads/{quote(request_id, safe='')}/{quote(unique, safe='')}", content=data, headers={
-                "Authorization": f"Bearer {self.session['token']}", **({"Content-Type": content_type} if content_type else {})}, timeout=None)
+                "Authorization": f"Bearer {self.session['token']}", **({"Content-Type": content_type} if content_type else {})}, timeout=_UPLOAD_TIMEOUT)
             if not response.is_success:
                 raise AgentError(_error(response), response.status_code)
             attached.append({"path": response.json()["path"]})

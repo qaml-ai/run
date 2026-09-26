@@ -144,6 +144,13 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(writes), 2)
         self.assertNotEqual(writes[0][1], writes[1][1])
         self.assertEqual(json.loads((await agent.execute(script))["output"][0]), {"saved": "once"}, "the new connection answers calls")
+
+        # A result whose event never arrives is found by asking for the request's status.
+        receive = agent._receive
+        agent._receive = lambda event: None if event["type"] == "response" else receive(event)
+        agent.poll_interval = 0.2
+        self.assertEqual((await asyncio.wait_for(agent.execute('return "polled"'), 10))["output"][0], "polled")
+        agent._receive = receive
         await agent.destroy()
 
     async def test_volumes_files_snapshots_and_mounts(self):

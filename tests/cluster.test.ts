@@ -291,14 +291,14 @@ test("with no live peer, a draining node answers 503 with Retry-After for anythi
 });
 
 /** An OpenAI-compatible model answering from `respond`; undefined leaves that call hanging, as if the node died mid-request. */
-async function fakeModel(t: { after(fn: () => Promise<void>): void }, respond: (body: any, index: number) => object | undefined) {
+async function fakeModel(t: { after(fn: () => Promise<void>): void }, respond: (body: any, index: number) => object | undefined | Promise<object | undefined>) {
   const bodies: any[] = [];
   const server = createHttpServer(async (req, res) => {
     let text = "";
     for await (const chunk of req) text += chunk;
     const body = JSON.parse(text);
     bodies.push(body);
-    const delta = respond(body, bodies.length - 1) as any;
+    const delta = await respond(body, bodies.length - 1) as any;
     if (!delta) return;
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const [content, finish_reason] of [[delta, null], [{}, delta.tool_calls ? "tool_calls" : "stop"]]) res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }] })}\n\n`);
@@ -487,4 +487,136 @@ test("a turn still running when the drain times out is handed off and resumed by
   assert.equal(model.bodies.length, 2);
   assert.equal(model.bodies[1].messages.filter((message: any) => message.role === "user").length, 1);
   assert.equal(await c.owner(created.session.id), b.url);
+});
+
+/**
+ * A load balancer's view of the nodes, as the SDK's `fetch`: each request goes to the next node
+ * that is up and not draining (a draining node fails its health check), so a reconnect finds another.
+ * `frames` may rewrite or drop the event stream's frames, as a lossy connection would.
+ */
+function balancer(nodes: { url: string; child: ChildProcess; logs: any[] }[], frames: (frame: string) => string | undefined = frame => frame) {
+  let turn = 0;
+  const streams = new Set<AbortController>();
+  const fetcher = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const up = nodes.filter(node => node.child.exitCode === null && !node.logs.some(entry => entry.type === "drain_started"));
+    const url = new URL(String(input));
+    const target = up[turn++ % up.length].url + url.pathname + url.search;
+    if (!url.pathname.endsWith("/events")) return fetch(target, init);
+    const stream = new AbortController();
+    streams.add(stream);
+    const response = await fetch(target, { ...init, signal: AbortSignal.any([stream.signal, ...(init.signal ? [init.signal] : [])]) });
+    if (!response.body) return response;
+    let buffer = "";
+    const body = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(new TransformStream<string, string>({
+      transform(chunk, controller) {
+        buffer += chunk;
+        for (let end; (end = buffer.indexOf("\n\n")) !== -1; buffer = buffer.slice(end + 2)) {
+          const frame = frames(buffer.slice(0, end));
+          if (frame !== undefined) controller.enqueue(`${frame}\n\n`);
+        }
+      },
+      flush() { streams.delete(stream); },
+    })).pipeThrough(new TextEncoderStream());
+    return new Response(body, { status: response.status, headers: response.headers });
+  };
+  /** Cut every open event stream, as a dropped connection would. */
+  const drop = () => { for (const stream of streams) stream.abort(); streams.clear(); };
+  return { fetch: fetcher, drop };
+}
+
+test("a prompt through a load balancer gets its result when its turn is handed off and finished on the next owner", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "finished on b" });
+  const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "500" });
+  const b = await c.start("b", model.env);
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "handoff-new-owner" });
+  await created.close();
+  const lb = balancer([a, b]);
+  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  t.after(() => client.close());
+  const run = client.prompt("go", { idempotencyKey: "turn-new-owner", timeoutMs: 60_000 });
+  await until(() => model.bodies.length === 1, "A called the model");
+
+  a.child.kill("SIGTERM");
+  assert.equal((await once(a.child, "exit"))[0], 0);
+  assert.equal((await run).reply, "finished on b");
+  assert.equal(await c.owner(created.session.id), b.url);
+});
+
+test("a prompt through a load balancer gets its result when its turn finishes on a node that is draining", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const answer = Promise.withResolvers<object>();
+  const model = await fakeModel(t, (_body, index) => index === 0 ? answer.promise : undefined);
+  const a = await c.start("a", model.env);
+  const b = await c.start("b", model.env);
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "handoff-old-owner" });
+  await created.close();
+  const lb = balancer([a, b]);
+  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  t.after(() => client.close());
+  const run = client.prompt("go", { idempotencyKey: "turn-old-owner", timeoutMs: 60_000 });
+  await until(() => model.bodies.length === 1, "A called the model");
+
+  const exited = once(a.child, "exit");
+  a.child.kill("SIGTERM");
+  await until(() => a.logs.some(entry => entry.type === "drain_started"), "A is draining");
+  answer.resolve({ role: "assistant", content: "finished on a" });
+  assert.equal((await run).reply, "finished on a");
+  assert.equal((await exited)[0], 0);
+  assert.equal(a.logs.find(entry => entry.type === "drain_finished")?.unfinished, 0);
+  assert.equal(model.bodies.length, 1, "the turn was not run again");
+});
+
+test("a prompt gets its result when the event stream drops mid-turn, and when its result event is lost", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  let answer = Promise.withResolvers<object>();
+  const model = await fakeModel(t, () => answer.promise);
+  const a = await c.start("a", model.env);
+  const b = await c.start("b", model.env);
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "dropped-stream" });
+  await created.close();
+  let lose = false;
+  const lb = balancer([a, b], frame => lose && frame.includes('"type":"response"') ? undefined : frame);
+  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch, journalStore: memoryJournalStore(), pollMs: 500 }).connectAgent(created.session, { tools: {} });
+  t.after(() => client.close());
+
+  // The stream drops while the turn runs; the client reconnects (through the other node) and replays.
+  const first = client.prompt("go", { timeoutMs: 60_000 });
+  await until(() => model.bodies.length === 1, "the model was called");
+  lb.drop();
+  answer.resolve({ role: "assistant", content: "after the drop" });
+  assert.equal((await first).reply, "after the drop");
+
+  // The result's event never arrives, and the stream stays up: the client asks for the request's status.
+  lose = true;
+  answer = Promise.withResolvers<object>();
+  answer.resolve({ role: "assistant", content: "event lost" });
+  assert.equal((await client.prompt("again", { timeoutMs: 60_000 })).reply, "event lost");
+});
+
+test("the agent's files download through another node while their owner drains, and after it has gone", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const a = await c.start("a");
+  const b = await c.start("b");
+  const gate = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  const tools = { slow: tool({ description: "Wait for the test", input: schema.Object({}, { additionalProperties: false }), execute: async () => { entered.resolve(); await gate.promise; return "done"; } }) };
+  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: "files-while-draining" });
+  const report = "x".repeat(300_000);
+  await created.files.upload("/workspace/out/report.md", report);
+  await created.close();
+  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools });
+  t.after(() => client.close());
+  const turn = client.execute("return await tools.slow({})", { timeoutMs: 60_000 });
+  await entered.promise;
+
+  const exited = once(a.child, "exit");
+  a.child.kill("SIGTERM");
+  await until(() => a.logs.some(entry => entry.type === "drain_started"), "A is draining");
+  const text = async () => new TextDecoder().decode((await client.files.download("/workspace/out/report.md")).data);
+  assert.equal(await text(), report, "served by A through B while A drains");
+  gate.resolve();
+  assert.equal((await turn).output[0], "done");
+  assert.equal((await exited)[0], 0);
+  assert.equal(await text(), report, "served by B once A has gone");
 });
