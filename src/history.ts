@@ -26,9 +26,10 @@ export function validateUserMessages(messages: AgentMessage[]) {
  * results get an explicit "outcome unknown" result, so the agent stays usable
  * without an operator, and the model is never told an effect did or did not
  * happen. They are appended: an interrupted turn's open calls are always at the end.
- * Without `close`, only the tool results are added, so the turn can continue.
+ * Without `close`, only the tool results are added, so the turn can continue. Calls `awaiting` a
+ * person's input are left open: their results come when the input is answered.
  */
-export function interruptedTurnRepairs(messages: AgentMessage[], close = true): AgentMessage[] {
+export function interruptedTurnRepairs(messages: AgentMessage[], close = true, awaiting: string[] = []): AgentMessage[] {
   const pending = new Map<string, string>();
   for (const message of messages) {
     if (message.role === "assistant") {
@@ -37,6 +38,7 @@ export function interruptedTurnRepairs(messages: AgentMessage[], close = true): 
     } else if (message.role === "toolResult") pending.delete(message.toolCallId);
     else if (message.role === "user") pending.clear();
   }
+  for (const id of awaiting) pending.delete(id);
   const repairs: AgentMessage[] = [...pending].map(([toolCallId, toolName]) => ({
     role: "toolResult", toolCallId, toolName, isError: true, timestamp: Date.now(),
     content: [{ type: "text", text: "The runtime restarted while this tool call was in progress. Its outcome is unknown: it may or may not have taken effect. Check the current state before repeating it." }],

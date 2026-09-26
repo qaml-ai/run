@@ -20,6 +20,12 @@ export type TranscriptRecord =
   /** Drops the latest message: a provider error that was retried. */
   | { t: "retract" }
   | { t: "turn"; active: boolean }
+  /**
+   * Tool calls a suspended turn leaves open until a person answers (inputs.ts): no result is written
+   * for them meanwhile, and a reload does not close them. `released` hands them back to the running
+   * turn, just before an approved call runs, so a crash then closes them as unknown like any call.
+   */
+  | { t: "awaiting"; calls: string[]; released?: true }
   /** Replaces all earlier messages (import, or folding the log). */
   | { t: "reset"; messages: AgentMessage[]; compaction?: CompactionState }
   /**
@@ -72,6 +78,8 @@ export class Transcript {
   active = false;
   /** `total` when the running turn started. */
   turnStart = 0;
+  /** Tool calls waiting on a person's input, in the order they were suspended. */
+  awaiting: string[] = [];
   readonly log: AppendLog<TranscriptRecord>;
   constructor(log: AppendLog<TranscriptRecord>) { this.log = log; }
 
@@ -94,18 +102,24 @@ export class Transcript {
   }
 
   apply(record: TranscriptRecord) {
-    if (record.t === "message") { this.context.push(record.message); this.total++; }
+    if (record.t === "message") {
+      this.context.push(record.message);
+      this.total++;
+      if (record.message.role === "toolResult") this.awaiting = this.awaiting.filter(id => id !== (record.message as { toolCallId: string }).toolCallId);
+    }
     else if (record.t === "retract") {
       if (this.context.pop()) this.total--;
       for (const update of this.updates) update.at = Math.min(update.at, this.total);
     }
     else if (record.t === "turn") { this.active = record.active; if (record.active) this.turnStart = this.total; }
+    else if (record.t === "awaiting") this.awaiting = record.released ? this.awaiting.filter(id => !record.calls.includes(id)) : [...this.awaiting, ...record.calls.filter(id => !this.awaiting.includes(id))];
     else if (record.t === "reset") {
       this.total = record.messages.length;
       this.compaction = record.compaction;
       this.context = record.messages.slice(record.compaction?.cut ?? 0);
       this.system = undefined;
       this.updates = [];
+      this.awaiting = [];
     } else if (record.t === "system") {
       if (record.leading) { this.system = record.message; this.updates = []; }
       else this.updates.push({ at: this.total, message: record.message });
@@ -128,6 +142,8 @@ export class Transcript {
   push(message: AgentMessage) { return this.write({ t: "message", message }); }
   retract() { return this.write({ t: "retract" }); }
   setActive(active: boolean) { return this.write({ t: "turn", active }); }
+  /** Leave tool calls open for a person's input, or (`released`) give them back to the turn. */
+  await(calls: string[], released = false) { return this.write({ t: "awaiting", calls, ...(released ? { released: true as const } : {}) }); }
   compact(state: CompactionState, system?: SystemMessage) { return this.write({ t: "compaction", ...state, ...(system ? { system } : {}) }); }
   /** Pin the leading system message, or (without `leading`) change the prompt or tools from here on. */
   declareSystem(message: SystemMessage, leading = false) { return this.write({ t: "system", message, ...(leading ? { leading: true as const } : {}) }); }

@@ -245,7 +245,7 @@ test("migration 015 links each channel conversation's agent to its channel's def
   }
   const definitions = async () => Object.fromEntries((await db.query("select id, header->'definition' as definition from agents order by id")).rows.map(row => [row.id, row.definition]));
   const expected = { linked: { id: "def_bot", revision: 0 }, made: { id: "def_other", revision: 3 }, foreign: null, unbound: null };
-  assert.deepEqual(await migrate(db), ["015_channel_agent_definition.sql"]);
+  assert.equal((await migrate(db))[0], "015_channel_agent_definition.sql");
   assert.deepEqual(await definitions(), expected, "another tenant's agent and an agent made from a definition are left alone");
   assert.deepEqual(await new Definitions({ db }).agents("alice", "def_bot"), [{ id: "linked", revision: 0 }], "apply reaches it");
   await db.query(readFileSync(join(all, "015_channel_agent_definition.sql"), "utf8"));

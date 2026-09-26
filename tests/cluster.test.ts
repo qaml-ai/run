@@ -620,3 +620,33 @@ test("the agent's files download through another node while their owner drains, 
   assert.equal((await exited)[0], 0);
   assert.equal(await text(), report, "served by B once A has gone");
 });
+
+test("a turn suspended on human input survives its node: the answer, taken by another node, resumes it there", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const ask = { questions: [{ question: "Proceed?", header: "Confirm", options: [{ label: "Yes" }, { label: "No" }] }] };
+  const model = await fakeModel(t, (body, index) => index === 0 ? { role: "assistant", tool_calls: [{ index: 0, id: "call_ask", type: "function", function: { name: "ask_user", arguments: JSON.stringify(ask) } }] }
+    : { role: "assistant", content: `answer: ${JSON.parse(toolMessages(body).at(-1)).answers["Proceed?"]}` });
+  const a = await c.start("a", model.env);
+  const b = await c.start("b", model.env);
+  const api = async (base: string, path: string, body?: unknown) => {
+    const response = await fetch(base + path, { method: body === undefined ? "GET" : "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, json: await response.json() as any };
+  };
+  const definition = (await api(a.url, "/v1/definitions", { name: "Asker", builtins: ["ask_user"] })).json;
+  const agent = (await api(a.url, "/v1/agents", { definition: definition.id })).json.id;
+  const prompted = (await api(a.url, `/v1/agents/${agent}/prompt`, { text: "go" })).json;
+  let record: any;
+  await until(async () => (record = (await api(a.url, `/v1/agents/${agent}/requests/${prompted.id}`)).json).state === "completed", "the turn to suspend");
+  assert.equal(record.outcome.result.stopped, "input_required");
+  const input = record.outcome.result.inputs[0];
+
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  await sleep(1500 + 500);
+  const answered = await api(b.url, `/v1/agents/${agent}/inputs/${input.id}`, { action: "accept", content: { answers: { "Proceed?": "Yes" } } });
+  assert.equal(answered.status, 202, JSON.stringify(answered.json));
+  await until(async () => (record = (await api(b.url, `/v1/agents/${agent}/requests/${answered.json.request.id}`)).json).state === "completed", "the turn to resume");
+  assert.equal(record.outcome.result.reply, "answer: Yes");
+  assert.equal(model.bodies.length, 2);
+  assert.equal(await c.owner(agent), b.url);
+});

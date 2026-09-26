@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boundedContext, recoverInterruptedTurn, validateInitialMessages, validateUserMessages } from "../src/history.ts";
+import { boundedContext, interruptedTurnRepairs, recoverInterruptedTurn, validateInitialMessages, validateUserMessages } from "../src/history.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SystemMessage } from "@earendil-works/pi-ai";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -80,4 +80,25 @@ test("system messages keep their place in the transcript across reloads, retract
   const after = await loaded();
   assert.deepEqual(after.view(), transcript.view());
   assert.deepEqual(after.system, folded);
+});
+
+test("calls awaiting human input stay open across a reload, and leave the wait once answered or released", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "awaiting-"));
+  try {
+    const path = join(directory, "transcript.jsonl");
+    const transcript = new Transcript(fileAppendLog<TranscriptRecord>(path));
+    await transcript.append([
+      { role: "user", content: "go", timestamp: 1 },
+      { role: "assistant", content: [{ type: "toolCall", id: "ask", name: "ask_user", arguments: {} }, { type: "toolCall", id: "other", name: "read", arguments: {} }, { type: "toolCall", id: "approve", name: "delete", arguments: {} }] } as AgentMessage,
+    ]);
+    await transcript.await(["ask"]);
+    await transcript.await(["approve"]);
+    const reloaded = new Transcript(fileAppendLog<TranscriptRecord>(path));
+    await reloaded.load();
+    assert.deepEqual(reloaded.awaiting, ["ask", "approve"]);
+    assert.deepEqual(interruptedTurnRepairs(reloaded.context, false, reloaded.awaiting).map(message => (message as { toolCallId: string }).toolCallId), ["other"], "only the call nobody waits on is closed as unknown");
+    await reloaded.await(["approve"], true);
+    await reloaded.push({ role: "toolResult", toolCallId: "ask", toolName: "ask_user", content: [{ type: "text", text: "{}" }], isError: false, timestamp: 2 } as AgentMessage);
+    assert.deepEqual(reloaded.awaiting, []);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

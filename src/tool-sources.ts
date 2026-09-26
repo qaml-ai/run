@@ -19,6 +19,7 @@ import { TOOL_FILE_LIMITS } from "./limits.ts";
 import type { FileLinks } from "./files.ts";
 import type { Mount, VolumeService } from "./volumes.ts";
 import type { ToolContext } from "./volume-tools.ts";
+import type { HumanInputSettings } from "./inputs.ts";
 
 /**
  * Server-side tool sources: tools the runtime calls itself, configured in a
@@ -64,7 +65,8 @@ export interface OpenApiSpec {
 }
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
-export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[] }
+/** `humanInput`: how long inputs wait, what happens when they expire, and who else may answer them (inputs.ts). */
+export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings }
 /** The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal, its mounts (for files in and out), and who hears of files saved. */
 export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim; identity?: AgentIdentity; mounts?: Mount[]; onWrite?: ToolContext["onWrite"] };
 

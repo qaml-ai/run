@@ -3,7 +3,7 @@ export const FRAME_BYTES = 1_100_000;
 export type Outcome = { result: unknown; error?: never; uncertain?: never } | { error: string; uncertain?: boolean; result?: never };
 /** `expiresAt` is null for agents that live until deleted. */
 export interface SessionCredentials { id: string; token: string; expiresAt: number | null }
-export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "history" | "continue" | "steer" | "followUp" | "configure";
+export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "history" | "continue" | "steer" | "followUp" | "configure" | "resume";
 export type RequestRecord = {
   id: string; startedAt?: number; endedAt?: number; prompt?: string; code?: string; fingerprint: string; method: RequestMethod;
   /** "running" covers queued runs too: a run has begun once `began` is set. */
@@ -16,6 +16,8 @@ export type RequestRecord = {
   resumes?: number;
   /** Who the application said is acting in this run: passed to its tool calls (`act` in identity tokens). */
   actor?: string;
+  /** A `resume` run's suspension: the run whose turn waited on human input, which this one continues. */
+  suspension?: string;
 };
 /** Events on an agent's stream. `mcp` carries the runtime's JSON-RPC messages to the application's attached MCP server: live only, with no id, never replayed. */
 export type ClientEvent =

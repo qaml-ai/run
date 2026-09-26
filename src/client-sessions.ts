@@ -33,6 +33,7 @@ import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
+import { answerInput, argumentsHash, expiresAt, inputRequests, inputView, mayAnswer, resolution, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -106,12 +107,15 @@ type Session = {
   activeSince?: number;
   /** What the running run wrote and handed over with present_file, for its outcome. */
   outputs?: { files: Map<string, WrittenFile>; presented: (FileRef & { caption?: string })[] };
+  /** In a `resume` run, how each answered call is run again, by tool call id. */
+  retries?: Map<string, RetryPlan>;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
 const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 const has = (object: object, key: string) => Object.hasOwn(object, key);
-const RUN_METHODS = ["prompt", "execute", "continue"];
+/** `resume` continues a turn that waited on human input; the runtime makes it when the last input settles. */
+const RUN_METHODS = ["prompt", "execute", "continue", "resume"];
 /**
  * Requests queued behind the agent's runs. Each keeps its params for as long as it may
  * run again on the agent's next owner: a run until it begins, and configuration (an
@@ -125,10 +129,12 @@ const ACTIVE_REPORT_MS = 60_000;
 /** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. */
 const MAX_RESUMES = 2;
 /** A model turn that began can continue from its transcript on another node; a code execution cannot. */
-const resumable = (request: RequestRecord) => ["prompt", "continue"].includes(request.method) && !!request.began;
+const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].includes(request.method) && !!request.began;
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
 const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "history", "steer", "followUp", "configure"];
+/** The id of the run that resumes a suspension: one per suspension, so every path that resumes it makes the same request. */
+const resumeId = (suspension: string) => `resume_${hash(suspension).slice(0, 40)}`;
 /** Settled records kept for idempotent retries once the journal is folded. */
 const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
@@ -200,6 +206,10 @@ export interface ClientSessionOptions {
   sources?: ToolSources;
   /** Stages that order `tools.search` results by meaning, fused with keyword ranking (AGENT_TOOL_SEARCH). */
   rerankers?: Reranker[];
+  /** Human input (questions, approvals, setup steps) that suspended turns wait on; without it, tools cannot ask. */
+  inputs?: Inputs;
+  /** Submit a request to an agent on whichever node serves it (resuming a suspension that expired). */
+  submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools">; sources?: Sources };
@@ -604,11 +614,18 @@ export class ClientSessions {
     return describeSources(sources.flat(), options.schemas);
   }
 
-  /** Answer one of the agent's tool calls through the server that lists it, once the run's start is durable. */
+  /**
+   * Answer one of the agent's tool calls through the server that lists it, once the run's start is
+   * durable. A tool that asks for human input (MCP's `input_required`, or the runtime's approval
+   * policy and ask_user in that form) suspends the call instead (`suspend`). In a `resume` run, a
+   * call the person answered runs again with their answers, and only with the same arguments.
+   */
   private async callTool(session: Session, call: ToolCall) {
     const server = session.route?.get(call.name);
     if (!server) throw new Error(`Unknown tool ${call.name}`);
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
+    const plan = call.toolCallId && !call.innerCallId ? session.retries?.get(call.toolCallId) : undefined;
+    if (plan && plan.argumentsHash !== argumentsHash(call.name, call.args)) throw new Error("These are not the arguments the user answered for; the call did not run");
     const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
     await this.beforeEffect(session);
     // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code).
@@ -616,7 +633,140 @@ export class ClientSessions {
       type: "tool_execution_update", toolCallId: call.toolCallId, toolName: call.innerCallId ? "js_exec" : call.name,
       partialResult: { content: [{ type: "text", text: message ?? `${progress}${total !== undefined ? `/${total}` : ""}` }], details: { type: "progress", tool: call.name, ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), progress, ...(total !== undefined ? { total } : {}), ...(message !== undefined ? { message } : {}) } },
     } }) : undefined;
-    return contentResult(await server.call({ ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}) }), server.returnsFiles);
+    let result: McpResult;
+    try {
+      result = await server.call({
+        ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}),
+        ...(plan?.approval ? { approval: { input: plan.approval.input, by: this.approver(plan.approval.by), at: plan.approval.at } } : {}),
+        ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),
+      });
+    } catch (error) {
+      // MCP's older form of a URL step (-32042): the user opens each URL, then the call is retried.
+      const elicitations = error instanceof McpError && error.code === -32042 ? (error.data as { elicitations?: unknown[] } | undefined)?.elicitations : undefined;
+      if (!Array.isArray(elicitations) || !elicitations.length) throw error;
+      result = { resultType: "input_required", inputRequests: Object.fromEntries(elicitations.map((params, index) => [`url_${index}`, { method: "elicitation/create", params: { ...params as object, mode: "url" } }])) };
+    }
+    if (result.resultType === "input_required") return this.suspend(session, call, request, result);
+    const content = contentResult(result, server.returnsFiles);
+    // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
+    if (plan) content.content.push({ type: "text", text: plan.note });
+    return content;
+  }
+
+  /** Who approved a call, as tools are told: ids only, never names a person chose. */
+  private approver(by: Responder) {
+    return { ...(by.via ? { via: by.via } : {}), ...(by.from ? { from: by.from.id } : {}), ...(by.actor ? { actor: by.actor } : {}) };
+  }
+
+  /**
+   * Suspend a tool call on the input its tool asked for: each request becomes an input (approvals
+   * shown as the runtime sees the call, never as the model or tool describes it), announced on the
+   * agent's stream, and the call returns open for the agent to leave waiting. Code in js_exec cannot
+   * wait for days, so a call from there fails, pointing the model at a direct call.
+   */
+  private async suspend(session: Session, call: ToolCall, request: RequestRecord | undefined, result: McpResult) {
+    const inputs = this.options.inputs;
+    let requests = inputRequests(result);
+    const approval = requests.every(entry => entry.kind === "approval");
+    if (!call.toolCallId || call.innerCallId || !request || !inputs) throw new Error(`${call.name} needs the user's ${approval ? "approval" : "input"}: call ${call.name} directly, not from js_exec`);
+    const header = session.header;
+    const hashed = argumentsHash(call.name, call.args);
+    const shown = JSON.stringify(call.args);
+    requests = requests.map(entry => entry.kind !== "approval" ? entry : {
+      ...entry, message: `Allow ${call.name} to run?`,
+      detail: { ...entry.detail, tool: call.name, source: call.name.includes("__") ? call.name.split("__")[0] : header.definitions.some(tool => tool.name === call.name) ? "application" : "runtime", arguments: shown.length > 4000 ? `${shown.slice(0, 4000)}…` : shown, argumentsHash: hashed },
+    });
+    const rows = await inputs.create({
+      agent: header.id, tenant: header.tenant, requestId: request.id, toolCallId: call.toolCallId,
+      responders: request.actor ? { audience: [request.actor] } : {}, expiresAt: expiresAt(header.sources?.humanInput, header.expiresAt),
+      tool: call.name, argumentsHash: hashed, ...(typeof result.requestState === "string" ? { requestState: result.requestState } : {}),
+    }, requests, session.claim);
+    for (const row of rows) this.publish(session, { type: "event", requestId: request.id, event: { type: "input_required", input: inputView(row) } });
+    return { content: [{ type: "text", text: "Waiting for the user's input." }], inputRequired: true };
+  }
+
+  /**
+   * Settle every input the agent waits on, as the runtime: a new message supersedes them (the agent
+   * closes their calls itself when it takes the message), and an abort cancels them, closing the
+   * turn with a `resume` run that does not call the model.
+   */
+  private async cancelInputs(session: Session, reason: "aborted" | "superseded") {
+    const inputs = this.options.inputs;
+    if (!inputs) return;
+    const settled: InputRow[] = [];
+    for (const input of await inputs.pending(session.header.id)) {
+      const done = await inputs.settle(input.id, { action: "cancel", by: { system: reason }, at: Date.now() }, reason === "aborted" ? "cancelled" : "superseded");
+      if (done) settled.push(done);
+    }
+    for (const input of settled) this.resolved(session, input);
+    if (reason === "aborted") for (const suspension of new Set(settled.map(input => input.requestId))) await this.resumeSettled(session, suspension);
+  }
+
+  private resolved(session: Session, input: InputRow) {
+    this.publish(session, { type: "event", requestId: input.requestId, event: { type: "input_resolved", id: input.id, state: input.state, by: input.answer?.by } });
+  }
+
+  /** Queue the run that resumes a suspension once none of its inputs is pending; idempotent per suspension. Returns its record, if any. */
+  private async resumeSettled(session: Session, suspension: string): Promise<RequestRecord | undefined> {
+    const rows = await this.options.inputs!.forRequest(session.header.id, suspension);
+    if (!rows.length || rows.some(row => row.state === "pending")) return undefined;
+    return (await this.accept(session, { id: resumeId(suspension), method: "resume", params: { suspension } }, true)).record;
+  }
+
+  /** A tenant's agent's inputs (`state`: pending, say), newest first. */
+  async inputsFor(id: string, tenant: string, state?: string) {
+    if (!this.options.inputs) return [];
+    return (await this.options.inputs.list(tenant, { agent: id, ...(state ? { state } : {}) })).map(inputView);
+  }
+
+  /**
+   * Answer one of a tenant's agent's inputs, on the node that serves it. An input settles once: the
+   * same answer again is 200, a different one 409. Whoever the request names (`from`, `actor`) must
+   * be among those who may answer (403). The last answer of a suspension queues its `resume` run.
+   */
+  async answer(id: string, tenant: string, inputId: string, body: any, via: Responder["via"] = "api"): Promise<{ status: 200 | 202; input: unknown; request: RequestRecord | null }> {
+    const inputs = this.options.inputs;
+    const session = inputs && (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    const input = session && await inputs!.get(inputId);
+    if (!session || !input || input.agent !== id) throw new HttpError(404, "Unknown input");
+    let by: Responder;
+    try { by = { via, ...(body?.from !== undefined ? { from: senderInput(body.from) } : {}), ...(body?.actor !== undefined ? { actor: actorInput(body.actor) } : {}) }; }
+    catch (error) { throw new HttpError(400, errorText(error)); }
+    if (!mayAnswer(input, by, session.header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
+    const answer = answerInput(input, body);
+    const settled = input.state === "pending" ? await inputs!.settle(input.id, { ...answer, by, at: Date.now() }) : undefined;
+    if (!settled) {
+      const current = (await inputs!.get(inputId))!;
+      const same = current.answer?.action === answer.action && canonical(current.answer?.content ?? null) === canonical(answer.content ?? null) && !current.answer?.by.system;
+      if (!same) throw Object.assign(new HttpError(409, `This input is already ${current.state}`), { input: inputView(current) });
+      return { status: 200, input: inputView(current), request: session.requests.get(resumeId(current.requestId)) ?? null };
+    }
+    this.resolved(session, settled);
+    const request = await this.resumeSettled(session, settled.requestId);
+    return { status: 202, input: inputView(settled), request: request ?? null };
+  }
+
+  /**
+   * Expire inputs past their time, on any node: each suspension whose last input expired is resumed
+   * on the node serving its agent, which closes the turn (or, with `onExpire: "resume"`, asks the model).
+   */
+  async expireInputs(now = Date.now()) {
+    const inputs = this.options.inputs;
+    if (!inputs) return;
+    for (let batch; (batch = await inputs.due(now)).length;) {
+      const suspensions = new Map<string, InputRow>();
+      for (const input of batch) {
+        const expired = await inputs.settle(input.id, { action: "cancel", by: { system: "expired" }, at: Date.now() }, "expired");
+        if (expired) suspensions.set(`${expired.agent} ${expired.requestId}`, expired);
+      }
+      for (const input of suspensions.values()) {
+        if ((await inputs.forRequest(input.agent, input.requestId)).some(row => row.state === "pending")) continue;
+        const submit = this.options.submit ?? ((agent, tenant, request) => this.submit(agent, tenant, request));
+        await submit(input.agent, input.tenant, { id: resumeId(input.requestId), method: "resume", params: { suspension: input.requestId } })
+          .catch(error => console.error(JSON.stringify({ type: "input_expiry_failed", agent: input.agent, error: errorText(error) })));
+      }
+      if (batch.length < 100) break;
+    }
   }
 
   /** The id of the agent `create` makes for a tenant's idempotency key. */
@@ -784,6 +934,10 @@ export class ClientSessions {
   /** Abort the running turn of a tenant's agent. Returns false when the agent is not theirs. */
   async abortAgent(id: string, tenant: string) {
     if (!await this.owns(id, tenant)) return false;
+    if (this.options.inputs) {
+      const session = await this.load(id);
+      if (session) await this.cancelInputs(session, "aborted");
+    }
     if (this.supervisor.agents.has(id)) await this.supervisor.request(id, "abort");
     return true;
   }
@@ -971,9 +1125,15 @@ export class ClientSessions {
       for (const entry of Array.isArray(message) ? message : [message]) attached.receive(entry);
       return json(c, 202, { accepted: true });
     });
+    app.get(`${agent}/inputs`, async c => json(c, 200, await this.inputsFor(c.var.session.header.id, c.var.session.header.tenant, c.req.query("state"))));
+    app.post(`${agent}/inputs/:input`, async c => {
+      const session = c.var.session;
+      const { status, ...answered } = await this.answer(session.header.id, session.header.tenant, c.req.param("input"), await readJson(body(c), 256 * 1024), "agent");
+      return json(c, status, answered);
+    });
     app.all(`${agent}/*`, () => { throw new HttpError(404, "Unknown client route"); });
     app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
-    app.onError((error, c) => json(c, errorStatus(error, 500), { error: errorText(error) }));
+    app.onError((error, c) => json(c, errorStatus(error, 500), { error: errorText(error), ...((error as { input?: unknown }).input ? { input: (error as { input?: unknown }).input } : {}) }));
     return app;
   }
 
@@ -988,6 +1148,8 @@ export class ClientSessions {
    */
   private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
+    // Only the runtime resumes a suspension, once its inputs have settled.
+    if (body.method === "resume" && (!trusted || Object.keys(body.params).length !== 1 || !validId(body.params.suspension))) throw new HttpError(400, "Answer the agent's inputs to resume its turn");
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
@@ -1016,8 +1178,10 @@ export class ClientSessions {
       if (params.from !== undefined) params.from = senderInput(params.from);
       // The sender acts, unless the application names someone else.
       actor = actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
+      // A resumed turn acts for whoever the suspended one did.
+      if (body.method === "resume") actor = session.requests.get(params.suspension)?.actor;
     } catch (error) { throw new HttpError(400, errorText(error)); }
-    const limited = await this.runLimit(session, body.method);
+    const limited = body.method === "resume" ? undefined : await this.runLimit(session, body.method);
     if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
     const queued = QUEUED_METHODS.includes(body.method);
     // Reads and aborts need no process; queued requests start it (if at all) when their turn comes.
@@ -1036,6 +1200,7 @@ export class ClientSessions {
       startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
       ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
       id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}),
+      ...(body.method === "resume" ? { suspension: params.suspension } : {}),
     });
     await this.commit(session, true);
     if (queued) this.enqueue(session, record, params);
@@ -1189,6 +1354,8 @@ export class ClientSessions {
     const live = this.supervisor.agents.has(id);
     if (record.method === "history") return this.history(session);
     if (record.method === "status" && !live) return { running: false };
+    // Aborting a suspended turn cancels its inputs: the turn is closed without the model.
+    if (record.method === "abort") await this.cancelInputs(session, "aborted");
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
       const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
@@ -1218,7 +1385,9 @@ export class ClientSessions {
       await this.writeHeader(session);
       return result;
     }
-    return this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
+    if (record.method === "resume") params = await this.resumeParams(session, record.suspension!);
+    try {
+      return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
       ? event => {
           // Failed calls report zero usage; count only responses the provider completed.
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
@@ -1227,6 +1396,29 @@ export class ClientSessions {
           if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant, id, { ...event, kind: "compaction", platform: !!session.platformKey });
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
+    } finally { session.retries = undefined; }
+  }
+
+  /**
+   * What a `resume` run tells its agent: each suspended call's result (an answer, or why there is
+   * none), or that it runs again (`session.retries` says how), and whether to close the turn
+   * without the model: every input closed by the runtime (expired, unless the definition says to
+   * resume, or cancelled by an abort).
+   */
+  private async resumeParams(session: Session, suspension: string) {
+    const inputs = this.options.inputs!;
+    const rows = await inputs.forRequest(session.header.id, suspension);
+    if (rows.some(row => row.state === "pending")) throw new Error("Inputs of this turn are still waiting for an answer");
+    const onExpire = session.header.sources?.humanInput?.onExpire;
+    const calls: { toolCallId: string; result?: unknown; retry?: true }[] = [];
+    session.retries = new Map();
+    for (const toolCallId of new Set(rows.map(row => row.toolCallId))) {
+      const resolved = resolution(rows.filter(row => row.toolCallId === toolCallId), row => inputs.requestState(row));
+      if ("retry" in resolved) { session.retries.set(toolCallId, resolved.retry); calls.push({ toolCallId, retry: true }); }
+      else calls.push({ toolCallId, result: resolved.result });
+    }
+    const close = rows.every(row => row.answer?.by.system && !(row.answer.by.system === "expired" && onExpire === "resume"));
+    return { calls, close };
   }
 
   /** The configuration an agent takes from its definition's current revision; tools added at creation stay. */
@@ -1245,6 +1437,8 @@ export class ClientSessions {
     session.handoff = undefined;
     if (handoff && "continue" in handoff) return { result: await this.execute(session, record, {}, "continue") };
     if (handoff) return { result: handoff.finished };
+    // A resume whose turn never became active did nothing yet: it runs again from its inputs.
+    if (record.method === "resume") return { result: await this.execute(session, record, {}) };
     return { error: "The runtime restarted during this request", uncertain: true };
   }
 
@@ -1282,11 +1476,18 @@ export class ClientSessions {
         session.activeSince = Date.now();
         session.outputs = { files: new Map(), presented: [] };
       }
+      // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
+      if (record.method === "prompt") await this.cancelInputs(session, "superseded");
       value = session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
       // The files the run wrote and presented, so an application can fetch them (agent.files).
       const outputs = session.outputs;
       if (RUN_METHODS.includes(record.method) && outputs && (outputs.files.size || outputs.presented.length) && value.result && typeof value.result === "object") {
         value = { result: { ...value.result, ...(outputs.files.size ? { files: [...outputs.files.values()] } : {}), ...(outputs.presented.length ? { presented: outputs.presented } : {}) } };
+      }
+      // A suspended turn's outcome lists what it waits on.
+      if ((value.result as { stopped?: string } | undefined)?.stopped === "input_required" && this.options.inputs) {
+        const inputs = (await this.options.inputs.forRequest(session.header.id, record.id)).filter(row => row.state === "pending").map(inputView);
+        value = { result: { ...value.result as object, inputs } };
       }
     }
     catch (error) { value = { error: errorText(error) }; }
@@ -1510,6 +1711,7 @@ export class ClientSessions {
         await sql.query("delete from channel_agents where agent = $1", [id]);
         await sql.query("delete from channel_conversations where agent = $1", [id]);
         await sql.query("delete from volume_watchers where agent = $1", [id]);
+        await sql.query("delete from agent_inputs where agent = $1", [id]);
         const tombstone = { version: 3, id, tenant: header.tenant, digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
         await sql.query("update agents set header = $2, name = $1, type = 'general', revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
           [id, JSON.stringify(tombstone), Date.now()]);

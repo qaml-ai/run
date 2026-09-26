@@ -708,8 +708,10 @@
               "continue",
               "steer",
               "followUp",
-              "configure"
-            ]
+              "configure",
+              "resume"
+            ],
+            "description": "resume: the runtime continuing a turn that waited on human input, once its inputs settled"
           },
           "state": {
             "type": "string",
@@ -736,6 +738,10 @@
           "code": {
             "type": "string"
           },
+          "suspension": {
+            "type": "string",
+            "description": "resume: the request whose turn waited on human input"
+          },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"
           }
@@ -757,7 +763,8 @@
           "uncertain": {
             "type": "boolean"
           }
-        }
+        },
+        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs"
       },
       "History": {
         "type": "object",
@@ -920,6 +927,182 @@
         },
         "additionalProperties": false,
         "description": "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it"
+      },
+      "Input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "The run that suspended waiting on it"
+          },
+          "toolCallId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "question",
+              "approval",
+              "form",
+              "url"
+            ],
+            "description": "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open"
+          },
+          "message": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "question: { questions }; approval: { tool, source, arguments, argumentsHash }, built by the runtime from the real call; form: { requestedSchema }; url: { url, origin }"
+          },
+          "responders": {
+            "type": "object",
+            "properties": {
+              "audience": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Who may answer besides the definition's humanInput.approvers: by default the sender or actor whose message started the turn"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "answered",
+              "declined",
+              "cancelled",
+              "expired",
+              "superseded"
+            ]
+          },
+          "answer": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "accept",
+                  "decline",
+                  "cancel"
+                ]
+              },
+              "content": {},
+              "by": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "at": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "action",
+              "by",
+              "at"
+            ]
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "expiresAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "tenant",
+          "requestId",
+          "toolCallId",
+          "kind",
+          "message",
+          "detail",
+          "responders",
+          "state",
+          "createdAt",
+          "expiresAt"
+        ]
+      },
+      "Answered": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "$ref": "#/components/schemas/Input"
+          },
+          "request": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RequestRecord"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "The run resuming the turn, once the suspension's last input settled; poll it like a prompt"
+              }
+            ]
+          }
+        },
+        "required": [
+          "input",
+          "request"
+        ]
+      },
+      "AnswerInput": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "decline",
+              "cancel"
+            ]
+          },
+          "content": {
+            "description": "question: { answers: { \"<question>\": \"<label>\" | [\"<label>\"] | \"<own words>\" } }; form: the fields, checked against its schema; approval decline: { reason? }"
+          },
+          "from": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false,
+            "description": "Who is answering, in your app: checked against the input's audience and approvers (403)"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who is answering (a user id in your app), when not from.id"
+          }
+        },
+        "required": [
+          "action"
+        ]
       },
       "Schedule": {
         "type": "object",
@@ -1717,11 +1900,12 @@
               "enum": [
                 "web_fetch",
                 "web_search",
-                "schedule"
+                "schedule",
+                "ask_user"
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
           },
           "webSearch": {
             "type": "object",
@@ -1761,6 +1945,35 @@
             "items": {
               "$ref": "#/components/schemas/OpenApi"
             }
+          },
+          "humanInput": {
+            "type": "object",
+            "properties": {
+              "expiresInSeconds": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 2592000,
+                "description": "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry"
+              },
+              "onExpire": {
+                "type": "string",
+                "enum": [
+                  "close",
+                  "resume"
+                ],
+                "description": "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues"
+              },
+              "approvers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "description": "Who may answer any input besides the person whose message started the turn: actors, or channel senders like slack:U0123"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Questions, approvals and setup steps the agent's turns wait on"
           },
           "createdAt": {
             "type": "number"
@@ -1989,11 +2202,12 @@
               "enum": [
                 "web_fetch",
                 "web_search",
-                "schedule"
+                "schedule",
+                "ask_user"
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
           },
           "webSearch": {
             "type": "object",
@@ -2037,6 +2251,35 @@
             },
             "maxItems": 64,
             "description": "OpenAPI specs whose operations the runtime calls for the agent, as tools"
+          },
+          "humanInput": {
+            "type": "object",
+            "properties": {
+              "expiresInSeconds": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 2592000,
+                "description": "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry"
+              },
+              "onExpire": {
+                "type": "string",
+                "enum": [
+                  "close",
+                  "resume"
+                ],
+                "description": "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues"
+              },
+              "approvers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "description": "Who may answer any input besides the person whose message started the turn: actors, or channel senders like slack:U0123"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Questions, approvals and setup steps the agent's turns wait on"
           }
         },
         "required": [
@@ -2344,11 +2587,12 @@
               "enum": [
                 "web_fetch",
                 "web_search",
-                "schedule"
+                "schedule",
+                "ask_user"
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
           },
           "webSearch": {
             "type": [
@@ -2401,6 +2645,38 @@
             },
             "maxItems": 64,
             "description": "OpenAPI specs whose operations the runtime calls for the agent, as tools"
+          },
+          "humanInput": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "expiresInSeconds": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 2592000,
+                "description": "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry"
+              },
+              "onExpire": {
+                "type": "string",
+                "enum": [
+                  "close",
+                  "resume"
+                ],
+                "description": "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues"
+              },
+              "approvers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "description": "Who may answer any input besides the person whose message started the turn: actors, or channel senders like slack:U0123"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Questions, approvals and setup steps the agent's turns wait on"
           },
           "revision": {
             "type": "integer",
@@ -3472,6 +3748,134 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RequestRecord"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/inputs": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "answered",
+                "declined",
+                "cancelled",
+                "expired",
+                "superseded"
+              ]
+            },
+            "required": false,
+            "name": "state",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent's human inputs, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Input"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/inputs/{inputId}": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "inputId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The same answer was recorded before",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Answered"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The answer is recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Answered"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The input had already settled otherwise",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

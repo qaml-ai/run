@@ -6,7 +6,11 @@ import { validFileRef } from "./files.ts";
  * MCP tools and results, whichever way the server is reached: remote servers the runtime
  * calls, and an application's attached server answering over its client connection.
  */
-export type McpResult = { content?: any[]; structuredContent?: unknown; isError?: boolean; toolResult?: unknown };
+export type McpResult = {
+  content?: any[]; structuredContent?: unknown; isError?: boolean; toolResult?: unknown;
+  /** MCP's multi round-trip requests: `input_required` asks for `inputRequests`, to retry with their answers and `requestState`. */
+  resultType?: string; inputRequests?: Record<string, unknown>; requestState?: string;
+};
 /** A tool from a server's `tools/list`. Runtime options ride in `_meta` under this prefix. */
 export type McpTool = { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; _meta?: Record<string, unknown> };
 export const META = "agent-runtime/";

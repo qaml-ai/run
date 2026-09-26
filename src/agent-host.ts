@@ -2,8 +2,8 @@ import { mkdir } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Agent, convertToLlm, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import {
-  getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration,
-  type AssistantMessage, type Message, type SystemMessage, type Tool,
+  getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
+  type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall,
 } from "@earendil-works/pi-ai";
 import { executeCode } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
@@ -50,8 +50,8 @@ export function createAgentHost(io: HostIO) {
   let busy = false;
   let active: AbortController | undefined;
   let persistenceError: unknown;
-  /** Set when a spend limit ended the current run early. */
-  let stopped: string | undefined;
+  /** Why the current run ended early: a spend limit, or tool calls waiting on a person's input. */
+  let stopped: { stopped: "spend_limit" | "input_required"; error?: string } | undefined;
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
   let dropped = new WeakSet<AgentMessage>();
   let summary: { state: CompactionState; message: AgentMessage } | undefined;
@@ -192,6 +192,12 @@ export function createAgentHost(io: HostIO) {
           signal?.throwIfAborted();
           const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId });
           signal?.throwIfAborted();
+          // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
+          if (value?.inputRequired) {
+            try { await transcript.await([toolCallId]); }
+            catch (error) { persistenceError = error; throw error; }
+            return { content: value.content, details: { inputRequired: true } };
+          }
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
             if (value.isError === true) throw new Error(value.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") || "Tool execution failed");
@@ -325,8 +331,14 @@ export function createAgentHost(io: HostIO) {
       transcript = new Transcript(io.transcript);
       await transcript.load();
       let recovered = false;
-      let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string } } | undefined;
-      if (transcript.active && config.resume) {
+      let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string } } | undefined;
+      if (transcript.active && transcript.awaiting.length) {
+        // The turn had suspended for input when its node stopped: its other calls are closed as unknown, and it stays suspended.
+        await transcript.append(interruptedTurnRepairs(transcript.context, false, transcript.awaiting));
+        await transcript.setActive(false);
+        if (config.resume) resume = { finished: { messages: transcript.total, error: null, stopped: "input_required" } };
+        recovered = true;
+      } else if (transcript.active && config.resume) {
         // A response cut off when its node stopped is not history; the model is asked again.
         for (let last = transcript.context.at(-1); last?.role === "assistant" && ["aborted", "error"].includes(last.stopReason) && transcript.total > transcript.turnStart; last = transcript.context.at(-1)) await transcript.retract();
         // Answer tool calls whose outcome was lost as unknown, never by running them again.
@@ -386,14 +398,18 @@ export function createAgentHost(io: HostIO) {
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
         transformContext: (messages, signal) => contextFor(messages, signal),
-        // A tenant past its spend cap stops before the next model request, after this response's tool results.
+        // A turn with calls waiting on a person suspends; a tenant past its spend cap stops before the next model request, after this response's tool results.
         finishTurn: async turn => {
+          if (transcript.awaiting.length) {
+            stopped = { stopped: "input_required" };
+            return { action: "end" };
+          }
           if (!turn.toolResults.length && !agent!.hasQueuedMessages()) return;
           let reason: string | undefined;
           try { reason = await io.spendLimit(); }
           catch { return; /* Unknown spend never stops a turn. */ }
           if (!reason) return;
-          stopped = reason;
+          stopped = { stopped: "spend_limit", error: reason };
           io.emit({ type: "spend_limit_reached", message: reason });
           return { action: "end" };
         },
@@ -409,7 +425,8 @@ export function createAgentHost(io: HostIO) {
           }
           return;
         }
-        if (event.type === "message_end") {
+        // A call waiting on input has no result yet: the transcript keeps it open instead (`awaiting`).
+        if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
           // One durable append per finished message. Streaming deltas are never persisted.
           try { await transcript.push(event.message); }
           catch (error) { persistenceError = error; agent!.abort(); throw error; }
@@ -442,7 +459,7 @@ export function createAgentHost(io: HostIO) {
       return { queued: true, running: busy };
     }
     if (method === "abort") { active?.abort(); agent.abort(); return { aborted: true }; }
-    if (method !== "prompt" && method !== "execute" && method !== "continue") throw new Error(`Unknown method: ${method}`);
+    if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
     if (persistenceError) throw new Error(`Session persistence failed: ${String(persistenceError)}`);
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
@@ -451,14 +468,31 @@ export function createAgentHost(io: HostIO) {
     active = new AbortController();
     try {
       if (method === "execute") return await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
+      if (method === "continue" && transcript.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");
       await transcript.setActive(true);
-      if (method === "continue") await agent.continue();
-      else await agent.prompt(promptMessages!);
+      if (method === "resume") {
+        const settled = await settle(params.calls ?? [], active.signal);
+        // Closed without the model (expired or cancelled inputs), still waiting, or nothing left to resume.
+        if (params.close || transcript.awaiting.length || !settled) {
+          await transcript.setActive(false);
+          return { messages: transcript.total, error: null, ...(transcript.awaiting.length ? { stopped: "input_required" } : {}) };
+        }
+        agent.state.messages = stateMessages();
+        await agent.continue();
+      } else if (method === "continue") await agent.continue();
+      else {
+        // A new message supersedes calls still waiting on input: each is closed first, so the model sees why.
+        if (transcript.awaiting.length) {
+          await settle(transcript.awaiting.map(toolCallId => ({ toolCallId, result: { content: [{ type: "text", text: "Not answered: the user sent a new message instead (next)." }], isError: true } })), active.signal);
+          agent.state.messages = stateMessages();
+        }
+        await agent.prompt(promptMessages!);
+      }
       await recoverFailedResponses(active.signal);
       if (persistenceError) throw persistenceError;
       await transcript.setActive(false);
       const last = agent.state.messages.at(-1) as AssistantMessage | undefined;
-      return { messages: transcript.total, ...answer(last), error: agent.state.errorMessage ?? null, ...(stopped ? { stopped: "spend_limit", error: stopped } : {}) };
+      return { messages: transcript.total, ...answer(last), error: agent.state.errorMessage ?? null, ...(stopped ?? {}) };
     } finally {
       // Release what compaction folded away: the next run starts from summary + kept messages.
       if (method !== "execute" && !persistenceError) {
@@ -469,6 +503,38 @@ export function createAgentHost(io: HostIO) {
       active = undefined;
       busy = false;
     }
+  }
+
+  /**
+   * Give calls waiting on input their results, in the order given: a ready result (an answer, or why
+   * there is none), or, with `retry`, the call run again now (an approved call, or a tool's own request
+   * retried with its answers). A retried call is released first, so a crash while it runs leaves it
+   * open to be closed as unknown, never run twice. Returns how many calls it settled.
+   */
+  type Settled = { content: unknown[]; isError?: boolean; details?: unknown };
+  async function settle(calls: { toolCallId: string; result?: Settled; retry?: boolean }[], signal: AbortSignal) {
+    const wanted = calls.filter(call => transcript.awaiting.includes(call.toolCallId));
+    const retried = wanted.filter(call => call.retry).map(call => call.toolCallId);
+    if (retried.length) await transcript.await(retried, true);
+    for (const call of wanted) {
+      const toolCall = transcript.context.flatMap(message => message.role === "assistant" ? message.content : []).find(part => part.type === "toolCall" && part.id === call.toolCallId) as ToolCall | undefined;
+      let result = call.result;
+      if (!result) {
+        const tool = agent!.state.tools.find(entry => entry.name === toolCall?.name && entry.name !== "js_exec");
+        try {
+          if (!tool || !toolCall) throw new Error(`${toolCall?.name ?? "This tool"} is no longer available to this agent`);
+          // The arguments as Pi gave them the first time: the approval is bound to them (inputs.ts).
+          result = await tool.execute(call.toolCallId, validateToolArguments(tool, toolCall), signal) as Settled;
+        } catch (error) { result = { content: [{ type: "text", text: errorText(error) }], isError: true }; }
+        // Asked again (another round of input): the call stays open.
+        if ((result!.details as { inputRequired?: boolean } | undefined)?.inputRequired) continue;
+      }
+      const message = { role: "toolResult", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", content: result!.content, ...(result!.details !== undefined ? { details: result!.details } : {}), isError: !!result!.isError, timestamp: Date.now() } as AgentMessage;
+      try { await transcript.push(message); }
+      catch (error) { persistenceError = error; throw error; }
+      io.emit({ type: "message_end", message });
+    }
+    return wanted.length;
   }
 
   /** The final answer's text, for callers that relay it (channels). */

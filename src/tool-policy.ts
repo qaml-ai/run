@@ -42,6 +42,11 @@ export function compiles(schema: object) {
   try { validator(schema); return true; } catch { return false; }
 }
 
+/** Whether `value` fits `schema` (a form an MCP tool asked the user to fill in). */
+export function schemaAccepts(schema: object, value: unknown) {
+  try { return validator(schema).Check(value); } catch { return false; }
+}
+
 const indexes = new WeakMap<ToolDefinition[], Map<string, ToolDefinition>>();
 
 export function validateToolCall(definitions: ToolDefinition[], name: unknown, args: unknown) {

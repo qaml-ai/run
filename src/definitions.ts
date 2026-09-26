@@ -10,6 +10,7 @@ import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import { BUILTINS } from "./builtins.ts";
 import { searchOrder } from "./web-search.ts";
+import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
 import { mcpServersInput, mcpServerView, openApiInput, openApiView, type McpServerSpec, type OpenApiSpec, type Sources } from "./tool-sources.ts";
 
 /**
@@ -34,6 +35,8 @@ export interface DefinitionSpec {
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
   webSearch?: { providers: string[] };
+  /** Human input: how long inputs wait (expiresInSeconds), what happens when they expire (onExpire), who else may answer (approvers). */
+  humanInput?: HumanInputSettings;
   /** Made for this channel, and deleted with it. */
   channel?: string;
 }
@@ -47,7 +50,7 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi"] as const;
+const FIELDS = ["model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "fileTools"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
@@ -57,7 +60,7 @@ const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 export function sources(spec: DefinitionSpec): Sources | undefined {
   const found: Sources = {
     ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.webSearch && spec.builtins?.includes("web_search") ? { webSearch: spec.webSearch } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
-    ...(spec.openApi?.length ? { openApi: spec.openApi } : {}),
+    ...(spec.openApi?.length ? { openApi: spec.openApi } : {}), ...(spec.humanInput ? { humanInput: spec.humanInput } : {}),
   };
   return Object.keys(found).length ? found : undefined;
 }
@@ -237,6 +240,7 @@ export class Definitions {
       if (!webSearch || typeof webSearch !== "object" || Array.isArray(webSearch) || Object.keys(webSearch).some(key => key !== "providers")) throw new HttpError(400, "webSearch is { providers }");
       try { searchOrder((webSearch as { providers?: unknown }).providers, "webSearch.providers"); } catch (error) { throw new HttpError(400, errorText(error)); }
     }
+    if (spec.humanInput !== undefined) humanInputSettings(spec.humanInput);
     const prefixes = [...spec.mcpServers ?? [], ...spec.openApi ?? []].map(source => source.name);
     const twice = prefixes.find((name, index) => prefixes.indexOf(name) !== index);
     if (twice) throw new HttpError(400, `${twice} names both an MCP server and an OpenAPI source; their tools would share ${twice}__`);

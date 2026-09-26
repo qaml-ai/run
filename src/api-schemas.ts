@@ -107,7 +107,7 @@ const Outcome = z.object({ result: z.unknown().optional(), error: z.string().opt
 
 export const RequestRecord = z.object({
   id: z.string(),
-  method: z.enum(["prompt", "execute", "status", "abort", "history", "continue", "steer", "followUp", "configure"]),
+  method: z.enum(["prompt", "execute", "status", "abort", "history", "continue", "steer", "followUp", "configure", "resume"]).openapi({ description: "resume: the runtime continuing a turn that waited on human input, once its inputs settled" }),
   state: z.enum(["running", "completed"]),
   fingerprint: z.string(),
   startedAt: z.number().optional(),
@@ -115,8 +115,30 @@ export const RequestRecord = z.object({
   endedAt: z.number().optional(),
   prompt: z.string().optional(),
   code: z.string().optional(),
-  outcome: Outcome.optional(),
+  suspension: z.string().optional().openapi({ description: "resume: the request whose turn waited on human input" }),
+  outcome: Outcome.optional().openapi({ description: "result.stopped is input_required when the turn waits on human input, listed in result.inputs" }),
 }).openapi("RequestRecord");
+
+const Sender = z.strictObject({ id: z.string(), name: z.string().optional(), username: z.string().optional() });
+export const Input = z.object({
+  id: z.string(), agent: z.string(), tenant: z.string(),
+  requestId: z.string().openapi({ description: "The run that suspended waiting on it" }),
+  toolCallId: z.string(),
+  kind: z.enum(["question", "approval", "form", "url"]).openapi({ description: "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open" }),
+  message: z.string(),
+  detail: z.record(z.string(), z.unknown()).openapi({ description: "question: { questions }; approval: { tool, source, arguments, argumentsHash }, built by the runtime from the real call; form: { requestedSchema }; url: { url, origin }" }),
+  responders: z.object({ audience: z.array(z.string()).optional() }).openapi({ description: "Who may answer besides the definition's humanInput.approvers: by default the sender or actor whose message started the turn" }),
+  state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]),
+  answer: z.object({ action: z.enum(["accept", "decline", "cancel"]), content: z.unknown().optional(), by: z.record(z.string(), z.unknown()), at: z.number() }).optional(),
+  createdAt: z.number(), expiresAt: z.number(),
+}).openapi("Input");
+export const AnswerInput = z.object({
+  action: z.enum(["accept", "decline", "cancel"]),
+  content: z.unknown().optional().openapi({ description: "question: { answers: { \"<question>\": \"<label>\" | [\"<label>\"] | \"<own words>\" } }; form: the fields, checked against its schema; approval decline: { reason? }" }),
+  from: Sender.optional().openapi({ description: "Who is answering, in your app: checked against the input's audience and approvers (403)" }),
+  actor: z.string().optional().openapi({ description: "Who is answering (a user id in your app), when not from.id" }),
+}).openapi("AnswerInput");
+export const Answered = z.object({ input: Input, request: RequestRecord.nullable().openapi({ description: "The run resuming the turn, once the suspension's last input settled; poll it like a prompt" }) }).openapi("Answered");
 
 
 export const ToolSource = z.object({
@@ -266,12 +288,17 @@ const definitionFields = {
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }),
   limits: DefinitionLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
-  builtins: z.array(z.enum(["web_fetch", "web_search", "schedule"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups" }),
+  builtins: z.array(z.enum(["web_fetch", "web_search", "schedule", "ask_user"])).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer" }),
   webSearch: z.object({
     providers: z.array(z.enum(["exa", "brave", "parallel"])).min(1).max(3).openapi({ description: "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited", example: ["brave"] }),
   }).strict().openapi({ description: "Pin web_search to providers of your choosing instead of the runtime's order (exa, brave, parallel by default)" }),
   mcpServers: z.array(McpServerInput).max(64).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
   openApi: z.array(OpenApiInput).max(64).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
+  humanInput: z.strictObject({
+    expiresInSeconds: z.number().int().min(60).max(30 * 86_400).optional().openapi({ description: "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry" }),
+    onExpire: z.enum(["close", "resume"]).optional().openapi({ description: "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues" }),
+    approvers: z.array(z.string()).max(100).optional().openapi({ description: "Who may answer any input besides the person whose message started the turn: actors, or channel senders like slack:U0123" }),
+  }).openapi({ description: "Questions, approvals and setup steps the agent's turns wait on" }),
 };
 const optional = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.optional()])) as { [K in keyof T]: z.ZodOptional<T[K]> };
 const removable = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.nullable().optional()])) as { [K in keyof T]: z.ZodOptional<z.ZodNullable<T[K]>> };

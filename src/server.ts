@@ -43,6 +43,7 @@ import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
+import { Inputs } from "./inputs.ts";
 
 // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
@@ -319,6 +320,9 @@ const clients = new ClientSessions(supervisor, {
     return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false }, sources: sources(spec) };
   },
   sources: toolSources,
+  // Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
+  inputs: new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) }),
+  submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({
@@ -327,6 +331,7 @@ const scheduler = new Scheduler({
     const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code } } : { method: "prompt", params: { text: schedule.text! } };
     await submitAnywhere(schedule.agent, schedule.tenant, { id: requestId, ...request });
   },
+  also: now => clients.expireInputs(now),
 });
 scheduler.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 // Messaging channels: webhooks (or a gateway socket one node holds) in, replies out through a durable queue any node can drain.

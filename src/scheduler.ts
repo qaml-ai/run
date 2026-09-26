@@ -37,13 +37,16 @@ export class Scheduler {
   readonly db: Db;
   readonly node: string;
   private readonly deliver: Deliver;
+  /** Other due work the scan takes care of: human input past its expiry. */
+  private readonly also?: (now: number) => Promise<unknown>;
   private timer?: ReturnType<typeof setInterval>;
   private scanning = false;
 
-  constructor(options: { db: Db; node: string; deliver: Deliver }) {
+  constructor(options: { db: Db; node: string; deliver: Deliver; also?: (now: number) => Promise<unknown> }) {
     this.db = options.db;
     this.node = options.node;
     this.deliver = options.deliver;
+    this.also = options.also;
   }
 
   start(intervalMs = 5_000) {
@@ -85,6 +88,7 @@ export class Scheduler {
         for (const due of batch) await this.fire(due);
         if (batch.length < CLAIM_BATCH) break;
       }
+      await this.also?.(now);
     } finally { this.scanning = false; }
   }
 

@@ -245,6 +245,17 @@ export function api(context: ApiContext) {
     return json(c, 200, request);
   });
 
+  const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).optional() });
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/inputs", request: { params: agentId, query: inputState }, responses: { 200: reply("The agent's human inputs, newest first", z.array(schema.Input)) } }),
+    async c => json(c, 200, await clients.inputsFor(c.req.param("id")!, c.var.principal.tenant, c.req.query("state"))));
+  route(createRoute({
+    method: "post", path: "/v1/agents/{id}/inputs/{inputId}", request: { params: agentId.extend({ inputId: z.string() }), body: content(schema.AnswerInput) },
+    responses: { 202: reply("The answer is recorded", schema.Answered), 200: reply("The same answer was recorded before", schema.Answered), 409: reply("The input had already settled otherwise", schema.ApiError) },
+  }), async c => {
+    const { status, ...answered } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, c.req.param("inputId")!, await readJson(c.req.raw.body, 256 * 1024, {}));
+    return json(c, status, answered);
+  });
+
   const scheduler = () => {
     if (!context.scheduler) throw new HttpError(404, "Unknown agent route");
     return context.scheduler;
@@ -424,7 +435,8 @@ export function api(context: ApiContext) {
   app.all("/v1/agents/:id/schedules/*", () => { scheduler(); throw new HttpError(404, "Unknown schedule route"); });
   app.all("/v1/agents/:id/*", () => { throw new HttpError(404, "Unknown agent route"); });
   app.all("/v1/*", () => { throw new HttpError(404, "Unknown API route"); });
-  app.onError((error, c) => json(c, errorStatus(error, 400), { error: errorText(error) }));
+  // A conflicting answer says what the input settled as.
+  app.onError((error, c) => json(c, errorStatus(error, 400), { error: errorText(error), ...((error as { input?: unknown }).input ? { input: (error as { input?: unknown }).input } : {}) }));
   return app;
 }
 

@@ -10,6 +10,7 @@ import { jsonResult } from "./tool-servers.ts";
 import { readCapped, type ToolFiles } from "./tool-files.ts";
 import { textual } from "./files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
+import { questionsInput } from "./inputs.ts";
 
 export { readableText };
 
@@ -18,13 +19,15 @@ export { readableText };
  * `web_fetch` reads a public page through the outbound guard (rendering a page that is
  * only a JavaScript shell through Firecrawl, see web-render.ts) and saves any other file it
  * fetches (a PDF, an image) to the agent's workspace (tool-files.ts), `web_search` asks web
- * search APIs in turn (see web-search.ts), and `schedule` lets an agent set, list and
- * cancel its own wake-ups in the shared scheduler.
+ * search APIs in turn (see web-search.ts), `schedule` lets an agent set, list and
+ * cancel its own wake-ups in the shared scheduler, and `ask_user` asks the user questions,
+ * suspending the turn until they answer (inputs.ts).
  */
 export const BUILTINS = {
   web_fetch: ["web_fetch"],
   web_search: ["web_search"],
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
+  ask_user: ["ask_user"],
 } as const;
 export type Builtin = keyof typeof BUILTINS;
 export const builtinNames = (builtins: string[] = []) => builtins.flatMap(builtin => (BUILTINS as Record<string, readonly string[]>)[builtin] ?? []);
@@ -61,6 +64,22 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
     name: "list_schedules", exposure: "both", description: "List your scheduled wake-ups.",
     parameters: { type: "object", additionalProperties: false, properties: {} },
   },
+  // AskUserQuestion's shape, which models already use well. Direct only: code cannot wait for an answer.
+  ask_user: {
+    name: "ask_user", exposure: "direct",
+    description: "Ask the user 1-4 questions, each with 2-4 options, when you are blocked on a choice only they can make. Your turn pauses until they answer, which may take days; the answers come back as this call's result. Don't ask about what you can find out yourself.",
+    parameters: { type: "object", additionalProperties: false, required: ["questions"], properties: {
+      questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["question", "header", "options"], properties: {
+        question: { type: "string", minLength: 1, maxLength: 1000, description: "The full question, ending with a question mark" },
+        header: { type: "string", minLength: 1, maxLength: 12, description: "A short label, like \"Auth method\"" },
+        options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["label"], properties: {
+          label: { type: "string", minLength: 1, maxLength: 200 }, description: { type: "string", maxLength: 1000, description: "What choosing it means" },
+        } } },
+        multiSelect: { type: "boolean", description: "Let the user choose several options" },
+        allowOther: { type: "boolean", description: "Let the user answer in their own words instead" },
+      } } },
+    } },
+  },
   cancel_schedule: {
     name: "cancel_schedule", exposure: "both", description: "Cancel one of your scheduled wake-ups by id.",
     parameters: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } },
@@ -78,6 +97,8 @@ export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; searc
 
 export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   if (name === "web_fetch") return webFetch(services, context, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
+  // The questions go to the user as an input; the answers become this call's result.
+  if (name === "ask_user") return { resultType: "input_required", inputRequests: { questions: { method: "agent-runtime/question", params: { questions: questionsInput(args.questions) } } } };
   return jsonResult(await builtinValue(services, context, name, args, signal));
 }
 
