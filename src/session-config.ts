@@ -1,4 +1,4 @@
-import { getModel } from '@earendil-works/pi-ai/compat';
+import { getModel, getProviders } from '@earendil-works/pi-ai/compat';
 import type { AgentConfig } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';
@@ -35,12 +35,13 @@ const lookup = getModel as (provider: string, id: string) => AgentConfig['model'
 
 /**
  * A model on a tenant's endpoint. Its id goes to the endpoint as it is; what it can do comes from
- * the endpoint's `models`, else from the catalog model it names (`anthropic/claude-opus-5`, as
- * a provider and model or as OpenRouter's id), and it costs nothing.
+ * the endpoint's `models`, else from the catalog model it names (`anthropic/claude-opus-5` as a
+ * provider and model, an OpenRouter id, or a bare `claude-opus-5`), and it costs nothing.
  */
 function endpointModel(provider: string, id: string, endpoint: ModelEndpoint): AgentConfig['model'] {
   const slash = id.indexOf('/');
-  const known = endpoint.models?.[id] ?? (slash > 0 ? lookup(id.slice(0, slash), id.slice(slash + 1)) : undefined) ?? lookup('openrouter', id);
+  const known = endpoint.models?.[id] ?? (slash > 0 ? lookup(id.slice(0, slash), id.slice(slash + 1)) : undefined) ?? lookup('openrouter', id) ??
+    getProviders().map(other => lookup(other, id)).find(Boolean);
   if (!known) throw new Error(`Unknown model "${provider}/${id}": declare it in the ${provider} endpoint's models, or name a model in GET /v1/models`);
   return {
     id, name: id, api: 'openai-completions', provider, baseUrl: endpoint.baseUrl, reasoning: known.reasoning ?? false, input: known.input ?? ['text'],

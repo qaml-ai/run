@@ -408,14 +408,31 @@ meters usage. Its entry in the tenants file names the endpoint as a provider:
   it is (`anthropic/claude-opus-5`) and Pi's chat-completions requests, streamed,
   with tools, tool calls and reasoning (`reasoning_effort`; `compat` takes Pi's
   `OpenAICompletionsCompat` options for an endpoint that differs).
-- What a model can do (context window, output tokens, reasoning, images) comes
-  from `models`, else from the catalog model its id names (a provider and model,
-  as `anthropic/claude-opus-5`, or an OpenRouter id). Other ids are refused.
-  `GET /v1/models` lists the declared ones.
+- What a model can do (context window, and so when compaction runs; output
+  tokens, reasoning, images) comes from `models`, else from the catalog model its
+  id names: a provider and model (`anthropic/claude-opus-5`), an OpenRouter id, or
+  a bare id (`claude-sonnet-5`). Other ids are refused. `GET /v1/models` lists the
+  declared ones. An endpoint that picks the real model itself should still be
+  told which one it is (`PATCH …/configuration {"model": …}` when a
+  conversation switches), so these stay right and Pi drops reasoning
+  signatures made by another model.
+- Reasoning streams as `delta.reasoning_content`. Signatures come as
+  OpenRouter's `delta.reasoning_details` (e.g. `{"type": "reasoning.encrypted",
+  "id": "<tool call id>", "data": "…"}`, sent once the response is complete); they
+  are kept in the transcript and go back as the assistant message's
+  `reasoning_details` in later requests, after restarts too.
+- Usage comes from the last chunk: `prompt_tokens`, `completion_tokens`,
+  `prompt_tokens_details.cached_tokens` and `.cache_write_tokens`,
+  `completion_tokens_details.reasoning_tokens`.
+- The runtime does not retry the endpoint's errors: a refusal before the stream
+  (an HTTP 402 or 429 with `{"error": {"message", "type", "code"}}`), an error
+  frame mid-stream (`data: {"error": {…}}`) or a 5xx ends the turn, with the
+  endpoint's message as the outcome's `error`. A context overflow still compacts
+  and continues once.
 - Each call carries `Authorization: Bearer <identity token>`: the EdDSA JWT MCP
   servers with `auth: {"type": "runtime"}` get (see
   [Identity tokens](#identity-tokens-auth--type-runtime-)), with `aud` the
-  endpoint's `baseUrl` and the same claims: `tenant`, `agent`, `sub`, `act` (the
+  endpoint's `baseUrl` exactly as configured, and the same claims: `tenant`, `agent`, `sub`, `act` (the
   turn's actor), `ctx` and `definition`. It is minted for every call, compaction
   summaries included, and lasts two minutes. Verify it against
   `/.well-known/jwks.json`; the runtime sends no key.

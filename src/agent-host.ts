@@ -297,7 +297,8 @@ export function createAgentHost(io: HostIO) {
         attempt--;
         continue;
       }
-      if (!isRetryableAssistantError(last)) return;
+      // A tenant's own endpoint has retried already: its errors (a credit gate's 402, say) end the turn.
+      if (!isRetryableAssistantError(last) || config.apiKey === IDENTITY_KEY) return;
       if (attempt > policy.maxAttempts) {
         io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage });
         return;
