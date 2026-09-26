@@ -124,6 +124,42 @@ failure is an MCP error result, which the model sees and which throws in code.
 `_meta["agent-runtime/…"]`, and progress it reports for a call
 (`notifications/progress`) reaches the agent's events as a `tool_execution_update`.
 
+## Asking the user
+
+A turn can wait for a person, for as long as it takes (see "Human input" in the
+top-level README): the agent's `prompt()` resolves with `stopped:
+"input_required"` and the `inputs` it waits on, and answering the last one
+resumes the turn. A tool asks with `needsApproval`, or with `ctx.confirm`,
+`ctx.ask(message, schema)` and `ctx.requireUrl(url, message)` (MCP's
+`input_required`). An ask ends the call; once the user answers, the runtime
+calls the tool again with the same arguments, and the ask returns the answer.
+**Everything before an ask runs again then**, so ask before acting.
+
+```ts
+const agent = await runtime.createAgent({
+  tools: {
+    // The user approves each call, shown as the runtime sees it, before it runs.
+    wipe_disk: tool({ description: "Wipe a disk", input: schema.Object({ disk: schema.String() }), needsApproval: true, execute: ({ disk }) => disks.wipe(disk) }),
+    delete_app: tool({
+      description: "Delete an app", input: schema.Object({ app: schema.String() }),
+      execute: async ({ app }, ctx) => {
+        // Ask first: on the first call this ends the call, and the tool runs again with the answer.
+        if (!await ctx.confirm(`Delete ${app}? Its URL stops working.`)) return { cancelled: true };
+        return apps.delete(app, { idempotencyKey: ctx.callId });
+      },
+    }),
+  },
+  // Answer at once, or return nothing and answer later (from any process) with agent.answer.
+  onInput: input => { ui.showQuestion(input); },
+});
+const run = await agent.prompt("Clean up old apps");
+if (run.stopped === "input_required") await agent.answer(run.inputs[0].id, { action: "accept", content: {} });
+```
+
+Python has the same: `@tool(needs_approval=True)`, `context.confirm`,
+`context.ask`, `context.require_url`, `on_input=`, `agent.answer(input_id,
+action=..., content=...)`, `agent.inputs()` and `runtime.inbox()`.
+
 ## Serving tools to many users
 
 When one server answers tools for many users' agents, serve them over HTTP and

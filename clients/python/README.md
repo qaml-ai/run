@@ -65,3 +65,30 @@ Keep the operator or API token on your backend: it can create and control every
 agent in your tenant. Sign in at https://agents.camelai.dev/console to add provider
 keys, create API tokens and watch agents. The TypeScript SDK is
 [`@camelai/agent-runtime`](https://www.npmjs.com/package/@camelai/agent-runtime).
+
+## Asking the user
+
+A turn can wait for a person, for as long as it takes. A tool marked
+`@tool(needs_approval=True)` is approved by the user before each call, shown as
+the runtime sees it; inside a tool, `context.confirm(message)`,
+`context.ask(message, schema)` and `context.require_url(url, message)` ask the
+user. `prompt()` then returns `{"stopped": "input_required", "inputs": [...]}`,
+and answering the last input resumes the turn:
+
+```python
+@tool
+async def delete_app(app: str, context: ToolContext) -> dict:
+    """Delete an app"""
+    # Ask first: the call ends here, and runs again with the answer.
+    if not await context.confirm(f"Delete {app}? Its URL stops working."):
+        return {"cancelled": True}
+    return await apps.delete(app, idempotency_key=context.call_id)
+
+agent = await runtime.create_agent(tools=[delete_app], on_input=lambda input: None)  # or return {"action": "accept"}
+run = await agent.prompt("Delete the demo app")
+if run.get("stopped") == "input_required":
+    await agent.answer(run["inputs"][0]["id"], action="accept", content={})
+```
+
+Everything in a tool before an ask runs again when the user answers. `agent.inputs(state="pending")`
+lists what an agent waits on, and `runtime.inbox(state="pending")` what all your agents do.

@@ -568,7 +568,7 @@ reconfiguration, not at a refresh.
 
 ### Built-ins a definition enables
 
-`"builtins": ["web_fetch", "web_search", "schedule"]`:
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user"]`:
 
 - `web_fetch` (`{url, maxCharacters?}`) GETs a public URL through the outbound
   guard. An `http://` link is tried as `https://`. Up to five redirects are
@@ -590,6 +590,12 @@ reconfiguration, not at a refresh.
   the tenant's own is charged at `AGENT_PRICE_WEB_RENDER_USD` (default $0.00083,
   one Firecrawl credit at its Standard plan's price) and appears in `/v1/usage`
   as `firecrawl/web_fetch`.
+- `ask_user` (`{questions}`) asks the user 1–4 questions, each with a header of
+  at most 12 characters, 2–4 options (`{label, description?}`), `multiSelect` and
+  `allowOther` (free text): Claude Code's AskUserQuestion. The turn waits for
+  the answer (see [Human input](#human-input)). It is declared to the model
+  directly, never in `js_exec`, and its environment summary tells the model to
+  ask only when blocked on a choice only the user can make.
 - `schedule` (`{text, inSeconds | at, everySeconds?}`), `list_schedules` and
   `cancel_schedule` (`{id}`) let an agent manage its own wake-ups in the shared
   scheduler; each one arrives as a new message. They write under the agent's
@@ -945,6 +951,106 @@ Every request to a URL a tenant or model chose (MCP servers, OpenAPI specs and A
   credentials are never sent to another origin.
 - Requests have a deadline (an event stream is timed until it starts) and
   responses a byte cap.
+
+## Human input
+
+A turn can wait for a person: a question the model asks (`ask_user`), a call
+that needs approval, or a form or setup step a tool asks for. The call that needs
+the person stays open and the turn **suspends**: its run completes with
+`stopped: "input_required"` and the `inputs` it waits on, the agent goes idle and
+unloads, and nothing is billed while it waits. Once the last input is answered,
+possibly days later and on another node, a `resume` run gives each call its
+result and the turn continues. The model sees an ordinary tool call and result,
+so its context and cached prefix are as if nobody had waited. The result says
+who answered and how long it took (`answeredBy`, `waited`), since things may have
+changed meanwhile.
+
+```json
+{"result": {"messages": 42, "stopped": "input_required", "reply": "One question first.",
+  "inputs": [{"id": "inp_…", "kind": "approval", "message": "Allow shop__delete_item to run?",
+    "detail": {"tool": "shop__delete_item", "source": "shop", "arguments": "{\"id\":\"a\"}", "argumentsHash": "…"},
+    "responders": {"audience": ["alice"]}, "state": "pending", "expiresAt": 1790000000000}]}}
+```
+
+Inputs come from:
+
+- **`ask_user`**, a built-in a definition enables (`"builtins": ["ask_user"]`).
+  Its input's `kind` is `question`.
+- **An approval policy** on a definition's sources, off by default:
+  `"approval": {"default": "never" | "always" | "destructive", "tools": {"delete_repo": "always"}}`
+  on an MCP server (`destructive`: tools annotated `destructiveHint`), and on an
+  OpenAPI source also `"methods": ["POST", "DELETE"]` (`destructive`: operations
+  other than GET, HEAD and OPTIONS). SDK tools take `needsApproval` (`true`, or
+  a function of the arguments), `needs_approval` in Python. The runtime makes
+  the `approval` input's card from the real call: the tool, its source, its
+  arguments (cut at 4,000 characters) and their hash. An approved call runs
+  in the resume with exactly those arguments, and carries
+  `_meta["agent-runtime/approval"]` (`{input, by, at}`) and an `approval` claim
+  in its identity token, so a tool server can require approval itself. A
+  declined call never runs. Tools that ask are declared to the model directly
+  (never only in `js_exec`), and its environment summary names them.
+- **The tool itself**, with MCP's `input_required` result (multi round-trip
+  requests): `elicitation/create` in `form` (a flat object schema) or `url`
+  mode (`https` only; the runtime never fetches it), and the older `-32042`
+  URL error. The runtime retries the call with `inputResponses` and the
+  server's `requestState`, which is sealed at rest and never shown to the model;
+  another `input_required` is another round. It tells a server it can elicit
+  (`_meta["io.modelcontextprotocol/clientCapabilities"]`) only when the agent
+  has someone to ask: a channel, a definition with `humanInput` or `ask_user`,
+  or a connected application. The SDKs' `ctx.confirm(message)`,
+  `ctx.ask(message, schema)` and `ctx.requireUrl(url, message)` make these
+  requests; **everything in a tool before an ask runs again on the retry**, so
+  ask first and act after.
+
+Code in `js_exec` cannot wait for days: a call from there that would ask fails
+with "needs the user's input: call it directly".
+
+**Answering.** `GET /v1/agents/:id/inputs?state=pending` (or
+`/clients/:id/inputs` with the agent's token) lists an agent's inputs, and
+`GET /v1/inputs?state=pending` the tenant's across its agents. `POST
+/v1/agents/:id/inputs/:inputId` with `{action: "accept" | "decline" | "cancel",
+content?, from?, actor?}` answers one: a question's `content` is `{answers:
+{"<question>": "<label>" | ["<label>", …] | "<own words>"}}`, a form's its
+fields (checked against its schema), a declined approval's `{reason?}`. It
+returns `202 {input, request}`, where `request` is the resume run (null until
+the suspension's last input is answered), polled like a prompt. `POST
+/v1/agents/:id/inputs {answers: [{id, action, …}]}` answers several, all or
+none. Answering again with the same answer is `200`; an input already settled
+otherwise is `409` with what it settled as. The agent's stream has
+`input_required` (the input) and `input_resolved` (`{id, state, by}`) events;
+the list is the durable record.
+
+**Who may answer.** By default, the sender or actor whose message started the
+turn (`from.id` / `actor`), plus the definition's `humanInput.approvers`
+(actors, or channel senders like `slack:U0123`). Over the API the token has
+authority; when a request names `from` or `actor`, it must be one of them
+(`403`). Channels always check the sender. The model has no way to answer.
+
+**Waiting.** A new prompt (or channel message that is not an answer)
+supersedes the inputs: their calls close with "Not answered: the user sent a
+new message instead", then the prompt runs. `steer` and `followUp` are held
+until the turn resumes. `POST /v1/agents/:id/abort` cancels them. Inputs expire
+after `humanInput.expiresInSeconds` (7 days by default, at most 30, never after
+the agent); expired and cancelled inputs close their calls and the turn
+without calling the model, unless `humanInput.onExpire` is `resume`.
+
+```json
+{"name": "Ops", "builtins": ["ask_user"], "humanInput": {"expiresInSeconds": 86400, "approvers": ["slack:U0123"]},
+ "mcpServers": [{"name": "github", "url": "…", "approval": {"tools": {"delete_repo": "always"}}}]}
+```
+
+**In a channel**, a suspended turn's reply ends with its first input as text:
+a question's numbered options, the call to approve, the URL and its site, a
+confirmation. The next message from someone allowed to answer, if it fits (an
+option's number or label, or free text where allowed; exactly `approve`/`yes`
+or `deny`/`no`; `done`; one line per question when there are several), is the
+answer, and the next input is asked. Anything else is a new message. Forms of
+more than one field are answered from an application.
+
+**In the SDKs**, `prompt()` resolves when the turn suspends (`result.stopped`).
+`onInput` (`on_input`) hears each input: return an answer to give it at once,
+or nothing to answer later with `agent.answer(inputId, answer)` from any
+process. `agent.inputs()` lists the agent's, `runtime.inbox()` the tenant's.
 
 ## Channels
 

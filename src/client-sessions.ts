@@ -751,7 +751,7 @@ export class ClientSessions {
     if (!answers.length || answers.length > 100 || new Set(answers.map(entry => entry.id)).size !== answers.length) throw new HttpError(400, "Answer 1 to 100 different inputs");
     const checked: { input: InputRow; answer: Answer }[] = [];
     for (const { id: inputId, body } of answers) {
-      const input = await inputs!.get(inputId);
+      const input = await inputs.get(inputId);
       if (!input || input.agent !== id) throw new HttpError(404, `Unknown input ${inputId}`);
       let by: Responder;
       try { by = { via, ...(body?.from !== undefined ? { from: senderInput(body.from) } : {}), ...(body?.actor !== undefined ? { actor: actorInput(body.actor) } : {}) }; }
@@ -759,11 +759,11 @@ export class ClientSessions {
       if (!mayAnswer(input, by, header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
       checked.push({ input, answer: { ...answerInput(input, body), by, at: Date.now() } });
     }
-    const settled = checked.every(({ input }) => input.state === "pending") ? await inputs!.settleAll(checked.map(({ input, answer }) => ({ id: input.id, answer }))) : undefined;
+    const settled = checked.every(({ input }) => input.state === "pending") ? await inputs.settleAll(checked.map(({ input, answer }) => ({ id: input.id, answer }))) : undefined;
     const suspensions = [...new Set(checked.map(({ input }) => input.requestId))];
     if (!settled) {
       // Settled already: a retry of these answers is 200; anything else conflicts, showing what was recorded.
-      const current = await Promise.all(checked.map(({ input }) => inputs!.get(input.id))) as InputRow[];
+      const current = await Promise.all(checked.map(({ input }) => inputs.get(input.id))) as InputRow[];
       const same = current.every((row, index) => row.answer && !row.answer.by.system && row.answer.action === checked[index].answer.action && canonical(row.answer.content ?? null) === canonical(checked[index].answer.content ?? null));
       if (!same) throw Object.assign(new HttpError(409, current.length === 1 ? `This input is already ${current[0].state}` : "An input is already settled"), { input: current.length === 1 ? inputView(current[0]) : current.map(inputView) });
       return { status: 200, inputs: current.map(inputView), requests: await this.resumeAnywhere(id, tenant, suspensions) };

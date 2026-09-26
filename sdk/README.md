@@ -92,6 +92,13 @@ create agents with a `subject` and `context`, and prompt with `from` or `actor`.
 Switch models between turns with `await agent.configure({ model: "openai/gpt-5.2" })`;
 the history carries over. Your tenant needs a key for that provider.
 
+A turn can also wait for the user: a tool with `needsApproval: true` is approved
+before each call, and `ctx.confirm`, `ctx.ask` and `ctx.requireUrl` ask from
+inside a tool. `prompt()` then resolves with `stopped: "input_required"` and the
+`inputs`; answer them with `onInput`, or later with `agent.answer(inputId, { action: "accept" })`,
+and the turn resumes. An ask ends the call, and the tool runs again with the
+answer, so everything before an ask runs twice: ask first, act after.
+
 ## Console and REST API
 
 Sign in at https://agents.camelai.dev/console with GitHub (qaml-ai members) to add

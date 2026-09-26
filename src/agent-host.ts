@@ -506,15 +506,14 @@ export function createAgentHost(io: HostIO) {
     }
   }
 
-  /**
-   * Give calls waiting on input their results, in the order given: a ready result (an answer, or why
-   * there is none), or, with `retry`, the call run again now (an approved call, or a tool's own request
-   * retried with its answers). A retried call is released first, so a crash while it runs leaves it
-   * open to be closed as unknown, never run twice. Returns how many calls it settled.
-   */
   type Settled = { content: unknown[]; isError?: boolean; details?: unknown };
+  /**
+   * Give calls waiting on input their results, in the order the model made them: a ready result (an
+   * answer, or why there is none), or, with `retry`, the call run again now (an approved call, or a
+   * tool's own request retried with its answers). A retried call is released first, so a crash while
+   * it runs leaves it open to be closed as unknown, never run twice. Returns how many calls it settled.
+   */
   async function settle(calls: { toolCallId: string; result?: Settled; retry?: boolean }[], signal: AbortSignal) {
-    // In the order the model made the calls.
     const made = transcript.context.flatMap(message => message.role === "assistant" ? message.content : []).filter(part => part.type === "toolCall") as ToolCall[];
     const position = (id: string) => made.findIndex(part => part.id === id);
     const wanted = calls.filter(call => transcript.awaiting.includes(call.toolCallId)).sort((a, b) => position(a.toolCallId) - position(b.toolCallId));
