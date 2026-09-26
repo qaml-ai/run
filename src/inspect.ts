@@ -2,7 +2,7 @@ import { Worker } from "node:worker_threads";
 import { FILE_LIMITS } from "./limits.ts";
 import { errorText } from "./protocol.ts";
 import { sandboxProcesses } from "./codemode.ts";
-import type { FileRef, Media } from "./files.ts";
+import { textual, type FileRef, type Media } from "./files.ts";
 import type { FileEntry, VolumeService } from "./volumes.ts";
 
 /**
@@ -74,5 +74,15 @@ export async function inspectFile(volumes: VolumeService, tenant: string, entry:
 /** A volume file as the transcript refers to it, with what inspecting it found. */
 export async function fileRef(volumes: VolumeService, tenant: string, volume: string, shown: string, entry: FileEntry & { contentType: string }): Promise<FileRef> {
   const found = await inspectFile(volumes, tenant, entry, entry.contentType);
-  return { type: "file", path: shown, volume, version: entry.version, size: entry.size, contentType: entry.contentType, chunks: entry.chunks, ...(found ? { media: found.media } : {}) };
+  const head = textual(entry.contentType) && entry.size ? firstLines(await volumes.readRange(tenant, entry, 0, FILE_LIMITS.headBytes), entry.size > FILE_LIMITS.headBytes) : undefined;
+  return { type: "file", path: shown, volume, version: entry.version, size: entry.size, contentType: entry.contentType, chunks: entry.chunks, ...(found ? { media: found.media } : {}), ...(head ? { head } : {}) };
+}
+
+/** A text's first lines, each cut to a width; a line the read cut short is left out. */
+function firstLines(data: Buffer, more: boolean): string | undefined {
+  if (data.includes(0)) return undefined;
+  const lines = new TextDecoder().decode(data).split(/\r?\n/);
+  if (more && lines.length > 1) lines.pop();
+  const head = lines.slice(0, FILE_LIMITS.headLines).map(line => line.length > FILE_LIMITS.headWidth ? `${line.slice(0, FILE_LIMITS.headWidth - 1)}…` : line).join("\n").trimEnd();
+  return head || undefined;
 }

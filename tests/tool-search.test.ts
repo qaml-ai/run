@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { executeCode } from "../src/codemode.ts";
 import { CATALOG_LIMITS } from "../src/limits.ts";
-import { validateDefinitions } from "../src/tool-policy.ts";
+import { validateDefinitions, validateToolCall } from "../src/tool-policy.ts";
 import { compose, defaultExposure, valueServer } from "../src/tool-servers.ts";
-import { embeddingReranker, jevReranker, keywordScores, namespaces, rerankersFromEnv, searchQuery, searchTools, type Candidate, type Reranker } from "../src/tool-search.ts";
+import { embeddingReranker, jevReranker, keywordScores, namespaces, rerankersFromEnv, searchQuery, searchTools, signature, type Candidate, type Reranker } from "../src/tool-search.ts";
 import { listen, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
 
 const tool = (name: string, description: string) => ({ name, description, parameters: { type: "object", properties: {} } });
@@ -39,6 +39,25 @@ test("keyword search matches words, not a substring of the whole query", async (
   assert.deepEqual(await searchTools(catalog, { query: "email someone" }), [], "keywords alone miss synonyms");
   const scores = keywordScores(catalog, "delete a file");
   assert.equal(scores.indexOf(Math.max(...scores)), 3);
+});
+
+test("hits carry the tool's arguments as a signature, and a call with wrong arguments says what is wrong and what it takes", async () => {
+  const refund = { name: "billing__refund_invoice", description: "Refund an invoice", parameters: {
+    type: "object", additionalProperties: false, required: ["invoiceId", "lines"],
+    properties: { invoiceId: { type: "string" }, amount: { type: "integer" }, mode: { enum: ["full", "partial"] }, lines: { type: "array", items: { type: "object", properties: { sku: { type: "string" }, meta: { type: "object", properties: { a: { type: "string" } } } } } },
+      receipt: { anyOf: [{ type: "string", format: "uri" }, { type: "object", required: ["$file"], properties: { $file: { type: "string" } } }] }, note: { type: ["string", "null"] } },
+  } };
+  const input = '{ invoiceId: string, amount?: number, mode?: "full" | "partial", lines: { sku?: string, meta?: {…} }[], receipt?: string | { $file: string }, note?: string | null }';
+  assert.equal(signature(refund.parameters), input);
+  assert.deepEqual(await searchTools([refund], { query: "refund" }), [{ name: refund.name, description: refund.description, input }]);
+  assert.equal(signature({ type: "object" }), "object");
+  assert.throws(() => validateToolCall([refund], refund.name, { invoice: "INV-1", lines: [] }),
+    { message: `Invalid arguments for tool: billing__refund_invoice: arguments must have required properties invoiceId; arguments must not have additional properties (invoice). It takes ${input}` });
+  // Code may pass the namespace and limit as a second argument.
+  const asked: unknown[] = [];
+  const bridge = { definitions: [refund], call: async () => null, search: async (query: unknown) => { asked.push(query); return []; } };
+  await executeCode({ bridge, code: `await tools.search("refund", { namespace: "billing", limit: 2 }); await tools.search("refund", "billing"); await tools.search({ query: "x" }); return 1;` });
+  assert.deepEqual(asked, [{ query: "refund", namespace: "billing", limit: 2 }, { query: "refund", namespace: "billing" }, { query: "x" }]);
 });
 
 test("an empty query lists the catalog; namespace and limit narrow it; namespaces count the sources", async () => {

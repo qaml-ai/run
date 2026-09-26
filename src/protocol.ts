@@ -23,6 +23,8 @@ export interface AgentConfig {
   apiKey?: string;
   systemPrompt?: string;
   tools: ToolDefinition[];
+  /** Where the agent's volumes are mounted, for its prompt's summary of its environment. */
+  mounts?: { path: string; mode: "ro" | "rw" }[];
   initialMessages?: AgentMessage[];
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** Host policy for retrying transient provider errors. */

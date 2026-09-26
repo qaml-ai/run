@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { errorText } from "./protocol.ts";
-import { safeName, type FileLinks, type FileRef } from "./files.ts";
+import { safeName, textual, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 import type { McpResult } from "./mcp-results.ts";
@@ -76,8 +76,6 @@ export function need(files: ToolFiles | undefined): ToolFiles {
 /** A file named in a tool's arguments, ready to send: its bytes, or a signed link to it. */
 export type ToolFile = { path: string; name: string; size: number; contentType: string; stream(): AsyncIterable<Uint8Array>; link(): string };
 
-/** Content types read as text: everything else a tool returns is saved as a file. */
-export const textual = (contentType: string) => /^(text\/|application\/(json|xml|xhtml\+xml|rss\+xml|atom\+xml|ld\+json|javascript|x-www-form-urlencoded)\b)|\+json\b|\+xml\b/i.test(contentType.trim());
 
 /** A response body read whole, failing past `maxBytes`. */
 export async function readCapped(response: Response, maxBytes: number): Promise<Buffer> {

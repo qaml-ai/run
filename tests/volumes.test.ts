@@ -428,7 +428,7 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   assert.equal(JSON.parse((await agent.execute('return await tools.ls({ path: "/reports" })')).output[0]).entries[0].name, "large.bin");
   assert.deepEqual(await a.mounts(agent.session.id), [{ volumeId: created.id, path: "/reports", mode: "ro", subpath: "/data" }]);
   const files = (await a.toolSources(agent.session.id, { schemas: true })).find(source => source.kind === "files")!;
-  assert.ok(files.tools.some(tool => tool.name === "read" && tool.parameters && tool.description.includes("/reports (read-only)")));
+  assert.ok(files.tools.some(tool => tool.name === "read" && tool.parameters));
   const plain = await a.createAgent({ tools: {} });
   t.after(() => plain.close());
   const workspace = (await a.mounts(plain.session.id))[0];

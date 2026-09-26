@@ -657,7 +657,7 @@ export class VolumeService {
     }
   }
 
-  definitions(mounts: Mount[], taken: ToolDefinition[]) { return volumeToolDefinitions(mounts).filter(tool => !taken.some(other => other.name === tool.name)); }
+  definitions() { return volumeToolDefinitions(); }
   tool(context: ToolContext, name: string, args: Record<string, unknown>, signal: AbortSignal) { return runVolumeTool(this, context, name, args, signal); }
 
   private async unload(volume: Volume) {

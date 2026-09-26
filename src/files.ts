@@ -37,6 +37,8 @@ const EXTENSIONS: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 };
+/** Content types read as text: everything else a tool returns is saved as a file. */
+export const textual = (contentType: string) => /^(text\/|application\/(json|xml|xhtml\+xml|rss\+xml|atom\+xml|ld\+json|javascript|x-www-form-urlencoded)\b)|\+json\b|\+xml\b/i.test(contentType.trim());
 /** A type from a name alone, for files recorded before content types were (listings do not read contents). */
 export const guessContentType = (name: string) => EXTENSIONS[/\.([a-z0-9]{1,8})$/i.exec(name)?.[1].toLowerCase() ?? ""] ?? "application/octet-stream";
 const starts = (head: Uint8Array, bytes: number[], at = 0) => bytes.every((byte, index) => head[at + index] === byte);
@@ -117,6 +119,8 @@ export type Media = { kind: "image"; mimeType: string; width: number; height: nu
 export type FileRef = {
   type: "file"; path: string; volume: string; version: number; size: number; contentType: string; chunks: string[];
   media?: Media;
+  /** A text file's first lines, so the model knows its shape without reading it. */
+  head?: string;
 };
 
 export function validFileRef(value: any): value is FileRef {
@@ -175,7 +179,7 @@ export function safeName(name: unknown, fallback = "file"): string {
 /** The text a file block becomes when it is not shown natively. */
 export function describeFile(ref: FileRef, why?: string) {
   const size = ref.size >= 1024 * 1024 ? `${(ref.size / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(ref.size / 1024)} KB`;
-  return `[File ${ref.path} (${ref.contentType}, ${size})${why ? `: ${why}` : ""}]`;
+  return `[File ${ref.path} (${ref.contentType}, ${size})${why ? `: ${why}` : ""}${ref.head ? `, beginning:\n${ref.head}` : ""}]`;
 }
 
 /**

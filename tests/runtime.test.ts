@@ -138,10 +138,36 @@ test("real Pi provider loop calls codemode and persists native messages across p
   for (const request of [requests[0], requests[2]]) {
     const instructions = request.messages.filter((m: any) => ["system", "developer"].includes(m.role)).map((m: any) => m.content).join("\n");
     assert.ok(instructions.includes(applicationPrompt));
-    assert.ok(instructions.includes('await tools.search("")'));
-    assert.ok(instructions.includes("QuickJS/WebAssembly"));
-    assert.equal(instructions.split("Runtime tools and execution:").length - 1, 1);
+    assert.ok(instructions.includes('tools.search("refund an invoice")'));
+    assert.equal(instructions.split("Finding tools in js_exec:").length - 1, 1);
+    assert.equal(instructions.split("Your environment:").length - 1, 1);
   }
+});
+
+test("the prompt summarizes the agent's environment from its configuration, and follows a change to it", async t => {
+  const requests: any[] = [];
+  const chosen = await fakeProvider(t, body => { requests.push(body); return { role: "assistant", content: "ok" }; });
+  const { supervisor } = await fixture(t);
+  const definition = (name: string, exposure: "both" | "codemode") => ({ name, description: name, parameters: { type: "object" }, exposure });
+  const bridge = { definitions: [definition("lookup", "both"), definition("crm__find", "codemode"), definition("crm__update", "codemode"), definition("misc", "codemode")], async call() { return null; } };
+  await supervisor.start("env", { model: chosen, apiKey: "fixture", mounts: [{ path: "/workspace", mode: "rw" }, { path: "/shared", mode: "ro" }] }, bridge);
+  await supervisor.request("env", "prompt", { text: "Hi" });
+  const system = (body: any) => body.messages[0].content as string;
+  assert.equal(system(requests[0]).slice(system(requests[0]).indexOf("Your environment:")), [
+    "Your environment:",
+    "- Files: /workspace (read-write), /shared (read-only); relative paths resolve against /workspace. Attachments are saved under /workspace/uploads/<request>/ and files that tools return under /workspace/tool-outputs/; keep scratch data under /workspace/tmp/.",
+    "- You cannot see images or PDFs: read a PDF for its text.",
+    "- Tools declared to you: lookup.",
+    "- Tools only in js_exec: 3, in 1 without a namespace, crm (2); find them with tools.search.",
+    "- js_exec limits per execution: 2 s of CPU, 16 MB of memory, 30 s (timeoutMs, up to 120 s), 256 tool calls, 32,000 output characters. QuickJS interprets slowly: process large data in one pass.",
+  ].join("\n"));
+  // The same configuration gives the same prompt, so the cached prefix holds; a model that sees images changes it from then on.
+  await supervisor.request("env", "prompt", { text: "Again" });
+  assert.equal(system(requests[1]), system(requests[0]));
+  await supervisor.request("env", "configure", { model: { ...chosen, input: ["text", "image"] } });
+  await supervisor.request("env", "prompt", { text: "Now?" });
+  assert.match(system(requests[2]), /\n- You see images \(attached ones and ones you read are shown to you/);
+  assert.equal(system(requests[2]).split("Your environment:").length - 1, 1);
 });
 
 test("process death closes the interrupted turn on restart without replaying it or blocking the agent", async t => {

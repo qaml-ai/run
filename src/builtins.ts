@@ -7,7 +7,8 @@ import { isShell, type WebRender } from "./web-render.ts";
 import { readableText } from "./html-text.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { jsonResult } from "./tool-servers.ts";
-import { readCapped, textual, type ToolFiles } from "./tool-files.ts";
+import { readCapped, type ToolFiles } from "./tool-files.ts";
+import { textual } from "./files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 
 export { readableText };

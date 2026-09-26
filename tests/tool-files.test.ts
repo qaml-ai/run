@@ -130,7 +130,7 @@ test("MCP images, audio, blobs and long text are saved to the workspace, under s
   assert.match(result, /made/);
   assert.match(result, /short note/, "a short text resource stays text");
   assert.match(result, /Resource: doc https:\/\/example\.test\/doc/, "a resource link stays a link");
-  assert.match(result, /\[File \/workspace\/tool-outputs\/files__outputs\/[a-f0-9]{8}\/long\.txt \(text\/plain, 65 KB\)\]/);
+  assert.match(result, /\[File \/workspace\/tool-outputs\/files__outputs\/[a-f0-9]{8}\/long\.txt \(text\/plain, 65 KB\), beginning:\nx{199}…\]/, "with its first line, cut short");
   const messages = JSON.stringify(r.model.bodies[1].messages);
   assert.ok(messages.includes(PNG.toString("base64")), "the model sees the image");
   assert.ok(messages.includes(PDF.toString("base64")), "and the PDF");

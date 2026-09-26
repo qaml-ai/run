@@ -33,10 +33,10 @@ export type ToolContext = {
 };
 
 const path = (description: string) => ({ type: "string", description });
-export function volumeToolDefinitions(mounts: Mount[]): ToolDefinition[] {
-  const where = `Mounted: ${mounts.map(mount => `${mount.path} (${mount.mode === "ro" ? "read-only" : "read-write"})`).join(", ")}. Relative paths resolve against ${mounts[0]?.path}.`;
+/** The file tools. Where the mounts are is in the agent's prompt (system-prompt.ts), so the tools stay the same when they change. */
+export function volumeToolDefinitions(): ToolDefinition[] {
   const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[]): ToolDefinition => ({
-    name, description: `${description} ${where}`, exposure: "both", executionMode: name === "write" || name === "edit" ? "sequential" : "parallel",
+    name, description, exposure: "both", executionMode: name === "write" || name === "edit" ? "sequential" : "parallel",
     parameters: { type: "object", additionalProperties: false, properties, required },
   });
   const version = { type: "integer", minimum: 0, description: "Only succeed if the file is still at this version (from read or ls); 0 means it must not exist yet" };
@@ -50,7 +50,7 @@ export function volumeToolDefinitions(mounts: Mount[]): ToolDefinition[] {
     }, ["path", "content"]),
     tool("edit", "Replace an exact text span in a file (old must appear once unless replaceAll). Pass the version from your last read so an edit based on a stale read is rejected.",
       { path: path("File path"), old: { type: "string", minLength: 1 }, new: { type: "string" }, replaceAll: { type: "boolean" }, version }, ["path", "old", "new"]),
-    tool("present_file", "Hand a file you made to the user: it goes to them (or their application) with your reply, with a download link. Write the file first; call this once per file to share.",
+    tool("present_file", "Hand a file you made to the user: it goes to them (or their application) with your reply, with a download link. Writing a file does not share it. Write the file first, then call this once per file to share.",
       { path: path("File path"), caption: { type: "string", maxLength: 1000, description: "A line about the file, shown with it" } }, ["path"]),
     tool("ls", "List a directory's entries with sizes and versions. / lists the mounts.", { path: path("Directory path") }, []),
     tool("glob", `Find files by glob (*, ?, **, {a,b}) relative to path; at most ${FILE_TOOL_LIMITS.maxGlobResults} results.`,

@@ -1,6 +1,7 @@
 import { Compile, type Validator } from "typebox/compile";
 import type { ToolDefinition } from "./protocol.ts";
 import { CATALOG_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
+import { inputSignature } from "./tool-search.ts";
 
 /** Catalogs already checked: one is checked again at every js_exec, and large ones are not free to check. */
 const validated = new WeakSet<ToolDefinition[]>();
@@ -50,6 +51,11 @@ export function validateToolCall(definitions: ToolDefinition[], name: unknown, a
   if (!tool) throw new Error("Unknown tool");
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Tool arguments must be a JSON object");
   const json = jsonWithinLimit(args, SANDBOX_LIMITS.argumentBytes, "Tool arguments");
-  if (!validator(tool.parameters).Check(args)) throw new Error(`Invalid arguments for tool: ${tool.name}`);
+  const check = validator(tool.parameters);
+  if (!check.Check(args)) {
+    // Say what is wrong and what the tool takes, so the next call can be right without tools.describe.
+    const problems = [...check.Errors(args)].slice(0, 3).map(error => `${error.instancePath || "arguments"} ${error.message}${error.keyword === "additionalProperties" ? ` (${(error.params as { additionalProperties?: string[] }).additionalProperties?.join(", ")})` : ""}`);
+    throw new Error(`Invalid arguments for tool: ${tool.name}: ${problems.join("; ")}. It takes ${inputSignature(tool.parameters)}`);
+  }
   return { tool, args: args as Record<string, unknown>, bytes: Buffer.byteLength(json) };
 }

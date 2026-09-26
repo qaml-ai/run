@@ -276,6 +276,7 @@ test("the TypeScript SDK attaches bytes, Blobs, local paths and workspace files;
   assert.equal(first.filter((part: any) => part.type === "image_url").length, 2);
   assert.equal(first.filter((part: any) => part.type === "file").length, 1);
   assert.ok(first.some((part: any) => part.text?.startsWith("[File /workspace/uploads/with-files/notes.txt (text/plain")));
+  assert.ok(first.some((part: any) => part.text === "[File /workspace/uploads/with-files/data.csv (text/csv, 1 KB), beginning:\na,b]"), "a text file comes with its first lines");
 
   // The attached files change afterwards: the earlier message still carries what was attached.
   const volume = (await client.mounts(agent.session.id))[0].volumeId;

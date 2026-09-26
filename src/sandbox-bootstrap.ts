@@ -79,7 +79,8 @@ export const SANDBOX_BOOTSTRAP = `
     for (const name of parse(namesJSON)) {
       tools[name] = async (args = {}) => parse(await call(name, stringify(args)));
     }
-    tools.search = async (query = "") => parse(await call("${HOST_CALLS.search}", stringify(query)));
+    // search(query), search(query, { namespace, limit }), search(query, namespace) or search({ query, namespace, limit }).
+    tools.search = async (query = "", options) => parse(await call("${HOST_CALLS.search}", stringify(options === undefined ? query : { ...(typeof options === "string" ? { namespace: options } : options), query })));
     tools.describe = async name => parse(await call("${HOST_CALLS.describe}", stringify(StringCtor(name))));
     tools.namespaces = async () => parse(await call("${HOST_CALLS.namespaces}", "null"));
     Object.defineProperty(globalThis, "tools", { value: Object.freeze(tools) });

@@ -3,7 +3,8 @@ import { parse as parseYaml } from "yaml";
 import type { ToolDefinition } from "./protocol.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { jsonResult } from "./tool-servers.ts";
-import { acceptFiles, fileMode, isFileArgument, need, readCapped, resolveFiles, textual, type ToolFile, type ToolFiles } from "./tool-files.ts";
+import { acceptFiles, fileMode, isFileArgument, need, readCapped, resolveFiles, type ToolFile, type ToolFiles } from "./tool-files.ts";
+import { textual } from "./files.ts";
 
 /**
  * OpenAPI 3 specs as a tool source, as Executor's openapi plugin does it: every operation is

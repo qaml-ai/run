@@ -286,9 +286,17 @@ authenticated by each agent's own token). Each agent admits one prompt or code
 execution at a time; later ones queue.
 
 Codemode supports `tools.search(query)`, `tools.namespaces()`, `tools.describe(name)`,
-`tools.<name>(args)`, `text(value)`, `console.log(value)`, top-level `await`, and
-`return`. It can compose parallel calls with `Promise.all`. Failed calls reject.
+`tools.<name>(args)`, `fs`, `text(value)`, `console.log(value)`, top-level `await`, and
+`return`. It can compose parallel calls with `Promise.all`. Failed calls reject; a call
+with invalid arguments says what is wrong and the tool's argument signature.
 No browser, connections, AI media, or other Worker binding facades are supplied yet.
+
+The model's system prompt is the runtime's instructions (`src/system-prompt.ts`), the
+application's, and a summary of the agent's environment built from its configuration:
+its mounts and where attachments and tool outputs land, whether its model sees images
+and PDFs, its direct tools, the tools reachable only in js_exec by namespace, and
+js_exec's limits. Nothing in it changes per turn, so the provider's cached prefix holds;
+a changed configuration (model, tools, mounts) follows as a system message.
 
 Scripts default to a 30-second external deadline, capped at 120 seconds. The
 QuickJS interrupt handler separately allows 2 seconds spent executing guest code
@@ -703,8 +711,9 @@ or `prompt(text, { from })` in the SDKs (`from_=` in Python; also on `steer` and
 
 ### Tool search
 
-Code finds tools with `tools.search(query)` or `tools.search({ query, namespace, limit })`:
-the best matches as `{ name, description }`, most relevant first (20 by default,
+Code finds tools with `tools.search(query)`, `tools.search(query, { namespace, limit })`
+or `tools.search({ query, namespace, limit })`: the best matches as `{ name, description,
+input }`, `input` being the arguments' signature (`{ id: string, limit?: number }`), most relevant first (20 by default,
 at most 128). An empty query lists tools in catalog order. `tools.namespaces()`
 lists the sources (what precedes `__` in names) with their tool counts, and
 `tools.describe(name)` a tool's schema. Only tool names enter the sandbox; search,
@@ -1067,7 +1076,8 @@ from REST callers; multipart forms add nothing the two do not cover.
 ### What the model sees
 
 The user message is the text, then per file a line such as
-`[File /workspace/uploads/r1/q3.pdf (application/pdf, 2.1 MB)]`, followed by a
+`[File /workspace/uploads/r1/q3.pdf (application/pdf, 2.1 MB)]` (a text file's
+line ends with its first five lines, from its first KiB), followed by a
 native block when the model takes the file: an image block for PNG, JPEG, GIF
 and WebP on models with image input, and a document for PDFs where the provider
 takes them. Anything else is only named, and the model reads it with its file

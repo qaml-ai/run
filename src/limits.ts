@@ -4,6 +4,8 @@ export const SANDBOX_LIMITS = Object.freeze({
   heapBytes: 16 * 1024 * 1024,
   stackBytes: 256 * 1024,
   cpuMs: 2_000,
+  /** One execution's wall time and output characters: by default, and at most when it asks (`timeoutMs`, `maxOutputCharacters`). */
+  timeoutMs: 30_000, maxTimeoutMs: 120_000, outputCharacters: 32_000, maxOutputCharacters: 128_000,
   toolCalls: 256,
   concurrentTools: 32,
   argumentBytes: 128 * 1024,
@@ -32,6 +34,8 @@ export const FILE_LIMITS = Object.freeze({
   hydratedBytes: 32 * 1024 * 1024,
   /** Parsing untrusted files (in a worker, in a sandbox process when there are some): input, time, memory and text out. */
   inspectBytes: 32 * 1024 * 1024, inspectMs: 10_000, inspectHeapMb: 256, inspectMemoryBytes: 512 * 1024 * 1024, extractedChars: 1_000_000,
+  /** A text file's first lines, as its reference carries them: read from at most this many bytes, lines cut to a width. */
+  headBytes: 1024, headLines: 5, headWidth: 200,
   /** Signed links: default and longest lifetime, in seconds. */
   linkSeconds: 15 * 60, maxLinkSeconds: 24 * 60 * 60,
   /** An upload's whole request may take this long (other requests get 30 s). */

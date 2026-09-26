@@ -500,7 +500,7 @@ export class ClientSessions {
       await this.makeRoom(id, session.header.tenant);
       const { key: apiKey, platform } = await this.apiKey(session, session.header.config.model.provider);
       session.platformKey = platform;
-      const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
+      const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: await this.toolset(session),
         spendLimit: async () => {
           const limited = await this.options.spendLimit?.(session.header.tenant);
@@ -541,7 +541,7 @@ export class ClientSessions {
     return [
       ...feature ? [view("channel", feature)] : [],
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
-      ...volumes && header.mounts?.length ? [view("files", fileServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
+      ...volumes && header.mounts?.length ? [view("files", fileServer(volumes.definitions(), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
       ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
     ];
   }
@@ -788,7 +788,7 @@ export class ClientSessions {
 
   /**
    * Replace a tenant's agent's mounts. Access checks use them at once; an idle agent
-   * restarts so its file tools describe them (a busy one picks them up next start).
+   * restarts so its prompt describes them (a busy one picks them up next start).
    */
   async setMounts(id: string, tenant: string, requested: unknown) {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;

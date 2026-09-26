@@ -363,10 +363,10 @@ export async function executeCode(options: {
   /** Strip TypeScript here before running: set when the sandbox found the code does not compile as JavaScript. */
   typescript?: boolean;
 }): Promise<{ output: string[]; truncated: boolean }> {
-  const timeoutMs = options.timeoutMs ?? 30_000;
-  const maxOutputCharacters = options.maxOutputCharacters ?? 32_000;
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new Error("timeoutMs must be 1..120000");
-  if (!Number.isInteger(maxOutputCharacters) || maxOutputCharacters < 1 || maxOutputCharacters > 128_000) throw new Error("maxOutputCharacters must be 1..128000");
+  const timeoutMs = options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs;
+  const maxOutputCharacters = options.maxOutputCharacters ?? SANDBOX_LIMITS.outputCharacters;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > SANDBOX_LIMITS.maxTimeoutMs) throw new Error(`timeoutMs must be 1..${SANDBOX_LIMITS.maxTimeoutMs}`);
+  if (!Number.isInteger(maxOutputCharacters) || maxOutputCharacters < 1 || maxOutputCharacters > SANDBOX_LIMITS.maxOutputCharacters) throw new Error(`maxOutputCharacters must be 1..${SANDBOX_LIMITS.maxOutputCharacters}`);
   if (typeof options.code !== "string" || options.code.length > 256_000) throw new Error("Invalid or oversized code");
   // Loaded here: sandbox processes import this module for CodePool alone, and typebox would cost each about 25 MB.
   const { validateDefinitions, validateToolCall } = await import("./tool-policy.ts");

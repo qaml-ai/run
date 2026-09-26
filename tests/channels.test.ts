@@ -320,7 +320,8 @@ test("every kind of Telegram attachment is saved to the agent's workspace and at
     await until(() => r.tg.sent(ada.id).length === index + 1, `the reply to ${shown}`);
     const user = lastUser(r.model.bodies[index]);
     assert.equal(user.match(/\[File /g)?.length, 1, "one file per message");
-    assert.ok(new RegExp(`\\[File /workspace/uploads/in_[a-f0-9]{40}/${shown.replace(/[.()]/g, "\\$&")}, 1 KB\\)\\]`).test(user), user);
+    // A text file comes with its first lines.
+    assert.ok(new RegExp(`\\[File /workspace/uploads/in_[a-f0-9]{40}/${shown.replace(/[.()]/g, "\\$&")}, 1 KB\\)${shown.includes("text/") ? `, beginning:\\n${id.file_id} bytes` : ""}\\]`).test(user), user);
     assert.ok(user.includes("(sent a file)"));
   }
   // The bytes are in the agent's workspace volume.

@@ -14,8 +14,9 @@ import type { ToolDefinition } from "../shared/client-protocol.ts";
  */
 
 export type SearchQuery = { query?: string; namespace?: string; limit?: number };
-export type SearchHit = { name: string; description: string };
-export type Candidate = { name: string; description: string };
+/** `input` is the tool's arguments as a signature (see `signature`), so most calls need no `tools.describe`. */
+export type SearchHit = { name: string; description: string; input?: string };
+export type Candidate = { name: string; description: string; parameters?: object };
 
 /** Told what each provider call cost, in USD: tool search is billed at cost. */
 export type Meter = (usd: number) => void;
@@ -42,6 +43,7 @@ export const RERANK_TIMEOUT_MS = 2_500;
 /** Candidates a stage that cannot see the whole catalog is given. */
 export const STAGE_CANDIDATES = 100;
 const DESCRIPTION_CHARS = 300;
+const SIGNATURE_CHARS = 400;
 
 /** A search from code: a string, or `{ query, namespace, limit }`. */
 export function searchQuery(value: unknown): SearchQuery {
@@ -130,9 +132,35 @@ export function keywordScores(tools: Candidate[], query: string): number[] {
 
 // ---------------------------------------------------------------------------------------------
 
+const clip = (text: string, length: number) => text.length > length ? `${text.slice(0, length - 1)}…` : text;
 const hit = (tool: Candidate): SearchHit => ({
-  name: tool.name, description: tool.description.length > DESCRIPTION_CHARS ? `${tool.description.slice(0, DESCRIPTION_CHARS - 1)}…` : tool.description,
+  name: tool.name, description: clip(tool.description, DESCRIPTION_CHARS), ...(tool.parameters ? { input: inputSignature(tool.parameters) } : {}),
 });
+
+/** A tool's arguments as `signature` gives them, cut to a length that suits a search hit or an error. */
+export const inputSignature = (schema: object) => clip(signature(schema), SIGNATURE_CHARS);
+
+/** A JSON schema as a short TypeScript-like type: `{ id: string, limit?: number, tags: string[] }`. Nesting past two levels is `{…}`. */
+export function signature(schema: any, depth = 0): string {
+  if (!schema || typeof schema !== "object") return "any";
+  if (Array.isArray(schema.enum)) return schema.enum.map((value: unknown) => JSON.stringify(value)).join(" | ");
+  if ("const" in schema) return JSON.stringify(schema.const);
+  const union = schema.anyOf ?? schema.oneOf;
+  if (Array.isArray(union)) return union.map((option: unknown) => signature(option, depth)).join(" | ");
+  if (Array.isArray(schema.type)) return schema.type.map((type: unknown) => signature({ ...schema, type }, depth)).join(" | ");
+  if (schema.type === "array") {
+    const items = signature(schema.items, depth);
+    return items.includes(" | ") ? `(${items})[]` : `${items}[]`;
+  }
+  if (schema.type === "object" || schema.properties) {
+    const entries = Object.entries(schema.properties ?? {});
+    if (!entries.length) return schema.additionalProperties === false ? "{}" : "object";
+    if (depth > 1) return "{…}";
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    return `{ ${entries.map(([key, value]) => `${key}${required.has(key) ? "" : "?"}: ${signature(value, depth + 1)}`).join(", ")} }`;
+  }
+  return schema.type === "integer" ? "number" : typeof schema.type === "string" ? schema.type : "any";
+}
 
 /** Positions from scores, best first; ties keep catalog order. Entries at or below `floor` get no rank. */
 function ranks(scores: number[], floor = -Infinity): Map<number, number> {

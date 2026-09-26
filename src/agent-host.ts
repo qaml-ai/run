@@ -8,7 +8,7 @@ import {
 import { executeCode } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, type AgentConfig, type ToolBridge } from "./protocol.ts";
-import { applicationInstructions, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
+import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
 import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
@@ -72,7 +72,7 @@ export function createAgentHost(io: HostIO) {
    * it, and each change follows as a system message of its own where the conversation stood.
    */
   function leading(tools: Tool[] = agent!.state.tools.map(toToolDeclaration)): SystemMessage {
-    return transcript.system ?? leadingSystemMessage(config.systemPrompt, tools);
+    return transcript.system ?? leadingSystemMessage(config, tools);
   }
 
   /** Pi's messages from the transcript: what a run starts from. */
@@ -100,15 +100,16 @@ export function createAgentHost(io: HostIO) {
     const messages = agent!.state.messages;
     const tools = agent!.state.tools.map(toToolDeclaration);
     if (!transcript.total && !transcript.compaction) {
-      agent!.state.messages = [leadingSystemMessage(config.systemPrompt, tools), ...messages.filter(message => message.role !== "system")];
+      agent!.state.messages = [leadingSystemMessage(config, tools), ...messages.filter(message => message.role !== "system")];
       return Promise.resolve();
     }
-    const instructions = applicationInstructions(config.systemPrompt);
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
-    const promptChanged = getCurrentSystemMessage(messages)?.sections?.[INSTRUCTIONS] !== instructions;
-    if (!promptChanged && !toolsAdded.length && !toolsRemoved.length) return Promise.resolve();
+    const current = getCurrentSystemMessage(messages)?.sections ?? {};
+    const wanted = { [INSTRUCTIONS]: applicationInstructions(config.systemPrompt), [ENVIRONMENT]: environmentSummary(config) };
+    const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => current[name] !== text));
+    if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return Promise.resolve();
     const change: SystemMessage = {
-      role: "system", content: "", timestamp: Date.now(), ...(promptChanged ? { sections: { [INSTRUCTIONS]: instructions } } : {}),
+      role: "system", content: "", timestamp: Date.now(), ...(Object.keys(sections).length ? { sections } : {}),
       ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}),
     };
     const written = declare(change, messages[0] as SystemMessage);
@@ -346,7 +347,7 @@ export function createAgentHost(io: HostIO) {
       const directTools = directAgentTools(config.tools);
       const jsExec: AgentTool = {
         name: "js_exec", label: "JavaScript",
-        description: "Execute JavaScript or TypeScript in a fresh QuickJS/WebAssembly sandbox. Only approved tools and output helpers are available: no network, imports, process, Node/Bun APIs, or timers. Use await tools.search(query) (ranked matches), await tools.namespaces(), await tools.describe(name), and await tools.<name>(args). Files in your mounts: await fs.readFile(path, { encoding: 'utf8' }?) (a Uint8Array without it), fs.writeFile(path, string | Uint8Array, { contentType }?), fs.stat(path), fs.list(path), fs.remove(path). Use text(value), console.log(value), or return to emit output. Calls can be composed with Promise.all. State does not survive between invocations.",
+        description: "Run JavaScript or TypeScript in a fresh QuickJS sandbox. What you return, and what you console.log or text(value), comes back. In scope: tools (await tools.<name>(args); tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
         parameters: {
           type: "object", required: ["code"],
           properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },
@@ -422,7 +423,7 @@ export function createAgentHost(io: HostIO) {
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
       if (params.tools !== undefined) { config.tools = params.tools; agent.state.tools = [agent.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools)]; }
-      if (params.systemPrompt !== undefined || params.tools !== undefined) await declareConfiguration();
+      if (params.systemPrompt !== undefined || params.tools !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Full history comes from the log; memory holds only the working set.
