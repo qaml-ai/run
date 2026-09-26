@@ -51,7 +51,7 @@ async function publicKey(url: string, kid: string, fetcher: typeof globalThis.fe
   const age = Date.now() - set.fetched;
   if (age > 300_000 || (!set.keys.has(kid) && age > 10_000)) {
     set.loading ??= (async () => {
-      const response = await fetcher(url, { headers: { Accept: "application/json" } });
+      const response = await fetcher(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
       if (!response.ok) throw new RuntimeTokenError(`Could not read the runtime's keys (${url}: HTTP ${response.status})`);
       const body = await response.json() as { keys?: Record<string, any>[] };
       const keys = new Map<string, CryptoKey>();
