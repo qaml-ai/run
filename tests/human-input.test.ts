@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
 import { lastUser, listen, OPERATOR, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+import { mayAnswer } from "../src/inputs.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
@@ -125,7 +126,9 @@ test("only whoever started the turn, or an approver, may answer", async t => {
   assert.deepEqual(input.responders, { audience: ["alice"] });
   const answer = (from?: object) => r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "US" } }, ...(from ? { from } : {}) } });
   assert.equal((await answer({ id: "mallory" })).status, 403);
-  assert.equal((await answer({ id: "boss" })).status, 202);
+  assert.ok(mayAnswer(input, { from: { id: "boss" } }, ["boss"]), "an approver may answer");
+  assert.ok(!mayAnswer(input, { via: "channel", from: { id: "slack:U9" } }), "a channel sender outside the audience may not");
+  assert.equal((await answer()).status, 202, "an answer naming no one has the token's authority");
 });
 
 test("an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs", async t => {
