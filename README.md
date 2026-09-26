@@ -866,7 +866,10 @@ volume at `/workspace`. Mounts are capabilities: sharing means mounting the same
 volume in several agents, and only the tenant's own volumes can be mounted.
 
 The agent's tools `read`, `write`, `edit`, `ls`, `glob` and `grep` work on mount
-paths (`/workspace/notes.md`), directly and from `js_exec`. An application tool
+paths (`/workspace/notes.md`), directly and from `js_exec`. `read` shows an image
+or PDF to a model that can view it, returns a PDF's text in windows otherwise, and
+returns raw bytes with `encoding: "base64"`; `write` takes bytes the same way, and
+a `contentType` (see [What the model sees](#what-the-model-sees)). An application tool
 with the same name takes precedence. Every file has a version; `write` and `edit`
 take a `version` (0: the file must not exist), so an edit based on a stale read
 fails with an error telling the model to read the file again. `read` returns at
@@ -1046,7 +1049,47 @@ ArrayBuffers, which heap limits do not count, so a 400 KB PDF that inflates to
 addons, `isEvalSupported: false`). Images are only measured: their bytes go to
 the provider as they were uploaded.
 
+### The fs API in js_exec
+
+Code in `js_exec` (and `execute`) has `fs` over the agent's mounts:
+
+```js
+const csv = await fs.readFile("/workspace/data.csv", { encoding: "utf8" });   // text
+const png = await fs.readFile("/workspace/chart.png");                        // Uint8Array
+await fs.writeFile("/workspace/out/chart.png", png, { contentType: "image/png" });
+await fs.stat("/workspace/out/chart.png");   // {path, type, size, version, updatedAt, contentType}
+await fs.list("/workspace/out");             // like the ls tool
+await fs.remove("/workspace/tmp.txt");
+```
+
+It is the runtime's file tools, whatever tools of the same names the agent has:
+the same mounts, read-only mounts refuse writes, and paths never leave a mount
+(`..` is refused, and anything outside a mount is not found). Each call is a
+tool call: it counts toward the 256 per script and the 8 MiB of traffic, is
+made durable before it has any effect, and is cancelled with the script. Bytes
+cross the sandbox boundary as base64 inside the JSON string every call carries,
+and are a `Uint8Array` on the guest's side, so one call moves at most 700 KiB of
+file (1 MiB of base64 with its path, a tool result's limit); `fs.writeFile`'s
+argument may be that large, while other tool calls keep 128 KiB. Larger files
+are read in windows with `tools.read({ path, offset, encoding: "base64" })`.
+
 ### Files out
+
+An agent's output files are volume files. A run's outcome (`prompt`,
+`continue`, `execute`) lists them in its `result`:
+
+- `files`: `[{path, version, size, contentType}]`, every file the agent wrote
+  with its tools or `fs` during the run (up to 100, last write of each path).
+- `presented`: the files the model handed over with the `present_file` built-in
+  (`{path, caption?}`, up to 20 a run), as file references with their
+  `caption`. Each is also a `file_presented` event on the agent's stream as soon
+  as it is presented, with a signed download `url` (15 minutes) and `expiresAt`.
+
+`present_file` comes with the file tools. It is the explicit way for the model
+to give someone a file ("here is your chart"), where `files` lists every write,
+scratch files included. A runtime feature such as a channel finds presented
+files in `record.outcome.result.presented` at `runEnded`, as it finds `reply`
+(channels do not send them yet).
 
 An application reads what its agent made with the agent's own token, by the
 paths the agent sees:
@@ -1197,8 +1240,9 @@ inspect or delete tenant B's agents. Per-tenant limits bound hosted agents
 
 ## Sandbox boundary and remaining production work
 
-The guest has ECMAScript built-ins plus `tools`, `text` and captured `console`
-methods. There is no `process`, `Bun`, `require`, filesystem, `fetch`, sockets,
+The guest has ECMAScript built-ins plus `tools`, `fs` (the file tools over its
+mounts, answered by the runtime), `text` and captured `console` methods. There is
+no `process`, `Bun`, `require`, host filesystem, `fetch`, sockets,
 workers, timers, shared memory or nested WebAssembly. Every module import is
 denied, including `node:`, `file:`, `data:` and HTTP URLs. `eval` and function
 constructors stay inside QuickJS; they never create host functions.

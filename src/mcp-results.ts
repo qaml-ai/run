@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./protocol.ts";
 import { compiles, validateDefinitions } from "./tool-policy.ts";
+import { validFileRef } from "./files.ts";
 
 /**
  * MCP tools and results, whichever way the server is reached: remote servers the runtime
@@ -10,10 +11,14 @@ export type McpResult = { content?: any[]; structuredContent?: unknown; isError?
 export type McpTool = { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; _meta?: Record<string, unknown> };
 export const META = "agent-runtime/";
 
-/** An MCP tool result as a content result: text and images pass through; other content is described in text. */
-export function contentResult(result: McpResult) {
+/**
+ * An MCP tool result as a content result: text and images pass through; other content is described in text.
+ * File references pass only from the runtime's own file tools (`files`): anyone else's are described too.
+ */
+export function contentResult(result: McpResult, files = false) {
   const content = (result.content ?? []).map((part: any) => {
     if (part?.type === "text") return { type: "text", text: String(part.text) };
+    if (files && validFileRef(part)) return part;
     if (part?.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") return { type: "image", data: part.data, mimeType: part.mimeType };
     if (part?.type === "resource" && typeof part.resource?.text === "string") return { type: "text", text: part.resource.text };
     if (part?.type === "resource_link") return { type: "text", text: `Resource: ${part.name ?? ""} ${part.uri ?? ""}`.trim() };

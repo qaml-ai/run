@@ -262,7 +262,8 @@ export async function runSandbox(options: {
     },
     call(nameHandle, jsonHandle) {
       const name = string(nameHandle, 80);
-      const args = JSON.parse(string(jsonHandle, SANDBOX_LIMITS.argumentBytes));
+      // fs.writeFile carries a file's bytes: up to a tool result's size, not a tool call's.
+      const args = JSON.parse(string(jsonHandle, name === "fs.writeFile" ? SANDBOX_LIMITS.resultBytes : SANDBOX_LIMITS.argumentBytes));
       // Also enforced by the main thread; failing here keeps a flood of calls from ever becoming messages.
       if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
       if (pending.size >= SANDBOX_LIMITS.concurrentTools) throw new Error("Too many concurrent tool calls");

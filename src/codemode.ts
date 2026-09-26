@@ -6,7 +6,7 @@ import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { frames } from "./sandbox-wire.ts";
 import { FILE_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
-import { HOST_CALLS } from "./sandbox-bootstrap.ts";
+import { FS_CALLS, HOST_CALLS } from "./sandbox-bootstrap.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
 
 /** How long a cancelled guest gets to unwind before its worker is terminated and replaced. */
@@ -433,7 +433,12 @@ export async function executeCode(options: {
         if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
         return JSON.stringify(await hostCall(options.bridge, params.name, params.args));
       }
-      const checked = validateToolCall(options.bridge.definitions, params.name, params.args);
+      // fs calls go to the runtime's file tools, whatever other tools are named; their arguments are checked there.
+      const fs = FS_CALLS.includes(params.name);
+      if (fs && !options.bridge.fs) throw new Error("fs is not available: this agent has no files");
+      if (fs && (!params.args || typeof params.args !== "object" || Array.isArray(params.args))) throw new Error("Invalid fs arguments");
+      const checked = fs ? { tool: { name: params.name }, args: params.args as Record<string, unknown>, bytes: Buffer.byteLength(jsonWithinLimit(params.args, SANDBOX_LIMITS.resultBytes, "fs arguments")) }
+        : validateToolCall(options.bridge.definitions, params.name, params.args);
       if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
       if (inflight >= SANDBOX_LIMITS.concurrentTools) throw new Error("Too many concurrent tool calls");
       transferred += checked.bytes;
@@ -441,7 +446,7 @@ export async function executeCode(options: {
       controller.signal.throwIfAborted();
       inflight++;
       try {
-        const result = await options.bridge.call(checked.tool.name, checked.args, controller.signal);
+        const result = fs ? await options.bridge.fs!(params.name.slice(3), checked.args, controller.signal) : await options.bridge.call(checked.tool.name, checked.args, controller.signal);
         controller.signal.throwIfAborted();
         const json = jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result");
         transferred += Buffer.byteLength(json);

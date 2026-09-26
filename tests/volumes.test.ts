@@ -23,6 +23,7 @@ import type { Db } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { applicationTools } from "../src/mcp-results.ts";
+import { pdfBytes, PNG } from "./file-fixtures.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const bytes = (text: string) => Buffer.from(text, "utf8");
@@ -457,4 +458,83 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   await assert.rejects(volume.info(), (error: AgentError) => error.status === 404);
   await assert.rejects(agent.execute('return await tools.ls({ path: "/reports" })'), /Unknown volume/);
   assert.equal(await fork.readText("data/large.bin").then(text => text.length > 0), true, "a fork outlives its source");
+});
+
+test("read shows an image or PDF natively when the model can view it, else a PDF's text, and says why not", async t => {
+  const f = await agents(t);
+  const call = (name: string, args: unknown, id: string) => ({ role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+  const script = [call("read", { path: "/workspace/chart.png" }, "call_png"), call("read", { path: "/workspace/report.pdf" }, "call_pdf"), { role: "assistant", content: "done" }];
+  const run = async (model: Partial<Model<Api>>) => {
+    const { bodies, model: base } = await fixtureModel(t, (_body, index) => script[(index - 1) % 3]);
+    f.setModel({ ...base, ...model } as Model<Api>);
+    const agent = await f.start();
+    const volume = VolumeService.workspaceOf(agent.session.id);
+    await f.volumes.put("default", volume, "/chart.png", PNG);
+    await f.volumes.put("default", volume, "/report.pdf", pdfBytes(["Revenue grew", "Costs fell"]));
+    assert.equal((await agent.prompt("Look at both")).reply, "done");
+    const messages = bodies.at(-1).messages;
+    const result = (id: string) => messages.find((message: any) => message.role === "tool" && message.tool_call_id === id).content;
+    const parts = messages.filter((message: any) => message.role === "user").flatMap((message: any) => Array.isArray(message.content) ? message.content : []);
+    return { png: result("call_png"), pdf: result("call_pdf"), parts };
+  };
+
+  // Images and documents (OpenRouter takes PDFs): both as native blocks after their tool results.
+  const both = await run({ provider: "openrouter", input: ["text", "image"] });
+  assert.match(both.png, /"width":2,"height":3/);
+  assert.match(both.pdf, /"pages":2/);
+  assert.ok(both.parts.some((part: any) => part.image_url?.url === `data:image/png;base64,${PNG.toString("base64")}`));
+  assert.ok(both.parts.some((part: any) => part.type === "file" && part.file.file_data.startsWith("data:application/pdf;base64,")));
+
+  // Images but no documents: the PDF comes back as its text, in windows.
+  const images = await run({ input: ["text", "image"] });
+  assert.ok(images.parts.some((part: any) => part.type === "image_url"));
+  assert.ok(!images.parts.some((part: any) => part.type === "file"));
+  const text = JSON.parse(images.pdf);
+  assert.deepEqual([text.pages, text.content, text.contentType], [2, "--- Page 1 ---\nRevenue grew\n\n--- Page 2 ---\nCosts fell", "application/pdf"]);
+
+  // Text only: the model is told it cannot view the image.
+  const textOnly = await run({ input: ["text"] });
+  assert.match(JSON.parse(textOnly.png).note, /cannot view images/);
+  assert.equal(JSON.parse(textOnly.pdf).pages, 2);
+  assert.ok(!textOnly.parts.some((part: any) => part.type === "image_url" || part.type === "file"));
+});
+
+test("js_exec's fs reads and writes bytes and text within the mounts, and write takes base64", async t => {
+  const f = await agents(t);
+  const writer = await f.start();
+  const workspace = VolumeService.workspaceOf(writer.session.id);
+  const value = JSON.parse((await writer.execute(`
+    // Bytes near fs's limit cross as base64 and come back as a Uint8Array.
+    const bytes = new Uint8Array(${700 * 1024});
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+    const written = await fs.writeFile("/workspace/bin/data.bin", bytes, { contentType: "application/x-test" });
+    const back = await fs.readFile("/workspace/bin/data.bin");
+    let same = back instanceof Uint8Array && back.length === bytes.length;
+    for (let i = 0; same && i < bytes.length; i++) same = back[i] === bytes[i];
+    await fs.writeFile("notes/a.txt", "héllo");
+    const text = await fs.readFile("/workspace/notes/a.txt", { encoding: "utf8" });
+    const odd = await fs.readFile("/workspace/notes/a.txt");
+    await tools.write({ path: "/workspace/pic.png", content: "${PNG.toString("base64")}", encoding: "base64" });
+    const pic = await tools.read({ path: "/workspace/pic.png", encoding: "base64" });
+    const removed = await fs.remove("/workspace/notes/a.txt");
+    return { written, same, text, odd: odd.length, stat: await fs.stat("/workspace/bin/data.bin"), dir: await fs.stat("/workspace/bin"), list: await fs.list("/workspace"), pic, removed };`)).output[0]);
+  assert.deepEqual([value.written.path, value.written.size, value.written.contentType], ["/workspace/bin/data.bin", 700 * 1024, "application/x-test"]);
+  assert.equal(value.same, true);
+  assert.equal(value.text, "héllo");
+  assert.equal(value.odd, 6, "bytes by default");
+  assert.deepEqual([value.stat.type, value.stat.size, value.stat.contentType], ["file", 700 * 1024, "application/x-test"]);
+  assert.deepEqual(value.dir, { path: "/workspace/bin", type: "directory" });
+  assert.deepEqual(value.list.entries.map((entry: any) => entry.name), ["bin", "pic.png"]);
+  assert.deepEqual([value.pic.contentType, Buffer.from(value.pic.data, "base64").equals(PNG)], ["image/png", true]);
+  assert.equal(value.removed.deleted, true);
+  const stored = await f.volumes.call(workspace, "default", "stat", { path: "/bin/data.bin" });
+  assert.equal(stored.by, writer.session.id);
+
+  // The same mount rules as the file tools: read-only mounts, nothing outside them, no way up.
+  const reader = await f.start([{ volumeId: workspace, path: "/shared", mode: "ro" }]);
+  assert.equal(JSON.parse((await reader.execute('return (await fs.readFile("/shared/bin/data.bin")).length')).output[0]), 700 * 1024);
+  for (const code of ['await fs.writeFile("/shared/x", "x")', 'await fs.remove("/shared/bin/data.bin")']) await assert.rejects(reader.execute(code), /mounted read-only/);
+  for (const path of ["/etc/passwd", "/shared/../../etc/passwd", "../outside", "/shared/bin/../../x"]) await assert.rejects(reader.execute(`return await fs.readFile(${JSON.stringify(path)})`), /not inside a mount|Invalid path/, path);
+  await assert.rejects(writer.execute(`await fs.writeFile("/workspace/big", new Uint8Array(${700 * 1024 + 1}))`), /at most/);
+  await assert.rejects(writer.execute('await fs.writeFile("/workspace/x", 42)'), /Uint8Array/);
 });

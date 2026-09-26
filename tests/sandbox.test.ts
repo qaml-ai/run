@@ -209,7 +209,7 @@ test("the guest reaches only ECMAScript built-ins and the codemode helpers: no p
     "Int8Array", "InternalError", "Iterator", "JSON", "Map", "Math", "NaN", "Number", "Object", "Promise", "Proxy", "RangeError",
     "ReferenceError", "Reflect", "RegExp", "Set", "String", "Symbol", "SyntaxError", "TypeError", "URIError", "Uint16Array", "Uint32Array",
     "Uint8Array", "Uint8ClampedArray", "WeakMap", "WeakRef", "WeakSet", "console", "decodeURI", "decodeURIComponent", "encodeURI",
-    "encodeURIComponent", "escape", "eval", "globalThis", "isFinite", "isNaN", "parseFloat", "parseInt", "text", "tools", "undefined", "unescape",
+    "encodeURIComponent", "escape", "eval", "fs", "globalThis", "isFinite", "isNaN", "parseFloat", "parseInt", "text", "tools", "undefined", "unescape",
   ]);
   assert.ok(Object.values(value.probes).every(type => type === "undefined"), JSON.stringify(value.probes));
   assert.ok(value.imports.every((outcome: string) => /imports are disabled/.test(outcome)), JSON.stringify(value.imports));

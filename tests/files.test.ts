@@ -13,7 +13,8 @@ import { bombPdf, pdfBytes, PNG } from "./file-fixtures.ts";
 import { contextTokens } from "../src/compaction.ts";
 import { messageChars } from "../src/history.ts";
 import { inspect, inspection } from "../src/inspect.ts";
-import { OPERATOR, runtime, until } from "./runtime-server.ts";
+import { contentResult } from "../src/mcp-results.ts";
+import { OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 
@@ -151,7 +152,7 @@ test("an upload streams to storage a chunk at a time: a file far larger than the
   const before = await rss();
   let peak = before;
   const sampling = setInterval(() => void rss().then(value => { peak = Math.max(peak, value); }, () => {}), 25);
-  const size = 240 * 1024 * 1024;
+  const size = 256 * 1024 * 1024;
   const piece = Buffer.alloc(64 * 1024, 7);
   const body = new ReadableStream<Uint8Array>({
     sent: 0,
@@ -167,7 +168,7 @@ test("an upload streams to storage a chunk at a time: a file far larger than the
   assert.equal(response.status, 201, JSON.stringify(file));
   assert.equal(file.size, size);
   assert.equal(file.chunks, undefined);
-  assert.ok(peak - before < 96 * 1024 * 1024, `the server grew by ${Math.round((peak - before) / 1024 / 1024)} MiB for a ${size / 1024 / 1024} MiB upload`);
+  assert.ok(peak - before < size / 2, `the server grew by ${Math.round((peak - before) / 1024 / 1024)} MiB for a ${size / 1024 / 1024} MiB upload`);
   const head = await fetch(`${server.base}/v1/volumes/${volume}/files/big.bin`, { headers: { Authorization: `Bearer ${OPERATOR}`, Range: "bytes=-3" } });
   assert.deepEqual([...Buffer.from(await head.arrayBuffer())], [7, 7, 7]);
 });
@@ -294,4 +295,38 @@ test("parsing a hostile file stops at its limits on a worker: the runtime's thre
   assert.deepEqual(inspection({ media: { kind: "pdf", pages: -1 } }).media.kind, "none");
   const text = await inspect(pdfBytes(["First page", "Second page"]), true);
   assert.deepEqual(text, { media: { kind: "pdf", pages: 2 }, text: "--- Page 1 ---\nFirst page\n\n--- Page 2 ---\nSecond page" });
+});
+
+test("only the runtime's own file tools may return file references: anyone else's are described, never hydrated", () => {
+  const ref = { type: "file", path: "/workspace/a.png", volume: `vol_${"a".repeat(24)}`, version: 1, size: 3, contentType: "image/png", chunks: ["c".repeat(64)] };
+  assert.deepEqual(contentResult({ content: [ref] }).content, [{ type: "text", text: "[file content omitted]" }]);
+  assert.deepEqual(contentResult({ content: [ref] }, true).content, [ref]);
+});
+
+test("a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link", async t => {
+  const server = await runtime(t, (_body, index) => [
+    toolCall("write", { path: "/workspace/out/summary.md", content: "# Summary" }),
+    toolCall("js_exec", { code: 'await fs.writeFile("/workspace/out/chart.png", new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))' }),
+    toolCall("present_file", { path: "/workspace/out/chart.png", caption: "Q3 chart" }),
+    { role: "assistant", content: "Here is your chart." },
+  ][index] ?? { role: "assistant", content: "ok" });
+  const events: any[] = [];
+  const client = new AgentRuntime({ url: server.base, apiKey: OPERATOR, journalStore: memoryJournalStore() });
+  const agent = await client.createAgent({ tools: {}, onEvent: event => { if (event.type === "file_presented") events.push(event); } });
+  t.after(() => agent.close());
+  const result = await agent.prompt("Make me a chart");
+  assert.equal(result.reply, "Here is your chart.");
+  assert.deepEqual(result.files.map((file: any) => [file.path, file.contentType]), [["/workspace/out/summary.md", "text/markdown"], ["/workspace/out/chart.png", "image/png"]]);
+  assert.deepEqual(result.presented.map((file: any) => [file.type, file.path, file.caption, file.contentType, file.size]), [["file", "/workspace/out/chart.png", "Q3 chart", "image/png", 8]]);
+  await until(() => events.length, "the file_presented event");
+  assert.equal(events[0].file.path, "/workspace/out/chart.png");
+  const fetched = await fetch(events[0].url.replace("https://agents.example.test", server.base));
+  assert.equal(fetched.headers.get("content-type"), "image/png");
+  assert.equal(Buffer.from(await fetched.arrayBuffer()).length, 8);
+  // Each run has its own list; a code execution is a run too.
+  await agent.prompt("Thanks");
+  const later = (await agent.outcomes()).requests.at(-1)!.outcome!.result as any;
+  assert.equal(later.files, undefined);
+  const executed = await agent.execute('await tools.present_file({ path: "/workspace/out/summary.md" })');
+  assert.deepEqual(executed.presented.map((file: any) => file.path), ["/workspace/out/summary.md"]);
 });

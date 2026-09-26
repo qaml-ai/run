@@ -1,20 +1,36 @@
 import { Worker } from "node:worker_threads";
 import type { ToolDefinition } from "./protocol.ts";
 import { HttpError } from "./http.ts";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { normalizePath, type FileEntry, type Mount, type VolumeService } from "./volumes.ts";
+import { essence, FILE_LIMITS, guessContentType, supportsDocuments, unseen, type FileRef } from "./files.ts";
+import { fileRef, inspectFile } from "./inspect.ts";
 
 /**
  * File tools over an agent's mounts: read, write, edit, ls, glob and grep. They
  * run in the runtime (never the sandbox), as direct tools and from js_exec. Paths
  * are mount paths (`/workspace/notes.md`); results stay small, so large files are
- * read in windows and searched without entering the model's context.
+ * read in windows and searched without entering the model's context. `read` shows
+ * an image or PDF to a model that can view it as a file reference (files.ts), which
+ * the agent host turns into a native block; a PDF's text is read in windows otherwise.
  */
 export const FILE_TOOL_LIMITS = Object.freeze({
   readBytes: 32 * 1024, maxReadBytes: 128 * 1024, editBytes: 1024 * 1024,
   globResults: 200, maxGlobResults: 1000,
   grepMatches: 50, maxGrepMatches: 200, grepFiles: 1000, grepFileBytes: 4 * 1024 * 1024, grepBytes: 32 * 1024 * 1024, grepLine: 240, grepMs: 10_000,
 });
-export type ToolContext = { tenant: string; agent: string; mounts: Mount[] };
+/** A file the agent wrote, as a run's outcome lists it. */
+export type WrittenFile = { path: string; version: number; size: number; contentType: string };
+/**
+ * `model` is the agent's current model, for what `read` can show it. `onWrite` hears of each file
+ * the agent writes, and `onPresent` of each it hands over with present_file (with its path in the
+ * volume); it throws to refuse one.
+ */
+export type ToolContext = {
+  tenant: string; agent: string; mounts: Mount[]; model?: () => Model<Api>;
+  onWrite?(file: WrittenFile): void;
+  onPresent?(file: FileRef & { caption?: string }, volumePath: string): void;
+};
 
 const path = (description: string) => ({ type: "string", description });
 export function volumeToolDefinitions(mounts: Mount[]): ToolDefinition[] {
@@ -25,11 +41,17 @@ export function volumeToolDefinitions(mounts: Mount[]): ToolDefinition[] {
   });
   const version = { type: "integer", minimum: 0, description: "Only succeed if the file is still at this version (from read or ls); 0 means it must not exist yet" };
   return [
-    tool("read", `Read a text file. Returns up to ${FILE_TOOL_LIMITS.readBytes} bytes from offset (at most ${FILE_TOOL_LIMITS.maxReadBytes}); nextOffset is set when more remains. Returns its version, for edit and write.`,
-      { path: path("File path"), offset: { type: "integer", minimum: 0 }, length: { type: "integer", minimum: 1, maximum: FILE_TOOL_LIMITS.maxReadBytes } }, ["path"]),
-    tool("write", "Create or replace a text file.", { path: path("File path"), content: { type: "string" }, version }, ["path", "content"]),
+    tool("read", `Read a file. Text comes back up to ${FILE_TOOL_LIMITS.readBytes} bytes from offset (at most ${FILE_TOOL_LIMITS.maxReadBytes}); nextOffset is set when more remains. Images and PDFs are shown to you when you can view them; otherwise a PDF's text comes back in windows (offset and length in characters). Other binary files need encoding: base64. Returns the file's version, for edit and write.`,
+      { path: path("File path"), offset: { type: "integer", minimum: 0 }, length: { type: "integer", minimum: 1, maximum: FILE_TOOL_LIMITS.maxReadBytes }, encoding: { type: "string", enum: ["utf8", "base64"], description: "base64: the raw bytes" } }, ["path"]),
+    tool("write", "Create or replace a file: text, or bytes as base64 with encoding: base64.", {
+      path: path("File path"), content: { type: "string" }, version,
+      encoding: { type: "string", enum: ["utf8", "base64"], description: "base64: content is the file's bytes, base64-encoded" },
+      contentType: { type: "string", description: "e.g. image/png; by default it is sniffed from the bytes and name" },
+    }, ["path", "content"]),
     tool("edit", "Replace an exact text span in a file (old must appear once unless replaceAll). Pass the version from your last read so an edit based on a stale read is rejected.",
       { path: path("File path"), old: { type: "string", minLength: 1 }, new: { type: "string" }, replaceAll: { type: "boolean" }, version }, ["path", "old", "new"]),
+    tool("present_file", "Hand a file you made to the user: it goes to them (or their application) with your reply, with a download link. Write the file first; call this once per file to share.",
+      { path: path("File path"), caption: { type: "string", maxLength: 1000, description: "A line about the file, shown with it" } }, ["path"]),
     tool("ls", "List a directory's entries with sizes and versions. / lists the mounts.", { path: path("Directory path") }, []),
     tool("glob", `Find files by glob (*, ?, **, {a,b}) relative to path; at most ${FILE_TOOL_LIMITS.maxGlobResults} results.`,
       { pattern: { type: "string" }, path: path("Directory to search"), limit: { type: "integer", minimum: 1, maximum: FILE_TOOL_LIMITS.maxGlobResults } }, ["pattern"]),
@@ -73,6 +95,7 @@ const binary = (data: Buffer) => data.subarray(0, 8000).includes(0);
 export async function runVolumeTool(volumes: VolumeService, context: ToolContext, name: string, args: Record<string, any>, signal: AbortSignal): Promise<unknown> {
   signal.throwIfAborted();
   const { tenant, mounts } = context;
+  if (name === "fs.list") name = "ls";
   const target = name === "ls" ? resolve(mounts, args.path) : resolve(mounts, args.path ?? (name === "grep" || name === "glob" ? undefined : ""));
   if (name === "ls" && !target) return { path: "/", entries: mounts.map(mount => ({ name: mount.path.slice(1), type: "directory", mode: mount.mode })) };
   if (!target) throw new Error("/ holds only the mounts; name a path inside one");
@@ -87,19 +110,42 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
   if (name === "read") {
     const entry = await file();
     const offset = args.offset ?? 0;
+    // A file from before types were recorded is labeled by its name here, rather than a chunk read to sniff it.
+    const contentType = entry.contentType ?? guessContentType(target.path);
+    const about = { path: shown, version: entry.version, size: entry.size, contentType };
+    const type = essence(contentType);
+    if (args.encoding !== "base64" && (type.startsWith("image/") || type === "application/pdf")) {
+      const model = context.model?.();
+      // Shown natively: the result carries a reference the agent host turns into the image or document.
+      if (model && (type !== "application/pdf" || supportsDocuments(model)) && !offset) {
+        const ref = await fileRef(volumes, tenant, target.mount.volumeId, shown, { ...entry, contentType });
+        const why = unseen(ref, model);
+        if (!why) return { ...about, ...(ref.media?.kind === "pdf" ? { pages: ref.media.pages } : ref.media?.kind === "image" ? { width: ref.media.width, height: ref.media.height } : {}), file: ref };
+        if (type !== "application/pdf" || ref.media?.kind === "none") return { ...about, note: `Not shown: ${why}` };
+      }
+      if (type === "application/pdf") {
+        const found = await inspectFile(volumes, tenant, entry, contentType, true);
+        if (found?.media.kind !== "pdf" || found.text === undefined) return { ...about, note: `This PDF ${found?.media.kind === "none" ? found.media.reason : "could not be read"}` };
+        const content = found.text.slice(offset, offset + (args.length ?? FILE_TOOL_LIMITS.readBytes));
+        const next = offset + content.length;
+        return { ...about, pages: found.media.pages, offset, content, ...(next < found.text.length ? { nextOffset: next } : {}), ...(found.truncated && next >= found.text.length ? { truncated: "Only the start of this PDF's text is available" } : {}) };
+      }
+      if (!model || !model.input.includes("image")) return { ...about, note: "An image; this model cannot view images" };
+    }
     if (offset > entry.size) throw new Error(`offset ${offset} is past the end of ${shown} (${entry.size} bytes)`);
     const data = await volumes.readRange(tenant, entry, offset, args.length ?? FILE_TOOL_LIMITS.readBytes);
-    if (binary(data)) return { path: shown, version: entry.version, size: entry.size, binary: true, note: "Binary file; its content is not shown" };
+    if (args.encoding === "base64") return { ...about, offset, data: data.toString("base64"), ...(offset + data.length < entry.size ? { nextOffset: offset + data.length } : {}) };
+    if (binary(data)) return { ...about, binary: true, note: "Binary file; read it with encoding: base64 for its bytes" };
     // A window may end inside a UTF-8 sequence: stop before it, and continue from there.
     const content = decoder().decode(data, { stream: offset + data.length < entry.size });
     const next = offset + Buffer.byteLength(content);
-    return { path: shown, version: entry.version, size: entry.size, offset, content, ...(next < entry.size ? { nextOffset: next } : {}) };
+    return { ...about, offset, content, ...(next < entry.size ? { nextOffset: next } : {}) };
   }
   if (name === "write" || name === "edit") {
     writable(target);
     let content: string;
     let expected = args.version;
-    let contentType: string | undefined;
+    let contentType: string | undefined = args.contentType;
     if (name === "write") content = args.content;
     else {
       const entry = await file();
@@ -116,10 +162,47 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
       expected = entry.version;
       contentType = entry.contentType;
     }
+    if (args.encoding === "base64" && !/^[A-Za-z0-9+/]*={0,2}$/.test(content)) throw new Error("content is not base64");
     signal.throwIfAborted();
-    const committed = await volumes.put(tenant, target.mount.volumeId, target.path, Buffer.from(content, "utf8"), { contentType, ifMatch: expected, by: context.agent })
+    const committed = await volumes.put(tenant, target.mount.volumeId, target.path, Buffer.from(content, args.encoding === "base64" ? "base64" : "utf8"), { contentType, ifMatch: expected, by: context.agent })
       .catch(error => conflict(error, shown, args.version ?? expected, name === "write" ? "Write" : "Edit"));
-    return { path: shown, version: committed.version, size: committed.size, contentType: committed.contentType };
+    const written = { path: shown, version: committed.version, size: committed.size, contentType: committed.contentType! };
+    context.onWrite?.(written);
+    return written;
+  }
+  // js_exec's fs: whole files as bytes (base64 across the sandbox boundary) or text, within the same mount rules.
+  if (name === "fs.readFile") {
+    const entry = await file();
+    if (entry.size > FILE_LIMITS.scriptFileBytes) throw new Error(`${shown} is larger than ${FILE_LIMITS.scriptFileBytes} bytes; read it in windows with tools.read and offset`);
+    const data = await volumes.readRange(tenant, entry, 0, entry.size);
+    return ["utf8", "utf-8"].includes(args.encoding) ? { text: decoder().decode(data) } : { data: data.toString("base64") };
+  }
+  if (name === "fs.writeFile") {
+    writable(target);
+    const data = typeof args.text === "string" ? Buffer.from(args.text, "utf8") : typeof args.data === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(args.data) ? Buffer.from(args.data, "base64") : undefined;
+    if (!data) throw new Error("fs.writeFile takes a string or a Uint8Array");
+    if (data.length > FILE_LIMITS.scriptFileBytes) throw new Error(`fs.writeFile writes at most ${FILE_LIMITS.scriptFileBytes} bytes at a time`);
+    signal.throwIfAborted();
+    const { path: _path, chunks: _chunks, by: _by, ...entry } = await volumes.put(tenant, target.mount.volumeId, target.path, data, { contentType: args.contentType, by: context.agent });
+    context.onWrite?.({ path: shown, version: entry.version, size: entry.size, contentType: entry.contentType! });
+    return { path: shown, ...entry };
+  }
+  if (name === "fs.stat") {
+    const stat = await call("stat").catch(error => { throw (error as HttpError).status === 404 ? new Error(`${shown} does not exist`) : error; });
+    if (stat.type !== "file") return { path: shown, type: "directory" };
+    return { path: shown, type: "file", size: stat.size, version: stat.version, updatedAt: stat.updatedAt, contentType: await volumes.contentType(tenant, target.path, stat) };
+  }
+  if (name === "fs.remove") {
+    writable(target);
+    const removed = await call("remove", { by: context.agent }).catch(error => { throw (error as HttpError).status === 404 ? new Error(`${shown} does not exist`) : error; });
+    return { path: shown, deleted: true, seq: removed.seq };
+  }
+  if (name === "present_file") {
+    const entry = await file();
+    const contentType = await volumes.contentType(tenant, target.path, entry);
+    const presented = { type: "file" as const, path: shown, volume: target.mount.volumeId, version: entry.version, size: entry.size, contentType, chunks: entry.chunks, ...(typeof args.caption === "string" ? { caption: args.caption } : {}) };
+    context.onPresent?.(presented, target.path);
+    return { path: shown, version: entry.version, size: entry.size, contentType, presented: true };
   }
   if (name === "ls") {
     const listing = await call("ls").catch(error => { throw (error as HttpError).status === 404 ? new Error((error as Error).message.replace(target.path, shown)) : error; });

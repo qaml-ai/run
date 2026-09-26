@@ -13,6 +13,8 @@ export interface ToolBridge {
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes (base64), for a model request that shows the file. */
   file?(ref: unknown): Promise<string>;
+  /** js_exec's `fs` (`op` is readFile, writeFile, stat, list or remove), answered by the runtime's file tools over the agent's mounts. */
+  fs?(op: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 export interface AgentConfig {
   id: string;

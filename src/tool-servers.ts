@@ -2,6 +2,7 @@ import type { ToolDefinition } from "./protocol.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { compiles, validateDefinitions } from "./tool-policy.ts";
 import { CATALOG_LIMITS } from "./limits.ts";
+import { validFileRef } from "./files.ts";
 
 /**
  * A tool call as a server gets it; `toolCallId` is the model's id for the call, `origin` where the
@@ -23,6 +24,8 @@ export interface ToolServer {
    * known, unless `refresh` lists remote sources now. Without it, the server shows as one source.
    */
   sources?(options: { refresh?: boolean }): Promise<ToolSourceView[]>;
+  /** Its results may carry file references (files.ts): only the runtime's own file tools, never a remote or application server. */
+  returnsFiles?: boolean;
 }
 
 /** One source of an agent's tools and what it offers, as callers see it. */
@@ -50,6 +53,19 @@ export function jsonResult(value: unknown): McpResult {
 /** A server for tools the runtime answers with plain values. */
 export function valueServer(tools: ToolDefinition[], run: (call: ToolCall) => Promise<unknown>): ToolServer {
   return { tools: () => tools, call: async call => jsonResult(await run(call)) };
+}
+
+/** The runtime's file tools: a value with a `file` reference (an image or PDF `read` shows) keeps it as a block of its own. */
+export function fileServer(tools: ToolDefinition[], run: (call: ToolCall) => Promise<unknown>): ToolServer {
+  return {
+    tools: () => tools, returnsFiles: true,
+    call: async call => {
+      const value = await run(call) as { file?: unknown } | undefined;
+      if (!validFileRef(value?.file)) return jsonResult(value);
+      const { file, ...rest } = value;
+      return { content: [{ type: "text", text: JSON.stringify(rest) }, file], structuredContent: rest };
+    },
+  };
 }
 
 const BUDGET = { count: CATALOG_LIMITS.tools, bytes: CATALOG_LIMITS.bytes };

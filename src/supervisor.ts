@@ -118,6 +118,7 @@ export class AgentSupervisor {
       if (method === "spend-limit") return (await handle.bridge.spendLimit?.()) ?? null;
       if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
+      if (method === "fs") return this.dispatchFs(handle, params);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
@@ -132,6 +133,15 @@ export class AgentSupervisor {
     const query = searchQuery(params);
     if (handle.bridge.search) return handle.bridge.search(query);
     return searchTools(handle.bridge.definitions.filter(tool => tool.exposure !== "direct"), query);
+  }
+
+  /** An agent's js_exec `fs` call: cancelled with its tool calls, and bounded like a tool result. */
+  private async dispatchFs(handle: Handle, params: { op: string; args: Record<string, unknown> }) {
+    if (!handle.bridge.fs) throw new Error("fs is not available: this agent has no files");
+    const controller = new AbortController();
+    handle.calls.add(controller);
+    try { return JSON.parse(jsonWithinLimit(await handle.bridge.fs(params.op, params.args, controller.signal), SANDBOX_LIMITS.resultBytes, "fs result")); }
+    finally { handle.calls.delete(controller); }
   }
 
   private file(handle: Handle, ref: unknown) {
@@ -161,6 +171,7 @@ export class AgentSupervisor {
       spendLimit: async () => handle.bridge.spendLimit?.(),
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),
       file: ref => this.file(handle, structuredClone(ref)),
+      fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
     });
     this.agents.set(id, handle);
     this.starting.delete(id);

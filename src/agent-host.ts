@@ -33,6 +33,8 @@ export interface HostIO {
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes as base64, read by the supervisor: the agent holds no storage access. */
   file(ref: FileRef): Promise<string>;
+  /** js_exec's `fs`, answered by the supervisor over the agent's mounts. */
+  fs(op: string, args: Record<string, unknown>): Promise<unknown>;
 }
 
 /**
@@ -173,6 +175,7 @@ export function createAgentHost(io: HostIO) {
         return config.tools.find(tool => tool.name === name)?.resultFormat === "content" ? scriptValue(value) : value;
       },
       ...(io.search ? { search: io.search } : {}),
+      fs: (op, args) => { signal.throwIfAborted(); return io.fs(op, args); },
     };
   }
 
@@ -343,7 +346,7 @@ export function createAgentHost(io: HostIO) {
       const directTools = directAgentTools(config.tools);
       const jsExec: AgentTool = {
         name: "js_exec", label: "JavaScript",
-        description: "Execute JavaScript or TypeScript in a fresh QuickJS/WebAssembly sandbox. Only approved tools and output helpers are available: no filesystem, network, imports, process, Node/Bun APIs, or timers. Use await tools.search(query) (ranked matches), await tools.namespaces(), await tools.describe(name), and await tools.<name>(args). Use text(value), console.log(value), or return to emit output. Calls can be composed with Promise.all. State does not survive between invocations.",
+        description: "Execute JavaScript or TypeScript in a fresh QuickJS/WebAssembly sandbox. Only approved tools and output helpers are available: no network, imports, process, Node/Bun APIs, or timers. Use await tools.search(query) (ranked matches), await tools.namespaces(), await tools.describe(name), and await tools.<name>(args). Files in your mounts: await fs.readFile(path, { encoding: 'utf8' }?) (a Uint8Array without it), fs.writeFile(path, string | Uint8Array, { contentType }?), fs.stat(path), fs.list(path), fs.remove(path). Use text(value), console.log(value), or return to emit output. Calls can be composed with Promise.all. State does not survive between invocations.",
         parameters: {
           type: "object", required: ["code"],
           properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },

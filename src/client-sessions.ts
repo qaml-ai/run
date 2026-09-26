@@ -28,11 +28,11 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity } from "./identity.ts";
 import { senderInput } from "./sender.ts";
-import { compose, defaultExposure, describeSources, valueServer, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { compose, defaultExposure, describeSources, fileServer, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
-import { resolve as resolveMount } from "./volume-tools.ts";
+import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -102,6 +102,8 @@ type Session = {
   platformKey?: boolean;
   /** Since when a run's active time has not been reported (`onActive`). */
   activeSince?: number;
+  /** What the running run wrote and handed over with present_file, for its outcome. */
+  outputs?: { files: Map<string, WrittenFile>; presented: (FileRef & { caption?: string })[] };
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -129,6 +131,8 @@ const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "history", "steer", 
 const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
 const MAX_BUFFERED_EVENTS = 512;
+/** Files written in one run that its outcome lists. */
+const OUTPUT_FILES = 100;
 /** How long a tool call waits for an application to reconnect before failing as not run. */
 const RECONNECT_GRACE_MS = 3_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -504,6 +508,7 @@ export class ClientSessions {
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...(context ? { toolCallId: context.toolCallId } : {}) }),
         file: ref => this.fileData(session, ref),
+        fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
@@ -532,13 +537,38 @@ export class ClientSessions {
     const feature = await this.options.hooks?.server?.(agent);
     const volumes = this.options.volumes;
     const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
-      ({ tools: () => server.tools(), call: call => server.call(call), sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
+      ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
     return [
       ...feature ? [view("channel", feature)] : [],
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
-      ...volumes && header.mounts?.length ? [view("files", valueServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool({ tenant, agent: header.id, mounts: header.mounts ?? [] }, name, args, signal)))] : [],
+      ...volumes && header.mounts?.length ? [view("files", fileServer(volumes.definitions(header.mounts, []), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
       ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}) }, sources)] : [],
     ];
+  }
+
+  /**
+   * What the agent's file tools act as: its tenant, mounts and current model. A run's writes and
+   * presented files are collected for its outcome; a presented file is also an event on the
+   * agent's stream, with a signed download link, as soon as it is presented.
+   */
+  private toolContext(session: Session): ToolContext {
+    const header = session.header;
+    return {
+      tenant: header.tenant, agent: header.id, mounts: header.mounts ?? [], model: () => session.header.config.model,
+      onWrite: file => {
+        const files = session.outputs?.files;
+        if (files && (files.has(file.path) || files.size < OUTPUT_FILES)) files.set(file.path, file);
+      },
+      onPresent: (file, volumePath) => {
+        const outputs = session.outputs;
+        if (!outputs) throw new Error("Files can be presented only during a run");
+        if (outputs.presented.length >= FILE_LIMITS.attachments) throw new Error(`At most ${FILE_LIMITS.attachments} files can be presented in a run`);
+        outputs.presented.push(file);
+        const request = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
+        const link = this.options.links?.sign({ tenant: header.tenant, volume: file.volume, path: volumePath, method: "GET" });
+        this.publish(session, { type: "event", requestId: request?.id ?? "", event: { type: "file_presented", file, ...(link ? { url: link.url, expiresAt: link.expiresAt } : {}) } });
+      },
+    };
   }
 
   /** The agent's tools from its servers (see `servers`). Records the route, and the servers for `toolSources`. */
@@ -574,7 +604,7 @@ export class ClientSessions {
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
     const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
     await this.beforeEffect(session);
-    return contentResult(await server.call({ ...call, ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}) }));
+    return contentResult(await server.call({ ...call, ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}) }), server.returnsFiles);
   }
 
   /** The id of the agent `create` makes for a tenant's idempotency key. */
@@ -1083,6 +1113,14 @@ export class ClientSessions {
     return refs;
   }
 
+  /** js_exec's `fs`: the file tools over the agent's mounts, durable before any effect like any other tool call. */
+  private async fsCall(session: Session, op: string, args: Record<string, unknown>, signal: AbortSignal) {
+    if (!this.options.volumes || !session.header.mounts?.length) throw new Error("This agent has no volumes mounted");
+    if (!["readFile", "writeFile", "stat", "list", "remove"].includes(op)) throw new Error("Unknown fs call");
+    await this.beforeEffect(session);
+    return this.options.volumes.tool(this.toolContext(session), `fs.${op}`, args, signal);
+  }
+
   /** A referenced file's bytes for the agent's model request, as base64 (only sizes a model can be shown). */
   private async fileData(session: Session, ref: unknown) {
     if (!validFileRef(ref) || ref.size > Math.max(FILE_LIMITS.imageBytes, FILE_LIMITS.documentBytes) || !this.options.volumes) throw new Error("Invalid file reference");
@@ -1187,10 +1225,19 @@ export class ClientSessions {
         else await this.commit(session, true);
         this.hook("runStarted", session, record);
       }
-      if (RUN_METHODS.includes(record.method)) session.activeSince = Date.now();
+      if (RUN_METHODS.includes(record.method)) {
+        session.activeSince = Date.now();
+        session.outputs = { files: new Map(), presented: [] };
+      }
       value = session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
+      // The files the run wrote and presented, so an application can fetch them (agent.files).
+      const outputs = session.outputs;
+      if (RUN_METHODS.includes(record.method) && outputs && (outputs.files.size || outputs.presented.length) && value.result && typeof value.result === "object") {
+        value = { result: { ...value.result, ...(outputs.files.size ? { files: [...outputs.files.values()] } : {}), ...(outputs.presented.length ? { presented: outputs.presented } : {}) } };
+      }
     }
     catch (error) { value = { error: errorText(error) }; }
+    if (RUN_METHODS.includes(record.method)) session.outputs = undefined;
     this.reportActive(session, false);
     session.beginning = undefined;
     if (this.closed || session.fault || session.requests.get(record.id)?.state !== "running") return;

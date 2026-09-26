@@ -36,8 +36,8 @@ export const FILE_LIMITS = Object.freeze({
   linkSeconds: 15 * 60, maxLinkSeconds: 24 * 60 * 60,
   /** An upload's whole request may take this long (other requests get 30 s). */
   uploadMs: 15 * 60_000,
-  /** One js_exec fs.readFile or fs.writeFile: base64 of this fits a 1 MiB tool result. */
-  scriptFileBytes: 768 * 1024,
+  /** One js_exec fs.readFile or fs.writeFile: base64 of this, with its path, fits a 1 MiB tool result. */
+  scriptFileBytes: 700 * 1024,
 });
 
 /** Transient provider failures (overload, rate limit, 5xx, network) are retried with backoff. */
