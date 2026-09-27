@@ -89,8 +89,6 @@ type Session = {
   watchers: Set<ServerResponse>;
   /** Long polls waiting for the next event. */
   polls: Set<() => void>;
-  /** When a poll (`/events?poll=1`) last read the stream: a poller between polls keeps the session loaded, as a watcher does. */
-  polledAt?: number;
   /** The assistant message streaming now, as its latest message_update carried it. */
   partial?: unknown;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
@@ -166,12 +164,12 @@ const resumeId = (suspension: string) => `resume_${hash(suspension).slice(0, 40)
 const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
 const MAX_BUFFERED_EVENTS = 512;
-/** Read-only subscribers one agent's stream may have at once (by default). */
+/** Read-only subscribers (watchers and waiting polls) one agent's stream may have at once, by default; and a tenant's and a node's. */
 const MAX_WATCHERS = 32;
+const MAX_TENANT_WATCHERS = 1024;
+const MAX_NODE_WATCHERS = 4096;
 /** A long poll waits at most this long for an event. */
 const MAX_POLL_WAIT_MS = 25_000;
-/** A poller that polled this recently counts as subscribed: its agent's session stays loaded, so its cursor stays valid. */
-const POLL_LEASE_MS = 60_000;
 /** Files written in one run that its outcome lists. */
 const OUTPUT_FILES = 100;
 /** How long a tool call waits for an application to reconnect before failing as not run. */
@@ -246,8 +244,8 @@ const visible = ({ params: _params, ...record }: RequestRecord): RequestRecord =
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
-  /** Read-only subscribers one agent's event stream may have at once (default 32). */
-  maxWatchers?: number;
+  /** Read-only subscribers (watchers and waiting polls) one agent's event stream may have at once (default 32), a tenant's agents on this node (1024), and this node (4096). */
+  maxWatchers?: number; maxTenantWatchers?: number; maxNodeWatchers?: number;
   /** Headers and the tenant index. */
   db: Db;
   /** Single-host shorthand for `storage: fileStorage(root)`, where journals are kept. */
@@ -601,6 +599,30 @@ export class ClientSessions {
     return snapshot;
   }
 
+  /**
+   * Take a read-only subscriber's place (a watcher's, or a waiting poll's), within the agent's, its tenant's and
+   * this node's bounds (429 past them); the function returned gives it back, once.
+   */
+  private hold(session: Session) {
+    const tenant = session.header.tenant;
+    const reject = (scope: string) => new HttpError(429, `${scope} has too many event stream subscribers; retry later`);
+    if (session.watchers.size + session.polls.size >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw reject("This agent");
+    if ((this.tenantWatching.get(tenant) ?? 0) >= (this.options.maxTenantWatchers ?? MAX_TENANT_WATCHERS)) throw reject("This tenant");
+    if (this.watching >= (this.options.maxNodeWatchers ?? MAX_NODE_WATCHERS)) throw reject("This node");
+    this.watching++;
+    this.tenantWatching.set(tenant, (this.tenantWatching.get(tenant) ?? 0) + 1);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      this.watching--;
+      const left = this.tenantWatching.get(tenant)! - 1;
+      if (left) this.tenantWatching.set(tenant, left); else this.tenantWatching.delete(tenant);
+    };
+  }
+  private watching = 0;
+  private readonly tenantWatching = new Map<string, number>();
+
   /** Every open event stream of the agent: the application's connection and its watchers. */
   private streams(session: Session) {
     return session.response ? [session.response, ...session.watchers] : [...session.watchers];
@@ -674,13 +696,13 @@ export class ClientSessions {
     const deltas = c.req.query("deltas") === "1";
     const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), deltas);
     const frames = this.replayed(session, events, deltas);
-    if (mode === "watch" && session.watchers.size >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw new HttpError(429, "This agent's event stream has too many subscribers; retry later");
+    const release = mode === "watch" ? this.hold(session) : undefined;
     const res = c.env.outgoing;
     if (deltas) deltaStreams.add(res);
     let ready: Record<string, unknown> = { version: 4, agentId: session.header.id, ...(deltas ? { deltas: true } : {}) };
     if (mode === "watch") {
       session.watchers.add(res);
-      res.on("close", () => session.watchers.delete(res));
+      res.on("close", () => { session.watchers.delete(res); release!(); });
       ready = { ...ready, watch: true };
     } else {
       session.response?.end();
@@ -716,16 +738,16 @@ export class ClientSessions {
     const wait = Number(c.req.query("wait") ?? 0);
     if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
     let read = this.replay(session, raw, deltas);
-    session.polledAt = Date.now();
     if (!read.snapshot && !read.events.length && wait > 0 && !this.closed && !session.fault) {
+      // A waiting poll holds a subscriber's place, as a watcher does.
+      const release = this.hold(session);
       await new Promise<void>(resolve => {
-        const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); resolve(); };
+        const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); release(); resolve(); };
         const timer = setTimeout(done, Math.min(wait * 1000, MAX_POLL_WAIT_MS));
         session.polls.add(done);
         c.env.outgoing.once("close", done);
       });
       read = this.replay(session, raw, deltas);
-      session.polledAt = Date.now();
     }
     const { cursor, snapshot, events } = read;
     // The frames' JSON as it is, not parsed and written again.
@@ -2231,8 +2253,10 @@ export class ClientSessions {
       if (session.activeSince !== undefined && now - session.activeSince >= ACTIVE_REPORT_MS) this.reportActive(session, true, now);
       if (this.busy(session) || now - session.lastActive < idleMs) continue;
       if (this.supervisor.agents.has(id)) void this.supervisor.stop(id).catch(() => {});
-      else if (!session.response && !session.watchers.size && !(session.polledAt && now - session.polledAt < POLL_LEASE_MS) && !session.fault) {
-        // Nothing is connected or running: everything needed later is in storage.
+      else if (!session.response && !session.fault) {
+        // Nothing is running and no application is connected: everything needed later is in storage. Watchers do
+        // not keep it here; their streams end, and a watcher that comes back gets a replay gap (or with deltas, a snapshot).
+        this.endStreams(session);
         void this.unload(session);
       }
     }

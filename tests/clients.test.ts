@@ -23,11 +23,11 @@ import { attachSilently, until, watchEvents } from "./runtime-server.ts";
 
 const token = "fixture-operator-secret-32-characters";
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number; ttlMs?: number; maxWatchers?: number } = {}) {
+async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number; ttlMs?: number; maxWatchers?: number; maxNodeWatchers?: number; maxTenantWatchers?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), "camelai-sse-test-"));
   const { db } = await testDatabase();
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, maxAgents: options.maxAgents });
-  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs, maxWatchers: options.maxWatchers });
+  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs, maxWatchers: options.maxWatchers, maxNodeWatchers: options.maxNodeWatchers, maxTenantWatchers: options.maxTenantWatchers });
   let model = configuredModel();
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
@@ -268,6 +268,9 @@ test("watchers each get the whole stream beside the application's connection, ne
   const poll = (cursor: number, query = "") => fetch(`${events}?poll=1${query}`, { headers: { ...auth, "Last-Event-ID": String(cursor) } }).then(async response => ({ status: response.status, json: await response.json() as any }));
   assert.deepEqual((await poll(last)).json, { cursor: last, events: [] });
   assert.equal((await poll(middle)).json.events.length, ids(second).filter(id => id! > middle).length);
+  // A waiting poll takes a subscriber's place: the resumed watcher gives its up.
+  resumed.close();
+  await sleep(100);
   const waiting = poll(last, "&wait=10");
   await sleep(100);
   await agent.execute("return 3", { idempotencyKey: "three" });
@@ -277,6 +280,45 @@ test("watchers each get the whole stream beside the application's connection, ne
   assert.equal((await poll(1)).status, 409, "a cursor behind the buffer is a replay gap");
   assert.equal((await watchEvents(t, events, auth, { cursor: 1 })).status, 409);
   assert.equal(executions, 2);
+});
+
+test("waiting polls count as subscribers, and subscribers are bounded per node and per tenant as well as per agent", async t => {
+  const f = await fixture(t, { maxWatchers: 2, maxTenantWatchers: 3 });
+  const [a, b] = [await f.start(), await f.start()];
+  const events = (agent: AgentClient) => `${f.url}/clients/${agent.session.id}/events`;
+  const auth = (agent: AgentClient) => ({ Authorization: `Bearer ${agent.session.token}` });
+  const cursor = async (agent: AgentClient) => String((await (await fetch(`${f.url}/clients/${agent.session.id}/state`, { headers: auth(agent) })).json() as any).cursor);
+  const aborts = new AbortController();
+  t.after(() => aborts.abort());
+  const waiting = (agent: AgentClient) => { void fetch(`${events(agent)}?poll=1&wait=20`, { headers: { ...auth(agent), "Last-Event-ID": lastA }, signal: aborts.signal }).catch(() => {}); };
+  const lastA = await cursor(a);
+  waiting(a); waiting(a);
+  await sleep(200);
+  assert.equal((await watchEvents(t, events(a), auth(a))).status, 429, "two polls waiting fill the agent's subscribers");
+  assert.equal((await fetch(`${events(a)}?poll=1&wait=20`, { headers: { ...auth(a), "Last-Event-ID": lastA } })).status, 429);
+  assert.equal((await fetch(`${events(a)}?poll=1`, { headers: { ...auth(a), "Last-Event-ID": lastA } })).status, 200, "a poll that does not wait holds nothing");
+  assert.equal((await watchEvents(t, events(b), auth(b))).status, 200);
+  assert.equal((await watchEvents(t, events(b), auth(b))).status, 429, "the tenant has 3");
+  aborts.abort();
+  await until(async () => (await watchEvents(t, events(b), auth(b))).status === 200, "the polls' places to free up");
+
+  const node = await fixture(t, { maxNodeWatchers: 1 });
+  const c = await node.start();
+  assert.equal((await watchEvents(t, `${node.url}/clients/${c.session.id}/events`, { Authorization: `Bearer ${c.session.token}` })).status, 200);
+  assert.equal((await watchEvents(t, `${node.url}/clients/${c.session.id}/events`, { Authorization: `Bearer ${c.session.token}` })).status, 429, "the node has 1");
+});
+
+test("a session with only watchers unloads once idle, ending their streams; they come back to a replay gap", async t => {
+  const f = await fixture(t, { idleMs: 1000 });
+  const agent = await f.start();
+  await agent.execute("return 1");
+  await agent.close();
+  const auth = { Authorization: `Bearer ${agent.session.token}` };
+  const watcher = await watchEvents(t, `${f.url}/clients/${agent.session.id}/events`, auth);
+  await until(() => watcher.ended, "the idle session's watcher to be ended", 10_000);
+  assert.equal(f.sessions.sessions.has(agent.session.id), false);
+  const last = watcher.frames.filter(frame => frame.id).at(-1)!.id!;
+  assert.equal((await watchEvents(t, `${f.url}/clients/${agent.session.id}/events`, auth, { cursor: last })).status, 409);
 });
 
 test("a call with no application connected fails as not run; one the application never answers times out as unknown", async t => {

@@ -361,16 +361,19 @@ conversation) opens a watcher instead: `GET /clients/:id/events?watch=1`. A
 watcher gets every event from its own `Last-Event-ID` on, with the same replay
 window and `409 REPLAY_GAP`; its `ready` frame says `watch: true` and names no
 `connection`. Watchers never replace the application's connection or each other,
-and watching does not keep the agent's process running. An agent takes at most
-32 watchers at once (`429` past that). Any node serves them: a node that does
-not own the agent forwards the stream to the one that does.
+and watching keeps neither the agent's process running nor its session loaded:
+once the agent has been idle (no events, nothing running, no application
+connected) for the idle timeout, its watchers' streams end, and one that comes
+back gets `409 REPLAY_GAP` (with deltas, a snapshot). Watchers and waiting polls
+are bounded: 32 per agent, 1024 per tenant and 4096 per node (`429` past them).
+Any node serves them: a node that does not own the agent forwards the stream to
+the one that does.
 
 A client that cannot hold a stream open polls instead:
 `GET /clients/:id/events?poll=1&wait=25` with `Last-Event-ID` answers
 `{ cursor, events: [{ id, data }] }`: the events after the cursor, and the
 cursor to send next. With nothing buffered it waits up to `wait` seconds (at
-most 25) for the next event. A client that polls at least once a minute keeps
-its cursor valid, as a watcher does.
+most 25) for the next event, holding a subscriber's place while it waits.
 
 ### Deltas and snapshots
 
