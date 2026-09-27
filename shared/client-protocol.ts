@@ -32,11 +32,11 @@ export type ClientEvent =
  * The agent's running turn as a subscriber that saw every event since the turn began would have it: the messages its run
  * finished (every `message_end`, in order) and the assistant message still streaming. `turn` is null when no turn runs.
  * `truncated`: the turn's messages were too large to send; read them from history. `start` is the index its first message
- * has in the agent's history.
+ * has in the agent's history, and `count` how many it finished (sent or not): the next takes `start + count`.
  */
 export type TurnSnapshot = {
   type: "snapshot"; cursor: number; requestId: string | null;
-  turn: { start: number | null; messages: unknown[]; partial: unknown | null; truncated?: true } | null;
+  turn: { start: number | null; count: number; messages: unknown[]; partial: unknown | null; truncated?: true } | null;
 };
 export type SessionState = { cursor: number; requests: RequestRecord[] };
 /** A tool an application offers its agent; shared by the SDKs and the runtime. */

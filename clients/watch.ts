@@ -194,7 +194,8 @@ export function watchAgent(options: WatchOptions): Watcher {
       json = new Map();
       state.progress = new Map();
       if (turn?.start !== null && turn?.start !== undefined) {
-        next = turn.start + turn.messages.length;
+        // What the run finished: all of it, unless it was too large to send (then from history, read below).
+        next = turn.start + (turn.count ?? turn.messages.length);
         for (const [offset, message] of turn.messages.entries()) messages.set(turn.start + offset, message);
       } else next = undefined;
       await newest();
@@ -225,6 +226,10 @@ export function watchAgent(options: WatchOptions): Watcher {
       // A failed response is taken back before the model is asked again: it gives up its place.
       case "auto_retry_start":
         if (next !== undefined && (messages.get(next - 1) as any)?.stopReason === "error") messages.delete(--next);
+        break;
+      // A message too large for the stream still takes its place; the newest page of history has it.
+      case "event_omitted":
+        if (event.was === "message_end" && next !== undefined) { next++; void newest().then(changed, report); }
         break;
       case "tool_execution_update": state.progress.set(event.toolCallId, event.partialResult); break;
       case "tool_execution_end": state.progress.delete(event.toolCallId); break;

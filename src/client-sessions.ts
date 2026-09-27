@@ -94,7 +94,7 @@ type Session = {
   /** The assistant message streaming now, as its latest message_update carried it. */
   partial?: unknown;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
-  turn?: { requestId: string; start?: number; messages: unknown[]; bytes: number; truncated?: boolean };
+  turn?: { requestId: string; start?: number; messages: unknown[]; count: number; last?: unknown; bytes: number; truncated?: boolean };
   /** The application's attached MCP server, over the connection `response` is. */
   attached?: AttachedServer;
   /** Tool calls to the application in flight: the agent is busy until they settle. */
@@ -544,7 +544,6 @@ export class ClientSessions {
 
   private publish(session: Session, data: ClientEvent) {
     if (this.closed || session.fault) return;
-    // A message_update is buffered and sent as its delta alone; the partial message it carried is kept once, as the latest.
     // A message_update is its delta alone; the runtime keeps the latest message it updates, for snapshots.
     if (data.type === "event") {
       const inner = data.event;
@@ -552,11 +551,13 @@ export class ClientSessions {
       else if (inner?.type === "message_start" && inner.message?.role === "assistant") session.partial = inner.message;
       else if (inner?.type === "message_end") session.partial = undefined;
     }
+    const sent = data;
     let text = JSON.stringify(data);
     const oversized = Buffer.byteLength(text) > FRAME_BYTES;
     if (oversized) {
-      // Control outcomes remain in the journal; oversized display events are explicit gaps.
-      data = { type: "event", requestId: "", event: { type: "event_omitted", reason: "Event exceeded transport limit" } };
+      // Control outcomes remain in the journal; oversized display events are explicit gaps, which say what they were.
+      const was = data.type === "event" ? data.event?.type : data.type;
+      data = { type: "event", requestId: data.type === "event" ? data.requestId : "", event: { type: "event_omitted", reason: "Event exceeded transport limit", ...(was ? { was } : {}) } };
       text = JSON.stringify(data);
     }
     const event: BufferedEvent = { id: ++session.cursor, bytes: Buffer.byteLength(text), data };
@@ -565,7 +566,7 @@ export class ClientSessions {
     session.lastActive = Date.now();
     const limit = this.options.eventBytes ?? 2 * 1024 * 1024;
     while (session.events.length > 1 && (session.events.length > MAX_BUFFERED_EVENTS || session.eventBytes > limit)) session.eventBytes -= session.events.shift()!.bytes;
-    this.follow(session, data, text, oversized);
+    this.follow(session, sent, text, oversized);
     const frame = `id: ${event.id}\ndata: ${text}\n\n`;
     for (const res of this.streams(session)) {
       const reader = readers.get(res);
@@ -581,13 +582,22 @@ export class ClientSessions {
     const turn = session.turn;
     if (!turn) return;
     if (data.type === "response" && data.id === turn.requestId) { session.turn = undefined; session.partial = undefined; return; }
-    if (oversized) { turn.truncated = true; return; }
     if (data.type !== "event" || data.requestId !== turn.requestId) return;
-    if (data.event?.type === "turn_opened") turn.start ??= data.event.index;
-    if (data.event?.type !== "message_end" || turn.truncated) return;
-    turn.bytes += text.length;
+    const type = data.event?.type;
+    if (type === "turn_opened") turn.start ??= data.event.index;
+    // A failed response taken back before the model is asked again gives up its place, as it does for a subscriber folding the stream.
+    if (type === "auto_retry_start" && (turn.last as { stopReason?: string } | undefined)?.stopReason === "error" && turn.count) {
+      turn.count--;
+      turn.last = undefined;
+      if (!turn.truncated) turn.messages.pop();
+    }
+    if (type !== "message_end") return;
+    // How many messages the run finished, whether or not the snapshot can carry them.
+    turn.count++;
+    turn.last = data.event.message;
+    turn.bytes += oversized ? FRAME_BYTES : text.length;
     // A snapshot is one frame: a turn too large for one is read from history instead.
-    if (turn.bytes > TURN_SNAPSHOT_BYTES) { turn.truncated = true; turn.messages = []; }
+    if (turn.truncated || turn.bytes > TURN_SNAPSHOT_BYTES) { turn.truncated = true; turn.messages = []; }
     else turn.messages.push(data.event.message);
   }
 
@@ -595,7 +605,7 @@ export class ClientSessions {
   private turnSnapshot(session: Session): TurnSnapshot {
     const turn = session.turn;
     const snapshot: TurnSnapshot = { type: "snapshot", cursor: session.cursor, requestId: turn?.requestId ?? null, turn: turn ? {
-      start: turn.start ?? null, messages: turn.messages, partial: session.partial ?? null, ...(turn.truncated ? { truncated: true as const } : {}),
+      start: turn.start ?? null, count: turn.count, messages: turn.messages, partial: session.partial ?? null, ...(turn.truncated ? { truncated: true as const } : {}),
     } : null };
     // Too large for one frame: the finished messages go first (they are in history), then the streaming message.
     if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > FRAME_BYTES) snapshot.turn = { ...snapshot.turn, messages: [], truncated: true };
@@ -2019,7 +2029,7 @@ export class ClientSessions {
         if (record.method === "execute") session.beginning = {};
         else await this.commit(session, true);
         this.hook("runStarted", session, record);
-        if (record.method !== "execute") session.turn = { requestId: record.id, messages: [], bytes: 0 };
+        if (record.method !== "execute") session.turn = { requestId: record.id, messages: [], count: 0, bytes: 0 };
       }
       if (RUN_METHODS.includes(record.method)) {
         session.activeSince = Date.now();

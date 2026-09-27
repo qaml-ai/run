@@ -399,11 +399,14 @@ of its id, then the live stream:
 
 ```json
 { "type": "snapshot", "cursor": 1700000000000123, "requestId": "req_1",
-  "turn": { "start": 12, "messages": [ ...every message the run finished... ], "partial": { ...the assistant message streaming now... } } }
+  "turn": { "start": 12, "count": 3, "messages": [ ...every message the run finished... ], "partial": { ...the assistant message streaming now... } } }
 ```
 
 `turn` is null when no turn runs, and has `truncated: true` (and no messages)
 when the run's messages are too large for one frame: read them from history.
+`count` is how many messages the run finished, sent or not, so the next one's
+index is `start + count`. (A message too large for any frame arrives as an
+`event_omitted` with `was: "message_end"`: it still takes its index.)
 `start` is the index of the run's first message in the agent's history, which
 each run also announces as a `turn_opened` event (`{ index }`). Without
 `snapshot=1`, a gap is `409 REPLAY_GAP` as before, and a new subscriber (no

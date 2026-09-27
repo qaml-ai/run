@@ -94,6 +94,28 @@ for (const transport of ["sse", "poll"] as const) {
   });
 }
 
+test("a watcher joining a turn whose snapshot was too large to carry its messages still places what follows", { timeout: 60_000 }, async t => {
+  const model = await scriptedModel(t, () => ({ deltas: words.map(word => ({ content: word })), hold: 2 }));
+  // A context large enough for a 1.05 MB prompt: more than a snapshot carries, so it comes truncated.
+  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url, AGENT_MODEL: "openai/gpt-4.1-mini" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "p".repeat(1_050_000) } });
+  await until(async () => (await (await fetch(`${r.base}/v1/agents/${agent}/events?poll=1&snapshot=1`, { headers: { Authorization: `Bearer ${OPERATOR}` } })).json() as any).events[0].data.turn?.partial, "the answer to start");
+  const snapshot = (await (await fetch(`${r.base}/v1/agents/${agent}/events?poll=1&snapshot=1`, { headers: { Authorization: `Bearer ${OPERATOR}` } })).json() as any).events[0].data;
+  assert.equal(snapshot.turn.truncated, true);
+  assert.equal(snapshot.turn.count, 1, "it still says how many messages the run finished");
+  const { token } = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: {} })).json;
+  const watcher = watchAgent({ url: r.base, agentId: agent, token });
+  t.after(() => watcher.close());
+  await until(() => watcher.state.partial, "the watcher to join the turn");
+  model.release();
+  await until(() => !watcher.state.running && watcher.state.messages.length === 2, "the turn to end", 20_000);
+  const history = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  assert.deepEqual(watcher.state.indexes, [0, 1]);
+  assert.deepEqual(watcher.state.messages.map((message: any) => message.role), history.map((message: any) => message.role), "the prompt is not overwritten");
+  assert.equal((watcher.state.messages[1] as any).content[0].text, words.join(""));
+});
+
 test("a watcher whose streams deliver nothing (a proxy that buffers them) falls back to long polls", { timeout: 60_000 }, async t => {
   const r = await runtime(t, () => ({ content: "polled" }));
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
