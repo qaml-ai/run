@@ -15,6 +15,7 @@ import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import type { Definitions } from "./definitions.ts";
 import { scopeEntry, type KeyScopes } from "./key-scopes.ts";
+import type { UsageWebhooks } from "./usage-webhooks.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
@@ -31,6 +32,7 @@ export interface ApiContext {
   clients: ClientSessions;
   consoleAuth: ConsoleAuth;
   keyScopes?: KeyScopes;
+  usageWebhooks?: UsageWebhooks;
   /** Provision an agent for a tenant (shared with POST /client-sessions). */
   createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
   verifyKeys?: boolean;
@@ -185,6 +187,26 @@ export function api(context: ApiContext) {
     async c => json(c, 200, await keyScopes().status(c.var.principal.tenant, c.req.param("scope")!)));
   route(createRoute({ ...scopePath, method: "delete", responses: { 200: reply("Every entry of the scope is deleted", schema.Deleted) } }), async c => {
     await keyScopes().delete(c.var.principal.tenant, c.req.param("scope")!);
+    return json(c, 200, { deleted: true });
+  });
+
+  const webhooks = () => {
+    if (!context.usageWebhooks || !accounts.canStoreKeys) throw new HttpError(503, "This runtime is not configured to store webhook secrets");
+    return context.usageWebhooks;
+  };
+  route(createRoute({ method: "put", path: "/v1/usage-webhook", request: { body: content(schema.UsageWebhookInput) }, responses: { 200: reply("The receiver; with its signing secret the first time only", schema.UsageWebhookSet) } }), async c => {
+    const { url } = parse(schema.UsageWebhookInput, await readJson(c.req.raw.body, 16 * 1024, {}));
+    return json(c, 200, await webhooks().set(c.var.principal.tenant, url));
+  });
+  route(createRoute({ method: "get", path: "/v1/usage-webhook", responses: { 200: reply("The receiver", schema.UsageWebhook) } }), async c => {
+    const webhook = await webhooks().get(c.var.principal.tenant);
+    if (!webhook) throw new HttpError(404, "No usage webhook is set");
+    return json(c, 200, webhook);
+  });
+  route(createRoute({ method: "post", path: "/v1/usage-webhook/secret", responses: { 200: reply("A new signing secret, shown only now; the old one also signs for 24 hours", schema.UsageWebhookSecret) } }),
+    async c => json(c, 200, await webhooks().rotate(c.var.principal.tenant)));
+  route(createRoute({ method: "delete", path: "/v1/usage-webhook", responses: { 200: reply("The receiver and its undelivered events are removed", schema.Deleted) } }), async c => {
+    if (!await webhooks().delete(c.var.principal.tenant)) throw new HttpError(404, "No usage webhook is set");
     return json(c, 200, { deleted: true });
   });
 

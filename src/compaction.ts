@@ -106,6 +106,43 @@ BedrockRuntimeClient.prototype.send = function (this: BedrockRuntimeClient, ...a
   return (send as (...args: unknown[]) => unknown).apply(this, args);
 } as typeof send;
 
+/**
+ * A fetch that reads the cost a provider reports in its response's usage as the body streams past:
+ * OpenRouter's `usage.cost` (plus the upstream cost of a key brought to OpenRouter), which Pi does
+ * not keep. `sink.cost` has it once the body is read.
+ */
+function costReading(sink: { cost?: number }): typeof fetch {
+  const read = (line: string) => {
+    if (!line.startsWith("data:") && !line.startsWith("{") || !line.includes('"cost"')) return;
+    try {
+      const data = JSON.parse(line.startsWith("data:") ? line.slice(5) : line);
+      const usage = data?.usage ?? data?.response?.usage ?? data?.message?.usage;
+      if (typeof usage?.cost !== "number") return;
+      sink.cost = usage.cost + (usage.is_byok ? Number(usage.cost_details?.upstream_inference_cost) || 0 : 0);
+    } catch { /* not JSON */ }
+  };
+  return async (input, init) => {
+    const response = await fetch(input, init);
+    if (!response.body) return response;
+    const decoder = new TextDecoder();
+    let pending = "";
+    const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+        const lines = (pending + decoder.decode(chunk, { stream: true })).split("\n");
+        pending = lines.pop()!;
+        for (const line of lines) read(line.trim());
+      },
+      flush() { read(pending.trim()); },
+    }));
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+}
+
+/** Options that read the provider's cost into `sink`, for the APIs OpenRouter answers (others, like Google's, take no custom fetch). */
+const costed = (model: Model<Api>, options: any, sink: { cost?: number }) =>
+  options.fetch || !["openai-completions", "openai-responses", "anthropic-messages"].includes(model.api) ? options : { ...options, fetch: costReading(sink) };
+
 /** Pi's model and options for one call with `credentials`. */
 function authorize(model: Model<Api>, options: any, credentials: Credentials): [Model<Api>, any] {
   if (credentials.identity) return [upstream(model), identityOptions(model, options, credentials.apiKey)];
@@ -128,7 +165,15 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent`);
     const call = (credentials: Credentials) => {
       const [target, callOptions] = authorize(model, options, credentials);
-      return streamSimple(target, context, callOptions);
+      const sink: { cost?: number } = {};
+      const stream = streamSimple(target, context, costed(target, callOptions, sink));
+      // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
+      const push = stream.push.bind(stream);
+      stream.push = event => {
+        if (event.type === "done" && sink.cost !== undefined) (event.message.usage as { providerCost?: number }).providerCost = sink.cost;
+        push(event);
+      };
+      return stream;
     };
     const credentials = perCall?.();
     return credentials ? credentials.then(call) : call({ apiKey: options.apiKey });
@@ -145,7 +190,9 @@ function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => 
   return {
     completeSimple: async (model: Model<Api>, context: any, options: any) => {
       const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey());
-      const response = await completeSimple(target, context, callOptions);
+      const sink: { cost?: number } = {};
+      const response = await completeSimple(target, context, costed(target, callOptions, sink));
+      if (sink.cost !== undefined) (response.usage as { providerCost?: number }).providerCost = sink.cost;
       if (response.stopReason !== "error") onResponse?.(response);
       return response;
     },

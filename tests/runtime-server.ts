@@ -68,14 +68,15 @@ export const lastUser = (body: any) => {
 export const toolResults = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""));
 
 /** `tenantsFile` replaces the tenants file (alice and bob, with admin keys). */
-export async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}, tenantsFile?: object) {
+/** `databaseUrl` shares another runtime's database, e.g. to start again after one stopped. */
+export async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}, tenantsFile?: object, options: { databaseUrl?: string } = {}) {
   const root = await mkdtemp(join(tmpdir(), "agent-runtime-server-"));
   writeFileSync(join(root, "tenants.json"), JSON.stringify(tenantsFile ?? { tenants: {
     alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
     bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
   } }));
   const model = await fakeModel(t, respond);
-  const { db, url: databaseUrl } = await testDatabase();
+  const { db, url: databaseUrl } = options.databaseUrl ? { db: undefined, url: options.databaseUrl } : await testDatabase();
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, PORT: "0", HOST: "127.0.0.1",
@@ -122,7 +123,7 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
       return record.state === "completed" && record;
     }, "the turn to end");
   };
-  return { root, db, base, call, prompt, model, logs, child };
+  return { root, db: db!, databaseUrl, base, call, prompt, model, logs, child };
 }
 
 /**

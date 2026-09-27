@@ -6,6 +6,7 @@ import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, Credentials, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
+import { usageCost } from "./usage-webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { configurationUpdate, type ModelEndpoints } from "./session-config.ts";
 import { validateDefinitions } from "./tool-policy.ts";
@@ -235,7 +236,11 @@ export type DefinitionConfig = { id: string; revision: number; config: Pick<Agen
  * rendered), or tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
  * embedding a catalog ahead of them), with its cost in `usage.cost.total`.
  */
-export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number };
+export type UsageRecord = {
+  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
+  requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string;
+};
 /** Why runs are refused: a message (402), or an error with its own status. */
 export type Refusal = string | HttpError;
 /** An agent's spend limit (USD), what it has spent since, and when it was set. */
@@ -251,7 +256,7 @@ export function spendInput(value: unknown): number | null {
 }
 const dollars = (usd: number) => `$${Number(usd.toFixed(6))}`;
 /** A model response's cost as the runtime counts it. */
-const responseCost = (usage: any) => Number(usage?.cost?.total) || 0;
+const responseCost = (usage: any) => usageCost(usage).usd;
 /** A provider key and whether it is the platform's rather than the tenant's own. */
 export type ProviderKey = { key: string; platform: boolean };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
@@ -1492,12 +1497,14 @@ export class ClientSessions {
           // Failed calls report zero usage; count only responses the provider completed.
           // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
           const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
+          const { identity, keyScope } = session.header;
+          const run = { requestId: record.id, ...(record.actor ? { actor: record.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
-            this.options.onUsage?.(session.header.tenant, id, { ...event.message, provider: via + event.message.provider, platform: !!session.platformKey });
+            this.options.onUsage?.(session.header.tenant, id, { ...event.message, ...run, provider: via + event.message.provider, platform: !!session.platformKey });
             this.spent(session, responseCost(event.message.usage));
           }
           if (event?.type === "compaction_usage" && event.usage) {
-            this.options.onUsage?.(session.header.tenant, id, { ...event, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
+            this.options.onUsage?.(session.header.tenant, id, { ...event, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
             this.spent(session, responseCost(event.usage));
           }
           this.publish(session, { type: "event", requestId: record.id, event });

@@ -6,6 +6,7 @@ import { accrueUsage, Billing, type UsageCharge } from "./billing.ts";
 import { activeCharge, MICROS, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
 import type { HttpError } from "./http.ts";
+import { usageEvent, type UsageEvent } from "./usage-webhooks.ts";
 
 /**
  * Tenant state that tenants manage themselves: provider keys (encrypted at rest),
@@ -32,10 +33,11 @@ type Charge = { platformCost: number; activeMs: number; toolCost: number; search
 /**
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
  * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
- * `charges` is what prepaid tenants pay for it (`Charge`).
+ * `charges` is what prepaid tenants pay for it (`Charge`), and `events` its model responses for
+ * tenants' usage webhooks (usage-webhooks.ts), which the same transaction adds to their outbox.
  */
-type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, Charge> };
-const batch = (): Batch => ({ id: randomUUID(), usage: new Map(), charges: new Map() });
+type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, Charge>; events: UsageEvent[] };
+const batch = (): Batch => ({ id: randomUUID(), usage: new Map(), charges: new Map(), events: [] });
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const validTenant = (id: string) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(id);
@@ -254,7 +256,7 @@ export class Accounts {
    * (provider ids never contain a colon), so the table's key stays as older nodes write it.
    * `platform` responses ran on a key that is not the tenant's own; a prepaid tenant pays for them.
    */
-  recordUsage(tenant: string, _agent: string, message: UsageRecord) {
+  recordUsage(tenant: string, agent: string, message: UsageRecord) {
     const usage = message.usage ?? {};
     const day = new Date(message.timestamp ?? Date.now()).toISOString().slice(0, 10);
     const model = `${message.provider ?? "unknown"}/${message.model ?? "unknown"}`;
@@ -280,6 +282,8 @@ export class Accounts {
     }
     const spent = this.spend.get(tenant);
     if (spent?.month === day.slice(0, 7)) spent.cost += cost;
+    const event = usageEvent(tenant, agent, message);
+    if (event) this.pending.events.push(event);
     this.scheduleFlush();
   }
 
@@ -330,7 +334,7 @@ export class Accounts {
 
   private async flushPending() {
     if (this.usageTimer) { clearTimeout(this.usageTimer); this.usageTimer = undefined; }
-    if (this.pending.usage.size || this.pending.charges.size) {
+    if (this.pending.usage.size || this.pending.charges.size || this.pending.events.length) {
       this.unflushed.push(this.pending);
       this.pending = batch();
     }
@@ -346,7 +350,7 @@ export class Accounts {
     }
   }
 
-  private async apply({ id, usage, charges }: Batch) {
+  private async apply({ id, usage, charges, events }: Batch) {
     const rows = [...usage].map(([key, totals]) => {
       const [tenant, day, model] = JSON.parse(key);
       return { tenant, day, model, ...totals };
@@ -374,6 +378,11 @@ export class Accounts {
           platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
       [JSON.stringify(rows)]);
       await accrueUsage(sql, billed);
+      // Only tenants with a usage webhook keep their events.
+      if (events.length) await sql.query(`
+        insert into usage_webhook_outbox (id, tenant, body, due, created_at)
+        select (e->>'id')::uuid, e->>'tenant', e, $2, $2 from jsonb_array_elements($1::jsonb) as e
+        where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')`, [JSON.stringify(events), Date.now()]);
     });
     this.billing.invalidate(charges.keys());
   }

@@ -68,6 +68,7 @@ once. The runtime does not start without a database.
 | schedules and their claims | |
 | channels, conversations, the outbox, dedupe markers, rate counters | |
 | volume headers, snapshots, watchers | |
+| agent spend limits, usage webhooks and their outbox | |
 
 Migrations are plain SQL files, applied at startup in one transaction under an
 advisory lock and recorded in `schema_migrations`, so nodes may start together.
@@ -510,9 +511,10 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
 ### Agent spend limits
 
 `spendLimit: {"usd": n}` at creation or through `PATCH /v1/agents/:id/configuration`
-is the most the agent may spend on model calls from then on: their token cost as
-the runtime counts it (`/v1/usage`'s `cost`), turns and compaction summaries,
-whoever's key they ran on. Setting a value starts counting from zero, so an
+is the most the agent may spend on model calls from then on: their cost as the
+[usage webhook](#usage-webhook) reports it (the provider's own when it reports
+one, else the catalog price), turns and compaction summaries, whoever's key they
+ran on. Setting a value starts counting from zero, so an
 application can set the remaining allowance before each prompt; `null` removes
 it. A PATCH applies it at once, ahead of runs already queued. `GET /v1/agents/:id`
 shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
@@ -521,6 +523,50 @@ shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
 `stopped: "spend_limit"`. The node serving the agent counts its spend in memory
 and writes it to `agent_spend_limits` after each response; only the tenant can
 set it, not the agent's own token.
+
+### Usage webhook
+
+A tenant can have each model response's usage POSTed to its own receiver, e.g.
+to bill its customers per key scope:
+
+```http
+PUT /v1/usage-webhook
+{"url": "https://example.com/hooks/agent-usage"}
+```
+
+The first `PUT` returns the signing `secret` (`whsec_…`), only then; a later one
+changes the URL and keeps it. `POST /v1/usage-webhook/secret` replaces it and
+returns the new one; the old one also signs for 24 hours. `GET` shows the URL,
+`DELETE` removes the webhook and its undelivered events. The URL goes through
+the [outbound guard](#outbound-calls) like any tenant URL. Each event is:
+
+```json
+{"id": "5d0c…", "agent": "client_…", "requestId": "…", "tenant": "camel",
+ "subject": "u_1", "actor": "u_2", "context": {"org": "org_abc123"}, "keyScope": "org_abc123",
+ "provider": "openrouter", "model": "anthropic/claude-sonnet-5", "kind": "response",
+ "input": 1200, "output": 85, "cacheRead": 0, "cacheWrite": 0, "reasoning": 40,
+ "cost": {"usd": 0.00471, "source": "provider"}, "at": 1790000000000}
+```
+
+- One per model response a provider completed: `kind` is `response` for the
+  agent's turns and `compaction` for summaries. `subject` is the agent's (its id
+  without one), `actor` the run's (or null), `context` the agent's `ctx`,
+  `keyScope` its key scope (or null). `requestId` is the run's. `at` is in ms.
+- `cost.source` is `provider` when the provider reported the cost in its
+  response (OpenRouter's `usage.cost`, plus the upstream cost for a key brought to
+  OpenRouter), else `catalog`, the catalog price of the tokens. Calls through a
+  [tenant's own endpoint](#a-tenants-own-model-endpoint) come too, provider
+  `<name>/<provider>` (e.g. `chiridion/openai-codex`), with the cost the provider
+  reported, else 0. `/v1/usage` and platform charges stay at catalog prices.
+- Requests are signed per Standard Webhooks: `webhook-id` (the event's `id`),
+  `webhook-timestamp` (Unix seconds) and `webhook-signature`, `v1,<base64
+  HMAC-SHA256 of "<id>.<timestamp>.<body>">` keyed with the secret's base64 part,
+  space-separated when two secrets sign during a rotation.
+- Delivery is at least once: events are written to an outbox in Postgres with
+  the usage flush that counts them (a few seconds after the response), and any
+  node sends them, each claimed by one node at a time. A 2xx acknowledges; else it
+  is retried with exponential backoff (from 5 s, `AGENT_USAGE_WEBHOOK_RETRY_MS`,
+  up to an hour apart) for 3 days. Receivers dedupe by `id`.
 
 ## Agent definitions
 
