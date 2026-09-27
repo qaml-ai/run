@@ -135,7 +135,7 @@ test("MCP images, audio, blobs and long text are saved to the workspace, under s
   assert.ok(messages.includes(PNG.toString("base64")), "the model sees the image");
   assert.ok(messages.includes(PDF.toString("base64")), "and the PDF");
   assert.equal(messages.includes("x".repeat(1000)), false, "but not the long text");
-  assert.deepEqual(JSON.parse(toolResults(r.model.bodies[2]).at(-1)).output[0], JSON.stringify(["image-1.png:image/png", "audio-2.wav:audio/wav", "hidden.pdf:application/pdf", "long.txt:text/plain"]), "code gets each file's path and type");
+  assert.deepEqual(toolResults(r.model.bodies[2]).at(-1), JSON.stringify(["image-1.png:image/png", "audio-2.wav:audio/wav", "hidden.pdf:application/pdf", "long.txt:text/plain"]), "code gets each file's path and type");
 });
 
 /** An API that takes uploads (multipart, raw bytes, base64 in JSON) and answers with a file. */

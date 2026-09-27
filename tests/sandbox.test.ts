@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Worker } from "node:worker_threads";
-import { CodePool, executeCode } from "../src/codemode.ts";
+import { CodePool, executeCode, presentResult } from "../src/codemode.ts";
 import { localTools } from "./local-tools.ts";
 import { SANDBOX_LIMITS, codeRequest } from "../src/limits.ts";
 import type { ToolBridge } from "../src/protocol.ts";
@@ -138,10 +138,22 @@ test("CPU, stack, hostile serialization and abandoned promises are bounded", { t
 
 test("output floods are bounded by both characters and event count", async t => {
   const { run } = await fixture(t);
-  assert.deepEqual(await run('return "x".repeat(1000000);', { maxOutputCharacters: 5 }), { output: ["xxxxx"], truncated: true });
+  assert.deepEqual(await run('return "x".repeat(1000000);', { maxOutputCharacters: 5 }), { output: ["xxxxx"], truncated: true, returned: { index: 0, json: false, truncated: true } });
   const result = await run('for(let i=0;i<10000;i++) text("x");', { maxOutputCharacters: 128000 });
   assert.equal(result.output.length, SANDBOX_LIMITS.outputEvents);
   assert.equal(result.truncated, true);
+});
+
+test("the model reads what code returned as it is, after what it logged, with cuts marked", async t => {
+  const { run } = await fixture(t);
+  const read = async (code: string, maxOutputCharacters?: number) => presentResult(await run(code, { maxOutputCharacters }), maxOutputCharacters);
+  assert.equal(await read('return { total: 2, apps: ["a", "b"] };'), '{"total":2,"apps":["a","b"]}', "a returned value is its JSON, not a string inside an envelope");
+  assert.equal(await read('return "done";'), "done", "a string is its own text");
+  assert.equal(await read('console.log("step", { n: 1 }); return [1];'), 'Logged:\nstep\n{"n":1}\n\nReturned:\n[1]');
+  assert.equal(await read('console.log("only");'), "only");
+  assert.equal(await read("const x = 1;"), "No output: nothing was returned or logged.");
+  assert.equal(await read('return { a: "z".repeat(40) };', 20), '{"a":"zzzzzzzzzzzzzz\n\n[Output cut at 20 characters, so the returned JSON is incomplete. Return only what you need (counts, chosen fields, a summary), or write the data to a file and read it in parts.]');
+  assert.match(await read('text("y".repeat(30)); return 1;', 20), /^Logged:\ny{20}\n\nReturned:\n\(cut\)\n\n\[Output cut at 20 characters, leaving no room for the return value\./);
 });
 
 test("tool call count, concurrency and result transfer quotas hold outside the guest", async t => {

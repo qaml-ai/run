@@ -2,7 +2,8 @@
 // accept/return strings; their JS wrappers and prototypes belong to the guest.
 // It runs once per sandbox image, before the snapshot that every execution starts
 // from (quickjs-sandbox.ts), and returns what the host calls per execution:
-// `install`, which defines `tools` from that execution's tool names, and the error formatter.
+// `install`, which defines `tools` from that execution's tool names, the error formatter, and
+// `finish`, which sends what the code returned.
 
 /** Calls answered by the host rather than a tool: no tool name contains a dot. */
 export const HOST_CALLS = Object.freeze({ search: "tools.search", describe: "tools.describe", namespaces: "tools.namespaces" });
@@ -20,10 +21,9 @@ export const SANDBOX_BOOTSTRAP = `
   const parse = JSON.parse;
   const StringCtor = String;
   const slice = Function.prototype.call.bind(String.prototype.slice);
-  const text = value => {
-    const rendered = typeof value === "string" ? value : (stringify(value) ?? StringCtor(value));
-    emit(slice(rendered, 0, 128000), rendered.length > 128000 ? 1 : 0);
-  };
+  // emit's flags: 1, cut at 128,000 characters; 2, the value code returned; 4, rendered as JSON.
+  const send = (rendered, flags) => emit(slice(rendered, 0, 128000), flags | (rendered.length > 128000 ? 1 : 0));
+  const text = value => send(typeof value === "string" ? value : (stringify(value) ?? StringCtor(value)), 0);
   const console = Object.freeze(Object.fromEntries(
     ["log", "info", "warn", "error", "debug"].map(name => [name, (...values) => { for (const value of values) text(value); }])
   ));
@@ -89,6 +89,12 @@ export const SANDBOX_BOOTSTRAP = `
     try { return slice(StringCtor(error && error.message || error), 0, 2048); }
     catch { return "Sandbox execution failed"; }
   };
-  return [install, formatError];
+  // Settles with the execution: what the code's promise resolved to is sent as its return value.
+  const finish = promise => promise.then(value => {
+    if (value === undefined) return;
+    const json = typeof value === "string" ? undefined : stringify(value);
+    send(json ?? StringCtor(value), json === undefined ? 2 : 6);
+  });
+  return [install, formatError, finish];
 })
 `;

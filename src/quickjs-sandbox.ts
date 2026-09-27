@@ -5,9 +5,16 @@ import {
 import { SANDBOX_LIMITS } from "./limits.ts";
 import { SANDBOX_BOOTSTRAP } from "./sandbox-bootstrap.ts";
 
+/**
+ * What the code returned, when it returned something: `output[index]` (absent when the output
+ * limit left no room for it), rendered as JSON (else it was a string, or had no JSON form),
+ * and whether it was cut short.
+ */
+export type Returned = { index?: number; json: boolean; truncated: boolean };
+
 /** What the running execution lends the image's host functions and interrupt handler. */
 type Execution = {
-  emit(value: QuickJSHandle, overflow: QuickJSHandle): void;
+  emit(value: QuickJSHandle, flags: QuickJSHandle): void;
   call(name: QuickJSHandle, json: QuickJSHandle): QuickJSHandle;
   interrupted(): boolean;
 };
@@ -35,6 +42,7 @@ type Image = {
   vm: QuickJSContext;
   install: QuickJSHandle;
   formatError: QuickJSHandle;
+  finish: QuickJSHandle;
   /** The snapshot's nonzero pages, merged into runs: the rest of it is zero. */
   pages: { offset: number; bytes: Uint8Array }[];
   /** Where the context keeps Math.random's state, reseeded for every execution. */
@@ -78,16 +86,17 @@ async function build(wasmModule: WebAssembly.Module, mark: (phase: string) => vo
     return self.current;
   };
   // Never disposed: a guest could not free these anyway (the bootstrap's helpers hold them).
-  const emit = vm.newFunction("emit", (value, overflow) => { running().emit(value, overflow); return vm.undefined; });
+  const emit = vm.newFunction("emit", (value, flags) => { running().emit(value, flags); return vm.undefined; });
   const call = vm.newFunction("call", (name, json) => running().call(name, json));
   const bootstrap = vm.unwrapResult(vm.evalCode(SANDBOX_BOOTSTRAP, "sandbox-bootstrap.js"));
   const helpers = vm.unwrapResult(vm.callFunction(bootstrap, vm.undefined, call, emit));
   const install = vm.getProp(helpers, 0);
   const formatError = vm.getProp(helpers, 1);
+  const finish = vm.getProp(helpers, 2);
   helpers.dispose();
   bootstrap.dispose();
   mark("bindings");
-  const self: Image = { memory, runtime, vm, install, formatError, pages: [], random };
+  const self: Image = { memory, runtime, vm, install, formatError, finish, pages: [], random };
   runtime.setInterruptHandler(() => self.current?.interrupted() ?? false);
   self.pages = snapshot(memory);
   mark("snapshot");
@@ -207,6 +216,7 @@ export async function runSandbox(options: {
   let remaining = options.maxOutputCharacters;
   let outputEvents = 0;
   let truncated = false;
+  let returned: Returned | undefined;
   let calls = 0;
   let closed = false;
   let faulted = false;
@@ -249,10 +259,13 @@ export async function runSandbox(options: {
       interrupted ||= now >= deadline || cpuMs + now - enteredAt >= SANDBOX_LIMITS.cpuMs || Atomics.load(options.cancel, 0) === 1;
       return interrupted;
     },
-    emit(value, overflow) {
+    emit(value, flagsHandle) {
       const text = string(value, 128_000);
+      const flags = vm.getNumber(flagsHandle);
       const part = outputEvents < SANDBOX_LIMITS.outputEvents ? text.slice(0, remaining) : "";
-      truncated ||= text.length > part.length || vm.getNumber(overflow) === 1;
+      const cut = text.length > part.length || (flags & 1) === 1;
+      truncated ||= cut;
+      if (flags & 2) returned = { ...(part ? { index: output.length } : {}), json: (flags & 4) === 4, truncated: cut };
       if (part) {
         outputEvents++;
         remaining -= part.length;
@@ -299,7 +312,7 @@ export async function runSandbox(options: {
     vm.unwrapResult(vm.callFunction(self.install, vm.undefined, catalog)).dispose();
     catalog.dispose();
     mark("install");
-    const initial = run(() => vm.evalCode(`(async function() { "use strict";\n${options.code}\n})().then(value => { if (value !== undefined) text(value); })`, "codemode.js"));
+    const initial = run(() => vm.evalCode(`(async function() { "use strict";\n${options.code}\n})()`, "codemode.js"));
     // Only compiling can fail here: the code's own errors reject the promise.
     if (initial.error) {
       try {
@@ -307,7 +320,8 @@ export async function runSandbox(options: {
         throw guestError(initial.error);
       } finally { initial.dispose(); }
     }
-    const result = initial.value;
+    const result = run(() => vm.unwrapResult(vm.callFunction(self.finish, vm.undefined, initial.value)));
+    initial.value.dispose();
     mark("compile");
     while (true) {
       const jobs = run(() => runtime.executePendingJobs(64));
@@ -327,7 +341,7 @@ export async function runSandbox(options: {
       else await new Promise<void>(resolve => { wake = resolve; });
     }
     mark("run");
-    return { output, truncated };
+    return { output, truncated, returned };
   } catch (error) {
     faulted = !(error instanceof Error && expected.has(error));
     throw error;

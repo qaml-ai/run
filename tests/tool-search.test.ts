@@ -293,7 +293,7 @@ test("every tenant pays tool search at cost on the platform's key: each search, 
     const definition = (await r.call("/v1/definitions", { body: { name: "Scheduler", builtins: ["schedule"] }, token })).json;
     const agent = (await r.call("/v1/agents", { body: { definition: definition.id }, token })).json.id;
     await r.prompt(agent, "go", token);
-    const [found, listed] = JSON.parse(JSON.parse(toolResults(r.model.bodies.at(-1)).at(-1)).output[0]);
+    const [found, listed] = JSON.parse(toolResults(r.model.bodies.at(-1)).at(-1));
     assert.ok(found.length && found.every((name: string) => name.includes("schedule")), "Jev kept the schedule tools");
     assert.ok(listed > 0);
   }

@@ -57,7 +57,7 @@ test("every execution, however it ends, leaves the memory exactly as the snapsho
   await sleep(100);
   unchanged("late tool result");
   assert.equal(await prepareSandbox(wasmModule), image, "Guest failures keep the image");
-  assert.deepEqual(await sandbox("return [typeof leak, ({}).polluted, [].push(1), JSON.parse('2'), Math.random() < 1];"), { output: ['["undefined",null,1,2,true]'], truncated: false });
+  assert.deepEqual(await sandbox("return [typeof leak, ({}).polluted, [].push(1), JSON.parse('2'), Math.random() < 1];"), { output: ['["undefined",null,1,2,true]'], truncated: false, returned: { index: 0, json: true, truncated: false } });
 });
 
 test("a failure outside the guest's own errors drops the image, and the next execution builds a new one", async () => {

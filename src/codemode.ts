@@ -8,6 +8,7 @@ import { FILE_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
 import { FS_CALLS, HOST_CALLS } from "./sandbox-bootstrap.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
+import type { Returned } from "./quickjs-sandbox.ts";
 
 /** How long a cancelled guest gets to unwind before its worker is terminated and replaced. */
 const CANCEL_GRACE_MS = 250;
@@ -332,13 +333,36 @@ function guestMessage(value: any): WireMessage {
   throw new Error("Codemode sandbox sent an invalid message");
 }
 
-function guestResult(value: any, maxOutputCharacters: number): { output: string[]; truncated: boolean } {
+/** What an execution printed, in order (its return value included), and what it returned. */
+export type CodeResult = { output: string[]; truncated: boolean; returned?: Returned };
+
+function guestResult(value: any, maxOutputCharacters: number): CodeResult {
   const output = value?.output;
+  const returned = value?.returned;
   if (!Array.isArray(output) || typeof value.truncated !== "boolean" || output.length > SANDBOX_LIMITS.outputEvents ||
-    !output.every(part => typeof part === "string") || output.reduce((total, part) => total + part.length, 0) > maxOutputCharacters) {
+    !output.every(part => typeof part === "string") || output.reduce((total, part) => total + part.length, 0) > maxOutputCharacters ||
+    (returned !== undefined && (typeof returned?.json !== "boolean" || typeof returned.truncated !== "boolean" ||
+      (returned.index !== undefined && !(Number.isInteger(returned.index) && returned.index >= 0 && returned.index < output.length))))) {
     throw new Error("Codemode sandbox returned an invalid result");
   }
-  return { output, truncated: value.truncated };
+  return { output, truncated: value.truncated, ...(returned ? { returned: { ...(returned.index !== undefined ? { index: returned.index } : {}), json: returned.json, truncated: returned.truncated } } : {}) };
+}
+
+/**
+ * js_exec's result as the model reads it: what the code returned, as it is (JSON, or a
+ * string's own text), after anything it logged. Nothing wraps the value, so it reads as
+ * the data tools gave the code rather than as an envelope to unpack.
+ */
+export function presentResult(result: CodeResult, maxOutputCharacters: number = SANDBOX_LIMITS.outputCharacters): string {
+  const { output, returned } = result;
+  // An empty string sends nothing; a value the limit left no room for is only noted.
+  const value = returned ? (returned.index !== undefined ? output[returned.index] : returned.truncated ? undefined : "\"\"") : undefined;
+  const logs = output.filter((_, index) => index !== returned?.index).join("\n");
+  const text = !returned ? logs || "No output: nothing was returned or logged."
+    : logs ? `Logged:\n${logs}\n\nReturned:\n${value ?? "(cut)"}` : value ?? "";
+  if (!result.truncated) return text;
+  const cut = !returned?.truncated ? "" : value === undefined ? ", leaving no room for the return value" : returned.json ? ", so the returned JSON is incomplete" : "";
+  return `${text}\n\n[Output cut at ${maxOutputCharacters.toLocaleString("en-US")} characters${cut}. Return only what you need (counts, chosen fields, a summary), or write the data to a file and read it in parts.]`;
 }
 
 /** `tools.search`, `tools.describe` and `tools.namespaces`: answered from the catalog, which stays out of the sandbox. */
@@ -362,7 +386,7 @@ export async function executeCode(options: {
   pool?: CodePool | { open(): Guest };
   /** Strip TypeScript here before running: set when the sandbox found the code does not compile as JavaScript. */
   typescript?: boolean;
-}): Promise<{ output: string[]; truncated: boolean }> {
+}): Promise<CodeResult> {
   const timeoutMs = options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs;
   const maxOutputCharacters = options.maxOutputCharacters ?? SANDBOX_LIMITS.outputCharacters;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > SANDBOX_LIMITS.maxTimeoutMs) throw new Error(`timeoutMs must be 1..${SANDBOX_LIMITS.maxTimeoutMs}`);

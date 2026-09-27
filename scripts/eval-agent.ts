@@ -3,7 +3,7 @@
 // makes a fresh agent, so the numbers compare conditions (a runtime version, a model) fairly.
 //
 //   AGENT_URL=http://127.0.0.1:8790 AGENT_RUNTIME_TOKEN=… AGENT_MODEL=anthropic/claude-sonnet-5 \
-//     node --experimental-strip-types scripts/eval-agent.ts [--runs 3] [--scenarios files,discovery,state,plain] [--label before]
+//     node --experimental-strip-types scripts/eval-agent.ts [--runs 3] [--scenarios files,discovery,state,plain,list] [--label before]
 //   node --experimental-strip-types scripts/eval-agent.ts --summary .agent-runtime/eval/before.jsonl .agent-runtime/eval/after.jsonl
 //
 // Each run appends a line to .agent-runtime/eval/<label>.jsonl, and its events (js_exec code included) to
@@ -155,7 +155,38 @@ function plain(): Scenario {
   };
 }
 
-const SCENARIOS: Record<string, () => Scenario> = { files, discovery, state, plain };
+// (e) "List my apps" (a real staging turn): 125 apps of about 350 characters each, at most 100
+// per call. Returned whole they pass the output limit, so the model must read what came back.
+function list(): Scenario {
+  const words = ["atlas", "beacon", "cobalt", "delta", "ember", "fjord", "garnet", "harbor", "iris", "juniper", "kelp", "lumen", "moss"];
+  const apps = Array.from({ length: 125 }, (_, index) => {
+    const name = `${words[index % 13]}-${words[(index * 5 + 3) % 13]}-${index}`;
+    const updated = new Date(Date.UTC(2026, 0, 1) + ((index * 7919) % 2600) * 3_600_000).toISOString();
+    return { name, url: `https://${name}--workspace-d05.camelai.app`, is_public: index % 3 === 0, created_by: "7f5110a2-856a-4dd3-91a7-90a848ea63d9", created_at: updated, updated_at: updated,
+      preview_status: index % 11 === 4 ? "failed" : index % 17 === 9 ? "pending" : "ready", project_id: `ca-bce87a9c129b474896a1e7f569b153fc-${name}`, commit_sha: (index * 2654435761).toString(16).padStart(8, "0").repeat(8) };
+  });
+  const unready = apps.filter(app => app.preview_status !== "ready");
+  const sorts: Record<string, (a: typeof apps[0], b: typeof apps[0]) => number> = {
+    updated_desc: (a, b) => b.updated_at.localeCompare(a.updated_at), updated_asc: (a, b) => a.updated_at.localeCompare(b.updated_at), name_asc: (a, b) => a.name.localeCompare(b.name),
+  };
+  return {
+    systemPrompt: "You are the assistant for an app hosting platform. Keep replies short.",
+    tools: {
+      apps__list_apps: tool({ description: "List the workspace's apps, newest first by default.", exposure: "codemode",
+        input: schema.Object({ limit: schema.Optional(schema.Integer({ minimum: 1, maximum: 100 })), sort: schema.Optional(schema.Union(Object.keys(sorts).map(key => schema.Literal(key)))) }, { additionalProperties: false }),
+        execute: ({ limit = 100, sort = "updated_desc" }) => { const page = apps.toSorted(sorts[sort]).slice(0, limit); return { total: apps.length, count: page.length, filters: { sort }, apps: page }; } }),
+    },
+    async run({ agent }) {
+      const result = await agent.prompt("hey can you list my apps? which ones aren't ready?", { timeoutMs: 600_000 });
+      const failures: string[] = [];
+      if (!/\b125\b/.test(result.reply ?? "")) failures.push("reply counts 125 apps");
+      for (const app of unready) if (!(result.reply ?? "").includes(app.name)) failures.push(`reply names ${app.name} (${app.preview_status})`);
+      return failures;
+    },
+  };
+}
+
+const SCENARIOS: Record<string, () => Scenario> = { files, discovery, state, plain, list };
 
 async function evaluate(label: string, name: string, index: number) {
   const scenario = SCENARIOS[name]();

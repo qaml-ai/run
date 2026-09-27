@@ -290,6 +290,9 @@ Codemode supports `tools.search(query)`, `tools.namespaces()`, `tools.describe(n
 `tools.<name>(args)`, `fs`, `text(value)`, `console.log(value)`, top-level `await`, and
 `return`. It can compose parallel calls with `Promise.all`. Failed calls reject; a call
 with invalid arguments says what is wrong and the tool's argument signature.
+The model reads a js_exec result as what the code returned (JSON, or a string's text),
+after anything it logged, and a note when the output limit cut it; `details` and
+`execute` keep `{output, truncated}`, the output in the order it was streamed.
 No browser, connections, AI media, or other Worker binding facades are supplied yet.
 
 The model's system prompt is the runtime's instructions (`src/system-prompt.ts`), the
@@ -1780,8 +1783,8 @@ What guest code can reach on the host, all through the trusted bootstrap
   string of at most 128 KiB. It returns a promise settled with the result as a
   JSON string, or rejected with an error carrying only a message of at most
   2,048 characters (tool errors keep the message the application's tool threw).
-- `emit(text, truncated)`: a string of at most 128,000 characters, returning
-  nothing.
+- `emit(text, flags)`: a string of at most 128,000 characters and whether it was
+  cut there, is the code's return value, or is JSON, returning nothing.
 - The tool catalog (names, descriptions and parameter schemas), as one JSON
   string at start.
 

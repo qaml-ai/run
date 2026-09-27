@@ -102,7 +102,7 @@ test("js_exec runs end to end through a sandbox process, tool calls included", a
     code: 'const value: number = 20; console.log("start"); return (await tools.echo({ n: value })).n + 22;',
     bridge: echo, pool: sandbox, onEvent: event => events.push(event),
   });
-  assert.deepEqual(result, { output: ["start", "42"], truncated: false });
+  assert.deepEqual(result, { output: ["start", "42"], truncated: false, returned: { index: 1, json: true, truncated: false } });
   assert.deepEqual(events, [{ type: "output", text: "start" }, { type: "output", text: "42" }]);
   await assert.rejects(executeCode({ code: "return await tools.nope({})", bridge: echo, pool: sandbox }), /not a function/);
   // Arguments are still validated here, whatever the sandbox forwards.
@@ -257,7 +257,7 @@ test("a sandbox process parses files for the runtime: bytes in frames, a hostile
   assert.deepEqual(inspection(await target.inspect(large, false)), { media: { kind: "image", mimeType: "image/png", width: 2, height: 3 } });
   assert.deepEqual(inspection(await target.inspect(pdfBytes(["Parsed in the sandbox"]), true)), { media: { kind: "pdf", pages: 1 }, text: "--- Page 1 ---\nParsed in the sandbox" });
   assert.deepEqual(inspection(await target.inspect(await bombPdf(), true)), { media: { kind: "none", reason: "could not be read (it needs too much memory)" } });
-  assert.deepEqual(await executeCode({ code: "return 1", bridge: echo, pool: target }), { output: ["1"], truncated: false });
+  assert.deepEqual(await executeCode({ code: "return 1", bridge: echo, pool: target }), { output: ["1"], truncated: false, returned: { index: 0, json: true, truncated: false } });
   assert.equal(target.load, 0);
   // Whatever a sandbox answers is checked: a lie becomes "could not be read".
   const liar = await fakeSandbox(t, (message, send) => { if (message.type === "request") send({ type: "response", id: message.id, result: { media: { kind: "image", mimeType: "image/png", width: "huge", height: 1 } } }); });

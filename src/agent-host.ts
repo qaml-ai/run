@@ -5,7 +5,7 @@ import {
   getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall,
 } from "@earendil-works/pi-ai";
-import { executeCode } from "./codemode.ts";
+import { executeCode, presentResult } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
@@ -367,7 +367,7 @@ export function createAgentHost(io: HostIO) {
       const directTools = directAgentTools(config.tools);
       const jsExec: AgentTool = {
         name: "js_exec", label: "JavaScript",
-        description: "Run JavaScript or TypeScript in a fresh QuickJS sandbox. What you return, and what you console.log or text(value), comes back. In scope: tools (await tools.<name>(args); tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
+        description: "Run JavaScript or TypeScript in a fresh QuickJS sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
         parameters: {
           type: "object", required: ["code"],
           properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },
@@ -375,14 +375,16 @@ export function createAgentHost(io: HostIO) {
         executionMode: "sequential",
         execute: async (id, args, signal, onUpdate) => {
           try {
-            const result = await executeCode({
-              ...codeRequest(args), bridge: bridge(signal ?? new AbortController().signal, id), signal,
+            const request = codeRequest(args);
+            const { returned, ...result } = await executeCode({
+              ...request, bridge: bridge(signal ?? new AbortController().signal, id), signal,
               onEvent: event => {
                 io.emit({ type: "codemode", toolCallId: id, event });
                 onUpdate?.({ content: [{ type: "text", text: JSON.stringify(event) }], details: event });
               },
             });
-            return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+            // details keeps the output as events streamed it, for clients that render it.
+            return { content: [{ type: "text", text: presentResult({ ...result, returned }, request.maxOutputCharacters) }], details: result };
           } finally { await io.cancelTools(); }
         },
       };
@@ -471,7 +473,10 @@ export function createAgentHost(io: HostIO) {
     stopped = undefined;
     active = new AbortController();
     try {
-      if (method === "execute") return await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
+      if (method === "execute") {
+        const { returned: _returned, ...result } = await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
+        return result;
+      }
       if (method === "continue" && transcript.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");
       await transcript.setActive(true);
       if (method === "resume") {
