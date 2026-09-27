@@ -205,6 +205,25 @@ function fitted(data: ClientEvent) {
   const text = JSON.stringify(data);
   return Buffer.byteLength(text) <= FRAME_BYTES ? text : JSON.stringify({ type: "event", requestId: "", event: { type: "event_omitted", reason: "Event exceeded transport limit" } });
 }
+/** Tool progress published per call at most this often. */
+const PROGRESS_MS = 250;
+/**
+ * `publish` at most once per PROGRESS_MS, trailing: an update within the window replaces the one
+ * waiting, which is published when the window ends. `onFlush` gets a function publishing the
+ * waiting one now (before the call's result), after which nothing more is published.
+ */
+function throttled<T>(publish: (value: T) => void, onFlush: (flush: () => void) => void) {
+  let last = 0, waiting: { value: T } | undefined, timer: ReturnType<typeof setTimeout> | undefined, done = false;
+  const release = () => { timer = undefined; if (waiting) { const { value } = waiting; waiting = undefined; last = Date.now(); publish(value); } };
+  onFlush(() => { clearTimeout(timer); release(); done = true; });
+  return (value: T) => {
+    if (done) return;
+    const wait = last + PROGRESS_MS - Date.now();
+    if (wait <= 0 && !timer) { last = Date.now(); publish(value); return; }
+    waiting = { value };
+    timer ??= setTimeout(release, Math.max(0, wait));
+  };
+}
 /** Write an SSE frame, cutting off a subscriber that does not keep up. */
 function send(res: ServerResponse, frame: string) {
   if (res.destroyed) return;
@@ -885,11 +904,13 @@ export class ClientSessions {
     if (plan && plan.argumentsHash !== argumentsHash(call.name, call.args)) throw new Error("These are not the arguments the user answered for; the call did not run");
     const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
     await this.beforeEffect(session);
-    // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code).
-    const onProgress = call.toolCallId ? ({ progress, total, message }: Progress) => this.publish(session, { type: "event", requestId: request?.id ?? "", event: {
+    // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code),
+    // at most one per PROGRESS_MS: the latest of a burst is published at its window's end, and before the call's result.
+    let progressed: (() => void) | undefined;
+    const onProgress = call.toolCallId ? throttled(({ progress, total, message }: Progress) => this.publish(session, { type: "event", requestId: request?.id ?? "", event: {
       type: "tool_execution_update", toolCallId: call.toolCallId, toolName: call.innerCallId ? "js_exec" : call.name,
       partialResult: { content: [{ type: "text", text: message ?? `${progress}${total !== undefined ? `/${total}` : ""}` }], details: { type: "progress", tool: call.name, ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), progress, ...(total !== undefined ? { total } : {}), ...(message !== undefined ? { message } : {}) } },
-    } }) : undefined;
+    } }), flush => { progressed = flush; }) : undefined;
     let result: McpResult;
     try {
       result = await server.call({
@@ -899,11 +920,13 @@ export class ClientSessions {
         ...(this.humanSurface(session) ? { elicit: true } : {}),
       });
     } catch (error) {
+      progressed?.();
       // MCP's older form of a URL step (-32042): the user opens each URL, then the call is retried.
       const elicitations = error instanceof McpError && error.code === -32042 ? (error.data as { elicitations?: unknown[] } | undefined)?.elicitations : undefined;
       if (!Array.isArray(elicitations) || !elicitations.length) throw error;
       result = { resultType: "input_required", inputRequests: Object.fromEntries(elicitations.map((params, index) => [`url_${index}`, { method: "elicitation/create", params: { ...params as object, mode: "url" } }])) };
     }
+    progressed?.();
     if (result.resultType === "input_required") return this.suspend(session, call, request, result);
     const content = contentResult(result, server.returnsFiles);
     // The model learns who answered, and how long ago: it should check what may have changed meanwhile.

@@ -211,8 +211,8 @@ test("a server that only speaks the older SSE transport is reached through it", 
   assert.match(toolResults(r.model.bodies[1]).at(-1), /pong/);
 });
 
-/** A stateless MCP server whose `deploy` reports progress twice before answering; `metas` collects each call's _meta. */
-async function progressServer(t: T, delayMs = 0) {
+/** A stateless MCP server whose `deploy` reports progress (twice, by default) before answering; `metas` collects each call's _meta. */
+async function progressServer(t: T, delayMs = 0, steps: (readonly [number, string])[] = [[1, "Building"], [2, "Uploading"]]) {
   const metas: any[] = [];
   const url = await listen(t, async (req, res) => {
     let text = "";
@@ -220,7 +220,7 @@ async function progressServer(t: T, delayMs = 0) {
     const server = new McpServer({ name: "camel", version: "1.0.0" });
     server.registerTool("deploy", { description: "Deploy the app" }, async extra => {
       metas.push(extra._meta);
-      for (const [progress, message] of [[1, "Building"], [2, "Uploading"]] as const) {
+      for (const [progress, message] of steps) {
         await sleep(delayMs);
         await extra.sendNotification({ method: "notifications/progress", params: { progressToken: extra._meta!.progressToken!, progress, total: 3, message } });
       }
@@ -260,6 +260,21 @@ test("tool servers get the model's call id, js_exec's too, and the actor; their 
     ["call_code", "js_exec", "Building", { type: "progress", tool: "camel__deploy", innerCallId: "call_code:1", progress: 1, total: 3, message: "Building" }],
     ["call_code", "js_exec", "Uploading", { type: "progress", tool: "camel__deploy", innerCallId: "call_code:1", progress: 2, total: 3, message: "Uploading" }],
   ]);
+});
+
+test("a burst of progress is coalesced per call: the stream gets the first, then the latest of each window, and the last before the result", async t => {
+  const server = await progressServer(t, 0, Array.from({ length: 40 }, (_, index) => [index + 1, `step ${index + 1}`] as const));
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("camel__deploy", {}) : { role: "assistant", content: "done" }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Camel", mcpServers: [{ name: "camel", url: server.url, exposure: "direct" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  await r.prompt(agent, "deploy");
+  const events = (await r.call(`/v1/agents/${agent}`)).json.events.map((entry: any) => entry.data.event).filter(Boolean);
+  const progress = events.filter((event: any) => event.type === "tool_execution_update").map((event: any) => event.partialResult.details.progress);
+  assert.ok(progress.length < 10, `coalesced (${progress.length} of 40)`);
+  assert.equal(progress.at(-1), 40, "the latest progress is not lost");
+  assert.deepEqual(progress, [...progress].sort((a: number, b: number) => a - b));
+  const end = events.findIndex((event: any) => event.type === "tool_execution_end");
+  assert.ok(events.findLastIndex((event: any) => event.type === "tool_execution_update") < end, "every update comes before the call's end");
 });
 
 test("a call that keeps reporting progress outlasts its timeout, which limits only silence", async t => {

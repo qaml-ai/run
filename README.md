@@ -875,7 +875,9 @@ reconfiguration, not at a refresh.
 - Each call carries a `progressToken`. The server's `notifications/progress`
   for it reach the agent's event stream as updates of the model's tool call,
   in the shape js_exec's own updates have, so an application can show a long
-  deploy as it goes (the attached server's progress arrives the same way):
+  deploy as it goes (the attached server's progress arrives the same way).
+  A call's updates are coalesced to one per 250 ms: the latest of a burst is
+  sent when its window ends, and any still waiting before the call's result:
 
   ```json
   {"type": "tool_execution_update", "toolCallId": "call_1", "toolName": "camel__deploy",

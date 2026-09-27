@@ -122,7 +122,8 @@ failure is an MCP error result, which the model sees and which throws in code.
 `callId`, `toolCallId` (for a call from js_exec, the js_exec call's, with
 `innerCallId`), `actor` and `origin` reach the server's handlers as
 `_meta["agent-runtime/…"]`, and progress it reports for a call
-(`notifications/progress`) reaches the agent's events as a `tool_execution_update`.
+(`notifications/progress`) reaches the agent's events as a `tool_execution_update`,
+at most one per call every 250 ms (the latest of a burst, never lost).
 
 ## Asking the user
 
