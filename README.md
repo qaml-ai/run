@@ -294,6 +294,24 @@ reads what an application would read with the agent's token:
 `clients/README.md`), `/state` (request state and the stream's cursor),
 `/history` and `/inputs`. Another tenant's agent is a 404 on every route.
 
+Its users' browsers can read an agent directly, with a browser token the server
+mints for each: `POST /v1/agents/:id/browser-tokens {ttlSeconds?, scopes?, events?,
+redact?, subject?}` answers `{token, expiresAt, agentId, url}`. The token reads that
+one agent, and only `GET /v1/agents/:id/{events,state,history,inputs}` (or the
+`scopes` named); every other route, and every other agent, is 403. It lives
+`ttlSeconds` (default 900, 5 to 3600), and its event stream ends when it expires, so
+the browser reconnects with a new one. It is stateless (an HMAC under the session
+secret): nothing is stored, and nothing revokes it sooner. Its reader gets:
+- events: every type but the runtime's own (`codemode`, `compaction_usage`,
+  `spend_limit_reached`), or only those `events` lists; a run's outcome only as
+  whether and why it stopped (`{id, outcome: {stopped?, error?}}`); snapshots whole;
+- `/state`: each request's id, method, state, times and that outcome, not its
+  parameters or result;
+- with `redact: ["usage.cost"]`, messages (streamed, in snapshots and in history)
+  without their provider cost.
+
+Send it as `Authorization: Bearer <token>`, never in a URL.
+
 Codemode supports `tools.search(query)`, `tools.namespaces()`, `tools.describe(name)`,
 `tools.<name>(args)`, `fs`, `text(value)`, `console.log(value)`, top-level `await`, and
 `return`. It can compose parallel calls with `Promise.all`. Failed calls reject; a call

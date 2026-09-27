@@ -207,6 +207,12 @@ function throttled<T>(publish: (value: T) => void, onFlush: (flush: () => void) 
     timer ??= setTimeout(release, Math.max(0, wait));
   };
 }
+/**
+ * Who reads a stream other than its tenant or its agent's own application: a browser token's holder,
+ * who sees each frame as `show` makes it (undefined: not at all), until `until` (ms), when it ends.
+ */
+export type StreamReader = { show(data: ClientEvent | TurnSnapshot): unknown; until: number };
+const readers = new WeakMap<ServerResponse, StreamReader>();
 /** Whether a request's client has gone: its connection closed before the response was written. */
 const gone = (c: Context<ClientEnv>) => c.env.incoming.destroyed || c.env.outgoing.destroyed || !!c.env.outgoing.socket?.destroyed;
 /** Write an SSE frame, cutting off a subscriber that does not keep up. */
@@ -551,7 +557,12 @@ export class ClientSessions {
     while (session.events.length > 1 && (session.events.length > MAX_BUFFERED_EVENTS || session.eventBytes > limit)) session.eventBytes -= session.events.shift()!.bytes;
     this.follow(session, data, text, oversized);
     const frame = `id: ${event.id}\ndata: ${text}\n\n`;
-    for (const res of this.streams(session)) send(res, frame);
+    for (const res of this.streams(session)) {
+      const reader = readers.get(res);
+      if (!reader) { send(res, frame); continue; }
+      const shown = reader.show(data);
+      if (shown !== undefined) send(res, shown === data ? frame : `id: ${event.id}\ndata: ${JSON.stringify(shown)}\n\n`);
+    }
     for (const wake of [...session.polls]) wake();
   }
 
@@ -641,7 +652,7 @@ export class ClientSessions {
    * replaces the connection before it, or a read-only watcher, which never replaces another and is
    * never replaced. Every stream gets every event from its own cursor on (see `replay`).
    */
-  private subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch") {
+  private subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch", reader?: StreamReader) {
     // Gone while the request was authorized and its agent loaded: its close has fired already, so nothing
     // registered from here would ever be released. (No await follows, so it cannot close unseen after this.)
     if (gone(c)) return RESPONSE_ALREADY_SENT;
@@ -649,9 +660,13 @@ export class ClientSessions {
     const release = mode === "watch" ? this.hold(session) : undefined;
     const res = c.env.outgoing;
     let ready: Record<string, unknown> = { version: 5, agentId: session.header.id };
+    // A reader's stream ends as its token expires: it reconnects with a fresh one, so access changes apply within a token's life.
+    const expiry = reader ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
+    expiry?.unref();
+    if (reader) readers.set(res, reader);
     if (mode === "watch") {
       session.watchers.add(res);
-      res.on("close", () => { session.watchers.delete(res); release!(); });
+      res.on("close", () => { session.watchers.delete(res); release!(); clearTimeout(expiry); });
       ready = { ...ready, watch: true };
     } else {
       session.response?.end();
@@ -667,10 +682,11 @@ export class ClientSessions {
       session.attached = attached;
     }
     res.write(`event: ready\ndata: ${JSON.stringify(ready)}\n\n`);
-    if (snapshot) send(res, `id: ${snapshot.cursor}\ndata: ${JSON.stringify(snapshot)}\n\n`);
+    if (snapshot) send(res, `id: ${snapshot.cursor}\ndata: ${JSON.stringify(reader ? reader.show(snapshot) : snapshot)}\n\n`);
     for (const event of events) {
       if (res.destroyed) break;
-      send(res, `id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`);
+      const shown = reader ? reader.show(event.data) : event.data;
+      if (shown !== undefined) send(res, `id: ${event.id}\ndata: ${JSON.stringify(shown)}\n\n`);
     }
     return RESPONSE_ALREADY_SENT;
   }
@@ -681,7 +697,7 @@ export class ClientSessions {
    * buffered yet, it answers when the next event arrives or the wait ends. With `snapshot=1`, as for
    * a stream: a snapshot where there is nothing to replay from.
    */
-  private async poll(c: Context<ClientEnv>, session: Session) {
+  private async poll(c: Context<ClientEnv>, session: Session, reader?: StreamReader) {
     if (gone(c)) return RESPONSE_ALREADY_SENT;
     const raw = c.req.header("last-event-id");
     const asked = c.req.query("snapshot") === "1";
@@ -693,16 +709,20 @@ export class ClientSessions {
       const release = this.hold(session);
       await new Promise<void>(resolve => {
         const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); release(); resolve(); };
-        const timer = setTimeout(done, Math.min(wait * 1000, MAX_POLL_WAIT_MS));
+        const timer = setTimeout(done, Math.max(0, Math.min(wait * 1000, MAX_POLL_WAIT_MS, reader ? reader.until - Date.now() : Infinity)));
         session.polls.add(done);
         c.env.outgoing.once("close", done);
       });
       read = this.replay(session, raw, asked);
     }
     const { cursor, snapshot, events } = read;
+    const shown = (data: ClientEvent | TurnSnapshot) => reader ? reader.show(data) : data;
     return json(c, 200, {
       cursor: events.at(-1)?.id ?? (cursor || session.cursor),
-      events: [...snapshot ? [{ id: snapshot.cursor, data: snapshot }] : [], ...events.map(({ id, data }) => ({ id, data }))],
+      events: [...snapshot ? [{ id: snapshot.cursor, data: shown(snapshot) }] : [], ...events.flatMap(({ id, data }) => {
+        const visible = shown(data);
+        return visible === undefined ? [] : [{ id, data: visible }];
+      })],
     });
   }
 
@@ -1239,12 +1259,12 @@ export class ClientSessions {
    * what `/clients/:id/events?watch=1` gives a holder of the agent's token, for a server that keeps
    * no per-agent tokens. `c.env.outgoing` is the raw response the stream is written to.
    */
-  async watchFor(c: Context, id: string, tenant: string) {
+  async watchFor(c: Context, id: string, tenant: string, reader?: StreamReader) {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Unknown agent");
     if (session.fault) throw session.fault;
     const context = c as Context<ClientEnv>;
-    return c.req.query("poll") === "1" ? this.poll(context, session) : this.subscribe(context, session, "watch");
+    return c.req.query("poll") === "1" ? this.poll(context, session, reader) : this.subscribe(context, session, "watch", reader);
   }
 
   /** A tenant's view of one agent's request state and stream cursor (`/clients/:id/state`). */

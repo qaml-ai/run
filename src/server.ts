@@ -46,6 +46,7 @@ import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
+import { BrowserTokens } from "./browser-tokens.ts";
 
 // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
@@ -433,7 +434,9 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
 app.route("/", channels.app);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, usageWebhooks, scheduler, channels, volumes, definitions, links, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+// Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
+const browserTokens = new BrowserTokens(sessionSecret);
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, usageWebhooks, scheduler, channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);

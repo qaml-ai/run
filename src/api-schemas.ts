@@ -218,6 +218,18 @@ export const EventPoll = z.object({
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
 }).openapi("EventPoll");
 
+export const BrowserTokenInput = z.object({
+  ttlSeconds: z.number().int().min(5).max(3600).optional().openapi({ description: "How long it lives: 5 to 3600 seconds, default 900. Nothing revokes it sooner" }),
+  scopes: z.array(z.enum(["events", "state", "history", "inputs"])).optional().openapi({ description: "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default all four" }),
+  events: z.array(z.string()).max(64).optional().openapi({ description: "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (codemode, compaction_usage, spend_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped" }),
+  redact: z.array(z.enum(["usage.cost"])).optional().openapi({ description: "Fields it does not see: usage.cost, a response's provider cost, in messages, snapshots and history" }),
+  subject: z.string().max(200).optional().openapi({ description: "Whom it is for, in your app (a user id)" }),
+}).openapi("BrowserTokenInput");
+export const BrowserToken = z.object({
+  token: z.string().openapi({ description: "Send as Authorization: Bearer <token>, never in a URL" }),
+  expiresAt: z.number(), agentId: z.string(), url: z.string().optional().openapi({ description: "Where the browser reaches the runtime" }),
+}).openapi("BrowserToken");
+
 export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi("History");
 export const HistoryPage = z.object({
   entries: z.array(z.object({ index: z.number().openapi({ description: "The message's index in the agent's history" }), message: z.unknown() })).openapi({ description: "Whole turns, oldest first" }),

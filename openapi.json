@@ -19,6 +19,11 @@
         "scheme": "bearer",
         "description": "Operator or API token"
       },
+      "browser": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A browser token (POST /v1/agents/{id}/browser-tokens): reads one agent's events, state, history and inputs, until it expires"
+      },
       "console": {
         "type": "apiKey",
         "in": "cookie",
@@ -1078,6 +1083,77 @@
           "messages"
         ],
         "additionalProperties": {}
+      },
+      "BrowserToken": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Send as Authorization: Bearer <token>, never in a URL"
+          },
+          "expiresAt": {
+            "type": "number"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "Where the browser reaches the runtime"
+          }
+        },
+        "required": [
+          "token",
+          "expiresAt",
+          "agentId"
+        ]
+      },
+      "BrowserTokenInput": {
+        "type": "object",
+        "properties": {
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 3600,
+            "description": "How long it lives: 5 to 3600 seconds, default 900. Nothing revokes it sooner"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "events",
+                "state",
+                "history",
+                "inputs"
+              ]
+            },
+            "description": "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default all four"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "description": "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (codemode, compaction_usage, spend_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped"
+          },
+          "redact": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "usage.cost"
+              ]
+            },
+            "description": "Fields it does not see: usage.cost, a response's provider cost, in messages, snapshots and history"
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Whom it is for, in your app (a user id)"
+          }
+        }
       },
       "PromptInput": {
         "type": "object",
@@ -4322,6 +4398,17 @@
     },
     "/v1/agents/{id}/events": {
       "get": {
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "console": []
+          },
+          {
+            "browser": []
+          }
+        ],
         "parameters": [
           {
             "schema": {
@@ -4429,6 +4516,17 @@
     },
     "/v1/agents/{id}/state": {
       "get": {
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "console": []
+          },
+          {
+            "browser": []
+          }
+        ],
         "parameters": [
           {
             "schema": {
@@ -4441,7 +4539,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Request state and the stream's cursor",
+            "description": "Request state and the stream's cursor; for a browser token, each request only as how it ended",
             "content": {
               "application/json": {
                 "schema": {
@@ -4465,6 +4563,17 @@
     },
     "/v1/agents/{id}/history": {
       "get": {
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "console": []
+          },
+          {
+            "browser": []
+          }
+        ],
         "parameters": [
           {
             "schema": {
@@ -4509,6 +4618,51 @@
                       "$ref": "#/components/schemas/History"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/browser-tokens": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserTokenInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "A token a browser reads this agent with, until it expires",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserToken"
                 }
               }
             }
@@ -4772,6 +4926,17 @@
     },
     "/v1/agents/{id}/inputs": {
       "get": {
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "console": []
+          },
+          {
+            "browser": []
+          }
+        ],
         "parameters": [
           {
             "schema": {

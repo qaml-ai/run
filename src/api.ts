@@ -21,6 +21,7 @@ import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
 import { declaredType, fileResponse, type FileLinks } from "./files.ts";
+import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -44,10 +45,18 @@ export interface ApiContext {
   billingAdmins?: string[];
   /** Signs and verifies file links (`/v1/links`). */
   links?: FileLinks;
+  /** Mints and checks browser tokens (`/v1/agents/:id/browser-tokens`); without it there are none. */
+  browserTokens?: BrowserTokens;
+  /** Where browsers reach this runtime (a browser token's `url`). */
+  publicUrl?: string;
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
-type Env = { Variables: { principal: Principal & { login?: string } } };
+/** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
+type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
+type Env = { Variables: { principal: Caller } };
+/** The routes a browser token reads, by scope: GET /v1/agents/<its agent>/<scope>. */
+const BROWSER_ROUTE = /^\/v1\/agents\/([^/]+)\/(events|state|history|inputs)$/;
 
 const DOCUMENT = {
   openapi: "3.1.0",
@@ -80,8 +89,11 @@ export function api(context: ApiContext) {
     app.on(config.method.toUpperCase(), path, handler);
   };
   app.openAPIRegistry.registerComponent("securitySchemes", "bearer", { type: "http", scheme: "bearer", description: "Operator or API token" });
+  app.openAPIRegistry.registerComponent("securitySchemes", "browser", { type: "http", scheme: "bearer", description: "A browser token (POST /v1/agents/{id}/browser-tokens): reads one agent's events, state, history and inputs, until it expires" });
   app.openAPIRegistry.registerComponent("securitySchemes", "console", { type: "apiKey", in: "cookie", name: "ar_session", description: "Console session; mutations also need X-Agent-Runtime-Console: 1" });
   app.doc31("/v1/openapi.json", DOCUMENT);
+  /** The routes a browser token may read, besides the tenant's own tokens. */
+  const readers = [...DOCUMENT.security, { browser: [] }];
 
   const volumes = () => {
     if (!context.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
@@ -123,7 +135,15 @@ export function api(context: ApiContext) {
     return json(c, 200, await accounts.billing.webhook(payload, c.req.header("stripe-signature")));
   });
   app.use("/v1/*", async (c, next) => {
-    c.set("principal", await authenticate(c, context));
+    const principal = await authenticate(c, context);
+    c.set("principal", principal);
+    // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else.
+    if (principal.browser) {
+      const [, agent, scope] = BROWSER_ROUTE.exec(c.req.path) ?? [];
+      if (c.req.method !== "GET" || !scope) throw new HttpError(403, "A browser token only reads an agent's events, state, history and inputs");
+      if (agent !== principal.browser.agent) throw new HttpError(403, "This browser token is for another agent");
+      if (!principal.browser.scopes.includes(scope as BrowserClaims["scopes"][number])) throw new HttpError(403, `This browser token does not read ${scope}`);
+    }
     await next();
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
@@ -267,20 +287,41 @@ export function api(context: ApiContext) {
       409: reply("REPLAY_GAP: the events after Last-Event-ID are gone; read state and history, then stream from state's cursor", schema.ApiError),
       429: reply("The agent has too many subscribers", schema.ApiError),
     },
-  }), c => clients.watchFor(c, c.req.param("id")!, c.var.principal.tenant));
-  route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, responses: { 200: reply("Request state and the stream's cursor", schema.SessionState) } }),
-    async c => json(c, 200, await clients.stateFor(c.req.param("id")!, c.var.principal.tenant)));
+    security: readers,
+  }), c => {
+    const browser = c.var.principal.browser;
+    return clients.watchFor(c, c.req.param("id")!, c.var.principal.tenant, browser && { show: data => readableFrame(browser, data), until: browser.exp });
+  });
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, security: readers, responses: { 200: reply("Request state and the stream's cursor; for a browser token, each request only as how it ended", schema.SessionState) } }), async c => {
+    const state = await clients.stateFor(c.req.param("id")!, c.var.principal.tenant);
+    return json(c, 200, c.var.principal.browser ? { ...state, requests: state.requests.map(readableRequest) } : state);
+  });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/history",
     request: { params: agentId, query: z.object({
       limit: z.string().optional().openapi({ description: "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit or before, the whole transcript" }),
       before: z.string().optional().openapi({ description: "The page ends before this message index: a page's next" }),
     }) },
+    security: readers,
     responses: { 200: { description: "With limit or before, a page of whole turns (HistoryPage); otherwise the whole transcript (History)", content: { "application/json": { schema: z.union([schema.HistoryPage, schema.History]) } } } },
   }), async c => {
     const { before, limit } = c.req.query();
-    const tenant = c.var.principal.tenant, id = c.req.param("id")!;
-    return json(c, 200, before !== undefined || limit !== undefined ? await clients.historyPageFor(id, tenant, { before, limit }) : await clients.agentHistory(id, tenant));
+    const tenant = c.var.principal.tenant, id = c.req.param("id")!, browser = c.var.principal.browser;
+    if (before !== undefined || limit !== undefined) {
+      const page = await clients.historyPageFor(id, tenant, { before, limit });
+      return json(c, 200, browser ? { ...page, entries: page.entries.map(entry => ({ ...entry, message: readableMessage(browser, entry.message) })) } : page);
+    }
+    const history = await clients.agentHistory(id, tenant) as { messages: unknown[] } | undefined;
+    return json(c, 200, browser && history ? { ...history, messages: history.messages.map(message => readableMessage(browser, message)) } : history);
+  });
+  route(createRoute({
+    method: "post", path: "/v1/agents/{id}/browser-tokens", request: { params: agentId, body: content(schema.BrowserTokenInput) },
+    responses: { 201: reply("A token a browser reads this agent with, until it expires", schema.BrowserToken) },
+  }), async c => {
+    if (!context.browserTokens) throw new HttpError(404, "Browser tokens are not enabled on this runtime");
+    const id = c.req.param("id")!;
+    const minted = context.browserTokens.mint(c.var.principal.tenant, id, await readJson(c.req.raw.body, 16 * 1024, {}));
+    return json(c, 201, { ...minted, agentId: id, ...(context.publicUrl ? { url: context.publicUrl } : {}) });
   });
   route(createRoute({ method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId }, responses: { 200: reply("The running turn is aborted", z.object({ aborted: z.literal(true) })) } }), async c => {
     await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant);
@@ -322,7 +363,7 @@ export function api(context: ApiContext) {
   });
 
   const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).optional() });
-  route(createRoute({ method: "get", path: "/v1/agents/{id}/inputs", request: { params: agentId, query: inputState }, responses: { 200: reply("The agent's human inputs, newest first", z.array(schema.Input)) } }),
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/inputs", request: { params: agentId, query: inputState }, security: readers, responses: { 200: reply("The agent's human inputs, newest first", z.array(schema.Input)) } }),
     async c => json(c, 200, await clients.inputsFor(c.req.param("id")!, c.var.principal.tenant, c.req.query("state"))));
   route(createRoute({
     method: "post", path: "/v1/agents/{id}/inputs/{inputId}", request: { params: agentId.extend({ inputId: z.string() }), body: content(schema.AnswerInput) },
@@ -528,8 +569,12 @@ export function api(context: ApiContext) {
 /** The OpenAPI document, without a running server (npm run openapi). */
 export const openapiDocument = () => api({} as ApiContext).getOpenAPI31Document(DOCUMENT);
 
-async function authenticate(c: Context, context: ApiContext): Promise<Principal & { login?: string }> {
+async function authenticate(c: Context, context: ApiContext): Promise<Caller> {
   const authorization = c.req.header("authorization");
+  if (context.browserTokens && BrowserTokens.carries(authorization)) {
+    const browser = context.browserTokens.verify(authorization!);
+    return { tenant: browser.tenant, via: "browser", browser };
+  }
   if (authorization) {
     const principal = await context.accounts.authenticate(authorization);
     if (!principal) throw new HttpError(401, "Invalid token");
