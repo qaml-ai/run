@@ -7,7 +7,7 @@ import { configuredModel } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { sessionConfig } from "./session-config.ts";
-import { ClientSessions } from "./client-sessions.ts";
+import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
@@ -159,10 +159,11 @@ const keyScopes = new KeyScopes({ db, accounts });
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
-  const { mcp: _mcp, subject: _subject, context: _context, keyScope, ...rest } = params ?? {};
+  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, ...rest } = params ?? {};
   // Who the agent acts for, and context for its tool servers' identity tokens.
   const identity = identityInput(params ?? {});
   if (keyScope !== undefined) checkScope(keyScope);
+  const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
@@ -173,7 +174,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
-    made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity, { keyScope });
+    made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity, { keyScope, spendLimit });
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };

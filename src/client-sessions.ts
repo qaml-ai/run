@@ -105,6 +105,8 @@ type Session = {
   lastActive: number;
   /** Whether the agent's current model key is the platform's, not the tenant's own. */
   platformKey?: boolean;
+  /** Its spend limit and what it has spent since it was set (`agent_spend_limits`); null when it has none, undefined until read. */
+  spend?: SpendLimit | null;
   /** Since when a run's active time has not been reported (`onActive`). */
   activeSince?: number;
   /** What the running run wrote and handed over with present_file, for its outcome. */
@@ -236,6 +238,20 @@ export type DefinitionConfig = { id: string; revision: number; config: Pick<Agen
 export type UsageRecord = { provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number };
 /** Why runs are refused: a message (402), or an error with its own status. */
 export type Refusal = string | HttpError;
+/** An agent's spend limit (USD), what it has spent since, and when it was set. */
+type SpendLimit = { usd: number; spent: number; setAt: number };
+/** `spendLimit` as given: `{usd}`, or null to remove it. */
+export function spendInput(value: unknown): number | null {
+  if (value === null) return null;
+  const usd = (value as { usd?: unknown } | undefined)?.usd;
+  if (!value || typeof value !== "object" || Object.keys(value).some(key => key !== "usd") || typeof usd !== "number" || !Number.isFinite(usd) || usd < 0 || usd > 1_000_000) {
+    throw new HttpError(400, "spendLimit must be {usd} with usd a number from 0 to 1000000, or null");
+  }
+  return usd;
+}
+const dollars = (usd: number) => `$${Number(usd.toFixed(6))}`;
+/** A model response's cost as the runtime counts it. */
+const responseCost = (usage: any) => Number(usage?.cost?.total) || 0;
 /** A provider key and whether it is the platform's rather than the tenant's own. */
 export type ProviderKey = { key: string; platform: boolean };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
@@ -528,12 +544,14 @@ export class ClientSessions {
     const id = session.header.id;
     return session.starting ??= (async () => {
       await this.makeRoom(id, session.header.tenant);
+      // Read before any response is counted against it.
+      await this.spendOf(session);
       const { key: apiKey, platform } = await this.apiKey(session, session.header.config.model.provider, session.header.keyScope);
       session.platformKey = platform;
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: await this.toolset(session),
         spendLimit: async () => {
-          const limited = await this.options.spendLimit?.(session.header.tenant);
+          const limited = await this.agentSpendLimit(session) ?? await this.options.spendLimit?.(session.header.tenant);
           return typeof limited === "string" ? limited : limited?.message;
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
@@ -828,7 +846,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string } = {}): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number } = {}): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -885,6 +903,7 @@ export class ClientSessions {
         created = true;
         settle(session);
         if (granted) await this.options.volumes!.watch(id, tenant, [], granted, claim);
+        if (access.spendLimit !== undefined) await this.setSpendLimit(session, access.spendLimit);
       } catch (error) {
         settle();
         if (!created) {
@@ -971,6 +990,7 @@ export class ClientSessions {
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
       ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
       ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null,
+      spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }),
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
@@ -1206,11 +1226,12 @@ export class ClientSessions {
     if (body.method === "resume" && (!trusted || Object.keys(body.params).length !== 1 || !validId(body.params.suspension))) throw new HttpError(400, "Answer the agent's inputs to resume its turn");
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
-    // Which keys an agent calls models with is the tenant's to choose, never the agent's own.
-    if (body.method === "configure" && !trusted && Object.hasOwn(body.params, "keyScope")) throw new HttpError(403, "Only the tenant can change an agent's keyScope");
+    // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
+    for (const key of ["keyScope", "spendLimit"]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
-      if (body.method === "configure" && !applying) configurationUpdate(body.params, this.options.modelEndpoints?.(session.header.tenant));
+      if (body.method === "configure" && !applying) { const { spendLimit: _limit, ...update } = body.params; configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant)); }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer", "followUp"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -1224,10 +1245,13 @@ export class ClientSessions {
     const retried = existing();
     if (retried) return { status: 200, record: visible(retried) };
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
+    // A spend limit applies at once, ahead of queued runs, so an application can set an allowance and then prompt.
+    if (spendLimit !== undefined) await this.setSpendLimit(session, spendLimit);
     const isRun = RUN_METHODS.includes(body.method);
     // Who is acting in a run is recorded apart from what the agent is asked to do.
     let actor: string | undefined;
     let { actor: rawActor, ...params } = body.params;
+    if (spendLimit !== undefined) delete params.spendLimit;
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     if (params.from !== undefined && !["prompt", "steer", "followUp"].includes(body.method)) throw new HttpError(400, "from is only for messages (prompt, steer, followUp)");
     try {
@@ -1470,8 +1494,12 @@ export class ClientSessions {
           const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
             this.options.onUsage?.(session.header.tenant, id, { ...event.message, provider: via + event.message.provider, platform: !!session.platformKey });
+            this.spent(session, responseCost(event.message.usage));
           }
-          if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant, id, { ...event, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
+          if (event?.type === "compaction_usage" && event.usage) {
+            this.options.onUsage?.(session.header.tenant, id, { ...event, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
+            this.spent(session, responseCost(event.usage));
+          }
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
     } finally { session.retries = undefined; }
@@ -1589,10 +1617,44 @@ export class ClientSessions {
     await this.fold(session);
   }
 
+  /** The agent's spend limit, read once per load; its owner keeps it current. */
+  private async spendOf(session: Session) {
+    if (session.spend === undefined) {
+      const row = (await this.db.query("select usd, spent, set_at from agent_spend_limits where agent = $1", [session.header.id])).rows[0];
+      session.spend ??= row ? { usd: Number(row.usd), spent: Number(row.spent), setAt: Number(row.set_at) } : null;
+    }
+    return session.spend;
+  }
+
+  /** Give the agent a budget of `usd` from now (null: none). A new value starts counting from zero. */
+  private async setSpendLimit(session: Session, usd: number | null) {
+    const id = session.header.id, setAt = Date.now();
+    if (usd === null) await this.db.query("delete from agent_spend_limits where agent = $1", [id]);
+    else await this.db.query("insert into agent_spend_limits (agent, usd, spent, set_at) values ($1, $2, 0, $3) on conflict (agent) do update set usd = excluded.usd, spent = 0, set_at = excluded.set_at", [id, usd, setAt]);
+    session.spend = usd === null ? null : { usd, spent: 0, setAt };
+  }
+
+  /** Count a model response's cost against the agent's spend limit, if it has one. */
+  private spent(session: Session, cost: number) {
+    const spend = session.spend;
+    if (!spend || !(cost > 0)) return;
+    spend.spent += cost;
+    // Only the owner writes, and a limit set since is not charged: every write adds to the current one's count.
+    void this.db.query("update agent_spend_limits set spent = spent + $2 where agent = $1 and set_at = $3", [session.header.id, cost, spend.setAt])
+      .catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: errorText(error) })));
+  }
+
+  /** Why the agent may not spend more on models: it has reached its own spend limit. */
+  private async agentSpendLimit(session: Session): Promise<string | undefined> {
+    const spend = await this.spendOf(session);
+    if (!spend || spend.spent < spend.usd) return undefined;
+    return `This agent has reached its spend limit of ${dollars(spend.usd)} (${dollars(spend.spent)} spent since it was set); raise it with PATCH /v1/agents/${session.header.id}/configuration {"spendLimit": {"usd": …}}`;
+  }
+
   /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
   private async runLimit(session: Session, method: string) {
     const tenant = session.header.tenant;
-    if (MODEL_RUNS.includes(method)) return this.options.spendLimit?.(tenant);
+    if (MODEL_RUNS.includes(method)) return await this.agentSpendLimit(session) ?? this.options.spendLimit?.(tenant);
     if (RUN_METHODS.includes(method)) return this.options.creditLimit?.(tenant);
     return undefined;
   }
@@ -1793,6 +1855,7 @@ export class ClientSessions {
         await sql.query("delete from channel_conversations where agent = $1", [id]);
         await sql.query("delete from volume_watchers where agent = $1", [id]);
         await sql.query("delete from agent_inputs where agent = $1", [id]);
+        await sql.query("delete from agent_spend_limits where agent = $1", [id]);
         const tombstone = { version: 3, id, tenant: header.tenant, digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
         await sql.query("update agents set header = $2, name = $1, type = 'general', revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
           [id, JSON.stringify(tombstone), Date.now()]);

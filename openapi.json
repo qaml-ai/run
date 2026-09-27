@@ -509,6 +509,9 @@
             "type": "string",
             "description": "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own",
             "example": "org_abc123"
+          },
+          "spendLimit": {
+            "$ref": "#/components/schemas/SpendLimitInput"
           }
         }
       },
@@ -543,6 +546,21 @@
           "path",
           "mode"
         ]
+      },
+      "SpendLimitInput": {
+        "type": "object",
+        "properties": {
+          "usd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000
+          }
+        },
+        "required": [
+          "usd"
+        ],
+        "additionalProperties": false,
+        "description": "The most the agent may spend on model calls (their token cost, compaction included) from when this is set: a new value starts counting from zero. At it, new prompts get 402 and a running turn ends with stopped \"spend_limit\""
       },
       "AgentDetail": {
         "allOf": [
@@ -608,6 +626,25 @@
                 ],
                 "description": "The key scope its model calls take keys from first"
               },
+              "spendLimit": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "usd": {
+                    "type": "number"
+                  },
+                  "spent": {
+                    "type": "number",
+                    "description": "Model spend since the limit was set"
+                  }
+                },
+                "required": [
+                  "usd",
+                  "spent"
+                ]
+              },
               "cursor": {
                 "type": "number"
               },
@@ -639,6 +676,7 @@
               "mounts",
               "systemPrompt",
               "keyScope",
+              "spendLimit",
               "cursor",
               "events",
               "requests"
@@ -1022,6 +1060,24 @@
               "null"
             ],
             "description": "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it"
+          },
+          "spendLimit": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "usd": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000
+              }
+            },
+            "required": [
+              "usd"
+            ],
+            "additionalProperties": false,
+            "description": "A new budget from now, applied at once, ahead of queued runs; null removes it"
           }
         },
         "additionalProperties": false,

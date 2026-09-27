@@ -84,6 +84,10 @@ export const Mount = z.object({
   notify: z.boolean().optional().openapi({ description: "Prompt the agent when others change files under this mount" }),
 }).openapi("Mount");
 
+export const SpendLimitInput = z.object({ usd: z.number().min(0).max(1_000_000) }).strict().openapi("SpendLimitInput", {
+  description: "The most the agent may spend on model calls (their token cost, compaction included) from when this is set: a new value starts counting from zero. At it, new prompts get 402 and a running turn ends with stopped \"spend_limit\"",
+});
+
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
 export const AgentInput = z.object({
   definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
@@ -100,6 +104,7 @@ export const AgentInput = z.object({
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
+  spendLimit: SpendLimitInput.optional(),
 }).openapi("AgentInput");
 
 export const AgentCreated = z.looseObject({
@@ -186,6 +191,7 @@ export const AgentDetail = AgentSummary.extend({
   systemPromptAppend: z.string().optional(),
   fileTools: z.literal(false).optional().openapi({ description: "Present when the model gets no file tools but present_file" }),
   keyScope: z.string().nullable().openapi({ description: "The key scope its model calls take keys from first" }),
+  spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
   requests: z.array(RequestRecord),
@@ -363,6 +369,7 @@ export const ConfigureInput = z.object({
   systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt; empty removes it" }),
   thinkingLevel: ThinkingLevel.optional(),
   keyScope: z.string().nullable().optional().openapi({ description: "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it" }),
+  spendLimit: SpendLimitInput.nullable().optional().openapi({ description: "A new budget from now, applied at once, ahead of queued runs; null removes it" }),
 }).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
 
 const ChannelAccess = z.object({

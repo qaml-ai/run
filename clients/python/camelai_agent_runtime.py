@@ -312,18 +312,18 @@ class AgentRuntime:
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, on_input=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, on_input=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
         `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: one day).
         `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
         file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
-        (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first."""
+        (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on."""
         if not self.api_key:
             raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to provision an agent")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
-        optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level, "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope}
+        optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level, "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit}
         # The tools are served to the agent as an attached MCP server; this is its tools/list.
         body = {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
         if ttl_seconds is not _DEFAULT:

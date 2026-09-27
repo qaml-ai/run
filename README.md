@@ -507,6 +507,21 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
   (agent time is charged as usual), and their calls are counted in `/v1/usage`
   under the model as usual.
 
+### Agent spend limits
+
+`spendLimit: {"usd": n}` at creation or through `PATCH /v1/agents/:id/configuration`
+is the most the agent may spend on model calls from then on: their token cost as
+the runtime counts it (`/v1/usage`'s `cost`), turns and compaction summaries,
+whoever's key they ran on. Setting a value starts counting from zero, so an
+application can set the remaining allowance before each prompt; `null` removes
+it. A PATCH applies it at once, ahead of runs already queued. `GET /v1/agents/:id`
+shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
+`prompt` and `continue` runs, and a running turn ends as at the tenant's
+[monthly spend cap](#persistence), after the response that crossed it, with
+`stopped: "spend_limit"`. The node serving the agent counts its spend in memory
+and writes it to `agent_spend_limits` after each response; only the tenant can
+set it, not the agent's own token.
+
 ## Agent definitions
 
 A definition is a tenant's reusable agent configuration: name, model, system
@@ -559,7 +574,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt`, `systemPromptAppend`, `thinkingLevel` or `keyScope` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `keyScope` or `spendLimit` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration

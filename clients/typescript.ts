@@ -245,6 +245,8 @@ export interface CreateAgentOptions extends AgentOptions {
   context?: Record<string, unknown>;
   /** A key scope (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first. */
   keyScope?: string;
+  /** The most the agent may spend on model calls from now on (USD); PATCH /v1/agents/:id/configuration sets a new one. */
+  spendLimit?: { usd: number };
   systemPrompt?: string;
   name?: string;
   type?: string;
@@ -419,7 +421,7 @@ export class AgentRuntime {
     const key = this.options.apiKey;
     if (!key) throw new AgentError("Set apiKey to provision an agent");
     const server = options.mcp ?? toolServer(options.tools ?? {});
-    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...(options.subject !== undefined ? { subject: options.subject } : {}), ...(options.context !== undefined ? { context: options.context } : {}), ...(options.keyScope !== undefined ? { keyScope: options.keyScope } : {}), ...(options.definition !== undefined ? { definition: options.definition } : {}), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
+    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...(options.subject !== undefined ? { subject: options.subject } : {}), ...(options.context !== undefined ? { context: options.context } : {}), ...(options.keyScope !== undefined ? { keyScope: options.keyScope } : {}), ...(options.spendLimit !== undefined ? { spendLimit: options.spendLimit } : {}), ...(options.definition !== undefined ? { definition: options.definition } : {}), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }
