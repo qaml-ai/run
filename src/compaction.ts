@@ -3,6 +3,7 @@ import {
   type AgentMessage, type CompactionSettings, type StreamFn,
 } from "@earendil-works/pi-agent-core";
 import { completeSimple, streamSimple, type Api, type Model, type Models } from "@earendil-works/pi-ai/compat";
+import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { CompactionState } from "./transcript.ts";
 import { messageChars } from "./history.ts";
@@ -65,11 +66,28 @@ export const IDENTITY_HEADER = "X-Agent-Runtime-Identity";
  * A model on a tenant's own endpoint as Pi calls it: `chiridion` / `openrouter/anthropic/claude-sonnet-5`
  * becomes `openrouter` / `anthropic/claude-sonnet-5`, so Pi speaks that provider's protocol, and the
  * responses (and their signatures, which Pi keeps only for the same provider and model) are its.
+ * Bedrock's region, already in the model's baseUrl, leaves the id.
  */
 function upstream(model: Model<Api>): Model<Api> {
-  const slash = model.id.indexOf("/");
-  return { ...model, provider: model.id.slice(0, slash), id: model.id.slice(slash + 1) };
+  const [provider, ...rest] = model.id.split("/");
+  if (provider === "amazon-bedrock") rest.shift();
+  return { ...model, provider, id: rest.join("/") };
 }
+/** Pi's options for a call to a tenant's own endpoint: its token also as `IDENTITY_HEADER`, and Bedrock over HTTP/1.1, as any gateway takes it. */
+const identityOptions = (options: any, token: string) =>
+  ({ ...options, apiKey: token, headers: { ...options?.headers, [IDENTITY_HEADER]: token }, env: { AWS_BEDROCK_FORCE_HTTP1: "1" } });
+
+/**
+ * Pi's other clients make one attempt per call and leave retries to the runtime (none for a
+ * tenant's own endpoint, which retries itself); its Bedrock client keeps the AWS SDK's three
+ * attempts, so each Bedrock request is made a single attempt too.
+ */
+const noRetries = { acquireInitialRetryToken: async () => ({ getRetryCount: () => 0, getRetryDelay: () => 0 }), refreshRetryTokenForRetry: async () => { throw new Error("No retries"); }, recordSuccess: () => {} };
+const send = BedrockRuntimeClient.prototype.send;
+BedrockRuntimeClient.prototype.send = function (this: BedrockRuntimeClient, ...args: unknown[]) {
+  (this.config as { retryStrategy: unknown }).retryStrategy = async () => noRetries;
+  return (send as (...args: unknown[]) => unknown).apply(this, args);
+} as typeof send;
 
 /**
  * The only way this runtime calls a model: with the tenant's explicit key. Pi-ai
@@ -81,7 +99,7 @@ function upstream(model: Model<Api>): Model<Api> {
 export function explicitKeyStream(identity?: () => boolean): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent`);
-    if (identity?.()) return streamSimple(upstream(model), context, { ...options, headers: { ...options.headers, [IDENTITY_HEADER]: options.apiKey }, env: {} });
+    if (identity?.()) return streamSimple(upstream(model), context, identityOptions(options, options.apiKey));
     return streamSimple(model, context, { ...options, env: {} });
   };
 }
@@ -97,7 +115,7 @@ function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => 
     completeSimple: async (model: Model<Api>, context: any, options: any) => {
       const token = typeof apiKey === "string" ? undefined : await apiKey();
       const response = token === undefined ? await completeSimple(model, context, { ...options, apiKey, env: {} })
-        : await completeSimple(upstream(model), context, { ...options, apiKey: token, headers: { ...options?.headers, [IDENTITY_HEADER]: token }, env: {} });
+        : await completeSimple(upstream(model), context, identityOptions(options, token));
       if (response.stopReason !== "error") onResponse?.(response);
       return response;
     },

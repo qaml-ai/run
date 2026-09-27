@@ -409,14 +409,18 @@ the tenants file names the endpoint as a provider:
 
 - Agents name its models as `<name>/<provider>/<model id>`, e.g.
   `"chiridion/anthropic/claude-opus-5"` or
-  `"chiridion/openrouter/anthropic/claude-sonnet-5"`, at creation, in a
-  definition or through `PATCH /v1/agents/:id/configuration`. The model is Pi's
-  catalog model `<provider>/<model id>` (metadata, API, compatibility), or one
-  declared in `models` under that name; `GET /v1/models` lists the declared ones.
-- `<baseUrl>/<provider>` stands for the provider's API root below: the gateway
-  strips `<baseUrl>/<provider>` and appends the rest of the path, query
-  included, to the root. The runtime puts its identity token where the provider
-  takes its key.
+  `"chiridion/openrouter/anthropic/claude-sonnet-5:nitro"`, at creation, in a
+  definition or through `PATCH /v1/agents/:id/configuration`. Bedrock models also
+  name their region: `"chiridion/amazon-bedrock/us-west-2/us.anthropic.claude-sonnet-5"`.
+  The model is Pi's catalog model `<provider>/<model id>` (its metadata, API and
+  compatibility; a routing variant like `:nitro` or `:free` is looked up without
+  the suffix). Or it is one declared in `models` under everything after
+  `<name>/`. `GET /v1/models` lists the declared ones. The model id is sent
+  exactly as given, variant and all.
+- `<baseUrl>/<provider>` stands for the provider's API root below. The gateway
+  strips `<baseUrl>/<provider>` (plus the region, for Bedrock) and appends the
+  rest of the path, query included, to the root. The runtime puts its identity
+  token where the provider takes its key.
 
   | provider | upstream root | requests | key header |
   |---|---|---|---|
@@ -424,11 +428,15 @@ the tenants file names the endpoint as a provider:
   | `openai` | `https://api.openai.com/v1` | `POST /responses` | `Authorization: Bearer` |
   | `openrouter` | `https://openrouter.ai/api` | `POST /v1/responses`; Anthropic models `POST /v1/messages?beta=true` | `Authorization: Bearer`; `x-api-key` |
   | `google` | `https://generativelanguage.googleapis.com/v1beta` | `POST /models/<id>:streamGenerateContent?alt=sse` | `x-goog-api-key` |
+  | `amazon-bedrock` | `https://bedrock-runtime.<region>.amazonaws.com`, from `<baseUrl>/amazon-bedrock/<region>` | `POST /model/<URL-encoded id>/converse-stream` | `Authorization: Bearer` (unsigned; no SigV4) |
 
   OpenRouter's models use its Responses API, stateless (`store: false`, the whole
   conversation each call), with reasoning kept and sent back as it came
   (`encrypted_content` or `signature`). Its Anthropic models keep its Messages API,
-  as in Pi's catalog, because Responses gets them no prompt caching.
+  as in Pi's catalog, because Responses gets them no prompt caching. Bedrock
+  requests are HTTP/1.1, and their ids are sent as given: a model id
+  (`anthropic.claude-sonnet-5`) or an inference profile's (`us.…`, `eu.…`,
+  `global.…`); Pi's catalog has both.
 - Every call also carries the token as `X-Agent-Runtime-Identity`. This is the
   EdDSA JWT that MCP servers with `auth: {"type": "runtime"}` get (see
   [Identity tokens](#identity-tokens-auth--type-runtime-)). Its `aud` is the

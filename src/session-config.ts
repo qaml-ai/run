@@ -27,7 +27,7 @@ export type EndpointModel = { contextWindow: number; maxTokens: number; reasonin
  * gateway where `<baseUrl>/<provider>` stands for that provider's API (`UPSTREAMS`). Pi speaks the
  * provider's own protocol to it with the runtime's identity token as the key; the endpoint swaps in
  * the real credential and meters, so calls cost the runtime nothing. `models` declares models Pi's
- * catalog lacks, by `<provider>/<model id>`.
+ * catalog lacks, by the model reference after `<name>/`.
  */
 export type ModelEndpoint = { baseUrl: string; models?: Record<string, EndpointModel> };
 /** A tenant's model endpoints by provider name. */
@@ -36,34 +36,40 @@ export type ModelEndpoints = Record<string, ModelEndpoint> | undefined;
 /**
  * The providers an endpoint forwards to: the API root `<endpoint>/<provider>` maps onto, and the API
  * Pi speaks to it. OpenRouter's models use its Responses API (stateless), except Anthropic's, which
- * keep its Messages API: Responses gets them no prompt caching.
+ * keep its Messages API: Responses gets them no prompt caching. Bedrock's root is regional: its
+ * models are named with their region (`amazon-bedrock/<region>/<model id>`), which ends up in the path.
  */
 export const UPSTREAMS: Record<string, { root: string; api: string; path?: string }> = {
   anthropic: { root: 'https://api.anthropic.com', api: 'anthropic-messages' },
   openai: { root: 'https://api.openai.com/v1', api: 'openai-responses' },
   openrouter: { root: 'https://openrouter.ai/api', api: 'openai-responses', path: '/v1' },
   google: { root: 'https://generativelanguage.googleapis.com/v1beta', api: 'google-generative-ai' },
+  'amazon-bedrock': { root: 'https://bedrock-runtime.<region>.amazonaws.com', api: 'bedrock-converse-stream' },
 };
 
 const lookup = getModel as (provider: string, id: string) => AgentConfig['model'] | undefined;
 
 /**
  * `<name>/<provider>/<model id>` on a tenant's endpoint: the catalog's (or the endpoint's declared)
- * model, called at `<endpoint>/<provider>`, at no cost. Its id keeps the provider, which Pi's calls
- * take back out (`compaction.ts`).
+ * model, called at `<endpoint>/<provider>`, at no cost. Its id keeps the provider (and Bedrock's
+ * region), which Pi's calls take back out (`compaction.ts`). A routing variant (`…:nitro`) is
+ * looked up without it and sent with it.
  */
 function endpointModel(name: string, id: string, endpoint: ModelEndpoint): AgentConfig['model'] {
-  const slash = id.indexOf('/');
-  const provider = id.slice(0, slash);
-  if (slash <= 0 || !Object.hasOwn(UPSTREAMS, provider)) throw new Error(`Model "${name}/${id}" must be "${name}/<provider>/<model id>" with a provider among ${Object.keys(UPSTREAMS).join(', ')}`);
-  const known = lookup(provider, id.slice(slash + 1));
+  const [provider, ...rest] = id.split('/');
+  const region = provider === 'amazon-bedrock' ? rest.shift() : undefined;
+  const modelId = rest.join('/');
+  if (!Object.hasOwn(UPSTREAMS, provider) || !modelId) throw new Error(`Model "${name}/${id}" must be "${name}/<provider>/<model id>" with a provider among ${Object.keys(UPSTREAMS).join(', ')}`);
+  if (region !== undefined && !/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region)) throw new Error(`Model "${name}/${id}" must be "${name}/amazon-bedrock/<region>/<model id>"`);
+  const known = lookup(provider, modelId) ?? lookup(provider, modelId.replace(/:[a-z]+$/, ''));
   const declared = endpoint.models?.[id];
   if (!known && !declared) throw new Error(`Unknown model "${name}/${id}": declare it in the ${name} endpoint's models, or name a model in GET /v1/models`);
   const upstream = UPSTREAMS[provider];
   const api = known?.api === 'anthropic-messages' ? 'anthropic-messages' : upstream.api;
+  const path = region ? `/${region}` : api === 'anthropic-messages' ? '' : upstream.path ?? '';
   return {
     reasoning: false, input: ['text'], ...known, name: known?.name ?? id, ...declared, id, provider: name, api,
-    baseUrl: `${endpoint.baseUrl}/${provider}${api === 'anthropic-messages' ? '' : upstream.path ?? ''}`, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    baseUrl: `${endpoint.baseUrl}/${provider}${path}`, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   } as AgentConfig['model'];
 }
 

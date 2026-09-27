@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { crc32 } from "node:zlib";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { Tenants } from "../src/tenants.ts";
 import { listen, OPERATOR, OTHER_OPERATOR, runtime, until, type T } from "./runtime-server.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
-type Reply = { events: object[] } | { status: number; error: object };
+type Reply = { events: object[] } | { eventStream: Buffer } | { status: number; error: object };
 /**
  * A tenant's pass-through gateway: records each request as it arrives (path, headers, the provider's
  * native body) and answers with the next scripted reply, SSE events or an HTTP error before any stream.
@@ -21,6 +22,7 @@ async function gateway(t: T, reply: (body: any, index: number) => Reply) {
     requests.push({ path: req.url!, headers: req.headers, body });
     const next = reply(body, requests.length - 1);
     if ("status" in next) { res.writeHead(next.status, { "Content-Type": "application/json" }).end(JSON.stringify({ error: next.error })); return; }
+    if ("eventStream" in next) { res.writeHead(200, { "Content-Type": "application/vnd.amazon.eventstream" }).end(next.eventStream); return; }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const event of next.events) res.write(`event: ${(event as { type: string }).type}\ndata: ${JSON.stringify(event)}\n\n`);
     res.end();
@@ -53,6 +55,19 @@ function responses(items: object[], usage = { input_tokens: 10, output_tokens: 5
   });
   return { events: [...events, { type: "response.completed", response: { id: "resp_1", status: "completed", usage: { ...usage, total_tokens: usage.input_tokens + usage.output_tokens } } }] };
 }
+/** Bedrock ConverseStream events, as AWS event-stream frames: each `[type, body]` one message. */
+function converse(events: [string, object][]) {
+  const u32 = (value: number) => { const buffer = Buffer.alloc(4); buffer.writeUInt32BE(value >>> 0); return buffer; };
+  const header = (name: string, value: string) => Buffer.concat([Buffer.from([name.length]), Buffer.from(name), Buffer.from([7, value.length >> 8, value.length & 255]), Buffer.from(value)]);
+  return { eventStream: Buffer.concat(events.map(([type, body]) => {
+    const headers = Buffer.concat([header(":event-type", type), header(":content-type", "application/json"), header(":message-type", "event")]);
+    const payload = Buffer.from(JSON.stringify(body));
+    const prelude = Buffer.concat([u32(16 + headers.length + payload.length), u32(headers.length)]);
+    const frame = Buffer.concat([prelude, u32(crc32(prelude)), headers, payload]);
+    return Buffer.concat([frame, u32(crc32(frame))]);
+  })) };
+}
+
 const message = (text: string) => ({ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] });
 
 const tenantsWith = (baseUrl: string, models?: object) => ({ tenants: {
@@ -130,6 +145,53 @@ test("OpenRouter models on a tenant's endpoint use its Responses API, reasoning 
   assert.ok(usage.days.some((entry: any) => entry.model === "chiridion/openrouter/free/tiny" && entry.kind === "compaction" && entry.cost === 0), JSON.stringify(usage));
 });
 
+test("a Bedrock model on a tenant's endpoint gets Converse's own request at its region's path, unsigned, with its signatures sent back", async t => {
+  const endpoint = await gateway(t, (_body, index) => [
+    converse([
+      ["messageStart", { role: "assistant" }],
+      ["contentBlockDelta", { contentBlockIndex: 0, delta: { reasoningContent: { text: "Adding in code." } } }],
+      ["contentBlockDelta", { contentBlockIndex: 0, delta: { reasoningContent: { signature: "sig-from-bedrock" } } }],
+      ["contentBlockStop", { contentBlockIndex: 0 }],
+      ["contentBlockStart", { contentBlockIndex: 1, start: { toolUse: { toolUseId: "tooluse_1", name: "js_exec" } } }],
+      ["contentBlockDelta", { contentBlockIndex: 1, delta: { toolUse: { input: JSON.stringify({ code: "return 1 + 1;" }) } } }],
+      ["contentBlockStop", { contentBlockIndex: 1 }],
+      ["messageStop", { stopReason: "tool_use" }],
+      ["metadata", { usage: { inputTokens: 900, outputTokens: 20, totalTokens: 920 }, metrics: { latencyMs: 5 } }],
+    ]),
+    converse([
+      ["messageStart", { role: "assistant" }],
+      ["contentBlockDelta", { contentBlockIndex: 0, delta: { text: "It is 2." } }],
+      ["contentBlockStop", { contentBlockIndex: 0 }],
+      ["messageStop", { stopReason: "end_turn" }],
+      ["metadata", { usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105 }, metrics: { latencyMs: 5 } }],
+    ]),
+    { status: 503, error: { message: "Upstream provider failed" } },
+  ][index]);
+  const r = await runtime(t, () => ({ role: "assistant", content: "platform model" }), {}, tenantsWith(endpoint.url));
+  for (const model of ["chiridion/amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", "chiridion/amazon-bedrock/Mars/us.anthropic.claude-haiku-4-5-20251001-v1:0"]) assert.equal((await r.call("/v1/agents", { body: { model } })).status, 400, model);
+  // The region is the model's, not the catalog's (us-east-1); the model id goes as it is, a profile's here.
+  const model = "chiridion/amazon-bedrock/us-west-2/us.anthropic.claude-haiku-4-5-20251001-v1:0";
+  const agent = (await r.call("/v1/agents", { body: { model, thinkingLevel: "high" } })).json.id;
+  assert.equal((await r.prompt(agent, "What is 1 + 1?")).outcome.result.reply, "It is 2.");
+
+  const [first, second] = endpoint.requests;
+  assert.equal(first.path, "/agent-runtime/llm/amazon-bedrock/us-west-2/model/us.anthropic.claude-haiku-4-5-20251001-v1%3A0/converse-stream");
+  assert.equal(first.headers.authorization, `Bearer ${first.headers["x-agent-runtime-identity"]}`, "a bearer token, not SigV4");
+  assert.ok(!first.headers["x-amz-date"] && !first.headers["x-amz-security-token"] && !first.headers["x-amz-content-sha256"]);
+  assert.equal(first.body.messages[0].role, "user");
+  const replayed = second.body.messages.find((entry: any) => entry.role === "assistant");
+  assert.deepEqual(replayed.content[0], { reasoningContent: { reasoningText: { text: "Adding in code.", signature: "sig-from-bedrock" } } });
+
+  const usage = (await r.call("/v1/usage")).json;
+  const row = usage.days.find((entry: any) => entry.model === "chiridion/amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0");
+  assert.deepEqual([row?.input, row?.output, row?.cost], [1000, 25, 0], JSON.stringify(usage));
+
+  // The AWS SDK's own retries are off too: an error is one request.
+  const outcome = (await r.prompt(agent, "Again?")).outcome;
+  assert.match(outcome.result?.error ?? outcome.error, /Upstream provider failed/);
+  assert.equal(endpoint.requests.length, 3);
+});
+
 test("a tenant endpoint's errors end the turn with its message, without retries", async t => {
   const endpoint = await gateway(t, (_body, index) => [
     { status: 402, error: { type: "insufficient_credits", message: "Out of credits for this workspace" } },
@@ -138,7 +200,8 @@ test("a tenant endpoint's errors end the turn with its message, without retries"
   ][index] ?? anthropic([{ type: "text", text: "ok" }], "end_turn"));
   const r = await runtime(t, () => ({ role: "assistant", content: "platform model" }), {}, tenantsWith(endpoint.url));
   // OpenRouter's Anthropic models keep its Messages API (at <endpoint>/openrouter/v1/messages, with the query Anthropic's client adds), where they are cached.
-  const agent = (await r.call("/v1/agents", { body: { model: "chiridion/openrouter/anthropic/claude-sonnet-5" } })).json.id;
+  // A routing variant is looked up without its suffix (the Messages API here) and sent with it.
+  const agent = (await r.call("/v1/agents", { body: { model: "chiridion/openrouter/anthropic/claude-sonnet-5:nitro" } })).json.id;
   for (const expected of [/Out of credits for this workspace/, /Too many requests for this user/, /Upstream provider failed/]) {
     const before = endpoint.requests.length;
     const outcome = (await r.prompt(agent, "hello")).outcome;
@@ -146,7 +209,7 @@ test("a tenant endpoint's errors end the turn with its message, without retries"
     assert.equal(endpoint.requests.length, before + 1, "one request, no retry");
   }
   assert.equal(endpoint.requests[0].path, "/agent-runtime/llm/openrouter/v1/messages?beta=true");
-  assert.equal(endpoint.requests[0].body.model, "anthropic/claude-sonnet-5");
+  assert.equal(endpoint.requests[0].body.model, "anthropic/claude-sonnet-5:nitro");
 });
 
 test("model endpoints are checked when the tenants file loads", async () => {
