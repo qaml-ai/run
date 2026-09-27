@@ -309,6 +309,8 @@ export interface FileLink { url: string; method: "GET" | "PUT"; path: string; ex
 /** A link's options: `expiresIn` seconds (default 900, at most 86400); for PUT, the largest upload and its content type. */
 export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBytes?: number; contentType?: string }
 export interface AgentHistory { messages: AgentMessage[] }
+/** A page of history: whole turns, oldest first, each message at its index in the agent's history. `next` is the older page's `before` (null at the start). */
+export interface HistoryPage { entries: { index: number; message: AgentMessage }[]; next: number | null; total: number; split?: true }
 /**
  * A file to attach to a message: bytes or a Blob (a File keeps its name and type), `{ name, data,
  * contentType? }`, a local path (Node entry), or `{ path }` for a file already in the agent's mounts.
@@ -853,6 +855,15 @@ export class AgentClient {
     return attached;
   }
   history(): Promise<AgentHistory> { return this.http("/history"); }
+  /**
+   * The page of whole turns ending before `before` (default: the newest message, the running turn's
+   * included), with at least `limit` messages (default 50) where there are that many. It reads only
+   * that page, however long the history.
+   */
+  historyPage(options: { before?: number; limit?: number } = {}): Promise<HistoryPage> {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 50), ...(options.before !== undefined ? { before: String(options.before) } : {}) });
+    return this.http(`/history?${query}`);
+  }
   continue(options?: RequestOptions & { actor?: string }) { return this.request("continue", options?.actor ? { actor: options.actor } : {}, options); }
   steer(text: string, options?: { from?: Sender; files?: Attachment[] }) { return this.message("steer", text, options); }
   followUp(text: string, options?: { from?: Sender; files?: Attachment[] }) { return this.message("followUp", text, options); }

@@ -17,6 +17,10 @@ import { boundedContext, interruptedTurnRepairs, validateInitialMessages, valida
 import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, runCompaction } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
+import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
+
+/** How long a stopping agent waits to index its settled turns (see `index`). */
+export const HISTORY_FLUSH_MS = 5_000;
 
 /** How a host talks to its supervisor: over IPC in its own process, or directly when inline. */
 export interface HostIO {
@@ -37,6 +41,8 @@ export interface HostIO {
   modelAuth(): Promise<Credentials>;
   /** js_exec's `fs`, answered by the supervisor over the agent's mounts. */
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
+  /** The agent's history index, which the supervisor writes: how many messages it has (null: none is kept), and a chunk to add. */
+  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
 }
 
 /**
@@ -60,6 +66,30 @@ export function createAgentHost(io: HostIO) {
   let hydratedBytes = 0;
   /** Whether the model request being built carries a PDF, whose block the provider payload needs rewritten. */
   let documents = false;
+  /** History index writes, one at a time. */
+  let indexing = Promise.resolve();
+
+  /**
+   * Add what the history index lacks to it, in the background. Like the log's own segments, chunks
+   * are written when the backlog has grown past one (all but the latest message, the only one a retry
+   * retracts) and when the agent stops (`final`: the settled turns), never per turn. A failed write
+   * is tried again with the next; what a crash leaves out is indexed at the next start.
+   */
+  function index(final = false): Promise<void> {
+    const history = io.history;
+    if (!history || !transcript) return Promise.resolve();
+    return indexing = indexing.then(async () => {
+      const backlog = transcript.backlog;
+      if (!backlog?.messages.length || (!final && backlog.bytes < CHUNK_BYTES)) return;
+      // A turn cut off by the stop is settled at the next start, with its repairs.
+      const count = !final ? backlog.messages.length - 1 : transcript.active ? Math.max(0, transcript.turnStart - backlog.from) : backlog.messages.length;
+      for (const chunk of chunksOf(backlog, count)) {
+        const indexed = await history.write(chunk);
+        transcript.indexed(indexed);
+        if (indexed !== chunk.start + chunk.messages.length) return;
+      }
+    }).catch(error => console.error(JSON.stringify({ type: "history_index_failed", agent: config.id, error: errorText(error) })));
+  }
 
   function summaryView(): AgentMessage[] {
     const state = transcript.compaction;
@@ -331,7 +361,9 @@ export function createAgentHost(io: HostIO) {
       if (agent) throw new Error("Agent already initialized");
       config = params;
       await mkdir(config.directory, { recursive: true, mode: 0o700 });
-      transcript = new Transcript(io.transcript);
+      // Messages the history index lacks are kept from here, as the log is read: all of them for an agent never indexed.
+      const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
+      transcript = new Transcript(io.transcript, indexed ?? undefined);
       await transcript.load();
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string } } | undefined;
@@ -435,11 +467,13 @@ export function createAgentHost(io: HostIO) {
           // One durable append per finished message. Streaming deltas are never persisted.
           try { await transcript.push(event.message); }
           catch (error) { persistenceError = error; agent!.abort(); throw error; }
+          void index();
         }
         io.emit(event);
       });
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
+      void index();
       return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}) };
     }
     if (!agent) throw new Error("Agent is not initialized");
@@ -459,6 +493,13 @@ export function createAgentHost(io: HostIO) {
     }
     // Full history comes from the log; memory holds only the working set.
     if (method === "history") return { messages: await readTranscriptLog(transcript.log) };
+    // Before a stop: index the settled turns, so a page of them needs neither the process nor the log.
+    if (method === "historyFlush") { await index(true); return null; }
+    // What the history index lacks yet: the running turn, and anything a failed write left. Null when nothing indexes the agent.
+    if (method === "historyTail") {
+      const backlog = transcript.backlog;
+      return backlog ? { from: backlog.from, messages: backlog.messages, turns: backlog.turns } : null;
+    }
     if (method === "steer" || method === "followUp") {
       // Pi queues these whether or not a run is active; an idle queue drains into the next run.
       for (const message of userMessages(params)) agent[method](message);
@@ -514,6 +555,7 @@ export function createAgentHost(io: HostIO) {
       await io.cancelTools();
       active = undefined;
       busy = false;
+      if (method !== "execute") void index();
     }
   }
 
@@ -564,6 +606,7 @@ export function createAgentHost(io: HostIO) {
   async function dispose() {
     active?.abort();
     agent?.abort();
+    await Promise.race([index(true), sleep(HISTORY_FLUSH_MS)]);
     await transcript?.log.close();
   }
 

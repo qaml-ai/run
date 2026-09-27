@@ -339,7 +339,9 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   const unload = storage.puts - before - turn;
   console.log(JSON.stringify({ type: "storage_writes", turn, unload, tailRows: tail }));
   assert.equal(turn, 0, "no Storage writes during the turn");
-  assert.ok(unload <= 2, `at most one segment per log on unload (was ${unload})`);
+  const chunks = [...storage.blobs.keys()].filter(key => key.startsWith(`sessions/${agent.session.id}/history/`)).length;
+  assert.equal(chunks, 1, "the settled turn goes to the history index as one chunk, when the agent stops");
+  assert.ok(unload - chunks <= 2, `at most one segment per log on unload (was ${unload - chunks})`);
   assert.equal(Number((await db.query("select count(*) as count from log_records")).rows[0].count), 0, "unloading emptied the tail");
   const history = (await supervisor.history(agent.session.id)).map(message => message.role);
   assert.deepEqual(history, ["user", "assistant", "toolResult", "assistant", "toolResult", "assistant"]);

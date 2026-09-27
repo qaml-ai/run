@@ -11,6 +11,7 @@ import { AgentSupervisor } from "./supervisor.ts";
 import { configurationUpdate, type ModelEndpoints } from "./session-config.ts";
 import { validateDefinitions } from "./tool-policy.ts";
 import { validateUserMessages } from "./history.ts";
+import type { Backlog } from "./transcript.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
@@ -34,6 +35,7 @@ import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
+import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
@@ -68,6 +70,8 @@ interface SessionHeader {
 type JournalRecord = { t: "request"; record: RequestRecord };
 type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; Variables: { session: Session } };
 type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
+/** What a running agent's history index lacks (its transcript's backlog). */
+type HistoryTail = Pick<Backlog, "from" | "messages" | "turns">;
 type Session = {
   header: SessionHeader;
   /** Revision of the stored header this node last read or wrote; writes are conditional on it. */
@@ -337,6 +341,8 @@ export class ClientSessions {
   readonly storage: Storage;
   readonly db: Db;
   readonly heartbeat: ReturnType<typeof setInterval>;
+  /** Agents' history in pages. */
+  readonly historyIndex: HistoryIndex;
   private closed = false;
   /** Set while the node drains or retires: runs that have not begun stay queued for the next owner. */
   draining = false;
@@ -348,6 +354,7 @@ export class ClientSessions {
     this.options = options;
     this.db = options.db;
     this.storage = options.storage ?? fileStorage(options.root!);
+    this.historyIndex = new HistoryIndex(this.db, this.storage);
     this.heartbeat = setInterval(() => this.tick(), Math.min(5000, Math.max(50, Math.floor((options.idleMs ?? 5 * 60_000) / 2))));
     this.heartbeat.unref();
     options.ownership?.onFence(() => { for (const session of [...this.sessions.values()]) void this.lost(session); });
@@ -775,6 +782,7 @@ export class ClientSessions {
         modelAuth: () => this.modelAuth(session),
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
+        history: { indexed: async () => (await this.historyIndex.indexed(id)) ?? 0, write: chunk => this.historyIndex.write(id, session.claim, chunk) },
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
@@ -1173,6 +1181,7 @@ export class ClientSessions {
   private async purgeData(id: string, sql: Sql) {
     await this.storage.removeLog(this.journalKey(id));
     await this.supervisor.purge(id);
+    await this.historyIndex.remove(id, sql);
     await deleteTail(sql, id, [this.journalKey(id), AgentSupervisor.transcriptKey(id)]);
   }
 
@@ -1290,6 +1299,39 @@ export class ClientSessions {
     this.purgeSoon();
   }
 
+  /**
+   * A page of the agent's history (see HistoryIndex.page): settled messages from their chunks, and
+   * what the running agent has not indexed yet from it. An agent never indexed (it predates the
+   * index) is indexed now, from its log, once.
+   */
+  private async historyPage(session: Session, query: { before?: string; limit?: string }): Promise<HistoryPage> {
+    const before = query.before === undefined ? undefined : Number(query.before);
+    const limit = query.limit === undefined ? 50 : Number(query.limit);
+    if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
+    const id = session.header.id;
+    const live = this.supervisor.agents.has(id);
+    let tail = live ? await this.supervisor.request(id, "historyTail" as RequestMethod) as HistoryTail | null : undefined;
+    if (!tail) {
+      // Not running: the index should have every message its runs reported. One behind (its stop could not write
+      // the last chunks) or never indexed (made before the index) catches up from its log, here, once.
+      const indexed = await this.historyIndex.indexed(id);
+      const reported = Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
+      if (tail === null || indexed === undefined || indexed < reported) {
+        const backlog = await this.supervisor.backlog(id, tail === null ? 0 : indexed ?? 0);
+        tail = !live && !this.supervisor.starting.has(id) ? await this.historyIndex.writeAll(id, session.claim, backlog) : backlog;
+      }
+    }
+    return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
+  }
+
+  /** A tenant's view of a page of one agent's history. */
+  async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string }) {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Unknown agent");
+    return this.historyPage(session, query);
+  }
+
   /** The transcript, from the live agent when it runs, otherwise straight from its log. */
   private async history(session: Session) {
     if (this.supervisor.agents.has(session.header.id)) return this.supervisor.request(session.header.id, "history");
@@ -1346,7 +1388,11 @@ export class ClientSessions {
       if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"), c.var.session.claim)) throw new HttpError(404, "Unknown schedule");
       return json(c, 200, { deleted: true });
     });
-    app.get(`${agent}/history`, async c => json(c, 200, await this.history(c.var.session)));
+    // With `limit` or `before`, a page of whole turns; without, the whole transcript.
+    app.get(`${agent}/history`, async c => {
+      const { before, limit } = c.req.query();
+      return json(c, 200, before !== undefined || limit !== undefined ? await this.historyPage(c.var.session, { before, limit }) : await this.history(c.var.session));
+    });
     // The agent's files by the paths it sees them at (/workspace/...), for applications holding its token.
     app.get(`${agent}/files`, async c => {
       const { path, glob, after, limit } = c.req.query();

@@ -304,6 +304,7 @@ bun examples/release-board.ts --prompt \
 | `agent.status()` / `agent.abort()` | Same | Inspect or cancel a turn |
 | `agent.outcomes()` | Same | Inspect recorded requests and tool outcomes |
 | `agent.requestStatus(id)` | `agent.request_status(id)` | Recover a timed-out request's result |
+| `agent.historyPage({ before, limit })` | `GET /clients/:id/history?limit=` | A page of whole turns (see [History in pages](#history-in-pages)) |
 | `agent.close()` | Same | Disconnect locally, retain hosted agent |
 | `agent.destroy()` | Same | Revoke the session and stop its agent |
 
@@ -396,6 +397,20 @@ Subscribers without `deltas=1` get the events as before. The runtime keeps only
 the latest partial message, so a `message_update` replayed after a reconnect
 carries its message as it stands now (or as it ended), not as it stood at that
 update.
+
+## History in pages
+
+`GET /clients/:id/history?limit=50` (tenants: `/v1/agents/:id/history?limit=50`)
+answers the newest page: whole turns, oldest first, with at least `limit`
+messages where the history has that many, and about 4 MB at most:
+`{ entries: [{ index, message }], next, total }`. Each message has its index in
+the agent's history; pass `next` as `before` for the page before it (`null` at
+the start). A page never starts inside a turn (a run that began with a user
+message), unless that turn alone is larger than a page: then the page says
+`split: true`. The newest page includes the running turn's finished messages,
+at the indexes `turn_opened` and snapshots give. A settled page never changes,
+so it can be cached by its `before` and `limit`. Without `limit` or `before`,
+`/history` still answers the whole transcript.
 
 ## Persistence and limits
 

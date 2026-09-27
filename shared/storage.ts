@@ -22,6 +22,8 @@ export interface Storage {
   /** Immutable binary objects, e.g. content-addressed chunks: writing a key that exists is a no-op. */
   readBlob(key: string): Promise<Uint8Array | undefined>;
   writeBlob(key: string, data: Uint8Array): Promise<void>;
+  /** Delete every blob whose key starts with `prefix` (a directory, ending in "/"), for an actor that is gone. */
+  removeBlobs(prefix: string): Promise<void>;
   /** Every stored object under `prefix`, with its size: for reconciling metered storage, not for reading state. */
   objects?(prefix: string): AsyncIterable<{ key: string; bytes: number }>;
   /** Whether every object this Storage creates or deletes is reported to its meter (single-host logs, appended files, are not). */
@@ -81,6 +83,11 @@ export function fileStorage(root: string, options: { tail?: LogTail; meter?: Sto
         meter?.(key, data.byteLength);
       } finally { await rm(temporary, { force: true }); }
     },
+    async removeBlobs(prefix) {
+      validKey(prefix.replace(/\/$/, ""));
+      if (meter) for await (const { key, bytes } of this.objects!(prefix)) meter(key.replace(/\.bin$/, ""), -bytes);
+      await rm(join(root, prefix), { recursive: true, force: true });
+    },
     async *objects(prefix) {
       let entries;
       try { entries = await readdir(join(root, prefix), { recursive: true, withFileTypes: true }); }
@@ -138,6 +145,9 @@ export function memoryStorage(tail: LogTail, meter?: StorageMeter): Storage & { 
       storage.puts++;
       blobs.set(key, Uint8Array.from(data));
       meter?.(key, data.byteLength);
+    },
+    async removeBlobs(prefix: string) {
+      for (const [key, data] of blobs) if (key.startsWith(prefix)) { blobs.delete(key); meter?.(key, -data.byteLength); }
     },
     async *objects(prefix: string) {
       for (const [key, objects] of logs) if (key.startsWith(prefix)) for (const [name, body] of objects) yield { key: `${key}.log/${name}`, bytes: Buffer.byteLength(body) };

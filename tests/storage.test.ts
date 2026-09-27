@@ -33,6 +33,22 @@ for (const [name, open] of backends) {
     await assert.rejects(storage.writeBlob("../escape", new Uint8Array()), /Invalid storage key/);
   });
 
+  test(`${name} storage: removing blobs by prefix removes those and no others, and meters them`, async t => {
+    const metered = new Map<string, number>();
+    const storage = await open(t, (key, bytes) => metered.set(key, (metered.get(key) ?? 0) + bytes));
+    const agent = `client_${"a".repeat(40)}`, other = `client_${"b".repeat(40)}`;
+    await storage.writeBlob(`sessions/${agent}/history/0-2`, new Uint8Array(10));
+    await storage.writeBlob(`sessions/${agent}/history/2-3`, new Uint8Array(20));
+    await storage.writeBlob(`sessions/${other}/history/0-1`, new Uint8Array(5));
+    await storage.removeBlobs(`sessions/${agent}/history/`);
+    assert.equal(await storage.readBlob(`sessions/${agent}/history/0-2`), undefined);
+    assert.equal(await storage.readBlob(`sessions/${agent}/history/2-3`), undefined);
+    assert.equal((await storage.readBlob(`sessions/${other}/history/0-1`))?.length, 5);
+    assert.equal(metered.get(`sessions/${agent}/history/0-2`), 0);
+    assert.equal(metered.get(`sessions/${agent}/history/2-3`), 0);
+    await storage.removeBlobs(`sessions/${agent}/history/`);
+  });
+
   test(`${name} storage: logs append, fold into snapshots, compact, and survive reopening`, async t => {
     const storage = await open(t);
     assert.deepEqual(await storage.log("agents/x/log").read(), []);

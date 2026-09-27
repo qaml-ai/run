@@ -60,6 +60,27 @@ function historyOf(records: TranscriptRecord[]): AgentMessage[] {
 }
 
 /**
+ * Messages the agent's history index (history-pages.ts) does not have yet: from absolute index
+ * `from` on, with each one's size, and where runs began among them (`turn` records).
+ */
+export interface Backlog { from: number; messages: AgentMessage[]; sizes: number[]; bytes: number; turns: number[] }
+
+/** The history index has a backlog's messages up to `indexed`: drop them from it. */
+export function advance(backlog: Backlog, indexed: number) {
+  if (indexed <= backlog.from) return;
+  const taken = Math.min(indexed - backlog.from, backlog.messages.length);
+  backlog.messages.splice(0, taken);
+  for (const size of backlog.sizes.splice(0, taken)) backlog.bytes -= size;
+  backlog.from = indexed;
+  backlog.turns = backlog.turns.filter(turn => turn >= indexed);
+}
+
+/** Where conversational turns begin in `messages` (absolute index `from` on) without turn records: at a user message after anything else, and at 0. */
+export function userTurns(from: number, messages: AgentMessage[]) {
+  return messages.flatMap((message, index) => message.role === "user" && (from + index === 0 || messages[index - 1]?.role !== "user") ? [from + index] : []);
+}
+
+/**
  * The agent's working set: the latest compaction summary plus the messages after
  * its cut. Earlier messages stay in the log (for history) but not in memory, so an
  * agent's memory and load time stop growing with its age.
@@ -80,8 +101,17 @@ export class Transcript {
   turnStart = 0;
   /** Tool calls waiting on a person's input, in the order they were suspended. */
   awaiting: string[] = [];
+  /** What the history index lacks, kept while this transcript is written; undefined when nothing indexes it. */
+  backlog?: Backlog;
   readonly log: AppendLog<TranscriptRecord>;
-  constructor(log: AppendLog<TranscriptRecord>) { this.log = log; }
+  /** `indexed`: how many messages the history index has; this transcript then keeps the ones after as `backlog`. */
+  constructor(log: AppendLog<TranscriptRecord>, indexed?: number) {
+    this.log = log;
+    if (indexed !== undefined) this.backlog = { from: indexed, messages: [], sizes: [], bytes: 0, turns: [] };
+  }
+
+  /** The history index now has messages up to `indexed`: they leave the backlog. */
+  indexed(indexed: number) { if (this.backlog) advance(this.backlog, indexed); }
 
   get offset() { return this.total - this.context.length; }
 
@@ -102,18 +132,43 @@ export class Transcript {
   }
 
   apply(record: TranscriptRecord) {
+    const backlog = this.backlog;
     if (record.t === "message") {
+      if (backlog && this.total >= backlog.from + backlog.messages.length) {
+        const size = JSON.stringify(record.message).length;
+        backlog.messages.push(record.message);
+        backlog.sizes.push(size);
+        backlog.bytes += size;
+      }
       this.context.push(record.message);
       this.total++;
       if (record.message.role === "toolResult") this.awaiting = this.awaiting.filter(id => id !== (record.message as { toolCallId: string }).toolCallId);
     }
     else if (record.t === "retract") {
-      if (this.context.pop()) this.total--;
+      if (this.context.pop()) {
+        this.total--;
+        if (backlog && this.total >= backlog.from && this.total === backlog.from + backlog.messages.length - 1) {
+          backlog.messages.pop();
+          backlog.bytes -= backlog.sizes.pop()!;
+        }
+      }
       for (const update of this.updates) update.at = Math.min(update.at, this.total);
     }
-    else if (record.t === "turn") { this.active = record.active; if (record.active) this.turnStart = this.total; }
+    else if (record.t === "turn") {
+      this.active = record.active;
+      if (record.active) this.turnStart = this.total;
+      if (record.active && backlog && this.total >= backlog.from) backlog.turns.push(this.total);
+    }
     else if (record.t === "awaiting") this.awaiting = record.released ? this.awaiting.filter(id => !record.calls.includes(id)) : [...this.awaiting, ...record.calls.filter(id => !this.awaiting.includes(id))];
     else if (record.t === "reset") {
+      if (backlog) {
+        // A reset is an import into an empty transcript: its messages have no turn records.
+        const messages = record.messages.slice(backlog.from);
+        backlog.messages = messages;
+        backlog.sizes = messages.map(message => JSON.stringify(message).length);
+        backlog.bytes = backlog.sizes.reduce((sum, size) => sum + size, 0);
+        backlog.turns = userTurns(backlog.from, messages);
+      }
       this.total = record.messages.length;
       this.compaction = record.compaction;
       this.context = record.messages.slice(record.compaction?.cut ?? 0);

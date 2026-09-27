@@ -1021,6 +1021,51 @@
           "requests"
         ]
       },
+      "HistoryPage": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "number",
+                  "description": "The message's index in the agent's history"
+                },
+                "message": {}
+              },
+              "required": [
+                "index"
+              ]
+            },
+            "description": "Whole turns, oldest first"
+          },
+          "next": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Pass as before for the older page; null at the start of the history"
+          },
+          "total": {
+            "type": "number",
+            "description": "Messages in the history, the running turn's included"
+          },
+          "split": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "One turn alone was larger than a page (about 4 MB), so this page starts inside it"
+          }
+        },
+        "required": [
+          "entries",
+          "next",
+          "total"
+        ]
+      },
       "History": {
         "type": "object",
         "properties": {
@@ -4428,15 +4473,42 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit or before, the whole transcript"
+            },
+            "required": false,
+            "description": "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit or before, the whole transcript",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The page ends before this message index: a page's next"
+            },
+            "required": false,
+            "description": "The page ends before this message index: a page's next",
+            "name": "before",
+            "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "The transcript",
+            "description": "With limit or before, a page of whole turns (HistoryPage); otherwise the whole transcript (History)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/History"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/HistoryPage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/History"
+                    }
+                  ]
                 }
               }
             }

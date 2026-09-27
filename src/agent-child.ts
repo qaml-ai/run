@@ -14,6 +14,7 @@ const host = createAgentHost({
   file: ref => rpc.request("file", ref),
   modelAuth: () => rpc.request("model-auth"),
   fs: (op, args) => rpc.request("fs", { op, args }),
+  history: { indexed: () => rpc.request("history", { op: "indexed" }), write: chunk => rpc.request("history", { op: "write", chunk }) },
   transcript: remoteTranscript(rpc),
 });
 

@@ -10,9 +10,10 @@ import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
-import { readTranscript, readTranscriptLog, transcriptPath, type TranscriptRecord } from "./transcript.ts";
+import { readTranscript, readTranscriptLog, Transcript, transcriptPath, type TranscriptRecord } from "./transcript.ts";
+import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
-import { createAgentHost } from "./agent-host.ts";
+import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -120,6 +121,7 @@ export class AgentSupervisor {
       if (method === "file") return this.file(handle, params);
       if (method === "model-auth") return this.modelAuth(handle);
       if (method === "fs") return this.dispatchFs(handle, params);
+      if (method === "history") return this.historyRequest(handle, params);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
@@ -155,6 +157,22 @@ export class AgentSupervisor {
     return handle.bridge.file(ref);
   }
 
+  /** An agent's history index operations; without an index, `indexed` is null and nothing is written. */
+  private historyRequest(handle: Handle, params: { op: string; chunk?: HistoryChunk }): Promise<any> {
+    const history = handle.bridge.history;
+    if (params.op === "indexed") return history ? history.indexed() : Promise.resolve(null);
+    if (params.op === "write" && history && params.chunk) return history.write(params.chunk);
+    return Promise.reject(new Error("Unknown history operation"));
+  }
+
+  /** The messages an agent's history index lacks, read from its log (all of them from `from`), without its process. */
+  async backlog(id: string, from: number) {
+    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
+    const transcript = new Transcript(log, from);
+    await transcript.load();
+    return transcript.backlog!;
+  }
+
   /** An agent process's transcript operations. Appends are applied before the first await, so they keep IPC order. */
   private transcriptRequest(handle: Handle, params: { op: string; records?: TranscriptRecord[]; durable?: boolean }) {
     const log = handle.transcript;
@@ -179,6 +197,7 @@ export class AgentSupervisor {
       file: ref => this.file(handle, structuredClone(ref)),
       modelAuth: () => this.modelAuth(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
+      history: { indexed: () => this.historyRequest(handle, { op: "indexed" }), write: chunk => this.historyRequest(handle, { op: "write", chunk: structuredClone(chunk) }) },
     });
     this.agents.set(id, handle);
     this.starting.delete(id);
@@ -232,6 +251,8 @@ export class AgentSupervisor {
   private async halt(handle: Handle) {
     this.cancelTools(handle);
     if (handle.kind === "process") {
+      // Its settled turns go to the history index first (the inline host does this as it is disposed).
+      await Promise.race([handle.rpc.request("historyFlush", {}), new Promise(resolve => setTimeout(resolve, HISTORY_FLUSH_MS).unref())]).catch(() => {});
       handle.rpc.close("Agent stopped");
       const closed = once(handle.child, "close");
       handle.child.kill("SIGKILL");

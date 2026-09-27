@@ -6,6 +6,7 @@ export type { ToolDefinition };
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 /** Which model tool call a tool call belongs to: its own, or for a call from js_exec, the js_exec call's and the call's id within it. */
 export type CallContext = { toolCallId: string; innerCallId?: string };
+import type { HistoryChunk } from "./history-pages.ts";
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: CallContext): Promise<unknown>;
@@ -19,6 +20,8 @@ export interface ToolBridge {
   modelAuth?(): Promise<Credentials>;
   /** js_exec's `fs` (`op` is readFile, writeFile, stat, list or remove), answered by the runtime's file tools over the agent's mounts. */
   fs?(op: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+  /** The agent's history index (history-pages.ts): how many messages it has, and writing a chunk where it ends (returning where it ends then). */
+  history?: { indexed(): Promise<number>; write(chunk: HistoryChunk): Promise<number> };
 }
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 export const IDENTITY_KEY = "agent-runtime:identity-token";

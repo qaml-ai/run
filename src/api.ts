@@ -270,8 +270,18 @@ export function api(context: ApiContext) {
   }), c => clients.watchFor(c, c.req.param("id")!, c.var.principal.tenant));
   route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, responses: { 200: reply("Request state and the stream's cursor", schema.SessionState) } }),
     async c => json(c, 200, await clients.stateFor(c.req.param("id")!, c.var.principal.tenant)));
-  route(createRoute({ method: "get", path: "/v1/agents/{id}/history", request: { params: agentId }, responses: { 200: reply("The transcript", schema.History) } }),
-    async c => json(c, 200, await clients.agentHistory(c.req.param("id")!, c.var.principal.tenant)));
+  route(createRoute({
+    method: "get", path: "/v1/agents/{id}/history",
+    request: { params: agentId, query: z.object({
+      limit: z.string().optional().openapi({ description: "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit or before, the whole transcript" }),
+      before: z.string().optional().openapi({ description: "The page ends before this message index: a page's next" }),
+    }) },
+    responses: { 200: { description: "With limit or before, a page of whole turns (HistoryPage); otherwise the whole transcript (History)", content: { "application/json": { schema: z.union([schema.HistoryPage, schema.History]) } } } },
+  }), async c => {
+    const { before, limit } = c.req.query();
+    const tenant = c.var.principal.tenant, id = c.req.param("id")!;
+    return json(c, 200, before !== undefined || limit !== undefined ? await clients.historyPageFor(id, tenant, { before, limit }) : await clients.agentHistory(id, tenant));
+  });
   route(createRoute({ method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId }, responses: { 200: reply("The running turn is aborted", z.object({ aborted: z.literal(true) })) } }), async c => {
     await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, { aborted: true });

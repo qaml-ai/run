@@ -85,6 +85,14 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
       catch (error) { if (!conditionFailed(error)) throw error; return; }
       options.meter?.(key, data.byteLength);
     },
+    async removeBlobs(prefix) {
+      const objects = await list(validKey(prefix.replace(/\/$/, "")) + "/");
+      for (let index = 0; index < objects.length; index += 1000) {
+        const batch = objects.slice(index, index + 1000);
+        await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: batch.map(object => ({ Key: object.key })), Quiet: true } }));
+        for (const object of batch) options.meter?.(base ? object.key.slice(base.length + 1) : object.key, -object.size);
+      }
+    },
     async *objects(prefix) {
       let token: string | undefined;
       do {

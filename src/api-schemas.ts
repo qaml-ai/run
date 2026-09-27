@@ -219,6 +219,12 @@ export const EventPoll = z.object({
 }).openapi("EventPoll");
 
 export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi("History");
+export const HistoryPage = z.object({
+  entries: z.array(z.object({ index: z.number().openapi({ description: "The message's index in the agent's history" }), message: z.unknown() })).openapi({ description: "Whole turns, oldest first" }),
+  next: z.number().nullable().openapi({ description: "Pass as before for the older page; null at the start of the history" }),
+  total: z.number().openapi({ description: "Messages in the history, the running turn's included" }),
+  split: z.literal(true).optional().openapi({ description: "One turn alone was larger than a page (about 4 MB), so this page starts inside it" }),
+}).openapi("HistoryPage");
 
 export const PromptInput = z.object({
   text: z.string({ error: SEND_TEXT }).refine(text => !!text.trim(), SEND_TEXT),
