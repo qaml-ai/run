@@ -59,6 +59,9 @@ const agent = await runtime.createAgent({
 await agent.prompt("Plan restocks for anything below target.");
 ```
 
+To show an agent in a browser, use `@camelai/agent-runtime/watch` with a browser
+token your server mints (see "Watching from a browser" in `clients/README.md`).
+
 `onEvent` gets the agent's events as they stream. Since 0.6.0 a `message_update`
 is its delta alone (`event.assistantMessageEvent.delta` for text), without the
 message it updates, and a stream that cannot replay starts with a

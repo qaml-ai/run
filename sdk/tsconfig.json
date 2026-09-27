@@ -12,5 +12,5 @@
     "lib": ["ES2024", "DOM"],
     "types": ["node"]
   },
-  "files": ["../clients/typescript.ts", "../clients/node.ts", "../clients/mcp.ts", "../clients/server.ts", "../clients/testing.ts"]
+  "files": ["../clients/typescript.ts", "../clients/node.ts", "../clients/mcp.ts", "../clients/server.ts", "../clients/testing.ts", "../clients/watch.ts"]
 }

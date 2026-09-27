@@ -30,6 +30,7 @@
   "exports": {
     ".": "./clients/typescript.ts",
     "./node": "./clients/node.ts",
+    "./watch": "./clients/watch.ts",
     "./supervisor": "./src/supervisor.ts"
   },
   "dependencies": {

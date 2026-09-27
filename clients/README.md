@@ -412,6 +412,37 @@ The event format changed in TypeScript SDK 0.6.0 and Python client 0.3.0
 (ready frame `version: 5`): `onEvent` / `on_event` gets deltas, and a snapshot
 where it used to get `replay_gap`.
 
+## Watching from a browser
+
+`@camelai/agent-runtime/watch` reads one agent from a browser with a browser token
+(see "Browser tokens" in the runtime's README), which your server mints for each
+user after its own access checks; the browser never holds a tenant or agent
+token. It has no dependencies and no Node APIs.
+
+```ts
+import { watchAgent } from "@camelai/agent-runtime/watch";
+
+const watcher = watchAgent({
+  url, agentId, token, expiresAt,                       // from your server's mint
+  getToken: () => fetch(`/api/threads/${id}/token`, { method: "POST" }).then(r => r.json()),
+  onChange: state => render(state),
+});
+// state.messages (Pi messages, oldest first, at state.indexes), state.partial (the
+// assistant message streaming now), state.progress, state.running, state.pendingInputs,
+// state.lastOutcome; watcher.loadOlder() on scroll-up; watcher.close() when done.
+```
+
+- It streams over SSE, and falls back to long polls where streams deliver nothing
+  (a proxy that buffers them). It reconnects with backoff from its cursor, or from a
+  snapshot of the running turn where it cannot replay, and closes the stream while
+  the page is hidden (`hiddenGraceMs`, default 30 s).
+- It folds deltas into Pi messages: text, thinking, and tool calls (named at their
+  start, their arguments parsed as partial JSON as they stream), so a card can show
+  a call's code while the model writes it.
+- It starts from the newest page of history and loads older pages on request.
+- It renews its token through `getToken` a minute before it expires, and when the
+  runtime refuses it (401).
+
 ## History in pages
 
 `GET /clients/:id/history?limit=50` (tenants: `/v1/agents/:id/history?limit=50`)
