@@ -488,7 +488,7 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
 
   | provider | root `baseUrl` replaces | requests |
   |---|---|---|
-  | `openrouter` | `https://openrouter.ai/api/v1` | `POST <baseUrl>/chat/completions`; Anthropic models (its Messages API) `POST <baseUrl>/messages?beta=true` |
+  | `openrouter` | `https://openrouter.ai/api/v1` | `POST <baseUrl>/responses`; Anthropic models (its Messages API) `POST <baseUrl>/messages?beta=true` |
   | `anthropic` | `https://api.anthropic.com` | `POST <baseUrl>/v1/messages?beta=true` |
   | `openai` | `https://api.openai.com/v1` | `POST <baseUrl>/responses` (or `/chat/completions`, per the catalog's API for the model) |
   | `amazon-bedrock` | `https://bedrock-runtime.<region>.amazonaws.com` | `POST <baseUrl>/model/<URL-encoded id>/converse-stream` |
@@ -515,6 +515,9 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
   definition keeps it. Models are named as usual, e.g.
   `openrouter/anthropic/claude-sonnet-5` (a routing variant like `:nitro` too),
   `anthropic/claude-opus-5` or `amazon-bedrock/us.anthropic.claude-sonnet-5`.
+  OpenRouter's models are called through its Responses API (stateless, reasoning
+  carried back as it came), whatever key they use, except Anthropic's, which keep
+  its Messages API for prompt caching: the same rule as on a tenant's endpoint.
 - Each model call, compaction summaries included, takes the key of the agent's
   scope for the model's provider, else the tenant's own key, else an admin's,
   else (prepaid) the platform's. It is read at the call, so a changed key applies

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fakeModel, runtime } from "./runtime-server.ts";
-import { anthropic, converse, gateway } from "./provider-fixtures.ts";
+import { anthropic, converse, gateway, responses } from "./provider-fixtures.ts";
 
 const reply = (text: string) => () => ({ role: "assistant", content: text, usage: { prompt_tokens: 10, completion_tokens: 2 } });
 
@@ -91,10 +91,9 @@ test("a scope's model provider need not be the tenant's: an agent may be created
 });
 
 test("a scope's baseUrl replaces the provider's root, a keyless entry sends only its gateway's headers, and an agent's modelHeaders come after them", async t => {
-  const chunk = (delta: object, finish: string | null, usage?: object) => ({ id: "c", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) });
   const aiGateway = await gateway(t, body => body.model.startsWith("anthropic/")
     ? anthropic([{ type: "text", text: "Messages API." }], "end_turn")
-    : { events: [chunk({ role: "assistant", content: "Chat Completions." }, null), chunk({}, "stop", { prompt_tokens: 5, completion_tokens: 2 })] });
+    : responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Responses API.", annotations: [] }] }]));
   const r = await runtime(t, reply("unused"));
   const put = await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { baseUrl: `${aiGateway.url}/openrouter`, headers: { "cf-aig-authorization": "Bearer gateway-token", "cf-aig-metadata": "scope" } } });
   assert.equal(put.status, 200, put.text);
@@ -104,20 +103,22 @@ test("a scope's baseUrl replaces the provider's root, a keyless entry sends only
   for (const modelHeaders of [{ Authorization: "Bearer x" }, { "cf-aig-authorization": "x" }, { "x-amz-date": "x" }]) {
     assert.equal((await r.call("/v1/agents", { body: { keyScope: "hosted", modelHeaders } })).status, 400, JSON.stringify(modelHeaders));
   }
-  // OpenRouter's Anthropic models speak its Messages API, at <root>/messages; its others Chat Completions, at <root>/chat/completions.
+  // OpenRouter's Anthropic models speak its Messages API, at <root>/messages; its others its Responses API, at <root>/responses.
   const claude = await r.call("/v1/agents", { body: { model: "openrouter/anthropic/claude-sonnet-4.5", keyScope: "hosted", modelHeaders: { "cf-aig-metadata": "thread-1" } } });
   assert.equal(claude.status, 201, claude.text);
-  const gpt = (await r.call("/v1/agents", { body: { model: "openrouter/openai/gpt-4o-mini", keyScope: "hosted" } })).json.id;
+  const gpt = (await r.call("/v1/agents", { body: { model: "openrouter/openai/gpt-6-luna", keyScope: "hosted", modelHeaders: { "cf-aig-metadata": "thread-9", "x-thread": "9" } } })).json.id;
   assert.equal((await r.prompt(claude.json.id, "Hi")).outcome.result.reply, "Messages API.");
-  assert.equal((await r.prompt(gpt, "Hi")).outcome.result.reply, "Chat Completions.");
+  assert.equal((await r.prompt(gpt, "Hi")).outcome.result.reply, "Responses API.");
   const [messages, completions] = aiGateway.requests;
   assert.equal(messages.path, "/agent-runtime/llm/openrouter/messages?beta=true");
-  assert.equal(completions.path, "/agent-runtime/llm/openrouter/chat/completions");
+  assert.equal(completions.path, "/agent-runtime/llm/openrouter/responses");
+  assert.equal(completions.body.model, "openai/gpt-6-luna");
+  assert.equal(completions.headers["x-thread"], "9");
   for (const { headers } of [messages, completions]) {
     assert.ok(!headers.authorization && !headers["x-api-key"], "no provider key is sent");
     assert.equal(headers["cf-aig-authorization"], "Bearer gateway-token");
   }
-  assert.deepEqual([messages.headers["cf-aig-metadata"], completions.headers["cf-aig-metadata"]], ["thread-1", "scope"]);
+  assert.deepEqual([messages.headers["cf-aig-metadata"], completions.headers["cf-aig-metadata"]], ["thread-1", "thread-9"]);
   assert.deepEqual((await r.call(`/v1/agents/${claude.json.id}`)).json.modelHeaders, { "cf-aig-metadata": "thread-1" });
 
   // PATCH replaces them whole, and null removes them; the agent's own token cannot.

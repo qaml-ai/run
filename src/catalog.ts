@@ -61,8 +61,17 @@ export function providerInfo(id: string): ProviderInfo | undefined {
   return listProviders().find(provider => provider.id === id);
 }
 
+/**
+ * The API Pi speaks to OpenRouter for a model: its Responses API (stateless, reasoning carried back
+ * as it came), except for Anthropic's models, which keep its Messages API, since Responses gets
+ * them no prompt caching.
+ */
+export function openRouterApi(api: string): Api {
+  return (api === "anthropic-messages" ? api : "openai-responses") as Api;
+}
+
 export const modelInfo = (model: Model<Api>): ModelInfo => ({
-  id: `${model.provider}/${model.id}`, provider: model.provider, modelId: model.id, name: model.name, api: model.api,
+  id: `${model.provider}/${model.id}`, provider: model.provider, modelId: model.id, name: model.name, api: model.provider === "openrouter" ? openRouterApi(model.api) : model.api,
   reasoning: model.reasoning, input: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
   cost: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead, cacheWrite: model.cost.cacheWrite },
 });

@@ -4,6 +4,7 @@ import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';
 import { attachedTools } from './mcp-results.ts';
 import { checkScope } from './key-scopes.ts';
+import { openRouterApi } from './catalog.ts';
 import { HttpError } from './http.ts';
 
 type SessionConfig = Omit<AgentConfig, 'id' | 'directory' | 'tools' | 'apiKey'>;
@@ -53,6 +54,7 @@ export const UPSTREAMS: Record<string, { root: string; api: string; path?: strin
 
 const lookup = getModel as (provider: string, id: string) => AgentConfig['model'] | undefined;
 
+
 /**
  * `<name>/<provider>/<model id>` on a tenant's endpoint: the catalog's (or the endpoint's declared)
  * model, called at `<endpoint>/<provider>`, at no cost. Its id keeps the provider (and Bedrock's
@@ -69,7 +71,7 @@ function endpointModel(name: string, id: string, endpoint: ModelEndpoint): Agent
   const declared = endpoint.models?.[id];
   if (!known && !declared) throw new Error(`Unknown model "${name}/${id}": declare it in the ${name} endpoint's models, or name a model in GET /v1/models`);
   const upstream = UPSTREAMS[provider];
-  const api = known?.api === 'anthropic-messages' ? 'anthropic-messages' : upstream.api;
+  const api = provider === 'openrouter' ? openRouterApi(known?.api ?? upstream.api) : known?.api === 'anthropic-messages' ? 'anthropic-messages' : upstream.api;
   const path = region ? `/${region}` : api === 'anthropic-messages' ? '' : upstream.path ?? '';
   return {
     reasoning: false, input: ['text'], ...known, name: known?.name ?? id, ...declared, id, provider: name, api,
@@ -91,7 +93,7 @@ export function resolveModel(reference: string, endpoints?: ModelEndpoints): Age
   if (endpoints && Object.hasOwn(endpoints, provider)) return endpointModel(provider, reference.slice(slash + 1), endpoints[provider]);
   const model = lookup(provider, reference.slice(slash + 1));
   if (!model) throw new Error(`Unknown model "${reference}"; see GET /v1/models`);
-  return model;
+  return provider === 'openrouter' ? { ...model, api: openRouterApi(model.api) } as AgentConfig['model'] : model;
 }
 
 /** Headers only the runtime sets on a model call: credentials, identity, and AWS signing. */
