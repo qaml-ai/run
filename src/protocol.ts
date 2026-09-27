@@ -21,7 +21,7 @@ export interface ToolBridge {
   /** js_exec's `fs` (`op` is readFile, writeFile, stat, list or remove), answered by the runtime's file tools over the agent's mounts. */
   fs?(op: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** The agent's history index (history-pages.ts): how many messages it has, and writing a chunk where it ends (returning where it ends then). */
-  history?: { indexed(): Promise<number>; write(chunk: HistoryChunk): Promise<number> };
+  history?: { indexed(): Promise<number>; write(chunk: HistoryChunk): Promise<number>; truncate(total: number): Promise<number> };
 }
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 export const IDENTITY_KEY = "agent-runtime:identity-token";

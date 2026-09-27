@@ -1,5 +1,5 @@
 -- An agent's history in pages (src/history-pages.ts): its settled messages as immutable chunks in
--- Storage (`sessions/<agent>/history/<start>-<count>`), each a run of whole turns unless one turn
+-- Storage (`sessions/<agent>/history/<start>-<count>-<hash>`), each a run of whole turns unless one turn
 -- alone is too large, indexed here so a page reads only the chunks it returns.
 create table agent_history_chunks (
   agent text not null,
@@ -7,6 +7,8 @@ create table agent_history_chunks (
   start integer not null,
   count integer not null,
   bytes integer not null,
+  -- The start of the chunk's SHA-256: its key, so a blob a failed writer left is never read for another's row.
+  hash text not null,
   -- Where turns begin among its messages (absolute indexes): where a page may start.
   turns integer[] not null,
   primary key (agent, start)

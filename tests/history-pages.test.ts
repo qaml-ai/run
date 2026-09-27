@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdir, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { boundaries, chunksOf } from "../src/history-pages.ts";
+import { boundaries, chunksOf, HistoryIndex } from "../src/history-pages.ts";
+import { fileStorage } from "../shared/storage.ts";
+import { testDatabase } from "./database.ts";
 import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { AgentRuntime, memoryJournalStore } from "../clients/typescript.ts";
@@ -138,4 +141,52 @@ test("the newest page has the running turn; an agent never indexed is indexed at
   assert.equal((await r.call(`/v1/agents/${agent}`, { method: "DELETE" })).status, 200);
   await until(async () => (await r.db.query("select count(*)::int as count from agent_history_chunks where agent = $1", [agent])).rows[0].count === 0, "the chunks to be purged");
   await until(async () => !(await readdir(join(r.root, "sessions", agent, "history")).catch(() => [])).length, "the chunk blobs to be purged");
+});
+
+const indexedOf = async (r: { db: any }, agent: string) => (await r.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed as number | undefined;
+
+test("catching up from the log leaves an interrupted turn unindexed, and an index past the transcript is rolled back", async t => {
+  const r = await runtime(t, body => ({ content: `reply ${lastUser(body)}` }), { AGENT_IDLE_MS: "1000" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(agent, "one");
+  await until(async () => await indexedOf(r, agent) === 2, "the first turn to be indexed as the agent stops", 20_000);
+  // A turn its node died in: open, its response cut off. The next start retracts that response and answers again.
+  const transcript = join(r.root, "sessions", agent, "transcript.jsonl");
+  await appendFile(transcript, [
+    { t: "turn", active: true },
+    { t: "message", message: { role: "user", content: [{ type: "text", text: "two" }], timestamp: 1 } },
+    { t: "message", message: { role: "assistant", content: [{ type: "text", text: "cut o" }], stopReason: "aborted", api: "openai-completions", provider: "openrouter", model: "x", usage: {}, timestamp: 2 } },
+  ].map(record => JSON.stringify(record)).join("\n") + "\n");
+  await r.db.query("delete from agent_history_chunks where agent = $1", [agent]);
+  await r.db.query("delete from agent_history_index where agent = $1", [agent]);
+  const page = (await r.call(`/v1/agents/${agent}/history?limit=10`)).json;
+  assert.deepEqual(page.entries.map((entry: any) => entry.index), [0, 1, 2, 3], "the open turn is on the page, from the log");
+  assert.equal(await indexedOf(r, agent), 2, "but only settled turns are indexed");
+
+  // An index claiming more than the transcript holds (a stale chunk) is rolled back when the agent starts.
+  const chunk = (await r.db.query("select * from agent_history_chunks where agent = $1", [agent])).rows[0];
+  await r.db.query("insert into agent_history_chunks (agent, start, count, bytes, turns, hash) values ($1, 2, 8, 10, '{2}', 'stale')", [agent]);
+  await r.db.query("update agent_history_index set indexed = 10 where agent = $1", [agent]);
+  await r.prompt(agent, "three");
+  await until(async () => await indexedOf(r, agent) === (await r.call(`/v1/agents/${agent}/history`)).json.messages.length, "the index to match the transcript after the stop", 20_000);
+  const rows = (await r.db.query("select start, count from agent_history_chunks where agent = $1 order by start", [agent])).rows;
+  assert.deepEqual(rows[0], { start: chunk.start, count: chunk.count });
+  assert.ok(!rows.some((row: any) => row.start === 2 && row.count === 8), "the stale chunk is gone");
+  const whole = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=100`)).json.entries.map((entry: any) => entry.message), whole);
+});
+
+test("a chunk a failed writer left in Storage is never served under another writer's row", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-blobs-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const index = new HistoryIndex(db, fileStorage(root));
+  const agent = `client_${"c".repeat(40)}`;
+  await db.query("insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision) values ($1, 't', '{}', 'a', 'general', 'm', null, false, 1)", [agent]);
+  const lost = { actor: agent, session: "00000000-0000-0000-0000-000000000000", epoch: 1 } as any;
+  // Its blob lands, then its claim turns out lost: no row.
+  await assert.rejects(index.write(agent, lost, { start: 0, messages: [user("stale"), assistant("stale")], turns: [0] }));
+  assert.equal(await index.write(agent, undefined, { start: 0, messages: [user("fresh"), assistant("fresh")], turns: [0] }), 2);
+  const page = await index.page(agent, { limit: 10 });
+  assert.deepEqual(page.entries.map(entry => (entry.message as any).content[0].text), ["fresh", "fresh"]);
 });

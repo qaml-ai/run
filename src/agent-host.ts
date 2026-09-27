@@ -42,7 +42,7 @@ export interface HostIO {
   /** js_exec's `fs`, answered by the supervisor over the agent's mounts. */
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: none is kept), and a chunk to add. */
-  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
+  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; truncate(total: number): Promise<number> };
 }
 
 /**
@@ -362,9 +362,15 @@ export function createAgentHost(io: HostIO) {
       config = params;
       await mkdir(config.directory, { recursive: true, mode: 0o700 });
       // Messages the history index lacks are kept from here, as the log is read: all of them for an agent never indexed.
-      const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
+      let indexed = io.history ? await io.history.indexed().catch(() => null) : null;
       transcript = new Transcript(io.transcript, indexed ?? undefined);
       await transcript.load();
+      // An index past what the transcript holds has chunks it no longer has: take them back, then read again from where it ends.
+      if (indexed !== null && transcript.total < indexed) {
+        indexed = await io.history!.truncate(transcript.total).catch(() => null);
+        transcript = new Transcript(io.transcript, indexed ?? undefined);
+        await transcript.load();
+      }
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string } } | undefined;
       if (transcript.active && transcript.awaiting.length) {

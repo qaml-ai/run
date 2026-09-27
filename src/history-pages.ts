@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Storage } from "../shared/storage.ts";
 import { underClaim, type Claim } from "./ownership.ts";
@@ -58,8 +59,8 @@ export function chunksOf(backlog: Backlog, count = backlog.messages.length): His
   return chunks;
 }
 
-type Row = { start: number; count: number; bytes: number; turns: number[] };
-type Piece = Row & { messages?: AgentMessage[] };
+type Row = { start: number; count: number; bytes: number; turns: number[]; hash: string };
+type Piece = Omit<Row, "hash"> & { hash?: string; messages?: AgentMessage[] };
 
 /**
  * An agent's history as pages: chunks of its settled messages in Storage, and their index in
@@ -72,7 +73,7 @@ export class HistoryIndex {
   readonly storage: Storage;
   constructor(db: Db, storage: Storage) { this.db = db; this.storage = storage; }
 
-  private key(agent: string, start: number, count: number) { return `sessions/${agent}/history/${start}-${count}`; }
+  private key(agent: string, row: Pick<Row, "start" | "count" | "hash">) { return `sessions/${agent}/history/${row.start}-${row.count}-${row.hash}`; }
 
   /** How many of the agent's messages the chunks cover; undefined for an agent never indexed. */
   async indexed(agent: string): Promise<number | undefined> {
@@ -86,20 +87,37 @@ export class HistoryIndex {
   async write(agent: string, claim: Claim | undefined, chunk: HistoryChunk): Promise<number> {
     const count = chunk.messages.length;
     const body = Buffer.from(JSON.stringify(chunk.messages));
-    await this.storage.writeBlob(this.key(agent, chunk.start, count), body);
+    const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
+    await this.storage.writeBlob(this.key(agent, { start: chunk.start, count, hash }), body);
     return underClaim(this.db, claim, async sql => {
       await sql.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);
       const indexed: number = (await sql.query("select indexed from agent_history_index where agent = $1 for update", [agent])).rows[0].indexed;
       if (indexed !== chunk.start || !count) return indexed;
-      await sql.query("insert into agent_history_chunks (agent, start, count, bytes, turns) values ($1, $2, $3, $4, $5)", [agent, chunk.start, count, body.length, chunk.turns]);
+      await sql.query("insert into agent_history_chunks (agent, start, count, bytes, turns, hash) values ($1, $2, $3, $4, $5, $6)", [agent, chunk.start, count, body.length, chunk.turns, hash]);
       await sql.query("update agent_history_index set indexed = $2 where agent = $1", [agent, chunk.start + count]);
       return chunk.start + count;
     });
   }
 
-  /** Index a backlog as chunks; returns what is left of it (what another writer had not indexed either). */
-  async writeAll(agent: string, claim: Claim | undefined, backlog: Backlog) {
-    for (const chunk of chunksOf(backlog)) {
+  /**
+   * Take back chunks past `total` messages, which an agent's transcript no longer has (a turn it
+   * retracted after they were written): the index then ends at the last chunk it still has whole.
+   * Returns where it ends.
+   */
+  async truncate(agent: string, claim: Claim | undefined, total: number): Promise<number> {
+    const { indexed, removed } = await underClaim(this.db, claim, async sql => {
+      const { rows } = await sql.query("delete from agent_history_chunks where agent = $1 and start + count > $2 returning start, count, hash", [agent, total]);
+      const kept = (await sql.query("select coalesce(max(start + count), 0)::int as indexed from agent_history_chunks where agent = $1", [agent])).rows[0].indexed as number;
+      await sql.query("update agent_history_index set indexed = $2 where agent = $1", [agent, kept]);
+      return { indexed: kept, removed: rows as Row[] };
+    });
+    for (const row of removed) await this.storage.removeBlobs(this.key(agent, row)).catch(() => {});
+    return indexed;
+  }
+
+  /** Index the first `count` messages of a backlog as chunks; returns what is left of it (what another writer had not indexed either). */
+  async writeAll(agent: string, claim: Claim | undefined, backlog: Backlog, count = backlog.messages.length) {
+    for (const chunk of chunksOf(backlog, count)) {
       const indexed = await this.write(agent, claim, chunk);
       advance(backlog, indexed);
       if (indexed !== chunk.start + chunk.messages.length) break;
@@ -133,7 +151,7 @@ export class HistoryIndex {
     let cursor = Math.min(end, below);
     const more = async () => {
       if (cursor <= 0) return false;
-      const { rows } = await this.db.query("select start, count, bytes, turns from agent_history_chunks where agent = $1 and start < $2 order by start desc limit $3", [agent, cursor, ROWS]);
+      const { rows } = await this.db.query("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 order by start desc limit $3", [agent, cursor, ROWS]);
       for (const row of rows as Row[]) pieces.push({ ...row, turns: row.turns.filter(turn => turn < end) });
       cursor = rows.length === ROWS ? rows.at(-1).start : 0;
       return rows.length > 0;
@@ -153,7 +171,7 @@ export class HistoryIndex {
     }
     start ??= previous ?? (pieces.length ? pieces.at(-1)!.start : end);
     const needed = pieces.filter(piece => piece.count > 0 && piece.start + piece.count > start! && piece.start < end);
-    const loaded = await mapLimit(needed, READS, async piece => piece.messages ?? this.read(agent, piece));
+    const loaded = await mapLimit(needed, READS, async piece => piece.messages ?? this.read(agent, piece as Row));
     const entries: HistoryEntry[] = [];
     needed.forEach((piece, index) => loaded[index].forEach((message, offset) => {
       const at = piece.start + offset;
@@ -164,7 +182,7 @@ export class HistoryIndex {
   }
 
   private async read(agent: string, row: Row): Promise<AgentMessage[]> {
-    const stored = await this.storage.readBlob(this.key(agent, row.start, row.count));
+    const stored = await this.storage.readBlob(this.key(agent, row));
     if (!stored) throw new Error(`History chunk ${row.start} of ${agent} is missing`);
     return JSON.parse(Buffer.from(stored).toString("utf8"));
   }

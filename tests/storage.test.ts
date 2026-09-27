@@ -47,6 +47,11 @@ for (const [name, open] of backends) {
     assert.equal(metered.get(`sessions/${agent}/history/0-2`), 0);
     assert.equal(metered.get(`sessions/${agent}/history/2-3`), 0);
     await storage.removeBlobs(`sessions/${agent}/history/`);
+    // A whole key is a prefix too: that blob alone goes.
+    await storage.writeBlob(`sessions/${other}/history/1-2`, new Uint8Array(3));
+    await storage.removeBlobs(`sessions/${other}/history/1-2`);
+    assert.equal(await storage.readBlob(`sessions/${other}/history/1-2`), undefined);
+    assert.equal((await storage.readBlob(`sessions/${other}/history/0-1`))?.length, 5);
   });
 
   test(`${name} storage: logs append, fold into snapshots, compact, and survive reopening`, async t => {

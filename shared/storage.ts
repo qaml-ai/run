@@ -85,8 +85,14 @@ export function fileStorage(root: string, options: { tail?: LogTail; meter?: Sto
     },
     async removeBlobs(prefix) {
       validKey(prefix.replace(/\/$/, ""));
-      if (meter) for await (const { key, bytes } of this.objects!(prefix)) meter(key.replace(/\.bin$/, ""), -bytes);
-      await rm(join(root, prefix), { recursive: true, force: true });
+      // Blobs are files `<key>.bin`: every one under the prefix's directory whose key starts with it.
+      const directory = prefix.slice(0, prefix.lastIndexOf("/") + 1);
+      for await (const { key, bytes } of this.objects!(directory)) {
+        const blob = key.replace(/\.bin$/, "");
+        if (!key.endsWith(".bin") || !blob.startsWith(prefix)) continue;
+        await rm(join(root, key), { force: true });
+        meter?.(blob, -bytes);
+      }
     },
     async *objects(prefix) {
       let entries;

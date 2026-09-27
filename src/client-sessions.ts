@@ -814,7 +814,10 @@ export class ClientSessions {
         modelAuth: () => this.modelAuth(session),
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
-        history: { indexed: async () => (await this.historyIndex.indexed(id)) ?? 0, write: chunk => this.historyIndex.write(id, session.claim, chunk) },
+        history: {
+          indexed: async () => (await this.historyIndex.indexed(id)) ?? 0, write: chunk => this.historyIndex.write(id, session.claim, chunk),
+          truncate: total => this.historyIndex.truncate(id, session.claim, total),
+        },
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
@@ -1354,8 +1357,8 @@ export class ClientSessions {
       const indexed = await this.historyIndex.indexed(id);
       const reported = Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
       if (tail === null || indexed === undefined || indexed < reported) {
-        const backlog = await this.supervisor.backlog(id, tail === null ? 0 : indexed ?? 0);
-        tail = !live && !this.supervisor.starting.has(id) ? await this.historyIndex.writeAll(id, session.claim, backlog) : backlog;
+        const { backlog, settled } = await this.supervisor.backlog(id, tail === null ? 0 : indexed ?? 0);
+        tail = !live && !this.supervisor.starting.has(id) ? await this.historyIndex.writeAll(id, session.claim, backlog, settled) : backlog;
       }
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
