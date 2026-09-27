@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { OPERATOR, OTHER_OPERATOR, runtime, sleep, toolCall, until, watchEvents } from "./runtime-server.ts";
+import { listen, OPERATOR, OTHER_OPERATOR, runtime, sleep, toolCall, until, watchEvents } from "./runtime-server.ts";
 
 const usage = { prompt_tokens: 100, completion_tokens: 20 };
 async function setup(t: Parameters<typeof runtime>[0]) {
@@ -114,4 +114,39 @@ test("a browser token's scopes, event list and redaction limit what it reads; a 
   await until(() => ending.ended, "the stream to end as its token expires", 10_000);
   assert.equal((await r.call(`/v1/agents/${agent}/state`, { token: brief })).status, 401);
   await sleep(0);
+});
+
+test("a snapshot shows a token's reader only what its scopes and event list let it read", { timeout: 60_000 }, async t => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const model = await listen(t, async (req, res) => {
+    for await (const _ of req);
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const chunk = (delta: object, finish: string | null = null) => res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+    chunk({ content: "half " });
+    await gate.promise;
+    chunk({ content: "done" });
+    chunk({}, "stop");
+    res.end("data: [DONE]\n\n");
+  });
+  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: `${model}/v1` });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go" } });
+  const snapshot = async (body: object) => {
+    const { token } = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body })).json;
+    return (await (await fetch(`${r.base}/v1/agents/${agent}/events?poll=1&snapshot=1`, { headers: bearer(token) })).json() as any).events[0].data;
+  };
+  await until(async () => (await snapshot({})).turn?.partial, "the answer to start");
+  // Its messages and the message streaming: history's, or the stream's when the token gets them there.
+  assert.equal((await snapshot({ scopes: ["events"], events: ["agent_start", "agent_end"] })).turn, null);
+  const streamed = (await snapshot({ scopes: ["events"], events: ["message_update", "message_end"] })).turn;
+  assert.equal(streamed.messages.length, 1);
+  assert.ok(streamed.partial);
+  const ended = (await snapshot({ scopes: ["events"], events: ["message_end"] })).turn;
+  assert.equal(ended.messages.length, 1);
+  assert.equal(ended.partial, null, "no message_update: not the message streaming either");
+  const historic = (await snapshot({ scopes: ["events", "history"], events: ["agent_end"] })).turn;
+  assert.equal(historic.messages.length, 1);
+  assert.equal(historic.partial, null);
+  gate.resolve();
 });

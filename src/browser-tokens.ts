@@ -102,7 +102,12 @@ export function readableFrame(claims: BrowserClaims, data: any): unknown {
     return { type: "response", id: data.id, outcome: { ...(stopped ? { stopped } : {}), ...(outcome.error ? { error: outcome.error } : {}) } };
   }
   if (data?.type === "snapshot") {
-    return readableMessage(claims, data);
+    // Its turn's messages are what history, or the stream's message_ends, would show; its message streaming, what message_updates would.
+    const lists = (type: string) => !claims.events || claims.events.includes(type);
+    if (!data.turn) return data;
+    const messages = claims.scopes.includes("history") || lists("message_end");
+    if (!messages) return { ...data, turn: null };
+    return readableMessage(claims, { ...data, turn: { ...data.turn, partial: lists("message_update") ? data.turn.partial : null } });
   }
   if (data?.type !== "event") return undefined;
   const type = data.event?.type;
