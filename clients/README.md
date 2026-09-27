@@ -385,7 +385,9 @@ each update as its delta alone, `{ type: "message_update", assistantMessageEvent
 { type, contentIndex?, delta? | content? | toolCall? | reason? } }`, without the
 message (`message`, `partial`, and `done`'s `message` or `error`'s `error`, which
 `message_end` carries next). Fold the message from its `message_start` and the
-deltas since.
+deltas since. A `toolcall_start` names its call with `id` and `name` (Pi has them
+only in the message); its arguments arrive as `toolcall_delta` JSON text, and
+whole in `toolcall_end`'s `toolCall`.
 
 A subscriber that cannot replay (no cursor, or one the buffer has moved past)
 cannot fold what it missed. With `snapshot=1` (on a stream, a watcher or a poll;

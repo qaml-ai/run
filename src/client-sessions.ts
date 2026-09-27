@@ -182,10 +182,16 @@ const TURN_SNAPSHOT_BYTES = 1_000_000;
 /**
  * A message_update as its delta: Pi's event without the message it updates, which it carries on every
  * token (as `message`, as the delta's `partial`, and as done's `message` or error's `error`, which
- * message_end carries next). A client folds the message from its message_start and the deltas since.
+ * message_end carries next). A client folds the message from its message_start and the deltas since;
+ * a toolcall_start names its call (`id`, `name`), which only the message did.
  */
 function deltaOf(event: any) {
-  const { partial: _partial, message: _done, error: _error, ...delta } = event.assistantMessageEvent ?? {};
+  const { partial, message: _done, error: _error, ...delta } = event.assistantMessageEvent ?? {};
+  // A tool call's id and name are only in the message at its start: they come along, as fields of their own.
+  if (delta.type === "toolcall_start") {
+    const call = partial?.content?.[delta.contentIndex];
+    if (call?.type === "toolCall") Object.assign(delta, { id: call.id, name: call.name });
+  }
   return { type: "message_update", assistantMessageEvent: delta };
 }
 /** Tool progress published per call at most this often. */

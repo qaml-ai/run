@@ -70,8 +70,7 @@ test("message_update carries its delta alone; a subscriber that asks gets a snap
   for (const event of [...updates(plain.frames), ...updates(asking.frames)]) {
     assert.equal(event.message, undefined);
     assert.equal(event.assistantMessageEvent.partial, undefined);
-    // Nothing is added: a toolcall_start is as Pi sent it, less the partial message.
-    assert.deepEqual(Object.keys(event.assistantMessageEvent).filter(key => !["type", "contentIndex", "delta", "content", "toolCall", "reason"].includes(key)), []);
+    assert.deepEqual(Object.keys(event.assistantMessageEvent).filter(key => !["type", "contentIndex", "delta", "content", "toolCall", "reason", "id", "name"].includes(key)), []);
   }
   assert.equal(deltaText(plain.frames), text(final));
   for (const watcher of [late, behind]) {
@@ -123,14 +122,16 @@ test("a snapshot too large for one frame drops the turn's finished messages firs
   model.release();
 });
 
-test("a tool call's updates are Pi's, less the message: toolcall_start adds nothing, toolcall_end carries the call", async t => {
+test("a tool call's updates are Pi's, less the message: toolcall_start names the call, toolcall_end carries it", async t => {
   const r = await runtime(t, (_body, index) => index === 0 ? toolCall("js_exec", { code: "return 1" }) : { content: "done" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const watcher = await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "" });
   const done = await r.prompt(agent, "go");
   await until(() => watcher.frames.some(frame => frame.data.type === "response" && frame.data.id === done.id), "the outcome");
   const calls = updates(watcher.frames).map(event => event.assistantMessageEvent).filter(delta => delta.type.startsWith("toolcall_"));
-  assert.deepEqual(calls.find(delta => delta.type === "toolcall_start"), { type: "toolcall_start", contentIndex: 0 });
+  // The call's id and name, which Pi's start carries only in the message, as fields of their own: never as a toolCall
+  // (a consumer that reads toolcall_start's toolCall, like chiridion's relay, would take it for a whole call).
+  assert.deepEqual(calls.find(delta => delta.type === "toolcall_start"), { type: "toolcall_start", contentIndex: 0, id: "call_js_exec", name: "js_exec" });
   assert.equal(calls.find(delta => delta.type === "toolcall_end").toolCall.name, "js_exec");
   for (const delta of updates(watcher.frames).map(event => event.assistantMessageEvent)) assert.equal(delta.partial ?? delta.message ?? delta.error, undefined);
 });
