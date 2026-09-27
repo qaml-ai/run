@@ -364,7 +364,9 @@ window and `409 REPLAY_GAP`; its `ready` frame says `watch: true` and names no
 and watching keeps neither the agent's process running nor its session loaded:
 once the agent has been idle (no events, nothing running, no application
 connected) for the idle timeout, its watchers' streams end, and one that comes
-back gets `409 REPLAY_GAP` (asking with `snapshot=1`, a snapshot). Watchers and waiting polls
+back gets `409 REPLAY_GAP` (asking with `snapshot=1`, a snapshot), even when
+nothing happened meanwhile: an agent's event ids start above every earlier one
+each time its session loads, so no id is ever reused. Watchers and waiting polls
 are bounded: 32 per agent, 1024 per tenant and 4096 per node (`429` past them).
 Any node serves them: a node that does not own the agent forwards the stream to
 the one that does.
@@ -399,7 +401,10 @@ of its id, then the live stream:
 when the run's messages are too large for one frame: read them from history.
 `start` is the index of the run's first message in the agent's history, which
 each run also announces as a `turn_opened` event (`{ index }`). Without
-`snapshot=1`, a gap is `409 REPLAY_GAP` as before.
+`snapshot=1`, a gap is `409 REPLAY_GAP` as before, and a new subscriber (no
+cursor) gets whatever is buffered, which may begin in the middle of a message:
+deltas whose `message_start` it never saw. Skip those until the next
+`message_start`, or ask for a snapshot.
 
 The event format changed in TypeScript SDK 0.6.0 and Python client 0.3.0
 (ready frame `version: 5`): `onEvent` / `on_event` gets deltas, and a snapshot

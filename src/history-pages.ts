@@ -98,8 +98,9 @@ export class HistoryIndex {
     const count = chunk.messages.length;
     const body = Buffer.from(JSON.stringify(chunk.messages));
     const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
-    // A deleted agent's history is purged, never written again: checked before the blob, so none is left behind,
-    // and again with the row, locking the agent's, so a purge cannot come between.
+    // A deleted agent's history is purged, not written again: checked before the blob, so almost never is one left
+    // behind (a delete landing between the check and the write can leave one, unreferenced, under its content hash),
+    // and again with the row, holding the agent's, so no row outlives a purge.
     if (!await this.live(agent, this.db)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
     await this.storage.writeBlob(this.key(agent, { start: chunk.start, count, hash }), body);
     return underClaim(this.db, claim, async sql => {
