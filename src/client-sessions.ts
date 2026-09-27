@@ -595,7 +595,9 @@ export class ClientSessions {
     const snapshot: TurnSnapshot = { type: "snapshot", cursor: session.cursor, requestId: turn?.requestId ?? null, turn: turn ? {
       start: turn.start ?? null, messages: turn.messages, partial: session.partial ?? null, ...(turn.truncated ? { truncated: true as const } : {}),
     } : null };
-    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > FRAME_BYTES) snapshot.turn = { start: snapshot.turn.start, messages: [], partial: null, truncated: true };
+    // Too large for one frame: the finished messages go first (they are in history), then the streaming message.
+    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > FRAME_BYTES) snapshot.turn = { ...snapshot.turn, messages: [], truncated: true };
+    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > FRAME_BYTES) snapshot.turn = { ...snapshot.turn, partial: null };
     return snapshot;
   }
 
