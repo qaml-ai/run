@@ -26,7 +26,7 @@ type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<
 type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc };
 type InlineHandle = Common & { kind: "inline"; host: ReturnType<typeof createAgentHost>; stop: (error: Error) => void; stopped: Promise<never> };
 type Handle = ProcessHandle | InlineHandle;
-export type SupervisorOptions = { runtime?: string; maxAgents?: number; storage?: Storage; hosting?: Hosting };
+export type SupervisorOptions = { runtime?: string; maxAgents?: number; storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number };
 
 export class AgentSupervisor {
   readonly agents = new Map<string, Handle>();
@@ -248,20 +248,33 @@ export class AgentSupervisor {
     finally { if (onEvent) handle.listeners.delete(onEvent); }
   }
 
-  stop(id: string): Promise<void> {
+  /**
+   * Stop an agent. It first indexes its settled turns (`flush`, for up to `historyFlushMs`); callers
+   * stopping many at once flush them together first (`flush`), and a node that lost the agent skips it.
+   */
+  stop(id: string, options: { flush?: boolean } = {}): Promise<void> {
     const handle = this.agents.get(id);
     if (!handle) return this.stopping.get(id) ?? Promise.resolve();
     this.agents.delete(id);
-    const stopped = this.halt(handle).finally(() => { if (this.stopping.get(id) === stopped) this.stopping.delete(id); });
+    const stopped = this.halt(handle, options.flush ?? true).finally(() => { if (this.stopping.get(id) === stopped) this.stopping.delete(id); });
     this.stopping.set(id, stopped);
     return stopped;
   }
 
-  private async halt(handle: Handle) {
+  /** Have agents index their settled turns, all at once, waiting at most `historyFlushMs` for all of them. */
+  async flush(ids: string[]) {
+    const handles = ids.flatMap(id => this.agents.get(id) ?? []);
+    if (!handles.length) return;
+    const flushed = handles.map(handle => (handle.kind === "process" ? handle.rpc.request("historyFlush", {}) : handle.host.handle("historyFlush", {})).catch(() => {}));
+    await Promise.race([Promise.all(flushed), new Promise(resolve => setTimeout(resolve, this.flushMs).unref())]);
+  }
+  private get flushMs() { return this.options.historyFlushMs ?? HISTORY_FLUSH_MS; }
+
+  private async halt(handle: Handle, flush: boolean) {
     this.cancelTools(handle);
     if (handle.kind === "process") {
       // Its settled turns go to the history index first (the inline host does this as it is disposed).
-      await Promise.race([handle.rpc.request("historyFlush", {}), new Promise(resolve => setTimeout(resolve, HISTORY_FLUSH_MS).unref())]).catch(() => {});
+      if (flush) await Promise.race([handle.rpc.request("historyFlush", {}), new Promise(resolve => setTimeout(resolve, this.flushMs).unref())]).catch(() => {});
       handle.rpc.close("Agent stopped");
       const closed = once(handle.child, "close");
       handle.child.kill("SIGKILL");
@@ -269,11 +282,14 @@ export class AgentSupervisor {
     } else {
       // Callers see the same failure as a killed process; the host writes nothing more.
       handle.stop(new Error("Agent stopped"));
-      await handle.host.dispose();
+      await handle.host.dispose(flush ? this.flushMs : 0);
     }
     // Unloading compacts the transcript's tail into Storage.
     await handle.transcript.close();
   }
 
-  async close() { await Promise.all([...[...this.agents.keys()].map(id => this.stop(id)), ...this.stopping.values()]); }
+  async close() {
+    await this.flush([...this.agents.keys()]);
+    await Promise.all([...[...this.agents.keys()].map(id => this.stop(id, { flush: false })), ...this.stopping.values()]);
+  }
 }

@@ -2,6 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
+import { ClientSessions } from "../src/client-sessions.ts";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { boundaries, chunksOf, HistoryIndex } from "../src/history-pages.ts";
@@ -228,4 +233,38 @@ test("a transcript's backlog is dropped past its bound, and adopted again from t
   assert.equal(transcript.adopt(20), true);
   assert.deepEqual([transcript.backlog!.from, transcript.backlog!.messages.length, transcript.backlog!.turns], [20, 4, [20, 22]]);
   assert.equal(transcript.adopt(30), false, "past the transcript");
+});
+
+test("stopping many agents waits once for their history, not once per agent", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-stop-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const provider = createServer(async (req, res) => {
+    for await (const _ of req);
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const [content, finish] of [[{ role: "assistant", content: "hi" }, null], [{}, "stop"]]) res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason: finish }] })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  provider.listen(0, "127.0.0.1"); await once(provider, "listening");
+  t.after(async () => { provider.closeAllConnections(); await new Promise(resolve => provider.close(resolve)); });
+  const model = { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1`, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
+  // A chunk store that stalls, as S3 or the database might.
+  const storage = fileStorage(join(root, "data"));
+  const stall = new Promise<never>(() => {});
+  const writeBlob = storage.writeBlob.bind(storage);
+  storage.writeBlob = (key, data) => key.includes("/history/") ? stall : writeBlob(key, data);
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, historyFlushMs: 400 });
+  const sessions = new ClientSessions(supervisor, { db, storage, secret: "history-stop-secret-with-32-characters", apiKeyFor: () => "fixture-only" });
+  t.after(async () => { await supervisor.close(); });
+  const ids: string[] = [];
+  for (let index = 0; index < 5; index++) {
+    const { id } = await sessions.create([], { model }, `agent-${index}`, {}, "default");
+    await sessions.submit(id, "default", { id: "turn", method: "prompt", params: { text: "hi" } });
+    ids.push(id);
+  }
+  for (const id of ids) await until(async () => (await sessions.stateFor(id, "default")).requests.some(record => record.id === "turn" && record.state === "completed"), "the turn");
+  const started = Date.now();
+  await sessions.close();
+  const took = Date.now() - started;
+  assert.ok(took < 5 * 400, `closing waited ${took} ms: once for all, not ${5 * 400} ms`);
 });

@@ -620,10 +620,10 @@ export function createAgentHost(io: HostIO) {
    * Stop serving: abort the run and close the transcript, so nothing more is
    * written. An interrupted turn stays marked active and is recovered on next load.
    */
-  async function dispose() {
+  async function dispose(flushMs = HISTORY_FLUSH_MS) {
     active?.abort();
     agent?.abort();
-    await Promise.race([index(true), sleep(HISTORY_FLUSH_MS)]);
+    if (flushMs > 0) await Promise.race([index(true), sleep(flushMs)]);
     await transcript?.log.close();
   }
 

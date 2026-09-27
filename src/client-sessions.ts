@@ -2205,9 +2205,12 @@ export class ClientSessions {
     if (this.releasing) return;
     this.releasing = true;
     try {
-      for (const session of [...this.sessions.values()]) {
+      const idle = [...this.sessions.values()].filter(session => !this.working(session) && !session.inflight);
+      // Their history is indexed together first, under one deadline, not one stop at a time.
+      await this.supervisor.flush(idle.map(session => session.header.id));
+      for (const session of idle) {
         if (this.working(session) || session.inflight) continue;
-        await this.supervisor.stop(session.header.id).catch(() => {});
+        await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
         await this.unload(session);
         this.endStreams(session);
       }
@@ -2249,7 +2252,8 @@ export class ClientSessions {
     this.fail(session, new Error("This node lost ownership of the agent"));
     this.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
-    await this.supervisor.stop(session.header.id).catch(() => {});
+    // Its claim is gone, so it could write no chunk: its next owner's start catches up.
+    await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
   }
 
   async close() {
@@ -2257,9 +2261,11 @@ export class ClientSessions {
     clearInterval(this.heartbeat);
     // A sweep stops after its batch; agents it claimed but did not reach are taken again once the lease lapses.
     await this.sweeping;
+    // Every agent's settled turns are indexed together, under one deadline, before they stop one at a time.
+    await this.supervisor.flush([...this.sessions.keys()]);
     for (const session of [...this.sessions.values()]) {
       // Stopped first, so no turn advances past what is handed off, and the next owner never shares the transcript with a live process.
-      await this.supervisor.stop(session.header.id).catch(() => {});
+      await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
       await this.unload(session);
