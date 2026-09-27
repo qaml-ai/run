@@ -309,6 +309,17 @@ test("waiting polls count as subscribers, and subscribers are bounded per node a
   assert.equal((await watchEvents(t, `${node.url}/clients/${c.session.id}/events`, { Authorization: `Bearer ${c.session.token}` })).status, 429, "the node has 1");
 });
 
+test("a watcher refused for capacity leaves nothing behind for its idle agent", async t => {
+  const f = await fixture(t, { idleMs: 1000, maxNodeWatchers: 1 });
+  const [a, b] = [await f.start(), await f.start()];
+  await Promise.all([a.close(), b.close()]);
+  await until(() => !f.sessions.sessions.has(a.session.id) && !f.sessions.sessions.has(b.session.id), "both idle sessions to unload", 10_000);
+  const watch = (agent: AgentClient) => watchEvents(t, `${f.url}/clients/${agent.session.id}/events`, { Authorization: `Bearer ${agent.session.token}` });
+  assert.equal((await watch(a)).status, 200);
+  assert.equal((await watch(b)).status, 429);
+  assert.equal((f.sessions as any).idle.has(b.session.id), false, "no empty idle entry is left");
+});
+
 test("an idle agent's watchers stay without its session and resume across its unload and reload without a gap", async t => {
   const f = await fixture(t, { idleMs: 1000 });
   const agent = await f.start();

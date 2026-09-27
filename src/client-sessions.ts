@@ -737,10 +737,11 @@ export class ClientSessions {
     if (gap && !asked) throw new HttpError(409, "REPLAY_GAP: recover from session state");
     const snapshot: TurnSnapshot | undefined = asked && (after === 0 || gap) ? { type: "snapshot", cursor, requestId: null, turn: null } : undefined;
     const shown = (data: TurnSnapshot) => reader ? reader.show(data) : data;
-    let entry = this.idle.get(id);
-    if (!entry) { entry = { tenant: header.tenant, watchers: new Set(), polls: new Set(), checked: Date.now() }; this.idle.set(id, entry); }
-    const idle = entry;
-    const release = this.hold(header.tenant, idle.watchers.size + idle.polls.size);
+    // Its place first: an entry is made only for a subscriber that has one.
+    const existing = this.idle.get(id);
+    const release = this.hold(header.tenant, existing ? existing.watchers.size + existing.polls.size : 0);
+    const idle = existing ?? { tenant: header.tenant, watchers: new Set<ServerResponse>(), polls: new Set<() => void>(), checked: Date.now() };
+    if (!existing) this.idle.set(id, idle);
     if (kind === "poll") {
       const wait = Number(c.req.query("wait") ?? 0);
       if (!snapshot && Number.isFinite(wait) && wait > 0) {
