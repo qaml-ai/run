@@ -304,7 +304,9 @@ one agent, and only `GET /v1/agents/:id/{events,state,history,inputs}` (or the
 the browser reconnects with a new one. It is stateless (an HMAC under the session
 secret): nothing is stored, and nothing revokes it sooner. Its reader gets:
 - events: every type but the runtime's own (`codemode`, `compaction_usage`,
-  `spend_limit_reached`), or only those `events` lists; a run's outcome only as
+  `spend_limit_reached`), or only those `events` lists (the SDK's watcher needs
+  `turn_opened`, `message_start`, `message_update` and `message_end` to follow
+  messages); a run's outcome only as
   whether and why it stopped (`{id, outcome: {stopped?, error?}}`); snapshots with
   their turn's messages only if it reads `history` or gets `message_end`, and the
   message streaming only if it gets `message_update` (else `turn: null`, or no `partial`);

@@ -449,6 +449,10 @@ const watcher = watchAgent({
   a call's code while the model writes it.
 - It starts from the newest page of history and loads older pages on request;
   with a token that does not read `history`, it follows the stream alone.
+- It places messages by the stream's `turn_opened` and `message_end` (and folds the
+  message streaming from `message_start` and `message_update`): a token whose
+  `events` list leaves any of these out gives a view that stops adding messages
+  (or showing the one streaming) until the next history read.
 - It renews its token through `getToken` a minute before it expires, and when the
   runtime refuses it (401).
 
