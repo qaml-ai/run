@@ -170,6 +170,8 @@ const MAX_BUFFERED_EVENTS = 512;
 const MAX_WATCHERS = 32;
 const MAX_TENANT_WATCHERS = 1024;
 const MAX_NODE_WATCHERS = 4096;
+/** How often an idle watcher's agent is checked for an owner elsewhere, should its load's notice be missed. */
+const IDLE_CHECK_MS = 20_000;
 /** A long poll waits at most this long for an event. */
 const MAX_POLL_WAIT_MS = 25_000;
 /** Files written in one run that its outcome lists. */
@@ -245,6 +247,8 @@ export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
   /** Read-only subscribers (watchers and waiting polls) one agent's event stream may have at once (default 32), a tenant's agents on this node (1024), and this node (4096). */
   maxWatchers?: number; maxTenantWatchers?: number; maxNodeWatchers?: number;
+  /** A tenant's own bound on its read-only subscribers on this node, instead of `maxTenantWatchers`; read at each subscribe. */
+  watcherLimitFor?: (tenant: string) => number | undefined;
   /** Headers and the tenant index. */
   db: Db;
   /** Single-host shorthand for `storage: fileStorage(root)`, where journals are kept. */
@@ -461,8 +465,7 @@ export class ClientSessions {
     const log = this.storage.log<JournalRecord>(this.journalKey(id), claim);
     const session: Session = {
       header, revision: stored.revision, claim, requests: new Map(), running: new Map(), log,
-      // Cursors restart above any cursor from an earlier process, so clients see a gap, never a repeat.
-      cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
+      cursor: await this.startCursor(id, claim), events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
     };
     for (const record of await log.read()) this.apply(session, record);
     if (header.version !== 3 || header.id !== id) throw new Error("Invalid client session header");
@@ -480,6 +483,7 @@ export class ClientSessions {
     await log.flush(true);
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
     this.sessions.set(id, session);
+    this.loaded(session);
     for (const record of resumed) { session.resuming.add(record.id); this.enqueue(session, record, undefined); }
     for (const record of queued.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) this.enqueue(session, record, record.params);
     return session;
@@ -603,11 +607,10 @@ export class ClientSessions {
    * Take a read-only subscriber's place (a watcher's, or a waiting poll's), within the agent's, its tenant's and
    * this node's bounds (429 past them); the function returned gives it back, once.
    */
-  private hold(session: Session) {
-    const tenant = session.header.tenant;
+  private hold(tenant: string, subscribers: number) {
     const reject = (scope: string) => new HttpError(429, `${scope} has too many event stream subscribers; retry later`);
-    if (session.watchers.size + session.polls.size >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw reject("This agent");
-    if ((this.tenantWatching.get(tenant) ?? 0) >= (this.options.maxTenantWatchers ?? MAX_TENANT_WATCHERS)) throw reject("This tenant");
+    if (subscribers >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw reject("This agent");
+    if ((this.tenantWatching.get(tenant) ?? 0) >= (this.options.watcherLimitFor?.(tenant) ?? this.options.maxTenantWatchers ?? MAX_TENANT_WATCHERS)) throw reject("This tenant");
     if (this.watching >= (this.options.maxNodeWatchers ?? MAX_NODE_WATCHERS)) throw reject("This node");
     this.watching++;
     this.tenantWatching.set(tenant, (this.tenantWatching.get(tenant) ?? 0) + 1);
@@ -622,6 +625,138 @@ export class ClientSessions {
   }
   private watching = 0;
   private readonly tenantWatching = new Map<string, number>();
+  /** Each watcher's agent, and its place (given back when it closes) and token expiry. */
+  private readonly watches = new WeakMap<ServerResponse, { agent: string; release: () => void; expiry?: ReturnType<typeof setTimeout> }>();
+  /**
+   * Watchers and waiting polls of agents no node has loaded: they hold a socket and a place, and no
+   * session, claim or journal read. The agent's next load takes them up (here) or ends them (elsewhere,
+   * told by `loadedElsewhere`, or found by `tick`'s check of who owns it), so they reconnect to its owner.
+   */
+  private readonly idle = new Map<string, { tenant: string; watchers: Set<ServerResponse>; polls: Set<() => void>; checked: number }>();
+
+  /** A watcher closed: out of its agent's session or idle entry, and its place given back. */
+  private unwatch(res: ServerResponse) {
+    const watch = this.watches.get(res);
+    if (!watch) return;
+    this.watches.delete(res);
+    this.sessions.get(watch.agent)?.watchers.delete(res);
+    const entry = this.idle.get(watch.agent);
+    entry?.watchers.delete(res);
+    if (entry && !entry.watchers.size && !entry.polls.size) this.idle.delete(watch.agent);
+    clearTimeout(watch.expiry);
+    watch.release();
+  }
+
+  /**
+   * The cursor a loaded session starts from: where its last owner stopped cleanly (nothing was
+   * published since, so a subscriber holding it resumes without a gap), else above any id an earlier
+   * process can have used. Marked unclean before any event, so a crash of this one never reuses an id.
+   */
+  private async startCursor(id: string, claim: Claim | undefined) {
+    const row = (await this.db.query("select last_cursor, cursor_clean from agents where id = $1", [id])).rows[0];
+    const stored = row?.last_cursor === null || row?.last_cursor === undefined ? undefined : Number(row.last_cursor);
+    const cursor = row?.cursor_clean && stored !== undefined ? stored : Math.max(Date.now() * 1000, (stored ?? 0) + 1);
+    await underClaim(this.db, claim, sql => sql.query("update agents set cursor_clean = false where id = $1", [id]));
+    return cursor;
+  }
+
+  /**
+   * The cursor of an agent no node has loaded, for its idle watchers: where its last owner stopped
+   * cleanly; for one that stopped otherwise, a cursor above any it used, recorded as clean while no
+   * node owns it (a load after takes it up). Undefined when a node owns it now: ask that node.
+   */
+  private async idleCursor(id: string): Promise<number | undefined> {
+    const row = (await this.db.query("select last_cursor, cursor_clean from agents where id = $1", [id])).rows[0];
+    if (row?.cursor_clean && row.last_cursor !== null) return Number(row.last_cursor);
+    const { rows } = await this.db.query(`
+      update agents set last_cursor = greatest($2::bigint, coalesce(last_cursor, 0) + 1), cursor_clean = true
+      where id = $1 and not cursor_clean and not exists (
+        select from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = $1)
+      returning last_cursor`, [id, Date.now() * 1000]);
+    if (rows[0]) return Number(rows[0].last_cursor);
+    const again = (await this.db.query("select last_cursor, cursor_clean from agents where id = $1", [id])).rows[0];
+    return again?.cursor_clean && again.last_cursor !== null ? Number(again.last_cursor) : undefined;
+  }
+
+  /** A session loaded here: it takes up its idle watchers and polls, and other nodes end theirs (they reconnect here). */
+  private loaded(session: Session) {
+    const id = session.header.id;
+    const entry = this.idle.get(id);
+    if (entry) {
+      this.idle.delete(id);
+      for (const res of entry.watchers) session.watchers.add(res);
+      for (const wake of [...entry.polls]) wake();
+    }
+    const node = this.options.ownership?.node;
+    if (node) void this.db.query("select pg_notify('agent_runtime_loaded', $1)", [`${node} ${id}`]).catch(() => {});
+  }
+
+  /** Another node loaded an agent: end the idle watchers and polls this node holds for it, so they reconnect to it. */
+  loadedElsewhere(id: string) {
+    const entry = this.idle.get(id);
+    if (!entry) return;
+    this.idle.delete(id);
+    for (const res of entry.watchers) res.end();
+    for (const wake of [...entry.polls]) wake();
+  }
+
+  /**
+   * A watcher or poll of an agent: on its session when loaded here (or loading), else registered idle,
+   * without loading it. `header` is the agent's, already authorized.
+   */
+  private async watchAgent(c: Context<ClientEnv>, header: SessionHeader, kind: "watch" | "poll", reader?: StreamReader): Promise<Response> {
+    const id = header.id;
+    const live = async () => {
+      const session = await this.load(id);
+      if (!session) throw new HttpError(404, "Unknown agent");
+      if (session.fault) throw session.fault;
+      return kind === "poll" ? this.poll(c, session, reader) : this.subscribe(c, session, "watch", reader);
+    };
+    if (this.sessions.has(id) || this.loading.has(id) || this.closed) return live();
+    const cursor = await this.idleCursor(id);
+    // Loaded meanwhile, here or on another node (whose stream this one does not have): take the loaded path, or retry there.
+    if (this.sessions.has(id) || this.loading.has(id)) return live();
+    if (cursor === undefined) throw new HttpError(503, "This agent is being loaded; retry");
+    if (gone(c)) return RESPONSE_ALREADY_SENT;
+    const raw = c.req.header("last-event-id") ?? "0";
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new HttpError(400, "Invalid event cursor");
+    const after = Number(raw);
+    const asked = c.req.query("snapshot") === "1";
+    // Nothing runs, and nothing happened after `cursor`: a subscriber at it (or new) is caught up; any other missed events.
+    const gap = after !== 0 && after !== cursor;
+    if (gap && !asked) throw new HttpError(409, "REPLAY_GAP: recover from session state");
+    const snapshot: TurnSnapshot | undefined = asked && (after === 0 || gap) ? { type: "snapshot", cursor, requestId: null, turn: null } : undefined;
+    const shown = (data: TurnSnapshot) => reader ? reader.show(data) : data;
+    let entry = this.idle.get(id);
+    if (!entry) { entry = { tenant: header.tenant, watchers: new Set(), polls: new Set(), checked: Date.now() }; this.idle.set(id, entry); }
+    const idle = entry;
+    const release = this.hold(header.tenant, idle.watchers.size + idle.polls.size);
+    if (kind === "poll") {
+      const wait = Number(c.req.query("wait") ?? 0);
+      if (!snapshot && Number.isFinite(wait) && wait > 0) {
+        await new Promise<void>(resolve => {
+          const done = () => { clearTimeout(timer); idle.polls.delete(done); c.env.outgoing.off("close", done); resolve(); };
+          const timer = setTimeout(done, Math.max(0, Math.min(wait * 1000, MAX_POLL_WAIT_MS, reader ? reader.until - Date.now() : Infinity)));
+          idle.polls.add(done);
+          c.env.outgoing.once("close", done);
+        });
+      }
+      release();
+      if (!idle.watchers.size && !idle.polls.size && this.idle.get(id) === idle) this.idle.delete(id);
+      return json(c, 200, { cursor, events: snapshot ? [{ id: cursor, data: shown(snapshot) }] : [] });
+    }
+    const res = c.env.outgoing;
+    const expiry = reader ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
+    expiry?.unref();
+    if (reader) readers.set(res, reader);
+    idle.watchers.add(res);
+    this.watches.set(res, { agent: id, release, expiry });
+    res.on("close", () => this.unwatch(res));
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+    res.write(`event: ready\ndata: ${JSON.stringify({ version: 5, agentId: id, watch: true })}\n\n`);
+    if (snapshot) send(res, `id: ${cursor}\ndata: ${JSON.stringify(shown(snapshot))}\n\n`);
+    return RESPONSE_ALREADY_SENT;
+  }
 
   /** Every open event stream of the agent: the application's connection and its watchers. */
   private streams(session: Session) {
@@ -663,7 +798,7 @@ export class ClientSessions {
     // registered from here would ever be released. (No await follows, so it cannot close unseen after this.)
     if (gone(c)) return RESPONSE_ALREADY_SENT;
     const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), c.req.query("snapshot") === "1");
-    const release = mode === "watch" ? this.hold(session) : undefined;
+    const release = mode === "watch" ? this.hold(session.header.tenant, session.watchers.size + session.polls.size) : undefined;
     const res = c.env.outgoing;
     let ready: Record<string, unknown> = { version: 5, agentId: session.header.id };
     // A reader's stream ends as its token expires: it reconnects with a fresh one, so access changes apply within a token's life.
@@ -672,7 +807,8 @@ export class ClientSessions {
     if (reader) readers.set(res, reader);
     if (mode === "watch") {
       session.watchers.add(res);
-      res.on("close", () => { session.watchers.delete(res); release!(); clearTimeout(expiry); });
+      this.watches.set(res, { agent: session.header.id, release: release!, expiry });
+      res.on("close", () => this.unwatch(res));
       ready = { ...ready, watch: true };
     } else {
       session.response?.end();
@@ -712,7 +848,7 @@ export class ClientSessions {
     let read = this.replay(session, raw, asked);
     if (!read.snapshot && !read.events.length && wait > 0 && !this.closed && !session.fault) {
       // A waiting poll holds a subscriber's place, as a watcher does.
-      const release = this.hold(session);
+      const release = this.hold(session.header.tenant, session.watchers.size + session.polls.size);
       await new Promise<void>(resolve => {
         const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); release(); resolve(); };
         const timer = setTimeout(done, Math.max(0, Math.min(wait * 1000, MAX_POLL_WAIT_MS, reader ? reader.until - Date.now() : Infinity)));
@@ -1266,11 +1402,9 @@ export class ClientSessions {
    * no per-agent tokens. `c.env.outgoing` is the raw response the stream is written to.
    */
   async watchFor(c: Context, id: string, tenant: string, reader?: StreamReader) {
-    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
-    if (!session) throw new HttpError(404, "Unknown agent");
-    if (session.fault) throw session.fault;
-    const context = c as Context<ClientEnv>;
-    return c.req.query("poll") === "1" ? this.poll(context, session, reader) : this.subscribe(context, session, "watch", reader);
+    const header = (await this.owns(id, tenant)) ? this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value : undefined;
+    if (!header || header.purged) throw new HttpError(404, "Unknown agent");
+    return this.watchAgent(c as Context<ClientEnv>, header, c.req.query("poll") === "1" ? "poll" : "watch", reader);
   }
 
   /** A tenant's view of one agent's request state and stream cursor (`/clients/:id/state`). */
@@ -1398,11 +1532,14 @@ export class ClientSessions {
       const authorization = c.req.header("authorization") ?? "";
       if (!header || c.req.header("origin") || (operator !== undefined && header.tenant !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
       if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
+      // A watcher or a poll does not load the agent (see `watchAgent`).
+      if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events` && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
+        return this.watchAgent(c, header, c.req.query("poll") === "1" ? "poll" : "watch");
+      }
       const session = await this.load(header.id);
       if (!session) throw new HttpError(401, "Unauthorized");
       if (session.fault) throw session.fault;
-      // Watching the stream is not activity: an open browser tab must not keep the agent's process running.
-      if (!(c.req.method === "GET" && c.req.path.endsWith("/events") && (c.req.query("watch") === "1" || c.req.query("poll") === "1"))) session.lastActive = Date.now();
+      session.lastActive = Date.now();
       if (operator !== undefined && !(c.req.method === "POST" && c.req.path === `/clients/${header.id}/requests`)) throw new HttpError(403, "Operator bridge only accepts requests");
       c.set("session", session);
       await next();
@@ -1418,7 +1555,7 @@ export class ClientSessions {
       return json(c, 200, { stopped: true });
     });
     // SSE is written straight to the socket: backpressure and replacement need the raw response.
-    app.get(`${agent}/events`, c => c.req.query("poll") === "1" ? this.poll(c, c.var.session) : this.subscribe(c, c.var.session, c.req.query("watch") === "1" ? "watch" : "attach"));
+    app.get(`${agent}/events`, c => this.subscribe(c, c.var.session, "attach"));
     app.get(`${agent}/schedules`, async c => json(c, 200, await this.scheduler().list(c.var.session.header.id)));
     app.post(`${agent}/schedules`, async c => {
       const scheduler = this.scheduler();
@@ -2202,6 +2339,8 @@ export class ClientSessions {
         await this.unload(session);
         this.endStreams(session);
       }
+      // Idle watchers reconnect to a node that stays.
+      for (const id of [...this.idle.keys()]) this.loadedElsewhere(id);
     } finally { this.releasing = false; }
   }
 
@@ -2220,12 +2359,32 @@ export class ClientSessions {
       if (this.busy(session) || now - session.lastActive < idleMs) continue;
       if (this.supervisor.agents.has(id)) void this.supervisor.stop(id).catch(() => {});
       else if (!session.response && !session.fault) {
-        // Nothing is running and no application is connected: everything needed later is in storage. Watchers do
-        // not keep it here; their streams end, and a watcher that comes back gets a replay gap (or, asking, a snapshot).
-        this.endStreams(session);
+        // Nothing is running and no application is connected: everything needed later is in storage. Its watchers
+        // stay, idle (see `idle`); its polls answer, and poll again idle.
+        this.idleWatchers(session);
         void this.unload(session);
       }
     }
+    for (const [id, entry] of this.idle) {
+      for (const res of entry.watchers) send(res, ": heartbeat\n\n");
+      // Should a load's notice be missed (the listening connection was down), who owns the agent says it too.
+      const ownership = this.options.ownership;
+      if (!ownership || now - entry.checked < IDLE_CHECK_MS) continue;
+      entry.checked = now;
+      void ownership.route(id).then(owner => { if (owner && owner !== ownership.node && !this.sessions.has(id)) this.loadedElsewhere(id); }).catch(() => {});
+    }
+  }
+
+  /** A session unloading keeps its watchers, idle, and answers its polls. */
+  private idleWatchers(session: Session) {
+    const id = session.header.id;
+    if (session.watchers.size) {
+      let entry = this.idle.get(id);
+      if (!entry) { entry = { tenant: session.header.tenant, watchers: new Set(), polls: new Set(), checked: Date.now() }; this.idle.set(id, entry); }
+      for (const res of session.watchers) entry.watchers.add(res);
+      session.watchers.clear();
+    }
+    for (const wake of [...session.polls]) wake();
   }
 
   /** Drop a session from memory and give up ownership so any node can serve it next. */
@@ -2234,6 +2393,8 @@ export class ClientSessions {
     await session.log.close().catch(() => {});
     // A revoked agent's logs are never read again.
     if (session.header.revoked) await underClaim(this.db, session.claim, sql => deleteTail(sql, session.header.id)).catch(() => {});
+    // Nothing is published after this: the next owner goes on from this cursor.
+    await underClaim(this.db, session.claim, sql => sql.query("update agents set last_cursor = $2, cursor_clean = true where id = $1", [session.header.id, session.cursor])).catch(() => {});
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
   }
 
@@ -2262,5 +2423,6 @@ export class ClientSessions {
       // Closed after release, so the client's reconnect finds the next owner rather than this node.
       this.endStreams(session);
     }
+    for (const id of [...this.idle.keys()]) this.loadedElsewhere(id);
   }
 }

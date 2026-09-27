@@ -95,6 +95,31 @@ test("watchers on any node share the owner's stream: each gets every event, besi
   assert.deepEqual(calls, ["k"]);
 });
 
+test("watching an idle agent loads it nowhere; when a node loads it, other nodes' idle watchers move to it at once", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const a = await c.start("a", { AGENT_IDLE_MS: "1000" });
+  const b = await c.start("b", { AGENT_IDLE_MS: "1000" });
+  const agent = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: lookup([]) });
+  await agent.execute("return 1");
+  await agent.close();
+  await until(async () => !(await c.owner(agent.session.id)), "the idle agent to be released", 20_000);
+  const auth = { Authorization: `Bearer ${agent.session.token}` };
+  // Held by B, which does not load it: no node owns it after.
+  const idle = await watchEvents(t, `${b.url}/clients/${agent.session.id}/events`, auth);
+  assert.equal(idle.status, 200);
+  await sleep(500);
+  assert.ok(!await c.owner(agent.session.id), "no node owns it");
+  // A loads it for a run: B's watcher ends at once (not at B's 20 s check), and reconnecting through B reaches A.
+  const started = Date.now();
+  const running = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(agent.session, { tools: lookup([]) });
+  t.after(() => running.close());
+  await until(() => idle.ended, "B's idle watcher to end", 10_000);
+  assert.ok(Date.now() - started < 10_000);
+  const moved = await watchEvents(t, `${b.url}/clients/${agent.session.id}/events`, auth, { query: "watch=1&snapshot=1" });
+  assert.equal((await running.execute("return 2", { idempotencyKey: "after" })).output[0], "2");
+  await until(() => moved.frames.some(frame => frame.data.type === "response" && frame.data.id === "after"), "the reconnected watcher to see the run on A");
+});
+
 test("a volume is served by one node: other nodes forward to it, agents anywhere reach it, and a survivor takes over", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const a = await c.start("a");

@@ -25,6 +25,9 @@ locals {
     AGENT_DATABASE_NAME       = aws_db_instance.control.db_name
     AGENT_DATABASE_SECRET_ARN = aws_db_instance.control.master_user_secret[0].secret_arn
     AGENT_DATABASE_CA         = "/etc/ssl/rds-global-bundle.pem"
+    # Notifications (a node that loads an agent tells the others) on the instance itself:
+    # RDS Proxy does not carry LISTEN reliably. A missed one is caught by a 20 s check.
+    AGENT_DATABASE_LISTEN_HOST = aws_db_instance.control.address
     # Longer than the database is away in a Multi-AZ failover, so nodes ride it
     # out instead of fencing; only crash takeover waits this long.
     AGENT_LEASE_TTL_MS       = "90000"

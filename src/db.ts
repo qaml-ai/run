@@ -75,6 +75,57 @@ export async function databaseFromEnvironment(env = process.env): Promise<Db> {
 }
 
 /**
+ * Listen for notifications on `channel` over a connection of its own, reconnecting (with backoff)
+ * whenever it drops; `onPayload` gets each payload. Configured as the pool is, except that
+ * AGENT_DATABASE_LISTEN_HOST, when set, names another host: RDS Proxy does not carry notifications
+ * reliably (a LISTEN pins a proxied session, and delivery to it is not assured), so production
+ * listens on the database instance itself. Notifications are a fast path: callers keep a slower
+ * check for what one missed while the connection was down.
+ */
+export async function listenFromEnvironment(channel: string, onPayload: (payload: string) => void, env = process.env) {
+  const ssl = env.AGENT_DATABASE_CA ? { ca: readFileSync(env.AGENT_DATABASE_CA, "utf8"), rejectUnauthorized: true } : undefined;
+  const secret = !env.AGENT_DATABASE_URL && env.AGENT_DATABASE_SECRET_ARN ? await secretReader(env.AGENT_DATABASE_SECRET_ARN, env) : undefined;
+  const config = async (): Promise<pg.ClientConfig> => {
+    if (env.AGENT_DATABASE_URL) {
+      const url = new URL(env.AGENT_DATABASE_URL);
+      if (ssl) for (const name of ["ssl", "sslmode", "sslrootcert", "sslcert", "sslkey", "uselibpqcompat"]) url.searchParams.delete(name);
+      return { connectionString: url.toString(), ...(ssl ? { ssl } : {}), keepAlive: true };
+    }
+    const login = JSON.parse(await secret!() || "{}");
+    return { host: env.AGENT_DATABASE_LISTEN_HOST || env.AGENT_DATABASE_HOST, port: Number(env.AGENT_DATABASE_PORT ?? 5432), database: env.AGENT_DATABASE_NAME ?? "agent_runtime",
+      user: login.username, password: login.password, ...(ssl ? { ssl } : {}), keepAlive: true, connectionTimeoutMillis: 10_000 };
+  };
+  let client: pg.Client | undefined, closed = false, backoff = 1_000, timer: ReturnType<typeof setTimeout> | undefined;
+  const connect = async () => {
+    if (closed) return;
+    const next = new pg.Client(await config());
+    const retry = (error?: Error) => {
+      if (client !== next) return;
+      client = undefined;
+      void next.end().catch(() => {});
+      if (closed) return;
+      if (error) console.error(JSON.stringify({ type: "database_listen_failed", channel, error: error.message }));
+      timer = setTimeout(() => void connect().catch(retry), backoff);
+      timer.unref();
+      backoff = Math.min(backoff * 2, 30_000);
+    };
+    client = next;
+    next.on("error", retry);
+    next.on("end", () => retry(new Error("connection ended")));
+    next.on("notification", message => { if (message.channel === channel && message.payload !== undefined) onPayload(message.payload); });
+    try {
+      await next.connect();
+      await next.query(`listen "${channel.replaceAll("\"", "")}"`);
+      backoff = 1_000;
+    } catch (error) { retry(error as Error); }
+  };
+  await connect();
+  return {
+    async close() { closed = true; clearTimeout(timer); const current = client; client = undefined; await current?.end().catch(() => {}); },
+  };
+}
+
+/**
  * A pool whose password comes from `credentials`, cached. The cache is refreshed
  * every ten minutes and whenever a new connection fails authentication, and that
  * connection is retried once, so a rotation never takes the runtime down.

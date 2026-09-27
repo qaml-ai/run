@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { OPERATOR, OTHER_OPERATOR, runtime, sleep, until, watchEvents } from "./runtime-server.ts";
 
 test("a tenant reads its agent's events, state, history and inputs with its own token, and no other tenant can", async t => {
@@ -60,4 +61,17 @@ test("a subscriber that goes away before its stream opens gives its place back",
   await sleep(500);
   const listed = (await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent);
   assert.equal(listed.connected, false);
+});
+
+test("a tenant's own watcher bound, from the tenants file, replaces the default", async t => {
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const r = await runtime(t, () => ({ content: "hello" }), {}, { tenants: {
+    alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" }, maxWatchers: 2 },
+  } });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const events = `${r.base}/v1/agents/${agent}/events`;
+  const auth = { Authorization: `Bearer ${OPERATOR}` };
+  assert.equal((await watchEvents(t, events, auth, { query: "" })).status, 200);
+  assert.equal((await watchEvents(t, events, auth, { query: "" })).status, 200);
+  assert.equal((await watchEvents(t, events, auth, { query: "" })).status, 429);
 });

@@ -63,6 +63,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
   }
   return {
     root, supervisor, url, runtimeOptions, start, post, clients,
+    db,
     header: async (id: string) => (await db.query("select header from agents where id = $1", [id])).rows[0]?.header,
     get sessions() { return sessions; },
     setModel(chosen: Model<Api>) { model = chosen; },
@@ -308,17 +309,39 @@ test("waiting polls count as subscribers, and subscribers are bounded per node a
   assert.equal((await watchEvents(t, `${node.url}/clients/${c.session.id}/events`, { Authorization: `Bearer ${c.session.token}` })).status, 429, "the node has 1");
 });
 
-test("a session with only watchers unloads once idle, ending their streams; they come back to a replay gap", async t => {
+test("an idle agent's watchers stay without its session and resume across its unload and reload without a gap", async t => {
   const f = await fixture(t, { idleMs: 1000 });
   const agent = await f.start();
+  const id = agent.session.id;
   await agent.execute("return 1");
   await agent.close();
+  const events = `${f.url}/clients/${id}/events`;
   const auth = { Authorization: `Bearer ${agent.session.token}` };
-  const watcher = await watchEvents(t, `${f.url}/clients/${agent.session.id}/events`, auth);
-  await until(() => watcher.ended, "the idle session's watcher to be ended", 10_000);
-  assert.equal(f.sessions.sessions.has(agent.session.id), false);
+  const watcher = await watchEvents(t, events, auth);
+  await until(() => !f.sessions.sessions.has(id), "the idle session to unload", 10_000);
+  await sleep(300);
+  assert.equal(watcher.ended, false, "its watcher stays, and the session goes");
   const last = watcher.frames.filter(frame => frame.id).at(-1)!.id!;
-  assert.equal((await watchEvents(t, `${f.url}/clients/${agent.session.id}/events`, auth, { cursor: last })).status, 409);
+
+  // Watchers and polls of the unloaded agent load nothing, and are caught up at the cursor it stopped at.
+  const again = await watchEvents(t, events, auth, { cursor: last });
+  assert.equal(again.status, 200);
+  const poll = (cursor: number, query = "") => fetch(`${events}?poll=1${query}`, { headers: { ...auth, "Last-Event-ID": String(cursor) } }).then(async response => ({ status: response.status, json: await response.json() as any }));
+  for (let index = 0; index < 5; index++) assert.deepEqual((await poll(last)).json, { cursor: last, events: [] });
+  assert.equal((await poll(last - 1)).status, 409, "a cursor behind it missed events");
+  assert.equal((await poll(last - 1, "&snapshot=1")).json.events[0].data.turn, null);
+  assert.equal(f.sessions.sessions.has(id), false, "nothing loaded it");
+  const waiting = poll(last, "&wait=10");
+
+  // The next run loads it: the idle watchers go on from the same cursor, and the waiting poll answers.
+  const connected = await new AgentRuntime(f.runtimeOptions).connectAgent(agent.session, { tools: {} });
+  f.clients.push(connected);
+  await connected.execute("return 2", { idempotencyKey: "next" });
+  const settled = (frames: typeof watcher.frames) => frames.some(frame => frame.data.type === "response" && frame.data.id === "next");
+  await until(() => settled(watcher.frames) && settled(again.frames), "both idle watchers to see the next run");
+  assert.equal(watcher.frames.filter(frame => frame.id && frame.id > last)[0].id, last + 1, "no gap");
+  assert.deepEqual((await waiting).json.events, []);
+  assert.ok((await poll(last)).json.events.some((event: any) => event.data.type === "response" && event.data.id === "next"), "a poll at the old cursor replays the reloaded session's events");
 });
 
 test("history answers while the agent is starting, whole or in pages", async t => {
@@ -363,6 +386,8 @@ test("bounded replay gaps recover from state; settled requests remain deduplicat
   const original = await agent.execute('text("a".repeat(400)); return 42;', { idempotencyKey: "persisted" });
   await agent.close();
   await f.restartHost();
+  // As a crash would leave it: the next process cannot know no event followed the saved cursor.
+  await f.db.query("update agents set cursor_clean = false where id = $1", [agent.session.id]);
   const seen: string[] = [];
   // The saved cursor belongs to the previous host process, whose buffered events are gone.
   const resumed = await new AgentRuntime(f.runtimeOptions).connectAgent(agent.session, { tools: {}, onEvent: event => seen.push(event.type) });

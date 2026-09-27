@@ -12,7 +12,7 @@ import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
-import { databaseFromEnvironment, migrate } from "./db.ts";
+import { databaseFromEnvironment, listenFromEnvironment, migrate } from "./db.ts";
 import { Ownership } from "./ownership.ts";
 import { tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
@@ -306,7 +306,7 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 // Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
 const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
-  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, agentLimitFor: async tenant => {
+  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, watcherLimitFor: tenant => tenants.maxWatchers(tenant), agentLimitFor: async tenant => {
     // An admin's limit for the tenant, else, on free credit, the free limit (never above the default).
     const free = tenants.maxAgents(tenant) === undefined ? await accounts.billing.agentLimit(tenant) : undefined;
     return tenants.maxAgents(tenant) ?? (free === undefined ? undefined : Math.min(free, maxAgentsPerTenant));
@@ -343,6 +343,11 @@ const clients = new ClientSessions(supervisor, {
   sources: toolSources,
   inputs,
   submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
+});
+// An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
+const loads = await listenFromEnvironment("agent_runtime_loaded", payload => {
+  const [from, agent] = payload.split(" ");
+  if (from !== node && agent) clients.loadedElsewhere(agent);
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({
@@ -611,6 +616,7 @@ async function drain(signal: string) {
   await step("mcp", () => mcp.close());
   await step("usage", () => accounts.flushUsage());
   await step("storage usage", () => storageUsage.flush());
+  await step("listen", () => loads.close());
   await step("heartbeat", () => ownership.close());
   server.close();
   server.closeAllConnections();
