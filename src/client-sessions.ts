@@ -1325,8 +1325,9 @@ export class ClientSessions {
     if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
     const id = session.header.id;
-    const live = this.supervisor.agents.has(id);
-    let tail = live ? await this.supervisor.request(id, "historyTail" as RequestMethod) as HistoryTail | null : undefined;
+    // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
+    await session.starting?.catch(() => {});
+    let tail = this.supervisor.agents.has(id) ? await this.supervisor.request(id, "historyTail" as RequestMethod) as HistoryTail | null : undefined;
     if (!tail) {
       // The index should have every message the agent's runs reported, or the running agent the rest. An agent
       // without one (made before the index), one behind (a stop that could not write its last chunks), or a running
@@ -1348,6 +1349,8 @@ export class ClientSessions {
 
   /** The transcript, from the live agent when it runs, otherwise straight from its log. */
   private async history(session: Session) {
+    // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
+    await session.starting?.catch(() => {});
     if (this.supervisor.agents.has(session.header.id)) return this.supervisor.request(session.header.id, "history");
     return { messages: await this.supervisor.history(session.header.id) };
   }

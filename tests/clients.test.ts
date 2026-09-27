@@ -321,6 +321,28 @@ test("a session with only watchers unloads once idle, ending their streams; they
   assert.equal((await watchEvents(t, `${f.url}/clients/${agent.session.id}/events`, auth, { cursor: last })).status, 409);
 });
 
+test("history answers while the agent is starting, whole or in pages", async t => {
+  const f = await fixture(t, { idleMs: 1000 });
+  const agent = await f.start();
+  await agent.execute("return 1");
+  await until(() => !f.supervisor.agents.has(agent.session.id), "the idle agent to stop", 10_000);
+  const headers = { Authorization: `Bearer ${agent.session.token}` };
+  const statuses: string[] = [];
+  // A run starts the agent; history is read meanwhile, as a client recovering from a replay gap does.
+  const run = agent.execute("return 2", { idempotencyKey: "starts-it" });
+  let done = false;
+  void run.finally(() => { done = true; });
+  while (!done) {
+    for (const path of ["/history", "/history?limit=5"]) {
+      const response = await fetch(`${f.url}/clients/${agent.session.id}${path}`, { headers });
+      if (response.status !== 200) statuses.push(`${path}: ${response.status} ${await response.text()}`);
+      else await response.body?.cancel();
+    }
+  }
+  await run;
+  assert.deepEqual(statuses, []);
+});
+
 test("a call with no application connected fails as not run; one the application never answers times out as unknown", async t => {
   const f = await fixture(t, { timeout: 400 });
   const agent = await f.start({ echo: echo(() => "must not execute") });
