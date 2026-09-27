@@ -75,6 +75,11 @@ export class HistoryIndex {
 
   private key(agent: string, row: Pick<Row, "start" | "count" | "hash">) { return `sessions/${agent}/history/${row.start}-${row.count}-${row.hash}`; }
 
+  /** Whether the agent is not deleted (`lock`: and keep it so until the transaction ends). */
+  private async live(agent: string, sql: Sql, lock = false) {
+    return !!(await sql.query(`select 1 from agents where id = $1 and not revoked and purged_at is null${lock ? " for share" : ""}`, [agent])).rowCount;
+  }
+
   /** Start a new agent's index, empty. */
   async begin(agent: string) {
     await this.db.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);
@@ -93,8 +98,12 @@ export class HistoryIndex {
     const count = chunk.messages.length;
     const body = Buffer.from(JSON.stringify(chunk.messages));
     const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
+    // A deleted agent's history is purged, never written again: checked before the blob, so none is left behind,
+    // and again with the row, locking the agent's, so a purge cannot come between.
+    if (!await this.live(agent, this.db)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
     await this.storage.writeBlob(this.key(agent, { start: chunk.start, count, hash }), body);
     return underClaim(this.db, claim, async sql => {
+      if (!await this.live(agent, sql, true)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
       await sql.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);
       const indexed: number = (await sql.query("select indexed from agent_history_index where agent = $1 for update", [agent])).rows[0].indexed;
       if (indexed !== chunk.start || !count) return indexed;

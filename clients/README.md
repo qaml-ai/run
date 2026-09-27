@@ -418,6 +418,11 @@ at the indexes `turn_opened` and snapshots give. A settled page never changes,
 so it can be cached by its `before` and `limit`. Without `limit` or `before`,
 `/history` still answers the whole transcript.
 
+A turn whose node died before it settled is not on the pages until the agent
+next starts (a new message, a schedule, or a resume after a deploy starts it):
+that start closes the turn, and may take back its cut-off response, before the
+turn is indexed. `/history` without paging shows it as the log has it.
+
 ## Persistence and limits
 
 - Host journals are append-only logs under `AGENT_DATA_DIR/client-sessions`,

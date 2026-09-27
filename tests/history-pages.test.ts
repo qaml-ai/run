@@ -268,3 +268,22 @@ test("stopping many agents waits once for their history, not once per agent", as
   const took = Date.now() - started;
   assert.ok(took < 5 * 400, `closing waited ${took} ms: once for all, not ${5 * 400} ms`);
 });
+
+test("a deleted agent's history is never written again, so a purge leaves nothing behind", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-purge-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const storage = fileStorage(root);
+  const index = new HistoryIndex(db, storage);
+  const agent = `client_${"d".repeat(40)}`;
+  await db.query("insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision) values ($1, 't', '{}', 'a', 'general', 'm', null, false, 1)", [agent]);
+  await index.begin(agent);
+  assert.equal(await index.write(agent, undefined, { start: 0, messages: [user("q"), assistant("a")], turns: [0] }), 2);
+  // Deleted, then purged; a stop's late flush (or a page's catch-up) comes after.
+  await db.query("update agents set revoked = true where id = $1", [agent]);
+  await index.remove(agent, db);
+  await assert.rejects(index.write(agent, undefined, { start: 0, messages: [user("q"), assistant("a")], turns: [0] }), /deleted/);
+  assert.equal((await db.query("select count(*)::int as count from agent_history_chunks where agent = $1", [agent])).rows[0].count, 0);
+  assert.equal((await db.query("select count(*)::int as count from agent_history_index where agent = $1", [agent])).rows[0].count, 0);
+  assert.deepEqual(await readdir(join(root, "sessions", agent, "history")).catch(() => []), []);
+});
