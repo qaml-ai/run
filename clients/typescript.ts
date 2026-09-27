@@ -205,6 +205,13 @@ export interface AgentOptions {
   mcp?: ToolServer;
   onEvent?: (event: any, requestId?: string) => unknown | Promise<unknown>;
   /**
+   * Stream each `message_update` as its delta alone, without the partial message Pi's event carries
+   * (twice) on every token: fold the message from `message_start` and the deltas. Where the stream
+   * cannot replay (a first connect, or a reconnect after the host's buffer moved on), `onEvent` gets
+   * a `{ type: "snapshot", turn }` of the running turn instead of a `replay_gap`.
+   */
+  deltas?: boolean;
+  /**
    * A question, approval or setup step the agent's turn now waits on. Return an answer to give it
    * at once, or nothing to answer later with `agent.answer` (from any process, via connectAgent).
    */
@@ -624,7 +631,7 @@ export class AgentClient {
       const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => this.stream?.abort(), 20_000); };
       touch();
       try {
-        const response = await this.transport.fetcher(this.transport.base + this.path("/events"), {
+        const response = await this.transport.fetcher(this.transport.base + this.path(this.options.deltas ? "/events?deltas=1" : "/events"), {
           headers: { Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor) },
           signal: this.stream.signal, redirect: "manual",
         });
@@ -669,8 +676,14 @@ export class AgentClient {
               }
               const id = Number(idLine.slice(3));
               if (!Number.isSafeInteger(id) || id <= 0) throw new AgentError("Invalid SSE cursor");
-              if (id <= this.journal.cursor) continue;
               const event = JSON.parse(data) as ClientEvent;
+              // A snapshot restarts the stream at its cursor, even one below the saved cursor (a restarted host).
+              if (event.type === "snapshot") {
+                this.journal.cursor = id; await this.save();
+                await this.options.onEvent?.(event);
+                continue;
+              }
+              if (id <= this.journal.cursor) continue;
               await this.receive(event);
               this.journal.cursor = id;
               // Display events are replayable only from the host's memory; persisting the

@@ -4312,6 +4312,19 @@
           {
             "schema": {
               "type": "string",
+              "enum": [
+                "1"
+              ],
+              "description": "Send each message_update as its delta alone, without the partial message; where the stream cannot replay (no Last-Event-ID, or one behind the buffer) start with a snapshot of the running turn instead of a 409"
+            },
+            "required": false,
+            "description": "Send each message_update as its delta alone, without the partial message; where the stream cannot replay (no Last-Event-ID, or one behind the buffer) start with a snapshot of the running turn instead of a 409",
+            "name": "deltas",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Resume after this event id; absent or 0 takes everything buffered. Behind the buffer: 409"
             },
             "required": false,

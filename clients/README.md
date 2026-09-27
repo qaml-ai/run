@@ -370,6 +370,33 @@ cursor to send next. With nothing buffered it waits up to `wait` seconds (at
 most 25) for the next event. A client that polls at least once a minute keeps
 its cursor valid, as a watcher does.
 
+### Deltas and snapshots
+
+Pi's `message_update` events carry the whole message so far, twice, so a long
+answer costs the square of its length on the wire. A subscriber that adds
+`deltas=1` (to a stream, a watcher or a poll; the TypeScript SDK's `deltas: true`)
+gets each update as its delta alone, `{ type: "message_update",
+assistantMessageEvent: { type, contentIndex, delta | content | toolCall } }`
+(a `toolcall_start` names its call's `id` and `name`), and folds the message from
+its `message_start`. Such a subscriber never gets `409`: when it connects with no
+cursor, or one the buffer has moved past, the stream starts with a snapshot as
+of its id, then continues live:
+
+```json
+{ "type": "snapshot", "cursor": 1700000000000123, "requestId": "req_1",
+  "turn": { "start": 12, "messages": [ ...every message the run finished... ], "partial": { ...the assistant message streaming now... } } }
+```
+
+`turn` is null when no turn runs, and has `truncated: true` (and no messages)
+when the run's messages are too large for one frame: read them from history.
+`start` is the index of the run's first message in the agent's history, which
+each run also announces as a `turn_opened` event (`{ index }`).
+
+Subscribers without `deltas=1` get the events as before. The runtime keeps only
+the latest partial message, so a `message_update` replayed after a reconnect
+carries its message as it stands now (or as it ended), not as it stood at that
+update.
+
 ## Persistence and limits
 
 - Host journals are append-only logs under `AGENT_DATA_DIR/client-sessions`,

@@ -479,6 +479,8 @@ export function createAgentHost(io: HostIO) {
       }
       if (method === "continue" && transcript.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");
       await transcript.setActive(true);
+      // Where the run's messages start in the agent's history, so a client can line up its stream with history pages.
+      io.emit({ type: "turn_opened", index: transcript.total });
       if (method === "resume") {
         const settled = await settle(params.calls ?? [], active.signal);
         // Closed without the model (expired or cancelled inputs), still waiting, or nothing left to resume.

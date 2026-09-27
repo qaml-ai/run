@@ -14,7 +14,7 @@ import { validateUserMessages } from "./history.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
-import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord } from "../shared/client-protocol.ts";
+import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorStatus, HttpError, readJson } from "./http.ts";
@@ -87,6 +87,10 @@ type Session = {
   polls: Set<() => void>;
   /** When a poll (`/events?poll=1`) last read the stream: a poller between polls keeps the session loaded, as a watcher does. */
   polledAt?: number;
+  /** The assistant message streaming now, as its latest message_update carried it. */
+  partial?: unknown;
+  /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
+  turn?: { requestId: string; start?: number; messages: unknown[]; bytes: number; truncated?: boolean };
   /** The application's attached MCP server, over the connection `response` is. */
   attached?: AttachedServer;
   /** Tool calls to the application in flight: the agent is busy until they settle. */
@@ -169,6 +173,34 @@ const OUTPUT_FILES = 100;
 /** How long a tool call waits for an application to reconnect before failing as not run. */
 const RECONNECT_GRACE_MS = 3_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** Streams that asked for deltas: message_update carries its delta alone. */
+const deltaStreams = new WeakSet<ServerResponse>();
+/** The most a snapshot's finished messages take; beyond it, a subscriber reads the turn from history. */
+const TURN_SNAPSHOT_BYTES = 1_000_000;
+/**
+ * A message_update as its delta: Pi's event without the partial message it carries twice (as
+ * `message`, and as the delta's `partial`), which a client folds from message_start and the deltas
+ * before. A toolcall_start names its call, as the partial did.
+ */
+function deltaOf(event: any) {
+  const { partial, message: _done, error: _error, ...delta } = event.assistantMessageEvent ?? {};
+  if (delta.type === "toolcall_start") {
+    const call = partial?.content?.[delta.contentIndex];
+    if (call?.type === "toolCall") delta.toolCall = { id: call.id, name: call.name };
+  }
+  return { type: "message_update", assistantMessageEvent: delta };
+}
+/** A delta as Pi sent it, with `message` the message it updates. */
+function wholeUpdate(event: any, message: unknown) {
+  const { toolCall: _call, ...delta } = event.assistantMessageEvent;
+  const shaped = delta.type === "done" ? { ...delta, message } : delta.type === "error" ? { ...delta, error: message } : { ...delta, partial: message };
+  return { ...event, message, assistantMessageEvent: delta.type === "toolcall_end" ? { ...shaped, toolCall: event.assistantMessageEvent.toolCall } : shaped };
+}
+/** An event's JSON, or an explicit gap where it is too large for one frame. */
+function fitted(data: ClientEvent) {
+  const text = JSON.stringify(data);
+  return Buffer.byteLength(text) <= FRAME_BYTES ? text : JSON.stringify({ type: "event", requestId: "", event: { type: "event_omitted", reason: "Event exceeded transport limit" } });
+}
 /** Write an SSE frame, cutting off a subscriber that does not keep up. */
 function send(res: ServerResponse, frame: string) {
   if (res.destroyed) return;
@@ -485,8 +517,18 @@ export class ClientSessions {
 
   private publish(session: Session, data: ClientEvent) {
     if (this.closed || session.fault) return;
+    // A message_update is buffered and sent as its delta alone; the partial message it carried is kept once, as the latest.
+    let update: any;
+    if (data.type === "event") {
+      const inner = data.event;
+      if (inner?.type === "message_update") { update = inner; session.partial = inner.message; data = { ...data, event: deltaOf(inner) }; }
+      else if (inner?.type === "message_start" && inner.message?.role === "assistant") session.partial = inner.message;
+      else if (inner?.type === "message_end") session.partial = undefined;
+    }
     let text = JSON.stringify(data);
-    if (Buffer.byteLength(text) > FRAME_BYTES) {
+    const oversized = Buffer.byteLength(text) > FRAME_BYTES;
+    if (oversized) {
+      update = undefined;
       // Control outcomes remain in the journal; oversized display events are explicit gaps.
       data = { type: "event", requestId: "", event: { type: "event_omitted", reason: "Event exceeded transport limit" } };
       text = JSON.stringify(data);
@@ -497,9 +539,40 @@ export class ClientSessions {
     session.lastActive = Date.now();
     const limit = this.options.eventBytes ?? 2 * 1024 * 1024;
     while (session.events.length > 1 && (session.events.length > MAX_BUFFERED_EVENTS || session.eventBytes > limit)) session.eventBytes -= session.events.shift()!.bytes;
+    this.follow(session, data, text, oversized);
     const frame = `id: ${event.id}\ndata: ${text}\n\n`;
-    for (const res of this.streams(session)) send(res, frame);
+    let whole: string | undefined;
+    for (const res of this.streams(session)) {
+      // Subscribers that did not ask for deltas get the update as Pi sent it, the message it updates included.
+      if (update && !deltaStreams.has(res)) whole ??= `id: ${event.id}\ndata: ${fitted({ type: "event", requestId: (data as { requestId: string }).requestId, event: update })}\n\n`;
+      send(res, update && !deltaStreams.has(res) ? whole! : frame);
+    }
     for (const wake of [...session.polls]) wake();
+  }
+
+  /** Keep the running turn as its events fold, for snapshots: the messages its run finished, from the run's start to its response. */
+  private follow(session: Session, data: ClientEvent, text: string, oversized: boolean) {
+    const turn = session.turn;
+    if (!turn) return;
+    if (data.type === "response" && data.id === turn.requestId) { session.turn = undefined; session.partial = undefined; return; }
+    if (oversized) { turn.truncated = true; return; }
+    if (data.type !== "event" || data.requestId !== turn.requestId) return;
+    if (data.event?.type === "turn_opened") turn.start ??= data.event.index;
+    if (data.event?.type !== "message_end" || turn.truncated) return;
+    turn.bytes += text.length;
+    // A snapshot is one frame: a turn too large for one is read from history instead.
+    if (turn.bytes > TURN_SNAPSHOT_BYTES) { turn.truncated = true; turn.messages = []; }
+    else turn.messages.push(data.event.message);
+  }
+
+  /** The running turn as of the latest event, for a subscriber that asked for deltas and has nothing to replay from. */
+  private turnSnapshot(session: Session): TurnSnapshot {
+    const turn = session.turn;
+    const snapshot: TurnSnapshot = { type: "snapshot", cursor: session.cursor, requestId: turn?.requestId ?? null, turn: turn ? {
+      start: turn.start ?? null, messages: turn.messages, partial: session.partial ?? null, ...(turn.truncated ? { truncated: true as const } : {}),
+    } : null };
+    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > FRAME_BYTES) snapshot.turn = { start: snapshot.turn.start, messages: [], partial: null, truncated: true };
+    return snapshot;
   }
 
   /** Every open event stream of the agent: the application's connection and its watchers. */
@@ -514,29 +587,57 @@ export class ClientSessions {
   }
 
   /**
-   * The buffered events after a subscriber's cursor (its `Last-Event-ID`). Cursor 0 is a new
-   * subscriber, which takes whatever is buffered; any other must be contiguous with the buffer,
-   * or the events between are gone: 409, and the subscriber recovers from state and history.
+   * What a subscriber reads after its cursor (its `Last-Event-ID`): the buffered events after it.
+   * Cursor 0 is a new subscriber, which takes whatever is buffered; any other must be contiguous
+   * with the buffer, or the events between are gone: 409, and the subscriber recovers from state
+   * and history. A subscriber that asked for deltas cannot fold updates it did not see from the
+   * start, so for it cursor 0 and a gap are instead a snapshot of the running turn, then what follows.
    */
-  private replay(session: Session, raw = "0") {
+  private replay(session: Session, raw = "0", deltas = false): { cursor: number; snapshot?: TurnSnapshot; events: BufferedEvent[] } {
     if (!/^\d+$/.test(raw)) throw new HttpError(400, "Invalid event cursor");
     const cursor = Number(raw);
     if (!Number.isSafeInteger(cursor)) throw new HttpError(400, "Invalid event cursor");
     const first = session.events[0]?.id ?? session.cursor + 1;
-    if (cursor !== 0 && (cursor > session.cursor || cursor < first - 1)) throw new HttpError(409, "REPLAY_GAP: recover from session state");
+    const gap = cursor > session.cursor || cursor < first - 1;
+    if (deltas && (cursor === 0 || gap)) return { cursor: session.cursor, snapshot: this.turnSnapshot(session), events: [] };
+    if (cursor !== 0 && gap) throw new HttpError(409, "REPLAY_GAP: recover from session state");
     return { cursor, events: session.events.filter(event => event.id > cursor) };
+  }
+
+  /**
+   * Buffered events as a subscriber gets them. One that did not ask for deltas gets each
+   * message_update with the message it updates, as Pi sent it; replayed, that is the message
+   * as it stands now (finished, or still streaming), not as it stood at that update.
+   */
+  private replayed(session: Session, events: BufferedEvent[], deltas: boolean) {
+    const data = events.map(event => event.data);
+    if (!deltas) {
+      // Backwards, so each update meets the latest state of its message first: its message_end, or the partial still streaming.
+      let latest = session.partial;
+      for (let index = data.length - 1; index >= 0; index--) {
+        const item = data[index];
+        if (item.type !== "event") continue;
+        if (item.event?.type === "message_end") latest = item.event.message;
+        else if (item.event?.type === "message_start") latest = undefined;
+        else if (item.event?.type === "message_update" && latest) data[index] = { ...item, event: wholeUpdate(item.event, latest) };
+      }
+    }
+    return events.map((event, index) => ({ id: event.id, data: data[index], text: data[index] === event.data ? JSON.stringify(event.data) : fitted(data[index]) }));
   }
 
   /**
    * Open an event stream: the application's (`attach`), which carries its attached MCP server and
    * replaces the connection before it, or a read-only watcher, which never replaces another and is
-   * never replaced. Every stream gets every event from its own cursor on.
+   * never replaced. Every stream gets every event from its own cursor on; `?deltas=1` asks for
+   * message_update as its delta alone (see `replay`).
    */
   private subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch") {
-    const { events } = this.replay(session, c.req.header("last-event-id"));
+    const deltas = c.req.query("deltas") === "1";
+    const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), deltas);
     if (mode === "watch" && session.watchers.size >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw new HttpError(429, "This agent's event stream has too many subscribers; retry later");
     const res = c.env.outgoing;
-    let ready: Record<string, unknown> = { version: 4, agentId: session.header.id };
+    if (deltas) deltaStreams.add(res);
+    let ready: Record<string, unknown> = { version: 4, agentId: session.header.id, ...(deltas ? { deltas: true } : {}) };
     if (mode === "watch") {
       session.watchers.add(res);
       res.on("close", () => session.watchers.delete(res));
@@ -555,9 +656,10 @@ export class ClientSessions {
       session.attached = attached;
     }
     res.write(`event: ready\ndata: ${JSON.stringify(ready)}\n\n`);
-    for (const event of events) {
+    if (snapshot) send(res, `id: ${snapshot.cursor}\ndata: ${JSON.stringify(snapshot)}\n\n`);
+    for (const event of this.replayed(session, events, deltas)) {
       if (res.destroyed) break;
-      send(res, `id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`);
+      send(res, `id: ${event.id}\ndata: ${event.text}\n\n`);
     }
     return RESPONSE_ALREADY_SENT;
   }
@@ -565,25 +667,32 @@ export class ClientSessions {
   /**
    * One read of the stream for clients that cannot hold it open: the buffered events after the
    * cursor, as JSON, and the cursor to poll from next. With `wait` (seconds, at most 25) and nothing
-   * buffered yet, it answers when the next event arrives or the wait ends.
+   * buffered yet, it answers when the next event arrives or the wait ends. With `deltas=1`, as for
+   * a stream: a snapshot where there is nothing to replay from.
    */
   private async poll(c: Context<ClientEnv>, session: Session) {
     const raw = c.req.header("last-event-id");
+    const deltas = c.req.query("deltas") === "1";
     const wait = Number(c.req.query("wait") ?? 0);
     if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
-    let { cursor, events } = this.replay(session, raw);
+    let read = this.replay(session, raw, deltas);
     session.polledAt = Date.now();
-    if (!events.length && wait > 0 && !this.closed && !session.fault) {
+    if (!read.snapshot && !read.events.length && wait > 0 && !this.closed && !session.fault) {
       await new Promise<void>(resolve => {
         const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); resolve(); };
         const timer = setTimeout(done, Math.min(wait * 1000, MAX_POLL_WAIT_MS));
         session.polls.add(done);
         c.env.outgoing.once("close", done);
       });
-      ({ events } = this.replay(session, raw));
+      read = this.replay(session, raw, deltas);
       session.polledAt = Date.now();
     }
-    return json(c, 200, { cursor: events.at(-1)?.id ?? (cursor || session.cursor), events: events.map(({ id, data }) => ({ id, data })) });
+    const { cursor, snapshot, events } = read;
+    const replayed = this.replayed(session, events, deltas).map(({ id, data }) => ({ id, data }));
+    return json(c, 200, {
+      cursor: events.at(-1)?.id ?? (cursor || session.cursor),
+      events: snapshot ? [{ id: snapshot.cursor, data: snapshot }, ...replayed] : replayed,
+    });
   }
 
   private busy(session: Session) {
@@ -1684,6 +1793,7 @@ export class ClientSessions {
         if (record.method === "execute") session.beginning = {};
         else await this.commit(session, true);
         this.hook("runStarted", session, record);
+        if (record.method !== "execute") session.turn = { requestId: record.id, messages: [], bytes: 0 };
       }
       if (RUN_METHODS.includes(record.method)) {
         session.activeSince = Date.now();
