@@ -3,7 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Storage } from "../shared/storage.ts";
 import { underClaim, type Claim } from "./ownership.ts";
 import type { Db, Sql } from "./db.ts";
-import { advance, type Backlog } from "./transcript.ts";
+import type { Backlog } from "./transcript.ts";
 
 /** Messages from absolute index `start`, and where turns begin among them. */
 export type HistoryChunk = { start: number; messages: AgentMessage[]; turns: number[] };
@@ -111,32 +111,6 @@ export class HistoryIndex {
       await sql.query("update agent_history_index set indexed = $2 where agent = $1", [agent, chunk.start + count]);
       return chunk.start + count;
     });
-  }
-
-  /**
-   * Take back chunks past `total` messages, which an agent's transcript no longer has (a turn it
-   * retracted after they were written): the index then ends at the last chunk it still has whole.
-   * Returns where it ends.
-   */
-  async truncate(agent: string, claim: Claim | undefined, total: number): Promise<number> {
-    const { indexed, removed } = await underClaim(this.db, claim, async sql => {
-      const { rows } = await sql.query("delete from agent_history_chunks where agent = $1 and start + count > $2 returning start, count, hash", [agent, total]);
-      const kept = (await sql.query("select coalesce(max(start + count), 0)::int as indexed from agent_history_chunks where agent = $1", [agent])).rows[0].indexed as number;
-      await sql.query("update agent_history_index set indexed = $2 where agent = $1", [agent, kept]);
-      return { indexed: kept, removed: rows as Row[] };
-    });
-    for (const row of removed) await this.storage.removeBlobs(this.key(agent, row)).catch(() => {});
-    return indexed;
-  }
-
-  /** Index the first `count` messages of a backlog as chunks; returns what is left of it (what another writer had not indexed either). */
-  async writeAll(agent: string, claim: Claim | undefined, backlog: Backlog, count = backlog.messages.length) {
-    for (const chunk of chunksOf(backlog, count)) {
-      const indexed = await this.write(agent, claim, chunk);
-      advance(backlog, indexed);
-      if (indexed !== chunk.start + chunk.messages.length) break;
-    }
-    return backlog;
   }
 
   /** Delete the agent's chunks and index, for an agent being purged. */

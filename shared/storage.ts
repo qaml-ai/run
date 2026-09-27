@@ -22,7 +22,7 @@ export interface Storage {
   /** Immutable binary objects, e.g. content-addressed chunks: writing a key that exists is a no-op. */
   readBlob(key: string): Promise<Uint8Array | undefined>;
   writeBlob(key: string, data: Uint8Array): Promise<void>;
-  /** Delete every blob whose key starts with `prefix` (a directory, ending in "/"), for an actor that is gone. */
+  /** Delete every blob under `prefix` (a directory, ending in "/"), for an actor that is gone. */
   removeBlobs(prefix: string): Promise<void>;
   /** Every stored object under `prefix`, with its size: for reconciling metered storage, not for reading state. */
   objects?(prefix: string): AsyncIterable<{ key: string; bytes: number }>;
@@ -85,14 +85,8 @@ export function fileStorage(root: string, options: { tail?: LogTail; meter?: Sto
     },
     async removeBlobs(prefix) {
       validKey(prefix.replace(/\/$/, ""));
-      // Blobs are files `<key>.bin`: every one under the prefix's directory whose key starts with it.
-      const directory = prefix.slice(0, prefix.lastIndexOf("/") + 1);
-      for await (const { key, bytes } of this.objects!(directory)) {
-        const blob = key.replace(/\.bin$/, "");
-        if (!key.endsWith(".bin") || !blob.startsWith(prefix)) continue;
-        await rm(join(root, key), { force: true });
-        meter?.(blob, -bytes);
-      }
+      if (meter) for await (const { key, bytes } of this.objects!(prefix)) meter(key.replace(/\.bin$/, ""), -bytes);
+      await rm(join(root, prefix), { recursive: true, force: true });
     },
     async *objects(prefix) {
       let entries;

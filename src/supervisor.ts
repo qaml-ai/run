@@ -158,25 +158,19 @@ export class AgentSupervisor {
   }
 
   /** An agent's history index operations; without an index, `indexed` is null and nothing is written. */
-  private historyRequest(handle: Handle, params: { op: string; chunk?: HistoryChunk; total?: number }): Promise<any> {
+  private historyRequest(handle: Handle, params: { op: string; chunk?: HistoryChunk }): Promise<any> {
     const history = handle.bridge.history;
     if (params.op === "indexed") return history ? history.indexed() : Promise.resolve(null);
-    if (params.op === "truncate" && history && typeof params.total === "number") return history.truncate(params.total);
     if (params.op === "write" && history && params.chunk) return history.write(params.chunk);
     return Promise.reject(new Error("Unknown history operation"));
   }
 
-  /**
-   * The messages an agent's history index lacks, read from its log (all of them from `from`), without its
-   * process; `settled` of them are of settled turns. A turn left open (its node died) is not: its next start
-   * may retract its cut-off response and answer again, so only that start may index it.
-   */
+  /** The messages an agent's history index lacks, read from its log (all of them from `from`), without its process. */
   async backlog(id: string, from: number) {
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     const transcript = new Transcript(log, from);
     await transcript.load();
-    const backlog = transcript.backlog!;
-    return { backlog, settled: transcript.active ? Math.max(0, Math.min(backlog.messages.length, transcript.turnStart - backlog.from)) : backlog.messages.length };
+    return transcript.backlog!;
   }
 
   /** An agent process's transcript operations. Appends are applied before the first await, so they keep IPC order. */
@@ -203,10 +197,7 @@ export class AgentSupervisor {
       file: ref => this.file(handle, structuredClone(ref)),
       modelAuth: () => this.modelAuth(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
-      history: {
-        indexed: () => this.historyRequest(handle, { op: "indexed" }), write: chunk => this.historyRequest(handle, { op: "write", chunk: structuredClone(chunk) }),
-        truncate: total => this.historyRequest(handle, { op: "truncate", total }),
-      },
+      history: { indexed: () => this.historyRequest(handle, { op: "indexed" }), write: chunk => this.historyRequest(handle, { op: "write", chunk: structuredClone(chunk) }) },
     });
     this.agents.set(id, handle);
     this.starting.delete(id);

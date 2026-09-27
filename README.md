@@ -341,18 +341,18 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
   being converted to UI messages. A retried provider error is retracted. The
   supervisor writes it under the agent's ownership claim; an agent in its own
   process sends records over IPC and holds no database connection.
-- History chunks (`sessions/<id>/history/<start>-<count>`, indexed in
+- History chunks (`sessions/<id>/history/<start>-<count>-<hash>`, indexed in
   `agent_history_chunks`): the settled messages again, in immutable chunks of
   whole turns of about 1 MB, so a page of history (`/history?limit=`) reads a
   few index rows and the chunks it returns, never the whole log (whose snapshot
   is every record in one object). Like the log's segments, chunks are written
   when the agent stops and when what is unindexed passes a chunk's size, never
   per turn; what is newer comes from the running agent, which keeps at most
-  8 MB of it (past that, and for an agent made before the index, it keeps none
-  and takes up the index again from its working set once it exists). An agent
-  whose index is missing or behind what its runs reported (a stop that could
-  not write) is indexed from its log at its first page, one agent at a time per
-  node, never all at once by their starts after a deploy.
+  8 MB of it (past that it keeps none until its next start). An agent made
+  before the index has none and is never indexed: its pages are read from its
+  whole log, as `/history` without paging is. So is the rest of an index behind
+  what the agent's runs reported (a stop that could not write), until the
+  agent's next start indexes it.
 - `<session>.journal.jsonl`: request state changes. It is fsynced only where
   correctness needs it: accepting a request, a run's start (before its first tool
   call can have an effect), and recording outcomes. Tool calls are not journaled:

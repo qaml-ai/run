@@ -839,9 +839,8 @@ export class ClientSessions {
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
         history: {
-          // An agent never indexed keeps no backlog: its first page backfills the index (see `historyPage`), and it takes up from there.
+          // An agent from before the index has none, and keeps no backlog: its pages come from its log (see `historyPage`).
           indexed: async () => (await this.historyIndex.indexed(id)) ?? null, write: chunk => this.historyIndex.write(id, session.claim, chunk),
-          truncate: total => this.historyIndex.truncate(id, session.claim, total),
         },
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
@@ -1379,30 +1378,16 @@ export class ClientSessions {
     const live = this.supervisor.agents.has(id);
     let tail = live ? await this.supervisor.request(id, "historyTail" as RequestMethod) as HistoryTail | null : undefined;
     if (!tail) {
-      // The index should have every message the agent's runs reported, or the running agent the rest. One behind
-      // (a stop that could not write its last chunks), never indexed (made before the index), or whose running agent
-      // keeps no backlog catches up from its log, here: its settled turns are indexed, and the rest is this page's tail.
+      // The index should have every message the agent's runs reported, or the running agent the rest. An agent
+      // without one (made before the index), one behind (a stop that could not write its last chunks), or a running
+      // agent keeping no backlog: the rest is read from its log, whole, as a full history read does. Nothing is
+      // indexed here; an agent's own process indexes from where its index ends, and one without an index never is.
       const indexed = await this.historyIndex.indexed(id);
       const reported = Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
-      if (tail === null || indexed === undefined || indexed < reported) tail = await this.backfill(session, indexed ?? 0);
+      if (tail === null || indexed === undefined || indexed < reported) tail = await this.supervisor.backlog(id, indexed ?? 0);
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
   }
-
-  /**
-   * Index an agent's settled turns from its log, from `from`; returns what is left (the open turn's messages).
-   * One at a time on this node: an old agent's first page reads its whole log once, and many of them at once
-   * (after a deploy) must not add up. The agent's own process writes only where the index ends, so they never overlap.
-   */
-  private backfill(session: Session, from: number) {
-    const run = this.backfilling.then(async () => {
-      const { backlog, settled } = await this.supervisor.backlog(session.header.id, from);
-      return this.historyIndex.writeAll(session.header.id, session.claim, backlog, settled);
-    });
-    this.backfilling = run.then(() => {}, () => {});
-    return run;
-  }
-  private backfilling: Promise<void> = Promise.resolve();
 
   /** A tenant's view of a page of one agent's history. */
   async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string }) {
