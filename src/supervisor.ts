@@ -168,7 +168,8 @@ export class AgentSupervisor {
   /** The messages an agent's history index lacks, read from its log (all of them from `from`), without its process. */
   async backlog(id: string, from: number) {
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
-    const transcript = new Transcript(log, from);
+    // Unbounded: this backlog is read for one page, not kept.
+    const transcript = new Transcript(log, from, Infinity);
     await transcript.load();
     return transcript.backlog!;
   }

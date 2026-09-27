@@ -60,12 +60,13 @@ function historyOf(records: TranscriptRecord[]): AgentMessage[] {
 }
 
 /**
- * Messages the agent's history index (history-pages.ts) does not have yet: from absolute index
- * `from` on, with each one's size, and where runs began among them (`turn` records).
+ * Messages the agent's history index (history-pages.ts) does not have yet, from absolute index
+ * `from` on, and where runs began among them (`turn` records). Memory holds those from `kept` on,
+ * with each one's size; the ones before it (more than a backlog holds) are read from the log.
  */
-export interface Backlog { from: number; messages: AgentMessage[]; sizes: number[]; bytes: number; turns: number[] }
+export interface Backlog { from: number; kept: number; messages: AgentMessage[]; sizes: number[]; bytes: number; turns: number[] }
 
-/** The most a backlog holds; past it the transcript stops keeping one. */
+/** The most a backlog holds in memory by default; past it, what it holds is left to the log. */
 const BACKLOG_BYTES = 8_000_000;
 
 /** Where conversational turns begin in `messages` (absolute index `from` on) without turn records: at a user message after anything else, and at 0. */
@@ -97,21 +98,33 @@ export class Transcript {
   /** What the history index lacks, kept while this transcript is written; undefined when nothing indexes it. */
   backlog?: Backlog;
   readonly log: AppendLog<TranscriptRecord>;
+  /** Past this many bytes, the backlog's messages are left to the log (see `Backlog`). */
+  private readonly bound: number;
   /** `indexed`: how many messages the history index has; this transcript then keeps the ones after as `backlog`. */
-  constructor(log: AppendLog<TranscriptRecord>, indexed?: number) {
+  constructor(log: AppendLog<TranscriptRecord>, indexed?: number, bound = BACKLOG_BYTES) {
     this.log = log;
-    if (indexed !== undefined) this.backlog = { from: indexed, messages: [], sizes: [], bytes: 0, turns: [] };
+    this.bound = bound;
+    if (indexed !== undefined) this.backlog = { from: indexed, kept: indexed, messages: [], sizes: [], bytes: 0, turns: [] };
   }
 
   /** The history index now has messages up to `indexed`: they leave the backlog. */
   indexed(indexed: number) {
     const backlog = this.backlog;
     if (!backlog || indexed <= backlog.from) return;
-    const taken = Math.min(indexed - backlog.from, backlog.messages.length);
+    const taken = Math.max(0, Math.min(indexed - backlog.kept, backlog.messages.length));
     backlog.messages.splice(0, taken);
     for (const size of backlog.sizes.splice(0, taken)) backlog.bytes -= size;
     backlog.from = indexed;
+    backlog.kept = Math.max(backlog.kept, indexed);
     backlog.turns = backlog.turns.filter(turn => turn >= indexed);
+  }
+
+  /** Leave what the backlog holds to the log: memory keeps only messages from here on. */
+  private spill(backlog: Backlog) {
+    backlog.kept += backlog.messages.length;
+    backlog.messages = [];
+    backlog.sizes = [];
+    backlog.bytes = 0;
   }
 
   get offset() { return this.total - this.context.length; }
@@ -135,13 +148,12 @@ export class Transcript {
   apply(record: TranscriptRecord) {
     const backlog = this.backlog;
     if (record.t === "message") {
-      if (backlog && this.total >= backlog.from + backlog.messages.length) {
+      if (backlog && this.total >= backlog.kept + backlog.messages.length) {
         const size = JSON.stringify(record.message).length;
         backlog.messages.push(record.message);
         backlog.sizes.push(size);
         backlog.bytes += size;
-        // Its chunks are not being written: stop keeping it, and the agent's next start takes it up from its index.
-        if (backlog.bytes > BACKLOG_BYTES) this.backlog = undefined;
+        if (backlog.bytes > this.bound) this.spill(backlog);
       }
       this.context.push(record.message);
       this.total++;
@@ -150,10 +162,10 @@ export class Transcript {
     else if (record.t === "retract") {
       if (this.context.pop()) {
         this.total--;
-        if (backlog && this.total >= backlog.from && this.total === backlog.from + backlog.messages.length - 1) {
+        if (backlog && this.total >= backlog.kept && this.total === backlog.kept + backlog.messages.length - 1) {
           backlog.messages.pop();
           backlog.bytes -= backlog.sizes.pop()!;
-        }
+        } else if (backlog && this.total < backlog.kept) backlog.kept = Math.max(backlog.from, this.total);
       }
       for (const update of this.updates) update.at = Math.min(update.at, this.total);
     }
@@ -167,11 +179,12 @@ export class Transcript {
       if (backlog) {
         // A reset is an import into an empty transcript: its messages have no turn records.
         const messages = record.messages.slice(backlog.from);
+        backlog.kept = backlog.from;
         backlog.messages = messages;
         backlog.sizes = messages.map(message => JSON.stringify(message).length);
         backlog.bytes = backlog.sizes.reduce((sum, size) => sum + size, 0);
         backlog.turns = userTurns(backlog.from, messages);
-        if (backlog.bytes > BACKLOG_BYTES) this.backlog = undefined;
+        if (backlog.bytes > this.bound) this.spill(backlog);
       }
       this.total = record.messages.length;
       this.compaction = record.compaction;

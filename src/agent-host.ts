@@ -19,6 +19,8 @@ import { codeRequest, DEFAULT_RETRY } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 
+/** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
+const LAG_READ_MS = 60_000;
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 export const HISTORY_FLUSH_MS = 5_000;
 
@@ -68,18 +70,36 @@ export function createAgentHost(io: HostIO) {
   let documents = false;
   /** History index writes, one at a time. */
   let indexing = Promise.resolve();
+  /** When messages the backlog left to the log were last read back (see `index`). */
+  let lagRead = 0;
 
   /**
    * Add what the history index lacks to it, in the background. Like the log's own segments, chunks
    * are written when the backlog has grown past one (all but the latest message, the only one a retry
    * retracts) and when the agent stops (`final`: the settled turns), never per turn. A failed write
-   * is tried again with the next; what a crash leaves out is indexed at the next start.
+   * is tried again with the next; what a crash leaves out is indexed at the next start. Messages the
+   * backlog left to the log (more than it holds: an index far behind) are read back from the log and
+   * indexed first, a chunk at a time, at most once a minute and as the agent stops.
    */
   function index(final = false): Promise<void> {
     const history = io.history;
     if (!history || !transcript) return Promise.resolve();
     return indexing = indexing.then(async () => {
       const backlog = transcript.backlog;
+      if (backlog && backlog.kept > backlog.from) {
+        if (!final && Date.now() - lagRead < LAG_READ_MS) return;
+        lagRead = Date.now();
+        const past = new Transcript(io.transcript, backlog.from, Infinity);
+        await past.load();
+        // A turn cut off by the stop is settled at the next start, with its repairs.
+        const upto = final && transcript.active ? Math.min(backlog.kept, transcript.turnStart) : backlog.kept;
+        for (const chunk of chunksOf(past.backlog!, Math.max(0, Math.min(upto - backlog.from, past.backlog!.messages.length)))) {
+          const indexed = await history.write(chunk);
+          transcript.indexed(indexed);
+          if (indexed !== chunk.start + chunk.messages.length) return;
+        }
+        if (backlog.kept > backlog.from) return;
+      }
       if (!backlog?.messages.length || (!final && backlog.bytes < CHUNK_BYTES)) return;
       // A turn cut off by the stop is settled at the next start, with its repairs.
       const count = !final ? backlog.messages.length - 1 : transcript.active ? Math.max(0, transcript.turnStart - backlog.from) : backlog.messages.length;
@@ -499,7 +519,8 @@ export function createAgentHost(io: HostIO) {
     // What the history index lacks yet: the running turn, and anything a failed write left. Null when nothing indexes the agent.
     if (method === "historyTail") {
       const backlog = transcript.backlog;
-      return backlog ? { from: backlog.from, messages: backlog.messages, turns: backlog.turns } : null;
+      // Part of it left to the log: the page reads the log instead.
+      return backlog && backlog.kept === backlog.from ? { from: backlog.from, messages: backlog.messages, turns: backlog.turns } : null;
     }
     if (method === "steer" || method === "followUp") {
       // Pi queues these whether or not a run is active; an idle queue drains into the next run.

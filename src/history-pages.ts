@@ -133,8 +133,14 @@ export class HistoryIndex {
     const end = Math.min(before ?? total, total);
     const pieces: Piece[] = [];
     if (tail && end > tail.from) {
+      // One piece per turn, newest first, as chunks are: a page's size is counted a turn at a time.
       const messages = tail.messages.slice(0, end - tail.from);
-      pieces.push({ start: tail.from, count: messages.length, bytes: messages.reduce((sum, message) => sum + JSON.stringify(message).length, 0), turns: boundaries(tail.from, messages, tail.turns), messages });
+      const turns = boundaries(tail.from, messages, tail.turns);
+      const starts = [...new Set([tail.from, ...turns])];
+      for (let index = starts.length - 1; index >= 0; index--) {
+        const part = messages.slice(starts[index] - tail.from, (starts[index + 1] ?? end) - tail.from);
+        pieces.push({ start: starts[index], count: part.length, bytes: part.reduce((sum, message) => sum + JSON.stringify(message).length, 0), turns: turns.includes(starts[index]) ? [starts[index]] : [], messages: part });
+      }
     }
     let cursor = Math.min(end, below);
     const more = async () => {

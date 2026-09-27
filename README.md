@@ -348,7 +348,8 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
   is every record in one object). Like the log's segments, chunks are written
   when the agent stops and when what is unindexed passes a chunk's size, never
   per turn; what is newer comes from the running agent, which keeps at most
-  8 MB of it (past that it keeps none until its next start). An agent made
+  8 MB of it in memory (past that it reads the rest back from its log to index
+  it, a chunk at a time). An agent made
   before the index has none and is never indexed: its pages are read from its
   whole log, as `/history` without paging is. So is the rest of an index behind
   what the agent's runs reported (a stop that could not write), until the

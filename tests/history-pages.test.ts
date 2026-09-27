@@ -166,12 +166,17 @@ test("a chunk a failed writer left in Storage is never served under another writ
   assert.deepEqual(page.entries.map(entry => (entry.message as any).content[0].text), ["fresh", "fresh"]);
 });
 
-test("a transcript's backlog is dropped past its bound", async () => {
+test("a transcript's backlog past its bound leaves what it holds to the log, and keeps the rest", async () => {
   const records: TranscriptRecord[] = [];
   for (let turn = 0; turn < 12; turn++) records.push({ t: "turn", active: true }, { t: "message", message: user(`q${turn}`) }, { t: "message", message: assistant("x".repeat(1_000_000)) }, { t: "turn", active: false });
   const transcript = new Transcript(memoryLog(records), 0);
   await transcript.load();
-  assert.equal(transcript.backlog, undefined, "writes that never land cannot grow it without bound");
+  const backlog = transcript.backlog!;
+  assert.equal(backlog.from, 0, "the index still has to reach back to where it ends");
+  assert.ok(backlog.kept > 0 && backlog.kept < 24 && backlog.bytes <= 8_000_000, "memory holds only what came after");
+  assert.equal(backlog.kept + backlog.messages.length, 24);
+  transcript.indexed(backlog.kept + 1);
+  assert.deepEqual([backlog.from, backlog.kept, backlog.kept + backlog.messages.length], [backlog.kept, backlog.kept, 24]);
 });
 
 test("stopping many agents waits once for their history, not once per agent", async t => {
@@ -225,4 +230,33 @@ test("a deleted agent's history is never written again, so a purge leaves nothin
   assert.equal((await db.query("select count(*)::int as count from agent_history_chunks where agent = $1", [agent])).rows[0].count, 0);
   assert.equal((await db.query("select count(*)::int as count from agent_history_index where agent = $1", [agent])).rows[0].count, 0);
   assert.deepEqual(await readdir(join(root, "sessions", agent, "history")).catch(() => []), []);
+});
+
+test("more unindexed history than a backlog holds is still paged, and indexed from the log rather than given up", { timeout: 120_000 }, async t => {
+  const r = await runtime(t, body => ({ content: `${lastUser(body)} ${"x".repeat(950_000)}` }), { AGENT_IDLE_MS: "1000" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const stopped = () => until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 30_000);
+  await stopped();
+  // As for an agent from before the index: its process keeps no backlog, and 10 turns make 9.5 MB unindexed.
+  await r.db.query("delete from agent_history_index where agent = $1", [agent]);
+  for (let turn = 0; turn < 10; turn++) await r.prompt(agent, `q${turn}`);
+  await stopped();
+  const page = (await r.call(`/v1/agents/${agent}/history?limit=4`)).json;
+  assert.equal(page.total, 20);
+  assert.deepEqual(page.entries.map((entry: any) => entry.index), [16, 17, 18, 19]);
+  assert.equal(await indexedOf(r, agent), undefined);
+
+  // An index that lags that far behind is caught up by the agent's next start, from its log.
+  await r.db.query("insert into agent_history_index (agent, indexed) values ($1, 0)", [agent]);
+  await r.prompt(agent, "again");
+  await until(async () => await indexedOf(r, agent) === 22, "the lagging index to catch up as the agent runs and stops", 30_000);
+  const whole = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  const paged: any[] = [];
+  for (let before: number | null | undefined; before !== null;) {
+    const page = (await r.call(`/v1/agents/${agent}/history?limit=100${before !== undefined ? `&before=${before}` : ""}`)).json;
+    paged.unshift(...page.entries);
+    before = page.next;
+  }
+  const head = (message: any) => (message.content[0].text as string).slice(0, 10);
+  assert.deepEqual(paged.map(entry => head(entry.message)), whole.map(head), "every page of about 4 MB, together, is the whole history");
 });
