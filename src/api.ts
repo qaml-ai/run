@@ -21,6 +21,7 @@ import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
 import { declaredType, fileResponse, type FileLinks } from "./files.ts";
+import type { CorsOrigins } from "./cors.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 
 /**
@@ -47,6 +48,8 @@ export interface ApiContext {
   links?: FileLinks;
   /** Mints and checks browser tokens (`/v1/agents/:id/browser-tokens`); without it there are none. */
   browserTokens?: BrowserTokens;
+  /** The origins tenants' browsers read with browser tokens from (`/v1/cors-origins`). */
+  cors?: CorsOrigins;
   /** Where browsers reach this runtime (a browser token's `url`). */
   publicUrl?: string;
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
@@ -314,6 +317,16 @@ export function api(context: ApiContext) {
     const history = await clients.agentHistory(id, tenant) as { messages: unknown[] } | undefined;
     return json(c, 200, browser && history ? { ...history, messages: history.messages.map(message => readableMessage(browser, message)) } : history);
   });
+  const corsOrigins = () => {
+    if (!context.cors) throw new HttpError(404, "Browser origins are not enabled on this runtime");
+    return context.cors;
+  };
+  route(createRoute({ method: "get", path: "/v1/cors-origins", responses: { 200: reply("The origins the tenant's browsers read its agents from, with browser tokens", schema.CorsOrigins) } }),
+    async c => json(c, 200, { origins: await corsOrigins().get(c.var.principal.tenant) }));
+  route(createRoute({
+    method: "put", path: "/v1/cors-origins", request: { body: content(schema.CorsOrigins) },
+    responses: { 200: reply("The origins, replaced; every node takes them within 30 seconds", schema.CorsOrigins) },
+  }), async c => json(c, 200, { origins: await corsOrigins().set(c.var.principal.tenant, await readJson(c.req.raw.body, 16 * 1024, {})) }));
   route(createRoute({
     method: "post", path: "/v1/agents/{id}/browser-tokens", request: { params: agentId, body: content(schema.BrowserTokenInput) },
     responses: { 201: reply("A token a browser reads this agent with, until it expires", schema.BrowserToken) },

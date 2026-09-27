@@ -47,6 +47,7 @@ import { identityInput, RuntimeSigner } from "./identity.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
+import { BROWSER_READS, CorsOrigins } from "./cors.ts";
 
 // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
@@ -400,6 +401,29 @@ app.use(async (c, next) => {
   if (c.res.status === 503 && !c.res.headers.has("retry-after")) c.res.headers.set("Retry-After", "1");
   if (c.res.status === 429 && !c.res.headers.has("retry-after")) c.res.headers.set("Retry-After", "5");
 });
+// A browser token's reads, from an origin its tenant listed: any node answers the preflight, and the node that
+// serves the read marks it readable there (errors too, so the browser sees a 401 and mints a new token). Every
+// other cross-origin request, and any not made with a browser token, gets no CORS headers.
+const cors = new CorsOrigins(db);
+app.use(async (c, next) => {
+  const origin = c.req.header("origin");
+  const agent = origin ? BROWSER_READS.exec(c.req.path)?.[1] : undefined;
+  if (!agent || !origin) return next();
+  const preflight = c.req.method === "OPTIONS";
+  const allowed = (preflight || BrowserTokens.carries(c.req.header("authorization"))) && await cors.allows(agent, origin).catch(() => false);
+  if (preflight) {
+    if (!allowed) return c.body(null, 403);
+    return c.body(null, 204, {
+      "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Methods": "GET", "Access-Control-Allow-Headers": "Authorization, Last-Event-ID, Accept",
+      "Access-Control-Max-Age": "86400", Vary: "Origin",
+    });
+  }
+  if (allowed) {
+    c.env.outgoing.setHeader("Access-Control-Allow-Origin", origin);
+    c.env.outgoing.setHeader("Vary", "Origin");
+  }
+  return next();
+});
 // One node serves each agent and volume; anything addressed to one another node holds goes there.
 // Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
 app.use(async (c, next) => {
@@ -436,7 +460,7 @@ app.route("/", consoleAuth.app);
 app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, usageWebhooks, scheduler, channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, usageWebhooks, scheduler, channels, volumes, definitions, links, browserTokens, cors, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);

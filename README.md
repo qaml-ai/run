@@ -312,6 +312,15 @@ secret): nothing is stored, and nothing revokes it sooner. Its reader gets:
 
 Send it as `Authorization: Bearer <token>`, never in a URL.
 
+A browser on another origin needs the tenant to list it: `PUT /v1/cors-origins
+{origins: ["https://app.example.com", "https://*.example.com", "http://localhost:5173"]}`
+(at most 32; `https://*.host` is any subdomain; every node takes a change within
+30 seconds). Only those four read routes answer them, and only for requests with
+a browser token (errors included, so a browser sees its token expire): a
+preflight from a listed origin is allowed `GET` with `Authorization`,
+`Last-Event-ID` and `Accept` for a day, anything else gets no CORS headers, and
+the tenant's own tokens never do.
+
 Codemode supports `tools.search(query)`, `tools.namespaces()`, `tools.describe(name)`,
 `tools.<name>(args)`, `fs`, `text(value)`, `console.log(value)`, top-level `await`, and
 `return`. It can compose parallel calls with `Promise.all`. Failed calls reject; a call

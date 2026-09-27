@@ -1084,6 +1084,22 @@
         ],
         "additionalProperties": {}
       },
+      "CorsOrigins": {
+        "type": "object",
+        "properties": {
+          "origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "description": "https://host[:port], https://*.host (any subdomain), or http://localhost[:port]. A browser at one of them may call GET /v1/agents/{id}/{events,state,history,inputs} with a browser token; nothing else is allowed cross-origin"
+          }
+        },
+        "required": [
+          "origins"
+        ]
+      },
       "BrowserToken": {
         "type": "object",
         "properties": {
@@ -4618,6 +4634,65 @@
                       "$ref": "#/components/schemas/History"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cors-origins": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The origins the tenant's browsers read its agents from, with browser tokens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorsOrigins"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorsOrigins"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The origins, replaced; every node takes them within 30 seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorsOrigins"
                 }
               }
             }
