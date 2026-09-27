@@ -45,6 +45,8 @@ export interface AgentConfig {
   mounts?: { path: string; mode: "ro" | "rw" }[];
   initialMessages?: AgentMessage[];
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  /** Headers the tenant set for every model call of this agent (non-secret, never auth headers). */
+  modelHeaders?: Record<string, string> | null;
   /** Host policy for retrying transient provider errors. */
   retry?: { maxAttempts: number; baseDelayMs: number };
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */

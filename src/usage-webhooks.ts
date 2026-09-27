@@ -40,9 +40,12 @@ export function usageCost(usage: any): { usd: number; source: "provider" | "cata
 export function usageEvent(tenant: string, agent: string, message: UsageRecord): UsageEvent | undefined {
   if (message.searches || message.renders || message.toolSearch) return undefined;
   const usage = message.usage ?? {};
+  // A tenant endpoint's calls are named as its agents name the model: `chiridion` / `openai-codex/gpt-5.5`.
+  const [provider, ...upstream] = (message.provider ?? "unknown").split("/");
+  const model = [...upstream, message.model ?? "unknown"].join("/");
   return {
     id: randomUUID(), agent, requestId: message.requestId ?? null, tenant, subject: message.identity?.subject ?? agent, actor: message.actor ?? null,
-    context: message.identity?.context ?? {}, keyScope: message.keyScope ?? null, provider: message.provider ?? "unknown", model: message.model ?? "unknown",
+    context: message.identity?.context ?? {}, keyScope: message.keyScope ?? null, provider, model,
     kind: message.kind === "compaction" ? "compaction" : "response",
     input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0,
     ...(typeof usage.reasoning === "number" ? { reasoning: usage.reasoning } : {}), cost: usageCost(usage), at: message.timestamp ?? Date.now(),

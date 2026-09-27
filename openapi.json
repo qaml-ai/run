@@ -233,7 +233,8 @@
                   "type": "string"
                 },
                 "last4": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Absent for an entry without a key"
                 },
                 "baseUrl": {
                   "type": "string"
@@ -254,7 +255,6 @@
               },
               "required": [
                 "provider",
-                "last4",
                 "setAt"
               ]
             }
@@ -272,11 +272,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4096,
-            "description": "The provider's API key (for amazon-bedrock, a Bedrock API key, sent as a bearer token)"
+            "description": "The provider's API key (for amazon-bedrock, a Bedrock API key, sent as a bearer token). Leave it out for a gateway at baseUrl that holds the key: no auth header is sent, only headers"
           },
           "baseUrl": {
             "type": "string",
-            "description": "An HTTPS endpoint that stands for the provider's API root, e.g. an AI gateway's",
+            "description": "An HTTPS endpoint that replaces the provider's API root in each request: https://openrouter.ai/api/v1, https://api.anthropic.com or https://api.openai.com/v1 (an AI gateway's /openrouter, /anthropic or /openai); for other providers, the model's base URL",
             "example": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openrouter"
           },
           "headers": {
@@ -288,13 +288,10 @@
           },
           "region": {
             "type": "string",
-            "description": "amazon-bedrock only: the AWS region to call",
+            "description": "amazon-bedrock only: the AWS region to call; read from baseUrl https://bedrock-runtime.<region>.amazonaws.com when left out",
             "example": "us-west-2"
           }
         },
-        "required": [
-          "apiKey"
-        ],
         "additionalProperties": false
       },
       "UsageWebhookSet": {
@@ -568,6 +565,9 @@
           },
           "spendLimit": {
             "$ref": "#/components/schemas/SpendLimitInput"
+          },
+          "modelHeaders": {
+            "$ref": "#/components/schemas/ModelHeaders"
           }
         }
       },
@@ -617,6 +617,13 @@
         ],
         "additionalProperties": false,
         "description": "The most the agent may spend on model calls (their token cost, compaction included) from when this is set: a new value starts counting from zero. At it, new prompts get 402 and a running turn ends with stopped \"spend_limit\""
+      },
+      "ModelHeaders": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Non-secret headers sent on each of the agent's model calls, after a key scope entry's, e.g. cf-aig-metadata. At most 20 and 8 KB; never authorization, x-api-key, x-goog-api-key, cf-aig-authorization, chatgpt-account-id, x-agent-runtime-identity, x-amz-* or transport headers"
       },
       "AgentDetail": {
         "allOf": [
@@ -682,6 +689,19 @@
                 ],
                 "description": "The key scope its model calls take keys from first"
               },
+              "modelHeaders": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ModelHeaders"
+                  },
+                  {
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                ]
+              },
               "spendLimit": {
                 "type": [
                   "object",
@@ -732,6 +752,7 @@
               "mounts",
               "systemPrompt",
               "keyScope",
+              "modelHeaders",
               "spendLimit",
               "cursor",
               "events",
@@ -1134,6 +1155,16 @@
             ],
             "additionalProperties": false,
             "description": "A new budget from now, applied at once, ahead of queued runs; null removes it"
+          },
+          "modelHeaders": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Replaces the agent's model headers; null or {} removes them"
           }
         },
         "additionalProperties": false,

@@ -7,7 +7,7 @@ import { configuredModel } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { UsageWebhooks } from "./usage-webhooks.ts";
-import { sessionConfig } from "./session-config.ts";
+import { modelHeadersInput, sessionConfig } from "./session-config.ts";
 import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
@@ -163,15 +163,16 @@ usageWebhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
-  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, ...rest } = params ?? {};
+  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, ...rest } = params ?? {};
   // Who the agent acts for, and context for its tool servers' identity tokens.
   const identity = identityInput(params ?? {});
   if (keyScope !== undefined) checkScope(keyScope);
   const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
+  const modelHeaders = headers === undefined ? null : modelHeadersInput(headers);
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
-  const config = sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant));
+  const config = { ...sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant)), ...(modelHeaders ? { modelHeaders } : {}) };
   if (!(keyScope && await keyScopes.entry(tenant, keyScope, config.model.provider)) && !await accounts.hasKey(tenant, config.model.provider)) {
     throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}; set one with PUT /v1/providers/${config.model.provider}/key`);
   }
@@ -318,7 +319,7 @@ const clients = new ClientSessions(supervisor, {
   },
   scopedKey: async (tenant, keyScope, provider) => {
     const entry = await keyScopes.entry(tenant, keyScope, provider);
-    if (entry) return { ...entry, platform: false };
+    if (entry) return { ...entry, apiKey: entry.apiKey ?? "", platform: false };
     const resolved = await accounts.providerKey(tenant, provider);
     return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant" };
   },

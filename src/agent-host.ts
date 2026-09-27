@@ -133,7 +133,7 @@ export function createAgentHost(io: HostIO) {
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
-        context: renderMessages(context), offset, previous: transcript.compaction, model: config.model, apiKey: perCall() ? () => io.modelAuth() : config.apiKey, signal, keepRecentTokens,
+        context: renderMessages(context), offset, previous: transcript.compaction, model: config.model, apiKey: perCall() ? () => io.modelAuth() : config.apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders,
         onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp }),
       });
       if ("skipped" in outcome) {
@@ -396,7 +396,7 @@ export function createAgentHost(io: HostIO) {
         getApiKey: () => config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment. A model on the
         // tenant's own endpoint gets a fresh identity token for each call, and a key scope's agent its scope's current key.
-        streamFn: explicitKeyStream(() => perCall() ? io.modelAuth() : undefined),
+        streamFn: explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders),
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
@@ -450,6 +450,7 @@ export function createAgentHost(io: HostIO) {
       if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; }
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
+      if (params.modelHeaders !== undefined) config.modelHeaders = params.modelHeaders;
       if (params.tools !== undefined) { config.tools = params.tools; agent.state.tools = [agent.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools)]; }
       if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };

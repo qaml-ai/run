@@ -994,7 +994,7 @@ export class ClientSessions {
     const definition = session.header.definition && { id: session.header.definition.id, revision: session.header.definition.revision };
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
       ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
-      ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null,
+      ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
       spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }),
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
@@ -1232,7 +1232,7 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit"]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "modelHeaders"]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {

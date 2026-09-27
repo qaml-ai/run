@@ -106,12 +106,21 @@ BedrockRuntimeClient.prototype.send = function (this: BedrockRuntimeClient, ...a
   return (send as (...args: unknown[]) => unknown).apply(this, args);
 } as typeof send;
 
+/** APIs whose clients take the runtime's fetch, so it can read their cost, move their endpoint, and drop auth headers. Google's, for one, takes none. */
+const FETCH_APIS = ["openai-completions", "openai-responses", "anthropic-messages"];
 /**
- * A fetch that reads the cost a provider reports in its response's usage as the body streams past:
- * OpenRouter's `usage.cost` (plus the upstream cost of a key brought to OpenRouter), which Pi does
- * not keep. `sink.cost` has it once the body is read.
+ * What a key scope's `baseUrl` stands for: the provider's API root as gateways in front of it name
+ * it (Cloudflare AI Gateway's `/openrouter`, `/anthropic`, `/openai`), else the model's own base URL.
  */
-function costReading(sink: { cost?: number }): typeof fetch {
+export const PROVIDER_ROOTS: Record<string, string> = { openrouter: "https://openrouter.ai/api/v1", anthropic: "https://api.anthropic.com", openai: "https://api.openai.com/v1" };
+
+/**
+ * The fetch a call makes: its URL moved from `rebase.from` (the longest that matches) to `rebase.to`,
+ * without the provider's auth headers when `keyless`, and reading the cost the provider reports in
+ * the response's usage as the body streams past: OpenRouter's `usage.cost` (plus the upstream cost
+ * of a key brought to OpenRouter), which Pi does not keep. `sink.cost` has it once the body is read.
+ */
+function callFetch(sink: { cost?: number }, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; base?: typeof fetch } = {}): typeof fetch {
   const read = (line: string) => {
     if (!line.startsWith("data:") && !line.startsWith("{") || !line.includes('"cost"')) return;
     try {
@@ -122,7 +131,19 @@ function costReading(sink: { cost?: number }): typeof fetch {
     } catch { /* not JSON */ }
   };
   return async (input, init) => {
-    const response = await fetch(input, init);
+    let url = String(input);
+    if (plan.rebase) {
+      const from = plan.rebase.from.find(prefix => url === prefix || url.startsWith(`${prefix}/`) || url.startsWith(`${prefix}?`));
+      if (!from) throw new Error(`The key scope's baseUrl does not stand for ${new URL(url).origin}`);
+      url = plan.rebase.to + url.slice(from.length);
+    }
+    let headers = init?.headers;
+    if (plan.keyless) {
+      const without = new Headers(headers);
+      for (const name of ["authorization", "x-api-key"]) without.delete(name);
+      headers = without;
+    }
+    const response = await (plan.base ?? fetch)(url, { ...init, headers });
     if (!response.body) return response;
     const decoder = new TextDecoder();
     let pending = "";
@@ -139,17 +160,29 @@ function costReading(sink: { cost?: number }): typeof fetch {
   };
 }
 
-/** Options that read the provider's cost into `sink`, for the APIs OpenRouter answers (others, like Google's, take no custom fetch). */
-const costed = (model: Model<Api>, options: any, sink: { cost?: number }) =>
-  options.fetch || !["openai-completions", "openai-responses", "anthropic-messages"].includes(model.api) ? options : { ...options, fetch: costReading(sink) };
-
-/** Pi's model and options for one call with `credentials`. */
-function authorize(model: Model<Api>, options: any, credentials: Credentials): [Model<Api>, any] {
-  if (credentials.identity) return [upstream(model), identityOptions(model, options, credentials.apiKey)];
+/**
+ * Pi's model and options for one call with `credentials`, reading the provider's cost into `sink`.
+ * Headers are Pi's, then a key scope entry's, then the agent's own `modelHeaders` (never auth headers).
+ * A key scope's `baseUrl` replaces the provider's root (`PROVIDER_ROOTS`) in each request's URL, or for
+ * an API that takes no fetch (Bedrock, Google), the model's base URL. An entry without a key sends none.
+ */
+function authorize(model: Model<Api>, options: any, credentials: Credentials, sink: { cost?: number }, modelHeaders?: Record<string, string> | null): [Model<Api>, any] {
+  if (credentials.identity) {
+    const target = upstream(model);
+    const callOptions = identityOptions(model, { ...options, headers: { ...options?.headers, ...modelHeaders } }, credentials.apiKey);
+    return [target, callOptions.fetch || !FETCH_APIS.includes(target.api) ? callOptions : { ...callOptions, fetch: callFetch(sink) }];
+  }
   const { apiKey, baseUrl, headers, region } = credentials;
-  // Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
-  const env = model.api === "bedrock-converse-stream" && baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {};
-  return [baseUrl ? { ...model, baseUrl } : model, { ...options, apiKey, env, ...(headers ? { headers: { ...options?.headers, ...headers } } : {}), ...(region ? { region } : {}) }];
+  const fetchable = FETCH_APIS.includes(model.api);
+  if (!apiKey && !fetchable) throw new Error(`A key scope entry without an apiKey cannot call ${model.provider}'s ${model.api} API`);
+  const callOptions = {
+    ...options, apiKey: apiKey || "keyless", headers: { ...options?.headers, ...headers, ...modelHeaders }, ...(region ? { region } : {}),
+    // Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
+    env: model.api === "bedrock-converse-stream" && baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {},
+  };
+  if (!fetchable) return [baseUrl ? { ...model, baseUrl } : model, callOptions];
+  const from = [PROVIDER_ROOTS[model.provider], model.baseUrl].filter(Boolean).map(prefix => prefix.replace(/\/+$/, "")).sort((a, b) => b.length - a.length);
+  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl } } : {}), keyless: !apiKey }) }];
 }
 
 /**
@@ -158,15 +191,15 @@ function authorize(model: Model<Api>, options: any, credentials: Credentials): [
  * (an `env` option only overrides those, it never hides them), which in a shared
  * worker could serve one tenant with another's (or the host's) key. When `perCall()`
  * gives credentials, the call uses them: an identity token for the tenant's own
- * endpoint, or a key scope's current entry.
+ * endpoint, or a key scope's current entry. `modelHeaders()` are the agent's own headers.
  */
-export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined): StreamFn {
+export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent`);
     const call = (credentials: Credentials) => {
-      const [target, callOptions] = authorize(model, options, credentials);
       const sink: { cost?: number } = {};
-      const stream = streamSimple(target, context, costed(target, callOptions, sink));
+      const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.());
+      const stream = streamSimple(target, context, callOptions);
       // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
       const push = stream.push.bind(stream);
       stream.push = event => {
@@ -186,12 +219,12 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
  * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
 type ApiKey = string | (() => Promise<Credentials>);
-function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void): Models {
+function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void, modelHeaders?: Record<string, string> | null): Models {
   return {
     completeSimple: async (model: Model<Api>, context: any, options: any) => {
-      const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey());
       const sink: { cost?: number } = {};
-      const response = await completeSimple(target, context, costed(target, callOptions, sink));
+      const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
+      const response = await completeSimple(target, context, callOptions);
       if (sink.cost !== undefined) (response.usage as { providerCost?: number }).providerCost = sink.cost;
       if (response.stopReason !== "error") onResponse?.(response);
       return response;
@@ -232,6 +265,8 @@ export async function runCompaction(options: {
   keepRecentTokens?: number;
   /** Each summarization response the provider completed, for billing. */
   onResponse?: (message: AssistantMessage) => void;
+  /** The agent's own headers for its model calls. */
+  modelHeaders?: Record<string, string> | null;
 }): Promise<CompactionOutcome> {
   const { context, offset, previous, model, apiKey, signal } = options;
   const defaults = compactionSettings(model);
@@ -240,7 +275,7 @@ export async function runCompaction(options: {
   if (!prepared.ok) throw prepared.error;
   const preparation = prepared.value;
   if (!preparation) return { skipped: "Nothing before the recent context to summarize" };
-  const models = summarizer(apiKey, options.onResponse);
+  const models = summarizer(apiKey, options.onResponse, options.modelHeaders);
   const scope = signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT;
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));

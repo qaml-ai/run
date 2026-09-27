@@ -4,6 +4,7 @@ import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';
 import { attachedTools } from './mcp-results.ts';
 import { checkScope } from './key-scopes.ts';
+import { HttpError } from './http.ts';
 
 type SessionConfig = Omit<AgentConfig, 'id' | 'directory' | 'tools' | 'apiKey'>;
 
@@ -93,6 +94,26 @@ export function resolveModel(reference: string, endpoints?: ModelEndpoints): Age
   return model;
 }
 
+/** Headers only the runtime sets on a model call: credentials, identity, and AWS signing. */
+const RESERVED_HEADERS = ['authorization', 'x-api-key', 'x-goog-api-key', 'cf-aig-authorization', 'chatgpt-account-id', 'x-agent-runtime-identity', 'host', 'content-length', 'content-type', 'transfer-encoding', 'connection'];
+
+/**
+ * An agent's own `modelHeaders`, sent on each of its model calls: at most 20, 8 KB in all, and none
+ * that carries a credential or identity (`RESERVED_HEADERS`, `x-amz-*`). Null when there are none.
+ */
+export function modelHeadersInput(value: unknown): Record<string, string> | null {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 20) throw new HttpError(400, 'modelHeaders must be an object of at most 20 header names and string values, or null');
+  let bytes = 0;
+  for (const [name, text] of Object.entries(value)) {
+    if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,100}$/.test(name) || typeof text !== 'string' || /[\r\n\0]/.test(text)) throw new HttpError(400, `Invalid model header ${name}`);
+    if (RESERVED_HEADERS.includes(name.toLowerCase()) || name.toLowerCase().startsWith('x-amz-')) throw new HttpError(400, `modelHeaders cannot set ${name}: the runtime sets credentials and identity`);
+    bytes += name.length + text.length;
+  }
+  if (bytes > 8192) throw new HttpError(400, 'modelHeaders must be at most 8 KB in all');
+  return Object.keys(value).length ? value as Record<string, string> : null;
+}
+
 /** Only operator-authenticated provisioning may choose a model, and only among trusted endpoints. */
 export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, allowedBaseUrls: string[] = [], endpoints?: ModelEndpoints): SessionConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid session configuration');
@@ -124,10 +145,12 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
+  // Replaced whole; null or {} removes them.
+  if (input.modelHeaders !== undefined) input = { ...input, modelHeaders: modelHeadersInput(input.modelHeaders) };
   // The application's attached MCP server's tools/list replaces its tools.
   if (input.mcp !== undefined) {
     const { mcp, ...rest } = input;

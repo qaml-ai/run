@@ -8,10 +8,11 @@ import { providerInfo } from "./catalog.ts";
  * of an application that serves many. An agent created with `keyScope` calls each model with its
  * scope's entry for that provider, else the tenant's own keys, else (prepaid) the platform's. An
  * entry is a key, and optionally an endpoint in front of the provider (an AI gateway) with extra
- * headers for it, or Bedrock's region. Keys and headers are sealed like provider keys.
+ * headers for it, or Bedrock's region. An entry for a gateway that holds the provider's key itself
+ * has no key: its calls carry only the extra headers. Keys and headers are sealed like provider keys.
  */
-export type ScopeEntry = { apiKey: string; baseUrl?: string; headers?: Record<string, string>; region?: string };
-export type ScopeStatus = { provider: string; last4: string; baseUrl?: string; region?: string; headers?: string[]; setAt: number };
+export type ScopeEntry = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string };
+export type ScopeStatus = { provider: string; last4?: string; baseUrl?: string; region?: string; headers?: string[]; setAt: number };
 
 /** A scope's entries reach other nodes' model calls within this long; the writing node's at once. */
 const CACHE_MS = 5_000;
@@ -36,18 +37,27 @@ function endpoint(value: unknown): string {
 export function scopeEntry(provider: string, input: any): ScopeEntry {
   const info = providerInfo(provider);
   if (!info || info.kind !== "model" || !(info.apiKey || provider === "amazon-bedrock")) invalid(`${provider} is not a model provider that takes an API key; see GET /v1/providers`);
-  if (!input || typeof input !== "object" || Array.isArray(input)) invalid("Body must be {apiKey, baseUrl?, headers?, region?}");
+  if (!input || typeof input !== "object" || Array.isArray(input)) invalid("Body must be {apiKey?, baseUrl?, headers?, region?}");
   for (const key of Object.keys(input)) if (!["apiKey", "baseUrl", "headers", "region"].includes(key)) invalid(`Unknown field ${key}`);
-  const { apiKey, baseUrl, headers, region } = input;
-  if (typeof apiKey !== "string" || !apiKey.trim() || apiKey.length > 4096) invalid("apiKey must be a non-empty string");
+  const { apiKey, baseUrl, headers } = input;
+  let { region } = input;
+  const bedrock = provider === "amazon-bedrock";
+  if (apiKey !== undefined && (typeof apiKey !== "string" || !apiKey.trim() || apiKey.length > 4096)) invalid("apiKey must be a non-empty string");
+  // Without a key, a gateway in front of the provider holds it: only the gateway's headers go.
+  if (apiKey === undefined && (baseUrl === undefined || bedrock || !["openrouter", "anthropic", "openai"].includes(provider))) invalid("apiKey may be left out only for openrouter, anthropic or openai behind a baseUrl (a gateway that holds the key)");
   if (headers !== undefined) {
     if (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.keys(headers).length > 20) invalid("headers must be an object of at most 20 header names and string values");
     for (const [name, value] of Object.entries(headers)) {
       if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,100}$/.test(name) || typeof value !== "string" || value.length > 4096 || /[\r\n]/.test(value)) invalid(`Invalid header ${name}`);
     }
   }
-  if (region !== undefined && (provider !== "amazon-bedrock" || typeof region !== "string" || !/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region))) invalid("region is only for amazon-bedrock, and must be an AWS region like us-west-2");
-  return { apiKey, ...(baseUrl !== undefined ? { baseUrl: endpoint(baseUrl) } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}), ...(region ? { region } : {}) };
+  // Bedrock's region is given, or read from its regional endpoint as baseUrl.
+  const hosted = typeof baseUrl === "string" ? /^https:\/\/bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com\/?$/.exec(baseUrl)?.[1] : undefined;
+  if (bedrock && hosted && region !== undefined && region !== hosted) invalid(`region ${region} does not match the baseUrl's ${hosted}`);
+  if (bedrock) region ??= hosted;
+  if (region !== undefined && (!bedrock || typeof region !== "string" || !/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region))) invalid("region is only for amazon-bedrock, and must be an AWS region like us-west-2");
+  if (bedrock && region === undefined) invalid("amazon-bedrock needs its region: region, or baseUrl https://bedrock-runtime.<region>.amazonaws.com");
+  return { ...(apiKey !== undefined ? { apiKey } : {}), ...(baseUrl !== undefined ? { baseUrl: endpoint(baseUrl) } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}), ...(region ? { region } : {}) };
 }
 
 export class KeyScopes {
@@ -67,7 +77,7 @@ export class KeyScopes {
     await this.db.query(`
       insert into key_scope_providers (tenant, scope, provider, sealed, last4, settings, set_at) values ($1, $2, $3, $4, $5, $6, $7)
       on conflict (tenant, scope, provider) do update set sealed = excluded.sealed, last4 = excluded.last4, settings = excluded.settings, set_at = excluded.set_at`,
-    [tenant, scope, provider, this.accounts.seal(aad(tenant, scope, provider), JSON.stringify({ apiKey, ...(headers ? { headers } : {}) })), apiKey.slice(-4),
+    [tenant, scope, provider, this.accounts.seal(aad(tenant, scope, provider), JSON.stringify({ ...(apiKey ? { apiKey } : {}), ...(headers ? { headers } : {}) })), apiKey?.slice(-4) ?? "",
       { ...settings, ...(headers ? { headers: Object.keys(headers) } : {}) }, Date.now()]);
     this.forget(tenant, scope);
     return this.status(tenant, scope);
@@ -84,7 +94,7 @@ export class KeyScopes {
   async status(tenant: string, scope: string): Promise<{ scope: string; providers: ScopeStatus[] }> {
     checkScope(scope);
     const { rows } = await this.db.query("select provider, last4, settings, set_at from key_scope_providers where tenant = $1 and scope = $2 order by provider", [tenant, scope]);
-    return { scope, providers: rows.map(row => ({ provider: row.provider, last4: row.last4, ...row.settings, setAt: Number(row.set_at) })) };
+    return { scope, providers: rows.map(row => ({ provider: row.provider, ...(row.last4 ? { last4: row.last4 } : {}), ...row.settings, setAt: Number(row.set_at) })) };
   }
 
   /** The scope's entry for `provider`, cached for a few seconds. */

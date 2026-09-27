@@ -479,13 +479,30 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
  "headers": {"cf-aig-authorization": "Bearer <gateway token>"}}
 ```
 
-- An entry is `{apiKey, baseUrl?, headers?, region?}`. `baseUrl` stands for the
-  provider's API root (an AI gateway in front of OpenRouter, Anthropic or OpenAI);
-  it must be HTTPS (plain HTTP only to localhost). `headers` are sent with every
-  call, sealed like the key. `region` is Bedrock's: for `amazon-bedrock` the key
-  is a Bedrock API key, sent as a bearer token (no SigV4) to that region's
-  endpoint, or to `baseUrl`. The provider is any model provider of
+- An entry is `{apiKey?, baseUrl?, headers?, region?}`. `headers` are sent with
+  every call, sealed like the key. The provider is any model provider of
   `GET /v1/providers` that takes a key, or `amazon-bedrock`.
+- `baseUrl` (HTTPS; plain HTTP only to localhost) replaces the provider's API
+  root in each request's URL, as an AI gateway's provider path stands for it
+  (Cloudflare AI Gateway's `…/openrouter`, `…/anthropic`, `…/openai`):
+
+  | provider | root `baseUrl` replaces | requests |
+  |---|---|---|
+  | `openrouter` | `https://openrouter.ai/api/v1` | `POST <baseUrl>/chat/completions`; Anthropic models (its Messages API) `POST <baseUrl>/messages?beta=true` |
+  | `anthropic` | `https://api.anthropic.com` | `POST <baseUrl>/v1/messages?beta=true` |
+  | `openai` | `https://api.openai.com/v1` | `POST <baseUrl>/responses` (or `/chat/completions`, per the catalog's API for the model) |
+  | `amazon-bedrock` | `https://bedrock-runtime.<region>.amazonaws.com` | `POST <baseUrl>/model/<URL-encoded id>/converse-stream` |
+  | others | the model's base URL in `GET /v1/models` | as the provider's API appends |
+
+- `apiKey` may be left out for `openrouter`, `anthropic` or `openai` behind a
+  `baseUrl`: a gateway that holds the provider's key itself (authenticated by,
+  say, `cf-aig-authorization` in `headers`). Its calls send no `Authorization` or
+  `x-api-key` header, only the entry's `headers`.
+- For `amazon-bedrock` the key is a Bedrock API key, sent as a bearer token (no
+  SigV4), and the entry needs its region: `region`, or a regional `baseUrl`
+  `https://bedrock-runtime.<region>.amazonaws.com`, which it is read from. Model
+  ids are the catalog's, inference profiles included
+  (`amazon-bedrock/us.anthropic.claude-sonnet-5`).
 - `GET /v1/key-scopes/:scope` lists the providers set, with each key's last four
   characters, `baseUrl`, `region` and the extra headers' names, never a secret.
   `DELETE /v1/key-scopes/:scope/providers/:provider` removes an entry, and
@@ -507,6 +524,19 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
 - Scope keys are the tenant's own: no platform token charge, like a tenant's key
   (agent time is charged as usual), and their calls are counted in `/v1/usage`
   under the model as usual.
+
+### Model headers
+
+`modelHeaders: {name: value}` at creation or through `PATCH
+/v1/agents/:id/configuration` are non-secret headers sent on each of the agent's
+model calls, compaction included, e.g. `{"cf-aig-metadata": "{\"org\": …, \"thread\": …}"}`
+to label a shared gateway's logs per conversation. A PATCH replaces them whole;
+`null` or `{}` removes them. They come after a key scope entry's `headers` (and
+win on a clash). At most 20 and 8 KB; `authorization`, `x-api-key`,
+`x-goog-api-key`, `cf-aig-authorization`, `chatgpt-account-id`,
+`x-agent-runtime-identity`, `x-amz-*` and transport headers (`host`,
+`content-length`, `content-type`, `transfer-encoding`, `connection`) are refused
+with 400. Only the tenant sets them; `GET /v1/agents/:id` shows them.
 
 ### Agent spend limits
 
@@ -548,16 +578,17 @@ the [outbound guard](#outbound-calls) like any tenant URL. Each event is:
  "cost": {"usd": 0.00471, "source": "provider"}, "at": 1790000000000}
 ```
 
-- One per model response a provider completed: `kind` is `response` for the
+- One event per POST, one per model response a provider completed: `kind` is `response` for the
   agent's turns and `compaction` for summaries. `subject` is the agent's (its id
   without one), `actor` the run's (or null), `context` the agent's `ctx`,
   `keyScope` its key scope (or null). `requestId` is the run's. `at` is in ms.
 - `cost.source` is `provider` when the provider reported the cost in its
   response (OpenRouter's `usage.cost`, plus the upstream cost for a key brought to
   OpenRouter), else `catalog`, the catalog price of the tokens. Calls through a
-  [tenant's own endpoint](#a-tenants-own-model-endpoint) come too, provider
-  `<name>/<provider>` (e.g. `chiridion/openai-codex`), with the cost the provider
-  reported, else 0. `/v1/usage` and platform charges stay at catalog prices.
+  [tenant's own endpoint](#a-tenants-own-model-endpoint) come too, named as the
+  agent names its model: provider `<name>`, model `<provider>/<model id>` (e.g.
+  `chiridion` and `openai-codex/gpt-5.5`), with the cost the provider reported,
+  else 0. `/v1/usage` and platform charges stay at catalog prices.
 - Requests are signed per Standard Webhooks: `webhook-id` (the event's `id`),
   `webhook-timestamp` (Unix seconds) and `webhook-signature`, `v1,<base64
   HMAC-SHA256 of "<id>.<timestamp>.<body>">` keyed with the secret's base64 part,
@@ -620,7 +651,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `keyScope` or `spendLimit` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration

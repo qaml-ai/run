@@ -41,15 +41,15 @@ export const KeySet = z.object({
 }).openapi("KeySet");
 
 export const KeyScopeEntryInput = z.object({
-  apiKey: z.string().min(1).max(4096).openapi({ description: "The provider's API key (for amazon-bedrock, a Bedrock API key, sent as a bearer token)" }),
-  baseUrl: z.string().optional().openapi({ description: "An HTTPS endpoint that stands for the provider's API root, e.g. an AI gateway's", example: "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openrouter" }),
+  apiKey: z.string().min(1).max(4096).optional().openapi({ description: "The provider's API key (for amazon-bedrock, a Bedrock API key, sent as a bearer token). Leave it out for a gateway at baseUrl that holds the key: no auth header is sent, only headers" }),
+  baseUrl: z.string().optional().openapi({ description: "An HTTPS endpoint that replaces the provider's API root in each request: https://openrouter.ai/api/v1, https://api.anthropic.com or https://api.openai.com/v1 (an AI gateway's /openrouter, /anthropic or /openai); for other providers, the model's base URL", example: "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openrouter" }),
   headers: z.record(z.string(), z.string()).optional().openapi({ description: "Extra headers for every call, sealed like the key, e.g. cf-aig-authorization" }),
-  region: z.string().optional().openapi({ description: "amazon-bedrock only: the AWS region to call", example: "us-west-2" }),
+  region: z.string().optional().openapi({ description: "amazon-bedrock only: the AWS region to call; read from baseUrl https://bedrock-runtime.<region>.amazonaws.com when left out", example: "us-west-2" }),
 }).strict().openapi("KeyScopeEntryInput");
 export const KeyScope = z.object({
   scope: z.string(),
   providers: z.array(z.object({
-    provider: z.string(), last4: z.string(), baseUrl: z.string().optional(), region: z.string().optional(),
+    provider: z.string(), last4: z.string().optional().openapi({ description: "Absent for an entry without a key" }), baseUrl: z.string().optional(), region: z.string().optional(),
     headers: z.array(z.string()).optional().openapi({ description: "The extra headers' names; never their values" }), setAt: z.number(),
   })),
 }).openapi("KeyScope");
@@ -94,6 +94,10 @@ export const SpendLimitInput = z.object({ usd: z.number().min(0).max(1_000_000) 
   description: "The most the agent may spend on model calls (their token cost, compaction included) from when this is set: a new value starts counting from zero. At it, new prompts get 402 and a running turn ends with stopped \"spend_limit\"",
 });
 
+export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeaders", {
+  description: "Non-secret headers sent on each of the agent's model calls, after a key scope entry's, e.g. cf-aig-metadata. At most 20 and 8 KB; never authorization, x-api-key, x-goog-api-key, cf-aig-authorization, chatgpt-account-id, x-agent-runtime-identity, x-amz-* or transport headers",
+});
+
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
 export const AgentInput = z.object({
   definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
@@ -111,6 +115,7 @@ export const AgentInput = z.object({
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
   spendLimit: SpendLimitInput.optional(),
+  modelHeaders: ModelHeaders.optional(),
 }).openapi("AgentInput");
 
 export const AgentCreated = z.looseObject({
@@ -197,6 +202,7 @@ export const AgentDetail = AgentSummary.extend({
   systemPromptAppend: z.string().optional(),
   fileTools: z.literal(false).optional().openapi({ description: "Present when the model gets no file tools but present_file" }),
   keyScope: z.string().nullable().openapi({ description: "The key scope its model calls take keys from first" }),
+  modelHeaders: ModelHeaders.nullable(),
   spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
@@ -376,6 +382,7 @@ export const ConfigureInput = z.object({
   thinkingLevel: ThinkingLevel.optional(),
   keyScope: z.string().nullable().optional().openapi({ description: "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it" }),
   spendLimit: SpendLimitInput.nullable().optional().openapi({ description: "A new budget from now, applied at once, ahead of queued runs; null removes it" }),
+  modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
 }).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
 
 const ChannelAccess = z.object({
