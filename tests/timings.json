@@ -17,6 +17,7 @@
     "ecs.test.ts": 0.2,
     "failover.test.ts": 18.3,
     "fencing.test.ts": 3.1,
+    "history-pages.test.ts": 23.8,
     "history.test.ts": 0.3,
     "log-tail.test.ts": 16.3,
     "mcp.test.ts": 4.8,
@@ -31,6 +32,8 @@
     "sdk-portable.test.ts": 7,
     "service-api.test.ts": 3.6,
     "storage.test.ts": 0.5,
+    "stream-deltas.test.ts": 19.5,
+    "tenant-reads.test.ts": 3.3,
     "volumes.test.ts": 6.7
   },
   "inline": {
@@ -51,6 +54,7 @@
     "ecs.test.ts": 0.2,
     "failover.test.ts": 16.8,
     "fencing.test.ts": 2.5,
+    "history-pages.test.ts": 21.7,
     "history.test.ts": 0.3,
     "log-tail.test.ts": 6,
     "mcp.test.ts": 3.6,
@@ -65,6 +69,8 @@
     "sdk-portable.test.ts": 6.3,
     "service-api.test.ts": 3.6,
     "storage.test.ts": 0.5,
+    "stream-deltas.test.ts": 18.3,
+    "tenant-reads.test.ts": 2.7,
     "volumes.test.ts": 5.3
   }
 }

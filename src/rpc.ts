@@ -57,6 +57,8 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
       PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, TMPDIR: cwd, AGENT_CODE_WORKERS_MIN: "0",
       // Where agent-launcher's sandbox processes listen, when it started them.
       ...(process.env.AGENT_SANDBOX_SOCKETS ? { AGENT_SANDBOX_SOCKETS: process.env.AGENT_SANDBOX_SOCKETS } : {}),
+      // The history backlog's bound (transcript.ts), which tests lower.
+      ...(process.env.AGENT_HISTORY_BACKLOG_BYTES ? { AGENT_HISTORY_BACKLOG_BYTES: process.env.AGENT_HISTORY_BACKLOG_BYTES } : {}),
     },
     stdio: ["ignore", "ignore", "inherit", "ipc"],
     serialization: "json",

@@ -67,7 +67,7 @@ function historyOf(records: TranscriptRecord[]): AgentMessage[] {
 export interface Backlog { from: number; kept: number; messages: AgentMessage[]; sizes: number[]; bytes: number; turns: number[] }
 
 /** The most a backlog holds in memory by default; past it, what it holds is left to the log. */
-const BACKLOG_BYTES = 8_000_000;
+const BACKLOG_BYTES = Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) || 8_000_000;
 
 /** Where conversational turns begin in `messages` (absolute index `from` on) without turn records: at a user message after anything else, and at 0. */
 function userTurns(from: number, messages: AgentMessage[]) {

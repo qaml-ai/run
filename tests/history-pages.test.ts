@@ -233,12 +233,13 @@ test("a deleted agent's history is never written again, so a purge leaves nothin
 });
 
 test("more unindexed history than a backlog holds is still paged, and indexed from the log rather than given up", { timeout: 120_000 }, async t => {
-  const r = await runtime(t, body => ({ content: `${lastUser(body)} ${"x".repeat(950_000)}` }), { AGENT_IDLE_MS: "1000" });
+  // A backlog bound of 100 KB, as 8 MB is in production: 10 turns of 30 KB pass it three times over.
+  const r = await runtime(t, body => ({ content: `${lastUser(body)} ${"x".repeat(30_000)}` }), { AGENT_IDLE_MS: "1000", AGENT_HISTORY_BACKLOG_BYTES: "100000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const stopped = () => until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 30_000);
   await stopped();
   // As for an agent from before the index (no row, and a header without the mark), once its session has unloaded:
-  // its process keeps no backlog, and 10 turns make 9.5 MB unindexed.
+  // its process keeps no backlog, and 10 turns make 300 KB unindexed.
   await r.db.query("delete from agent_history_index where agent = $1", [agent]);
   await r.db.query("update agents set header = (header::jsonb - 'history')::json where id = $1", [agent]);
   await sleep(2500);
