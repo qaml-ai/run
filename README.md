@@ -308,8 +308,8 @@ secret): nothing is stored, and nothing revokes it sooner. Its reader gets:
   whether and why it stopped (`{id, outcome: {stopped?, error?}}`); snapshots whole;
 - `/state`: each request's id, method, state, times and that outcome, not its
   parameters or result;
-- with `redact: ["usage.cost"]`, messages (streamed, in snapshots and in history)
-  without their provider cost.
+- with `redact: ["usage.cost"]`, no provider cost: every `usage` it reads (in any
+  event, snapshot or history message) comes without its `cost`.
 
 Send it as `Authorization: Bearer <token>`, never in a URL.
 

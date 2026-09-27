@@ -73,14 +73,19 @@ export class BrowserTokens {
   }
 }
 
-/** Drop `usage.cost` from a message (and a snapshot's messages), for a token that redacts it. */
-function withoutCost(message: any) {
-  if (!message?.usage || !("cost" in message.usage)) return message;
-  const { cost: _cost, ...usage } = message.usage;
-  return { ...message, usage };
+/** A value without the `cost` of any `usage` in it, however deep: messages, and whatever holds them (agent_end's, turn_end's). */
+function withoutCost(value: any): any {
+  if (Array.isArray(value)) return value.map(withoutCost);
+  if (!value || typeof value !== "object") return value;
+  const copy: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "usage" && item && typeof item === "object" && !Array.isArray(item)) { const { cost: _cost, ...usage } = item as Record<string, unknown>; copy[key] = withoutCost(usage); }
+    else copy[key] = withoutCost(item);
+  }
+  return copy;
 }
 
-/** A message as a token's reader may see it. */
+/** A message (or anything holding messages) as a token's reader may see it. */
 export function readableMessage(claims: BrowserClaims, message: unknown) {
   return claims.redact?.includes("usage.cost") ? withoutCost(message) : message;
 }
@@ -97,13 +102,12 @@ export function readableFrame(claims: BrowserClaims, data: any): unknown {
     return { type: "response", id: data.id, outcome: { ...(stopped ? { stopped } : {}), ...(outcome.error ? { error: outcome.error } : {}) } };
   }
   if (data?.type === "snapshot") {
-    if (!data.turn || !claims.redact?.length) return data;
-    return { ...data, turn: { ...data.turn, messages: data.turn.messages.map((message: unknown) => readableMessage(claims, message)), partial: data.turn.partial && readableMessage(claims, data.turn.partial) } };
+    return readableMessage(claims, data);
   }
   if (data?.type !== "event") return undefined;
   const type = data.event?.type;
   if (claims.events ? !claims.events.includes(type) : INTERNAL_EVENTS.has(type)) return undefined;
-  return data.event?.message && claims.redact?.length ? { ...data, event: { ...data.event, message: readableMessage(claims, data.event.message) } } : data;
+  return readableMessage(claims, data);
 }
 
 /** A request as a browser token's reader may see it (`/state`): what it is and how it ended, not its parameters or result. */

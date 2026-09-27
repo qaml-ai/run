@@ -92,6 +92,11 @@ test("a browser token's scopes, event list and redaction limit what it reads; a 
   assert.ok(events.length > 0 && events.every(event => event.type === "message_end"), "only the listed events");
   const assistant = events.find(event => event.message.role === "assistant").message;
   assert.ok(assistant.usage && !("cost" in assistant.usage), "no cost in the stream");
+  // Nor anywhere else in a frame: every event, whatever holds the messages.
+  const everything = await (await fetch(`${r.base}/v1/agents/${agent}/events?poll=1`, { headers: { ...bearer((await mint({ redact: ["usage.cost"] })).json.token), "Last-Event-ID": String(watcher.frames.find(frame => frame.id)!.id! - 1) } })).json() as any;
+  const costs = (value: any): number => !value || typeof value !== "object" ? 0 : (value.usage && typeof value.usage === "object" && "cost" in value.usage ? 1 : 0) + Object.values(value).reduce((sum: number, item) => sum + costs(item), 0);
+  assert.ok(everything.events.some((event: any) => event.data.event?.type === "agent_end"), "agent_end is there to check");
+  assert.equal(costs(everything), 0, "no usage anywhere carries its cost");
   const page = (await r.call(`/v1/agents/${agent}/history?limit=10`, { token: narrow })).json;
   for (const entry of page.entries.filter((entry: any) => entry.message.role === "assistant")) assert.ok(!("cost" in entry.message.usage), "nor in history");
   const tenants = (await r.call(`/v1/agents/${agent}/history?limit=10`)).json.entries.find((entry: any) => entry.message.role === "assistant").message;
