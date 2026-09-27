@@ -251,6 +251,24 @@ export function api(context: ApiContext) {
     await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, { deleted: true });
   });
+  route(createRoute({
+    method: "get", path: "/v1/agents/{id}/events",
+    request: {
+      params: agentId,
+      headers: z.object({ "last-event-id": z.string().optional().openapi({ description: "Resume after this event id; absent or 0 takes everything buffered. Behind the buffer: 409" }) }),
+      query: z.object({
+        poll: z.enum(["1"]).optional().openapi({ description: "Answer once, as JSON, instead of streaming" }),
+        wait: z.string().optional().openapi({ description: "With poll: seconds (at most 25) to wait for the next event when none is buffered" }),
+      }),
+    },
+    responses: {
+      200: { description: "Server-sent events, each `id: <cursor>` and `data: <ClientEvent>`, after a `ready` frame; with poll=1, the events as JSON", content: { "text/event-stream": { schema: z.string() }, "application/json": { schema: schema.EventPoll } } },
+      409: reply("REPLAY_GAP: the events after Last-Event-ID are gone; read state and history, then stream from state's cursor", schema.ApiError),
+      429: reply("The agent has too many subscribers", schema.ApiError),
+    },
+  }), c => clients.watchFor(c, c.req.param("id")!, c.var.principal.tenant));
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, responses: { 200: reply("Request state and the stream's cursor", schema.SessionState) } }),
+    async c => json(c, 200, await clients.stateFor(c.req.param("id")!, c.var.principal.tenant)));
   route(createRoute({ method: "get", path: "/v1/agents/{id}/history", request: { params: agentId }, responses: { 200: reply("The transcript", schema.History) } }),
     async c => json(c, 200, await clients.agentHistory(c.req.param("id")!, c.var.principal.tenant)));
   route(createRoute({ method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId }, responses: { 200: reply("The running turn is aborted", z.object({ aborted: z.literal(true) })) } }), async c => {

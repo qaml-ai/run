@@ -209,6 +209,15 @@ export const AgentDetail = AgentSummary.extend({
   requests: z.array(RequestRecord),
 }).openapi("AgentDetail");
 
+export const SessionState = z.object({
+  cursor: z.number().openapi({ description: "The agent's latest event id: a stream opened with it as Last-Event-ID continues from here" }),
+  requests: z.array(RequestRecord).openapi({ description: "Recent requests (the running ones and the latest settled), with their outcomes" }),
+}).openapi("SessionState");
+export const EventPoll = z.object({
+  cursor: z.number().openapi({ description: "Send as Last-Event-ID on the next poll" }),
+  events: z.array(z.object({ id: z.number(), data: z.unknown() })),
+}).openapi("EventPoll");
+
 export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi("History");
 
 export const PromptInput = z.object({

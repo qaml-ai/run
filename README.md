@@ -286,6 +286,14 @@ API token; applications attach to their agents with the SDKs (`/clients/*`,
 authenticated by each agent's own token). Each agent admits one prompt or code
 execution at a time; later ones queue.
 
+A server that relays agents to its own users needs no per-agent tokens: with its
+tenant token it prompts (`POST /v1/agents/:id/prompt`), answers inputs, aborts, and
+reads what an application would read with the agent's token:
+`GET /v1/agents/:id/events` (always a read-only watcher of the stream, as
+`/clients/:id/events?watch=1`, with `?poll=1&wait=N` for one JSON read; see
+`clients/README.md`), `/state` (request state and the stream's cursor),
+`/history` and `/inputs`. Another tenant's agent is a 404 on every route.
+
 Codemode supports `tools.search(query)`, `tools.namespaces()`, `tools.describe(name)`,
 `tools.<name>(args)`, `fs`, `text(value)`, `console.log(value)`, top-level `await`, and
 `return`. It can compose parallel calls with `Promise.all`. Failed calls reject; a call

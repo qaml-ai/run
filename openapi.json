@@ -973,6 +973,54 @@
         },
         "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs"
       },
+      "EventPoll": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "number",
+            "description": "Send as Last-Event-ID on the next poll"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "number"
+                },
+                "data": {}
+              },
+              "required": [
+                "id"
+              ]
+            }
+          }
+        },
+        "required": [
+          "cursor",
+          "events"
+        ]
+      },
+      "SessionState": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "number",
+            "description": "The agent's latest event id: a stream opened with it as Last-Event-ID continues from here"
+          },
+          "requests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequestRecord"
+            },
+            "description": "Recent requests (the running ones and the latest settled), with their outcomes"
+          }
+        },
+        "required": [
+          "cursor",
+          "requests"
+        ]
+      },
       "History": {
         "type": "object",
         "properties": {
@@ -4210,6 +4258,136 @@
                   "required": [
                     "deleted"
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/events": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ],
+              "description": "Answer once, as JSON, instead of streaming"
+            },
+            "required": false,
+            "description": "Answer once, as JSON, instead of streaming",
+            "name": "poll",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "With poll: seconds (at most 25) to wait for the next event when none is buffered"
+            },
+            "required": false,
+            "description": "With poll: seconds (at most 25) to wait for the next event when none is buffered",
+            "name": "wait",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Resume after this event id; absent or 0 takes everything buffered. Behind the buffer: 409"
+            },
+            "required": false,
+            "description": "Resume after this event id; absent or 0 takes everything buffered. Behind the buffer: 409",
+            "name": "last-event-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent events, each `id: <cursor>` and `data: <ClientEvent>`, after a `ready` frame; with poll=1, the events as JSON",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPoll"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "REPLAY_GAP: the events after Last-Event-ID are gone; read state and history, then stream from state's cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The agent has too many subscribers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/state": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request state and the stream's cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionState"
                 }
               }
             }

@@ -1101,6 +1101,26 @@ export class ClientSessions {
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
+  /**
+   * A tenant's watcher on one of its agents' event streams (or, with `?poll=1`, one poll of it):
+   * what `/clients/:id/events?watch=1` gives a holder of the agent's token, for a server that keeps
+   * no per-agent tokens. `c.env.outgoing` is the raw response the stream is written to.
+   */
+  async watchFor(c: Context, id: string, tenant: string) {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Unknown agent");
+    if (session.fault) throw session.fault;
+    const context = c as Context<ClientEnv>;
+    return c.req.query("poll") === "1" ? this.poll(context, session) : this.subscribe(context, session, "watch");
+  }
+
+  /** A tenant's view of one agent's request state and stream cursor (`/clients/:id/state`). */
+  async stateFor(id: string, tenant: string) {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Unknown agent");
+    return { cursor: session.cursor, requests: [...session.requests.values()].map(visible) };
+  }
+
   /** A tenant's view of one agent's history; undefined when the agent is not theirs. */
   async agentHistory(id: string, tenant: string) {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
