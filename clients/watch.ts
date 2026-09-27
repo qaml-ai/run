@@ -171,9 +171,21 @@ export function watchAgent(options: WatchOptions): Watcher {
   }
   const json200 = async (path: string) => {
     const response = await get(path);
-    if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+    if (!response.ok) throw Object.assign(new Error(`${path}: HTTP ${response.status}`), { status: response.status });
     return response.json();
   };
+  /** Whether the token reads history: until a 403 says not, when the watcher goes on with the stream alone. */
+  let readsHistory = true;
+  async function historyRead(path: string) {
+    if (!readsHistory) return undefined;
+    try { return await json200(path); }
+    catch (error) {
+      if ((error as { status?: number }).status !== 403) throw error;
+      readsHistory = false;
+      before = null;
+      return undefined;
+    }
+  }
 
   /** Take in a page of history: its messages by index, and (for the first, or an older one) where the next older page ends. */
   function page(value: { entries: { index: number; message: AgentMessage }[]; next: number | null }, older = false) {
@@ -181,7 +193,8 @@ export function watchAgent(options: WatchOptions): Watcher {
     if (older || before === undefined) before = value.next;
   }
   async function newest() {
-    page(await json200(`/history?limit=${pageSize}`));
+    const value = await historyRead(`/history?limit=${pageSize}`);
+    if (value) page(value);
   }
 
   /** Take in one frame of the stream. */
@@ -332,7 +345,9 @@ export function watchAgent(options: WatchOptions): Watcher {
     state,
     async loadOlder() {
       if (!before) return false;
-      page(await json200(`/history?limit=${pageSize}&before=${before}`), true);
+      const value = await historyRead(`/history?limit=${pageSize}&before=${before}`);
+      if (!value) return false;
+      page(value, true);
       changed();
       return true;
     },

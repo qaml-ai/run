@@ -135,6 +135,21 @@ test("a watcher whose streams deliver nothing (a proxy that buffers them) falls 
   assert.equal((watcher.state.messages.at(-1) as any).content[0].text, "polled");
 });
 
+test("a watcher whose token does not read history follows the stream without it", { timeout: 60_000 }, async t => {
+  const r = await runtime(t, () => ({ content: "streamed" }));
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const { token } = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: { scopes: ["events"] } })).json;
+  const errors: Error[] = [];
+  const watcher = watchAgent({ url: r.base, agentId: agent, token, onError: error => errors.push(error) });
+  t.after(() => watcher.close());
+  await until(() => watcher.state.connected, "the watcher to connect");
+  const done = await r.prompt(agent, "hi");
+  await until(() => watcher.state.lastOutcome?.id === done.id, "the turn");
+  assert.equal((watcher.state.messages.at(-1) as any).content[0].text, "streamed");
+  assert.equal(await watcher.loadOlder(), false);
+  assert.ok(errors.length <= 2, `no retrying: ${errors.map(error => error.message).join("; ")}`);
+});
+
 test("a watcher starts from the newest page and loads older pages on request", { timeout: 60_000 }, async t => {
   const r = await runtime(t, body => ({ content: `reply ${body.messages.length}` }));
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;

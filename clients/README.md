@@ -445,7 +445,8 @@ const watcher = watchAgent({
 - It folds deltas into Pi messages: text, thinking, and tool calls (named at their
   start, their arguments parsed as partial JSON as they stream), so a card can show
   a call's code while the model writes it.
-- It starts from the newest page of history and loads older pages on request.
+- It starts from the newest page of history and loads older pages on request;
+  with a token that does not read `history`, it follows the stream alone.
 - It renews its token through `getToken` a minute before it expires, and when the
   runtime refuses it (401).
 
