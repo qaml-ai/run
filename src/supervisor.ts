@@ -121,7 +121,7 @@ export class AgentSupervisor {
       if (method === "file") return this.file(handle, params);
       if (method === "model-auth") return this.modelAuth(handle);
       if (method === "fs") return this.dispatchFs(handle, params);
-      if (method === "history") return this.historyRequest(handle, params);
+      if (method === "history") return this.historyRequest(id, handle, params);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
@@ -158,8 +158,10 @@ export class AgentSupervisor {
   }
 
   /** An agent's history index operations; without an index, `indexed` is null and nothing is written. */
-  private historyRequest(handle: Handle, params: { op: string; chunk?: HistoryChunk }): Promise<any> {
+  private historyRequest(id: string, handle: Handle, params: { op: string; chunk?: HistoryChunk; from?: number }): Promise<any> {
     const history = handle.bridge.history;
+    // What the agent's backlog left to its log, read through a log of its own, never the writer's.
+    if (params.op === "read" && typeof params.from === "number") return this.backlog(id, params.from);
     if (params.op === "indexed") return history ? history.indexed() : Promise.resolve(null);
     if (params.op === "write" && history && params.chunk) return history.write(params.chunk);
     return Promise.reject(new Error("Unknown history operation"));
@@ -198,7 +200,10 @@ export class AgentSupervisor {
       file: ref => this.file(handle, structuredClone(ref)),
       modelAuth: () => this.modelAuth(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
-      history: { indexed: () => this.historyRequest(handle, { op: "indexed" }), write: chunk => this.historyRequest(handle, { op: "write", chunk: structuredClone(chunk) }) },
+      history: {
+        indexed: () => this.historyRequest(id, handle, { op: "indexed" }), write: chunk => this.historyRequest(id, handle, { op: "write", chunk: structuredClone(chunk) }),
+        read: from => this.historyRequest(id, handle, { op: "read", from }),
+      },
     });
     this.agents.set(id, handle);
     this.starting.delete(id);

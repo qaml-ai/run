@@ -12,7 +12,7 @@ import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS,
 import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
-import { Transcript, readTranscriptLog, summaryMessage, type CompactionState, type TranscriptRecord } from "./transcript.ts";
+import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, runCompaction } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY } from "./limits.ts";
@@ -44,7 +44,7 @@ export interface HostIO {
   /** js_exec's `fs`, answered by the supervisor over the agent's mounts. */
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
-  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
+  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
 
 /**
@@ -89,11 +89,12 @@ export function createAgentHost(io: HostIO) {
       if (backlog && backlog.kept > backlog.from) {
         if (!final && Date.now() - lagRead < LAG_READ_MS) return;
         lagRead = Date.now();
-        const past = new Transcript(io.transcript, backlog.from, Infinity);
-        await past.load();
-        // A turn cut off by the stop is settled at the next start, with its repairs.
-        const upto = final && transcript.active ? Math.min(backlog.kept, transcript.turnStart) : backlog.kept;
-        for (const chunk of chunksOf(past.backlog!, Math.max(0, Math.min(upto - backlog.from, past.backlog!.messages.length)))) {
+        // Read apart from the transcript's own log, so the running turn's appends do not wait behind it.
+        const past = await history.read(backlog.from);
+        // A turn cut off by the stop is settled at the next start, with its repairs; while the agent runs, its latest
+        // message (which a retry may take back) waits, as it does in memory.
+        const upto = final ? (transcript.active ? Math.min(backlog.kept, transcript.turnStart) : backlog.kept) : Math.min(backlog.kept, transcript.total - 1);
+        for (const chunk of chunksOf(past, Math.max(0, Math.min(upto - backlog.from, past.messages.length)))) {
           const indexed = await history.write(chunk);
           transcript.indexed(indexed);
           if (indexed !== chunk.start + chunk.messages.length) return;
