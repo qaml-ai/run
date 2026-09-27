@@ -205,6 +205,8 @@ function throttled<T>(publish: (value: T) => void, onFlush: (flush: () => void) 
     timer ??= setTimeout(release, Math.max(0, wait));
   };
 }
+/** Whether a request's client has gone: its connection closed before the response was written. */
+const gone = (c: Context<ClientEnv>) => c.env.incoming.destroyed || c.env.outgoing.destroyed || !!c.env.outgoing.socket?.destroyed;
 /** Write an SSE frame, cutting off a subscriber that does not keep up. */
 function send(res: ServerResponse, frame: string) {
   if (res.destroyed) return;
@@ -638,6 +640,9 @@ export class ClientSessions {
    * never replaced. Every stream gets every event from its own cursor on (see `replay`).
    */
   private subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch") {
+    // Gone while the request was authorized and its agent loaded: its close has fired already, so nothing
+    // registered from here would ever be released. (No await follows, so it cannot close unseen after this.)
+    if (gone(c)) return RESPONSE_ALREADY_SENT;
     const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), c.req.query("snapshot") === "1");
     const release = mode === "watch" ? this.hold(session) : undefined;
     const res = c.env.outgoing;
@@ -675,6 +680,7 @@ export class ClientSessions {
    * a stream: a snapshot where there is nothing to replay from.
    */
   private async poll(c: Context<ClientEnv>, session: Session) {
+    if (gone(c)) return RESPONSE_ALREADY_SENT;
     const raw = c.req.header("last-event-id");
     const asked = c.req.query("snapshot") === "1";
     const wait = Number(c.req.query("wait") ?? 0);

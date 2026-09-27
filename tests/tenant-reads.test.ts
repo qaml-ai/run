@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { OPERATOR, OTHER_OPERATOR, runtime, until, watchEvents } from "./runtime-server.ts";
+import { OPERATOR, OTHER_OPERATOR, runtime, sleep, until, watchEvents } from "./runtime-server.ts";
 
 test("a tenant reads its agent's events, state, history and inputs with its own token, and no other tenant can", async t => {
   const r = await runtime(t, () => ({ content: "hello" }));
@@ -38,4 +38,26 @@ test("a tenant reads its agent's events, state, history and inputs with its own 
   // A deleted agent's stream is gone.
   assert.equal((await r.call(`/v1/agents/${agent}`, { method: "DELETE" })).status, 200);
   assert.equal((await r.call(`/v1/agents/${agent}/events?poll=1`)).status, 404);
+});
+
+test("a subscriber that goes away before its stream opens gives its place back", async t => {
+  const r = await runtime(t, () => ({ content: "hello" }));
+  const created = (await r.call("/v1/agents", { body: {} })).json;
+  const agent = created.id as string;
+  const auth = { Authorization: `Bearer ${OPERATOR}` };
+  // Watchers and waiting polls whose clients give up while the request is still being authorized and loaded.
+  const abandon = (url: string, headers: Record<string, string>, count: number) => Promise.all(Array.from({ length: count }, async (_, index) => {
+    const aborts = new AbortController();
+    setTimeout(() => aborts.abort(), index % 5);
+    await fetch(url, { headers, signal: aborts.signal }).then(response => response.body?.cancel()).catch(() => {});
+  }));
+  await abandon(`${r.base}/v1/agents/${agent}/events`, auth, 150);
+  await abandon(`${r.base}/v1/agents/${agent}/events?poll=1&wait=20`, auth, 150);
+  await sleep(500);
+  assert.equal((await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, auth, { query: "" })).status, 200, "every place was given back");
+  // The application's connection likewise: one gone before it opened is not kept as the agent's connection.
+  await abandon(`${r.base}/clients/${agent}/events`, { Authorization: `Bearer ${created.token}` }, 50);
+  await sleep(500);
+  const listed = (await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent);
+  assert.equal(listed.connected, false);
 });
