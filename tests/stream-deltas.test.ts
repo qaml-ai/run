@@ -119,3 +119,29 @@ test("the SDK streams deltas when asked: its events carry no partial message, an
   for (const event of streamed) assert.equal(event.message, undefined);
   assert.equal(streamed.filter(event => event.assistantMessageEvent.type === "text_delta").map(event => event.assistantMessageEvent.delta).join(""), words.join(""));
 });
+
+test("a legacy subscriber whose replay would re-expand past the buffer's size gets a replay gap, not a cut connection", async t => {
+  // 150 updates of a 30 KB answer: re-expanded, each carries the whole message twice.
+  const words = Array.from({ length: 150 }, (_, index) => `${String(index).padStart(3, "0")}${"x".repeat(197)}`);
+  const model = await streamingModel(t, words, words.length);
+  model.release();
+  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const events = `${r.base}/v1/agents/${agent}/events`;
+  const auth = { Authorization: `Bearer ${OPERATOR}` };
+  const first = (await r.call(`/v1/agents/${agent}/state`)).json.cursor;
+  await r.prompt(agent, "go");
+  const legacy = await watchEvents(t, events, auth, { query: "", cursor: first });
+  assert.equal(legacy.status, 409, "the old invariant: a replay larger than the buffer is a gap to recover from history");
+  const poll = await fetch(`${events}?poll=1`, { headers: { ...auth, "Last-Event-ID": String(first) } });
+  assert.equal(poll.status, 409);
+  await poll.body?.cancel();
+  // A replay that fits is still sent whole, ready frame first.
+  const last = (await r.call(`/v1/agents/${agent}/state`)).json.cursor;
+  const small = await watchEvents(t, events, auth, { query: "", cursor: last - 2 });
+  assert.equal(small.status, 200);
+  await until(() => small.frames.length === 3, "the ready frame and two replayed events");
+  // With deltas the same replay is small and whole.
+  const deltas = await (await fetch(`${events}?poll=1&deltas=1`, { headers: { ...auth, "Last-Event-ID": String(first) } })).json() as any;
+  assert.ok(deltas.events.length > 150);
+});

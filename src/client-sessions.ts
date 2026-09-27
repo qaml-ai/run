@@ -635,9 +635,10 @@ export class ClientSessions {
    * message_update with the message it updates, as Pi sent it; replayed, that is the message
    * as it stands now (finished, or still streaming), not as it stood at that update.
    */
-  private replayed(session: Session, events: BufferedEvent[], deltas: boolean) {
+  private replayed(session: Session, events: BufferedEvent[], deltas: boolean): { id: number; text: string }[] {
+    if (deltas) return events.map(event => ({ id: event.id, text: JSON.stringify(event.data) }));
     const data = events.map(event => event.data);
-    if (!deltas) {
+    {
       // Backwards, so each update meets the latest state of its message first: its message_end, or the partial still streaming.
       let latest = session.partial;
       for (let index = data.length - 1; index >= 0; index--) {
@@ -648,7 +649,19 @@ export class ClientSessions {
         else if (item.event?.type === "message_update" && latest) data[index] = { ...item, event: wholeUpdate(item.event, latest) };
       }
     }
-    return events.map((event, index) => ({ id: event.id, data: data[index], text: data[index] === event.data ? JSON.stringify(event.data) : fitted(data[index]) }));
+    // Re-expanded updates carry their whole message each (twice), so a replay can be far larger than the buffer it
+    // comes from. Past the buffer's own size it is a gap, as a replay the buffer could not hold always was: the
+    // subscriber recovers from state and history (or asks for deltas). Built one frame at a time, so it stops there.
+    const budget = Math.min(this.options.eventBytes ?? 2 * 1024 * 1024, 2 * FRAME_BYTES - 64 * 1024);
+    const frames: { id: number; text: string }[] = [];
+    let bytes = 0;
+    for (const [index, event] of events.entries()) {
+      const text = data[index] === event.data ? JSON.stringify(event.data) : fitted(data[index]);
+      bytes += text.length;
+      if (bytes > budget) throw new HttpError(409, "REPLAY_GAP: recover from session state");
+      frames.push({ id: event.id, text });
+    }
+    return frames;
   }
 
   /**
@@ -660,6 +673,7 @@ export class ClientSessions {
   private subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch") {
     const deltas = c.req.query("deltas") === "1";
     const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), deltas);
+    const frames = this.replayed(session, events, deltas);
     if (mode === "watch" && session.watchers.size >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw new HttpError(429, "This agent's event stream has too many subscribers; retry later");
     const res = c.env.outgoing;
     if (deltas) deltaStreams.add(res);
@@ -683,9 +697,9 @@ export class ClientSessions {
     }
     res.write(`event: ready\ndata: ${JSON.stringify(ready)}\n\n`);
     if (snapshot) send(res, `id: ${snapshot.cursor}\ndata: ${JSON.stringify(snapshot)}\n\n`);
-    for (const event of this.replayed(session, events, deltas)) {
+    for (const frame of frames) {
       if (res.destroyed) break;
-      send(res, `id: ${event.id}\ndata: ${event.text}\n\n`);
+      send(res, `id: ${frame.id}\ndata: ${frame.text}\n\n`);
     }
     return RESPONSE_ALREADY_SENT;
   }
@@ -714,11 +728,10 @@ export class ClientSessions {
       session.polledAt = Date.now();
     }
     const { cursor, snapshot, events } = read;
-    const replayed = this.replayed(session, events, deltas).map(({ id, data }) => ({ id, data }));
-    return json(c, 200, {
-      cursor: events.at(-1)?.id ?? (cursor || session.cursor),
-      events: snapshot ? [{ id: snapshot.cursor, data: snapshot }, ...replayed] : replayed,
-    });
+    // The frames' JSON as it is, not parsed and written again.
+    const entries = [...snapshot ? [{ id: snapshot.cursor, text: JSON.stringify(snapshot) }] : [], ...this.replayed(session, events, deltas)];
+    const body = `{"cursor":${events.at(-1)?.id ?? (cursor || session.cursor)},"events":[${entries.map(entry => `{"id":${entry.id},"data":${entry.text}}`).join(",")}]}`;
+    return c.body(body, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   }
 
   private busy(session: Session) {

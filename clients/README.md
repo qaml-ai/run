@@ -397,7 +397,9 @@ each run also announces as a `turn_opened` event (`{ index }`).
 Subscribers without `deltas=1` get the events as before. The runtime keeps only
 the latest partial message, so a `message_update` replayed after a reconnect
 carries its message as it stands now (or as it ended), not as it stood at that
-update.
+update. Each replayed update carries that whole message, so a replay larger than
+the buffer's size (2 MiB) is a `409 REPLAY_GAP`, as before: recover from state and
+history, or ask for deltas.
 
 ## History in pages
 
