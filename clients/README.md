@@ -364,7 +364,7 @@ window and `409 REPLAY_GAP`; its `ready` frame says `watch: true` and names no
 and watching keeps neither the agent's process running nor its session loaded:
 once the agent has been idle (no events, nothing running, no application
 connected) for the idle timeout, its watchers' streams end, and one that comes
-back gets `409 REPLAY_GAP` (with deltas, a snapshot). Watchers and waiting polls
+back gets `409 REPLAY_GAP` (asking with `snapshot=1`, a snapshot). Watchers and waiting polls
 are bounded: 32 per agent, 1024 per tenant and 4096 per node (`429` past them).
 Any node serves them: a node that does not own the agent forwards the stream to
 the one that does.
@@ -377,15 +377,18 @@ most 25) for the next event, holding a subscriber's place while it waits.
 
 ### Deltas and snapshots
 
-Pi's `message_update` events carry the whole message so far, twice, so a long
-answer costs the square of its length on the wire. A subscriber that adds
-`deltas=1` (to a stream, a watcher or a poll; the TypeScript SDK's `deltas: true`)
-gets each update as its delta alone, `{ type: "message_update",
-assistantMessageEvent: { type, contentIndex, delta | content | toolCall } }`
-(a `toolcall_start` names its call's `id` and `name`), and folds the message from
-its `message_start`. Such a subscriber never gets `409`: when it connects with no
-cursor, or one the buffer has moved past, the stream starts with a snapshot as
-of its id, then continues live:
+Pi's `message_update` carries the whole message so far on every token, so a
+long answer would cost the square of its length on the wire. The stream sends
+each update as its delta alone, `{ type: "message_update", assistantMessageEvent:
+{ type, contentIndex?, delta? | content? | toolCall? | reason? } }`, without the
+message (`message`, `partial`, and `done`'s `message` or `error`'s `error`, which
+`message_end` carries next). Fold the message from its `message_start` and the
+deltas since.
+
+A subscriber that cannot replay (no cursor, or one the buffer has moved past)
+cannot fold what it missed. With `snapshot=1` (on a stream, a watcher or a poll;
+both SDKs ask) it gets, instead of whatever is buffered or `409`, a snapshot as
+of its id, then the live stream:
 
 ```json
 { "type": "snapshot", "cursor": 1700000000000123, "requestId": "req_1",
@@ -395,14 +398,12 @@ of its id, then continues live:
 `turn` is null when no turn runs, and has `truncated: true` (and no messages)
 when the run's messages are too large for one frame: read them from history.
 `start` is the index of the run's first message in the agent's history, which
-each run also announces as a `turn_opened` event (`{ index }`).
+each run also announces as a `turn_opened` event (`{ index }`). Without
+`snapshot=1`, a gap is `409 REPLAY_GAP` as before.
 
-Subscribers without `deltas=1` get the events as before. The runtime keeps only
-the latest partial message, so a `message_update` replayed after a reconnect
-carries its message as it stands now (or as it ended), not as it stood at that
-update. Each replayed update carries that whole message, so a replay larger than
-the buffer's size (2 MiB) is a `409 REPLAY_GAP`, as before: recover from state and
-history, or ask for deltas.
+The event format changed in TypeScript SDK 0.6.0 and Python client 0.3.0
+(ready frame `version: 5`): `onEvent` / `on_event` gets deltas, and a snapshot
+where it used to get `replay_gap`.
 
 ## History in pages
 

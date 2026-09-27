@@ -32,6 +32,14 @@ async def main():
 asyncio.run(main())
 ```
 
+## Events
+
+`on_event` gets the agent's events as they stream. Since 0.3.0 a `message_update`
+is its delta alone (`event["assistantMessageEvent"]["delta"]` for text), without
+the message it updates, and a stream that cannot replay starts with a
+`{"type": "snapshot", "turn": ...}` of the running turn (see "Deltas and
+snapshots" in the runtime's `clients/README.md`).
+
 ## Serving tools to many users
 
 When one server answers tools for many users' agents, serve them over HTTP and let

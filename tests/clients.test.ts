@@ -244,7 +244,7 @@ test("watchers each get the whole stream beside the application's connection, ne
   const first = await watchEvents(t, events, auth);
   const second = await watchEvents(t, events, auth);
   assert.equal(first.status, 200);
-  assert.deepEqual((await until(() => second.frames[0], "the ready frame")).data, { version: 4, agentId: agent.session.id, watch: true });
+  assert.deepEqual((await until(() => second.frames[0], "the ready frame")).data, { version: 5, agentId: agent.session.id, watch: true });
   // The application's connection still answers tool calls: no watcher replaced it.
   assert.deepEqual((await agent.execute('return await tools.echo({value:"seen"})', { idempotencyKey: "one" })).output, ["seen"]);
   assert.equal(executions, 1);
@@ -345,7 +345,7 @@ test("bounded replay gaps recover from state; settled requests remain deduplicat
   // The saved cursor belongs to the previous host process, whose buffered events are gone.
   const resumed = await new AgentRuntime(f.runtimeOptions).connectAgent(agent.session, { tools: {}, onEvent: event => seen.push(event.type) });
   f.clients.push(resumed);
-  assert.ok(seen.includes("replay_gap"));
+  await until(() => seen.includes("snapshot"), "a snapshot: the SDK asks for one, so a gap is one");
   assert.deepEqual(await resumed.execute('text("a".repeat(400)); return 42;', { idempotencyKey: "persisted" }), original);
   assert.deepEqual((await resumed.execute("return 7")).output, ["7"]);
 });

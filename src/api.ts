@@ -259,7 +259,7 @@ export function api(context: ApiContext) {
       query: z.object({
         poll: z.enum(["1"]).optional().openapi({ description: "Answer once, as JSON, instead of streaming" }),
         wait: z.string().optional().openapi({ description: "With poll: seconds (at most 25) to wait for the next event when none is buffered" }),
-        deltas: z.enum(["1"]).optional().openapi({ description: "Send each message_update as its delta alone, without the partial message; where the stream cannot replay (no Last-Event-ID, or one behind the buffer) start with a snapshot of the running turn instead of a 409" }),
+        snapshot: z.enum(["1"]).optional().openapi({ description: "Where the stream cannot replay (no Last-Event-ID, or one behind the buffer), start with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot" }),
       }),
     },
     responses: {

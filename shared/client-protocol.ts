@@ -21,7 +21,7 @@ export type RequestRecord = {
 };
 /**
  * Events on an agent's stream. `mcp` carries the runtime's JSON-RPC messages to the application's attached MCP server: live only, with no id, never replayed.
- * `snapshot` goes only to subscribers that asked for deltas (`?deltas=1`), in place of what they cannot replay: the running turn as of its id.
+ * `snapshot` goes only to subscribers that ask for one (`?snapshot=1`), in place of what they cannot replay: the running turn as of its id.
  */
 export type ClientEvent =
   | { type: "event"; requestId: string; event: any }

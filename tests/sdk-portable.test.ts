@@ -21,7 +21,7 @@ test("portable SDK awaits event consumers, persists the cursor only for control 
   const requestIds: (string | undefined)[] = [];
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/events")) {
+    if (url.endsWith("/events?snapshot=1")) {
       assert.equal(new Headers(init?.headers).get("Last-Event-ID"), "4");
       const stream = new ReadableStream<Uint8Array>({ start(controller) {
         eventStream = controller;
@@ -66,7 +66,7 @@ test("the SDK is its agent's MCP server: it answers initialize, tools/list and t
   const answered = Promise.withResolvers<void>();
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/events")) return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    if (url.endsWith("/events?snapshot=1")) return new Response(new ReadableStream<Uint8Array>({ start(controller) {
       eventStream = controller;
       controller.enqueue(new TextEncoder().encode('event: ready\ndata: {"version":4,"connection":"conn-1"}\n\n'));
       init?.signal?.addEventListener("abort", () => controller.close(), { once: true });
@@ -106,7 +106,7 @@ test("native fetch is bound to the global receiver required by Workers", async (
   globalThis.fetch = async function (this: unknown, input, init) {
     assert.equal(this, globalThis);
     calls++;
-    if (String(input).endsWith("/events")) return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    if (String(input).endsWith("/events?snapshot=1")) return new Response(new ReadableStream<Uint8Array>({ start(controller) {
       controller.enqueue(new TextEncoder().encode('event: ready\ndata: {}\n\n'));
       init?.signal?.addEventListener("abort", () => controller.close(), { once: true });
     } }), { headers: { "Content-Type": "text/event-stream" } });

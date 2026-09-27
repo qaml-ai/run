@@ -4360,11 +4360,11 @@
               "enum": [
                 "1"
               ],
-              "description": "Send each message_update as its delta alone, without the partial message; where the stream cannot replay (no Last-Event-ID, or one behind the buffer) start with a snapshot of the running turn instead of a 409"
+              "description": "Where the stream cannot replay (no Last-Event-ID, or one behind the buffer), start with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot"
             },
             "required": false,
-            "description": "Send each message_update as its delta alone, without the partial message; where the stream cannot replay (no Last-Event-ID, or one behind the buffer) start with a snapshot of the running turn instead of a 409",
-            "name": "deltas",
+            "description": "Where the stream cannot replay (no Last-Event-ID, or one behind the buffer), start with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot",
+            "name": "snapshot",
             "in": "query"
           },
           {

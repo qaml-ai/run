@@ -59,6 +59,12 @@ const agent = await runtime.createAgent({
 await agent.prompt("Plan restocks for anything below target.");
 ```
 
+`onEvent` gets the agent's events as they stream. Since 0.6.0 a `message_update`
+is its delta alone (`event.assistantMessageEvent.delta` for text), without the
+message it updates, and a stream that cannot replay starts with a
+`{ type: "snapshot", turn }` of the running turn (see "Deltas and snapshots" in
+`clients/README.md`).
+
 Already have an MCP server? Attach it instead of (or alongside) `tools`: the SDK
 talks to it in memory, and the same server can later run remotely as a definition's
 `mcpServers` entry without changing its tools. Install `@modelcontextprotocol/sdk` too.

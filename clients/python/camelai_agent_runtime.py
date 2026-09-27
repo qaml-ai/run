@@ -592,7 +592,7 @@ class AgentClient:
         backoff = 0.25
         while not self.closed:
             try:
-                async with self.http.stream("GET", self.base + self.path + "/events", headers={
+                async with self.http.stream("GET", self.base + self.path + "/events?snapshot=1", headers={
                     "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream",
                     "Last-Event-ID": str(self.journal["cursor"])}, timeout=20) as response:
                     if response.status_code == 409:
@@ -631,9 +631,17 @@ class AgentClient:
                                     self._track(asyncio.create_task(self._mcp(event["message"])))
                                 continue
                             cursor = int(id_line[3:])
+                            event = json.loads(data)
+                            # A snapshot of the running turn restarts the stream at its cursor, even one below
+                            # the saved cursor (a restarted host).
+                            if event.get("type") == "snapshot":
+                                self.journal["cursor"] = cursor
+                                self._save()
+                                if self.on_event:
+                                    self.on_event(event)
+                                continue
                             if cursor <= self.journal["cursor"]:
                                 continue
-                            event = json.loads(data)
                             self._receive(event)
                             self.journal["cursor"] = cursor
                             # Display events replay only from host memory; don't write per token.

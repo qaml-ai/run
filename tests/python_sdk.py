@@ -118,6 +118,19 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await agent.inputs())[0]["answer"]["by"], {"via": "agent", "actor": "ops"})
         self.assertEqual(await agent.inputs(state="pending"), [])
 
+    async def test_events_start_from_a_snapshot_and_updates_are_deltas(self):
+        seen = []
+        agent = await self.runtime.create_agent(tools=[], on_event=seen.append)
+        self.assertEqual((await agent.prompt("hello"))["reply"], "seen")
+        self.assertEqual(seen[0]["type"], "snapshot")
+        self.assertIsNone(seen[0]["turn"])
+        updates = [event for event in seen if event.get("type") == "message_update"]
+        self.assertTrue(updates)
+        for event in updates:
+            self.assertNotIn("message", event)
+            self.assertNotIn("partial", event["assistantMessageEvent"])
+        self.assertEqual("".join(event["assistantMessageEvent"]["delta"] for event in updates if event["assistantMessageEvent"]["type"] == "text_delta"), "seen")
+
     async def test_annotations_reconnect_and_lost_acknowledgements(self):
         writes = []
         entered, release = asyncio.Event(), asyncio.Event()
