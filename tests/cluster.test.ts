@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
 import { testDatabase } from "./database.ts";
+import { watchEvents } from "./runtime-server.ts";
 import { balancer, cluster, fakeEcs, fakeModel, freePort, jsExec, lookup, sha, sleep, token, toolMessages, until } from "./cluster-helpers.ts";
 
 test("a node with single-host file storage refuses to start beside another node on the same database", { timeout: 60_000 }, async t => {
@@ -71,6 +72,27 @@ test("any node serves any agent: requests are forwarded to the owner, and a surv
   assert.deepEqual(calls, ["one", "two", "three"]);
   const agents = await (await fetch(`${b.url}/v1/agents`, { headers: { Authorization: `Bearer ${token}` } })).json() as any[];
   assert.deepEqual(agents.map(agent => agent.id), [viaA.session.id]);
+});
+
+test("watchers on any node share the owner's stream: each gets every event, beside the application's connection", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const a = await c.start("a");
+  const b = await c.start("b");
+  const calls: string[] = [];
+  const agent = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: lookup(calls) });
+  t.after(() => agent.close());
+  const auth = { Authorization: `Bearer ${agent.session.token}` };
+  const onA = await watchEvents(t, `${a.url}/clients/${agent.session.id}/events`, auth);
+  // B does not own the agent: its watcher is forwarded to A.
+  const onB = await watchEvents(t, `${b.url}/clients/${agent.session.id}/events`, auth);
+  assert.equal(onB.status, 200);
+  assert.equal((await agent.execute('return await tools.lookup({ key: "k" })', { idempotencyKey: "run" })).output[0], "value-of-k");
+  const settled = (watcher: typeof onA) => watcher.frames.some(frame => frame.data.type === "response" && frame.data.id === "run");
+  await until(() => settled(onA) && settled(onB), "both watchers to see the outcome");
+  const ids = (watcher: typeof onA) => watcher.frames.filter(frame => frame.id).map(frame => frame.id);
+  assert.deepEqual(ids(onA), ids(onB));
+  assert.equal(await c.owner(agent.session.id), a.url);
+  assert.deepEqual(calls, ["k"]);
 });
 
 test("a volume is served by one node: other nodes forward to it, agents anywhere reach it, and a survivor takes over", { timeout: 90_000 }, async t => {

@@ -19,15 +19,15 @@ import { configuredModel } from "../src/model.ts";
 import { AgentClient, AgentRuntime, tool, schema, type AgentOptions, type RuntimeOptions, type Tool } from "../clients/node.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { testDatabase } from "./database.ts";
-import { attachSilently } from "./runtime-server.ts";
+import { attachSilently, until, watchEvents } from "./runtime-server.ts";
 
 const token = "fixture-operator-secret-32-characters";
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number; ttlMs?: number } = {}) {
+async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number; ttlMs?: number; maxWatchers?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), "camelai-sse-test-"));
   const { db } = await testDatabase();
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, maxAgents: options.maxAgents });
-  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs });
+  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs, maxWatchers: options.maxWatchers });
   let model = configuredModel();
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
@@ -233,6 +233,50 @@ test("a call goes to one connection: a client that connects meanwhile never runs
   gate.resolve();
   await sleep(300);
   assert.equal(executions, 1, "the call went to the first client only");
+});
+
+test("watchers each get the whole stream beside the application's connection, never evicting it or each other, and resume from their own cursors", async t => {
+  const f = await fixture(t, { maxWatchers: 2 });
+  let executions = 0;
+  const agent = await f.start({ echo: echo(({ value }) => { executions++; return value; }) });
+  const events = `${f.url}/clients/${agent.session.id}/events`;
+  const auth = { Authorization: `Bearer ${agent.session.token}` };
+  const first = await watchEvents(t, events, auth);
+  const second = await watchEvents(t, events, auth);
+  assert.equal(first.status, 200);
+  assert.deepEqual((await until(() => second.frames[0], "the ready frame")).data, { version: 4, agentId: agent.session.id, watch: true });
+  // The application's connection still answers tool calls: no watcher replaced it.
+  assert.deepEqual((await agent.execute('return await tools.echo({value:"seen"})', { idempotencyKey: "one" })).output, ["seen"]);
+  assert.equal(executions, 1);
+  const settled = (watcher: typeof first, id: string) => watcher.frames.some(frame => frame.data.type === "response" && frame.data.id === id);
+  await until(() => settled(first, "one") && settled(second, "one"), "both watchers to see the outcome");
+  const ids = (watcher: typeof first) => watcher.frames.filter(frame => frame.id).map(frame => frame.id);
+  assert.deepEqual(ids(first), ids(second), "every watcher gets every event, in order");
+  assert.ok(ids(first).length > 1);
+  assert.equal((await watchEvents(t, events, auth)).status, 429, "subscribers are bounded per agent");
+
+  // A watcher that reconnects resumes from its own cursor; the other keeps streaming meanwhile.
+  first.close();
+  const middle = ids(second)[0]!;
+  const resumed = await watchEvents(t, events, auth, { cursor: middle });
+  await agent.execute('return await tools.echo({value:"again"})', { idempotencyKey: "two" });
+  await until(() => settled(resumed, "two") && settled(second, "two"), "the resumed watcher to see the next outcome");
+  assert.deepEqual(ids(resumed), ids(second).filter(id => id! > middle));
+
+  // A poll answers with the events after its cursor and where to poll from next, or waits for the next one.
+  const last = ids(second).at(-1)!;
+  const poll = (cursor: number, query = "") => fetch(`${events}?poll=1${query}`, { headers: { ...auth, "Last-Event-ID": String(cursor) } }).then(async response => ({ status: response.status, json: await response.json() as any }));
+  assert.deepEqual((await poll(last)).json, { cursor: last, events: [] });
+  assert.equal((await poll(middle)).json.events.length, ids(second).filter(id => id! > middle).length);
+  const waiting = poll(last, "&wait=10");
+  await sleep(100);
+  await agent.execute("return 3", { idempotencyKey: "three" });
+  const woken = await waiting;
+  assert.ok(woken.json.events.length > 0 && woken.json.events[0].id === last + 1, "a waiting poll answers with the next event");
+  assert.equal(woken.json.cursor, woken.json.events.at(-1).id);
+  assert.equal((await poll(1)).status, 409, "a cursor behind the buffer is a replay gap");
+  assert.equal((await watchEvents(t, events, auth, { cursor: 1 })).status, 409);
+  assert.equal(executions, 2);
 });
 
 test("a call with no application connected fails as not run; one the application never answers times out as unknown", async t => {

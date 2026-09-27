@@ -79,7 +79,14 @@ type Session = {
   log: AppendLog<JournalRecord>;
   /** Streamed events live only in memory; durable state is recovered through /state. */
   cursor: number; events: BufferedEvent[]; eventBytes: number;
+  /** The application's connection: its event stream, which carries its attached MCP server. */
   response?: ServerResponse; starting?: Promise<unknown>;
+  /** Read-only subscribers (`/events?watch=1`): each gets every event, and none replaces another or the application's connection. */
+  watchers: Set<ServerResponse>;
+  /** Long polls waiting for the next event. */
+  polls: Set<() => void>;
+  /** When a poll (`/events?poll=1`) last read the stream: a poller between polls keeps the session loaded, as a watcher does. */
+  polledAt?: number;
   /** The application's attached MCP server, over the connection `response` is. */
   attached?: AttachedServer;
   /** Tool calls to the application in flight: the agent is busy until they settle. */
@@ -151,11 +158,23 @@ const resumeId = (suspension: string) => `resume_${hash(suspension).slice(0, 40)
 const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
 const MAX_BUFFERED_EVENTS = 512;
+/** Read-only subscribers one agent's stream may have at once (by default). */
+const MAX_WATCHERS = 32;
+/** A long poll waits at most this long for an event. */
+const MAX_POLL_WAIT_MS = 25_000;
+/** A poller that polled this recently counts as subscribed: its agent's session stays loaded, so its cursor stays valid. */
+const POLL_LEASE_MS = 60_000;
 /** Files written in one run that its outcome lists. */
 const OUTPUT_FILES = 100;
 /** How long a tool call waits for an application to reconnect before failing as not run. */
 const RECONNECT_GRACE_MS = 3_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** Write an SSE frame, cutting off a subscriber that does not keep up. */
+function send(res: ServerResponse, frame: string) {
+  if (res.destroyed) return;
+  if (res.writableLength + Buffer.byteLength(frame) > 2 * FRAME_BYTES) res.destroy();
+  else res.write(frame);
+}
 
 /**
  * A request's body straight from Node's request stream: reaching it through the Fetch
@@ -172,6 +191,8 @@ const visible = ({ params: _params, ...record }: RequestRecord): RequestRecord =
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
+  /** Read-only subscribers one agent's event stream may have at once (default 32). */
+  maxWatchers?: number;
   /** Headers and the tenant index. */
   db: Db;
   /** Single-host shorthand for `storage: fileStorage(root)`, where journals are kept. */
@@ -386,7 +407,7 @@ export class ClientSessions {
     const session: Session = {
       header, revision: stored.revision, claim, requests: new Map(), running: new Map(), log,
       // Cursors restart above any cursor from an earlier process, so clients see a gap, never a repeat.
-      cursor: Date.now() * 1000, events: [], eventBytes: 0, inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
+      cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
     };
     for (const record of await log.read()) this.apply(session, record);
     if (header.version !== 3 || header.id !== id) throw new Error("Invalid client session header");
@@ -442,7 +463,7 @@ export class ClientSessions {
     if (session.fault) return;
     // A failed disk commit must never turn into a successful retry from memory.
     session.fault = new Error(`Session persistence failed: ${errorText(error)}`);
-    session.response?.destroy();
+    this.endStreams(session, true);
     void session.attached?.close();
   }
 
@@ -476,12 +497,93 @@ export class ClientSessions {
     session.lastActive = Date.now();
     const limit = this.options.eventBytes ?? 2 * 1024 * 1024;
     while (session.events.length > 1 && (session.events.length > MAX_BUFFERED_EVENTS || session.eventBytes > limit)) session.eventBytes -= session.events.shift()!.bytes;
-    const res = session.response;
-    if (res && !res.destroyed) {
-      const frame = `id: ${event.id}\ndata: ${text}\n\n`;
-      if (res.writableLength + Buffer.byteLength(frame) > 2 * FRAME_BYTES) res.destroy();
-      else res.write(frame);
+    const frame = `id: ${event.id}\ndata: ${text}\n\n`;
+    for (const res of this.streams(session)) send(res, frame);
+    for (const wake of [...session.polls]) wake();
+  }
+
+  /** Every open event stream of the agent: the application's connection and its watchers. */
+  private streams(session: Session) {
+    return session.response ? [session.response, ...session.watchers] : [...session.watchers];
+  }
+
+  /** Close every event stream (`destroy`: cut off, not ended cleanly), and answer waiting polls, so subscribers reconnect. */
+  private endStreams(session: Session, destroy = false) {
+    for (const res of this.streams(session)) if (destroy) res.destroy(); else res.end();
+    for (const wake of [...session.polls]) wake();
+  }
+
+  /**
+   * The buffered events after a subscriber's cursor (its `Last-Event-ID`). Cursor 0 is a new
+   * subscriber, which takes whatever is buffered; any other must be contiguous with the buffer,
+   * or the events between are gone: 409, and the subscriber recovers from state and history.
+   */
+  private replay(session: Session, raw = "0") {
+    if (!/^\d+$/.test(raw)) throw new HttpError(400, "Invalid event cursor");
+    const cursor = Number(raw);
+    if (!Number.isSafeInteger(cursor)) throw new HttpError(400, "Invalid event cursor");
+    const first = session.events[0]?.id ?? session.cursor + 1;
+    if (cursor !== 0 && (cursor > session.cursor || cursor < first - 1)) throw new HttpError(409, "REPLAY_GAP: recover from session state");
+    return { cursor, events: session.events.filter(event => event.id > cursor) };
+  }
+
+  /**
+   * Open an event stream: the application's (`attach`), which carries its attached MCP server and
+   * replaces the connection before it, or a read-only watcher, which never replaces another and is
+   * never replaced. Every stream gets every event from its own cursor on.
+   */
+  private subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch") {
+    const { events } = this.replay(session, c.req.header("last-event-id"));
+    if (mode === "watch" && session.watchers.size >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw new HttpError(429, "This agent's event stream has too many subscribers; retry later");
+    const res = c.env.outgoing;
+    let ready: Record<string, unknown> = { version: 4, agentId: session.header.id };
+    if (mode === "watch") {
+      session.watchers.add(res);
+      res.on("close", () => session.watchers.delete(res));
+      ready = { ...ready, watch: true };
+    } else {
+      session.response?.end();
+      session.response = res;
+      res.on("close", () => { if (session.response === res) session.response = undefined; });
     }
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+    if (mode === "attach") {
+      // Each connection is a new MCP session with the application's attached server; `connection` names it.
+      const attached = new AttachedServer(res);
+      ready = { ...ready, connection: attached.id };
+      void session.attached?.close();
+      session.attached = attached;
+    }
+    res.write(`event: ready\ndata: ${JSON.stringify(ready)}\n\n`);
+    for (const event of events) {
+      if (res.destroyed) break;
+      send(res, `id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`);
+    }
+    return RESPONSE_ALREADY_SENT;
+  }
+
+  /**
+   * One read of the stream for clients that cannot hold it open: the buffered events after the
+   * cursor, as JSON, and the cursor to poll from next. With `wait` (seconds, at most 25) and nothing
+   * buffered yet, it answers when the next event arrives or the wait ends.
+   */
+  private async poll(c: Context<ClientEnv>, session: Session) {
+    const raw = c.req.header("last-event-id");
+    const wait = Number(c.req.query("wait") ?? 0);
+    if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
+    let { cursor, events } = this.replay(session, raw);
+    session.polledAt = Date.now();
+    if (!events.length && wait > 0 && !this.closed && !session.fault) {
+      await new Promise<void>(resolve => {
+        const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); resolve(); };
+        const timer = setTimeout(done, Math.min(wait * 1000, MAX_POLL_WAIT_MS));
+        session.polls.add(done);
+        c.env.outgoing.once("close", done);
+      });
+      ({ events } = this.replay(session, raw));
+      session.polledAt = Date.now();
+    }
+    return json(c, 200, { cursor: events.at(-1)?.id ?? (cursor || session.cursor), events: events.map(({ id, data }) => ({ id, data })) });
   }
 
   private busy(session: Session) {
@@ -900,7 +1002,7 @@ export class ClientSessions {
         session = {
           header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
-          cursor: Date.now() * 1000, events: [], eventBytes: 0, inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
+          cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
         // A conditional create: if a concurrent request made this agent first, retry as a load.
         await this.writeHeader(session);
@@ -1085,7 +1187,8 @@ export class ClientSessions {
       const session = await this.load(header.id);
       if (!session) throw new HttpError(401, "Unauthorized");
       if (session.fault) throw session.fault;
-      session.lastActive = Date.now();
+      // Watching the stream is not activity: an open browser tab must not keep the agent's process running.
+      if (!(c.req.method === "GET" && c.req.path.endsWith("/events") && (c.req.query("watch") === "1" || c.req.query("poll") === "1"))) session.lastActive = Date.now();
       if (operator !== undefined && !(c.req.method === "POST" && c.req.path === `/clients/${header.id}/requests`)) throw new HttpError(403, "Operator bridge only accepts requests");
       c.set("session", session);
       await next();
@@ -1101,32 +1204,7 @@ export class ClientSessions {
       return json(c, 200, { stopped: true });
     });
     // SSE is written straight to the socket: backpressure and replacement need the raw response.
-    app.get(`${agent}/events`, c => {
-      const session = c.var.session;
-      const rawCursor = c.req.header("last-event-id") ?? "0";
-      if (!/^\d+$/.test(rawCursor)) throw new HttpError(400, "Invalid event cursor");
-      const cursor = Number(rawCursor);
-      if (!Number.isSafeInteger(cursor)) throw new HttpError(400, "Invalid event cursor");
-      // Cursor 0 means a new client: it takes whatever is buffered. Anything else must be contiguous.
-      const first = session.events[0]?.id ?? session.cursor + 1;
-      if (cursor !== 0 && (cursor > session.cursor || cursor < first - 1)) throw new HttpError(409, "REPLAY_GAP: recover from session state");
-      const res = c.env.outgoing;
-      session.response?.end();
-      session.response = res;
-      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
-      // Each connection is a new MCP session with the application's attached server; `connection` names it.
-      const attached = new AttachedServer(res);
-      res.write(`event: ready\ndata: ${JSON.stringify({ version: 4, agentId: session.header.id, connection: attached.id })}\n\n`);
-      void session.attached?.close();
-      session.attached = attached;
-      for (const event of session.events) if (event.id > cursor) {
-        const frame = `id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`;
-        if (res.writableLength + Buffer.byteLength(frame) > 2 * FRAME_BYTES) { res.destroy(); break; }
-        res.write(frame);
-      }
-      res.on("close", () => { if (session.response === res) session.response = undefined; });
-      return RESPONSE_ALREADY_SENT;
-    });
+    app.get(`${agent}/events`, c => c.req.query("poll") === "1" ? this.poll(c, c.var.session) : this.subscribe(c, c.var.session, c.req.query("watch") === "1" ? "watch" : "attach"));
     app.get(`${agent}/schedules`, async c => json(c, 200, await this.scheduler().list(c.var.session.header.id)));
     app.post(`${agent}/schedules`, async c => {
       const scheduler = this.scheduler();
@@ -1760,7 +1838,7 @@ export class ClientSessions {
     session.header.revoked = true;
     await this.writeHeader(session);
     await this.interrupt(session, "Session revoked");
-    session.response?.end();
+    this.endStreams(session);
     await this.releaseVolumes(session.header, session.claim);
   }
 
@@ -1900,7 +1978,7 @@ export class ClientSessions {
         if (this.working(session) || session.inflight) continue;
         await this.supervisor.stop(session.header.id).catch(() => {});
         await this.unload(session);
-        session.response?.end();
+        this.endStreams(session);
       }
     } finally { this.releasing = false; }
   }
@@ -1915,11 +1993,11 @@ export class ClientSessions {
         void this.remove(id).then(() => this.supervisor.stop(id)).catch(() => {});
         continue;
       }
-      if (session.response && !session.response.write(": heartbeat\n\n")) session.response.destroy();
+      for (const res of this.streams(session)) send(res, ": heartbeat\n\n");
       if (session.activeSince !== undefined && now - session.activeSince >= ACTIVE_REPORT_MS) this.reportActive(session, true, now);
       if (this.busy(session) || now - session.lastActive < idleMs) continue;
       if (this.supervisor.agents.has(id)) void this.supervisor.stop(id).catch(() => {});
-      else if (!session.response && !session.fault) {
+      else if (!session.response && !session.watchers.size && !(session.polledAt && now - session.polledAt < POLL_LEASE_MS) && !session.fault) {
         // Nothing is connected or running: everything needed later is in storage.
         void this.unload(session);
       }
@@ -1938,7 +2016,7 @@ export class ClientSessions {
   /** This node fenced itself: another node may already be serving the agent, so stop writing, stop the agent, forget it. */
   private async lost(session: Session) {
     this.fail(session, new Error("This node lost ownership of the agent"));
-    session.response?.destroy();
+    this.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     await this.supervisor.stop(session.header.id).catch(() => {});
   }
@@ -1955,7 +2033,7 @@ export class ClientSessions {
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
       await this.unload(session);
       // Closed after release, so the client's reconnect finds the next owner rather than this node.
-      session.response?.end();
+      this.endStreams(session);
     }
   }
 }

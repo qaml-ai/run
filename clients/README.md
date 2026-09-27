@@ -350,6 +350,26 @@ that two different calls represent the same business operation. Ordinary tool
 exceptions are returned to the model; uncertainty is explicit for interrupted
 execution. Keep handlers and schemas trusted.
 
+## Watching an agent's stream
+
+An agent has one application connection, which carries its tool calls: a new
+connection replaces the one before. Anything that only reads the stream
+(browser tabs relayed by your server, dashboards, other members of a shared
+conversation) opens a watcher instead: `GET /clients/:id/events?watch=1`. A
+watcher gets every event from its own `Last-Event-ID` on, with the same replay
+window and `409 REPLAY_GAP`; its `ready` frame says `watch: true` and names no
+`connection`. Watchers never replace the application's connection or each other,
+and watching does not keep the agent's process running. An agent takes at most
+32 watchers at once (`429` past that). Any node serves them: a node that does
+not own the agent forwards the stream to the one that does.
+
+A client that cannot hold a stream open polls instead:
+`GET /clients/:id/events?poll=1&wait=25` with `Last-Event-ID` answers
+`{ cursor, events: [{ id, data }] }`: the events after the cursor, and the
+cursor to send next. With nothing buffered it waits up to `wait` seconds (at
+most 25) for the next event. A client that polls at least once a minute keeps
+its cursor valid, as a watcher does.
+
 ## Persistence and limits
 
 - Host journals are append-only logs under `AGENT_DATA_DIR/client-sessions`,

@@ -165,3 +165,35 @@ export async function attachSilently(t: T, base: string, agent: string, token: s
   await initialized.promise;
   return { calls };
 }
+
+/**
+ * A read-only subscriber of an agent's event stream (`?watch=1` unless `query` says otherwise):
+ * `frames` collects what arrives, each with its id, `status` is the response's.
+ */
+export async function watchEvents(t: T, url: string, headers: Record<string, string>, options: { cursor?: number; query?: string } = {}) {
+  const stream = new AbortController();
+  t.after(() => stream.abort());
+  const response = await fetch(`${url}?${options.query ?? "watch=1"}`, { headers: { ...headers, Accept: "text/event-stream", ...(options.cursor !== undefined ? { "Last-Event-ID": String(options.cursor) } : {}) }, signal: stream.signal });
+  const frames: { id?: number; event?: string; data: any }[] = [];
+  let ended = false;
+  if (response.ok) void (async () => {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for await (const chunk of response.body!) {
+        buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+        for (let end; (end = buffer.indexOf("\n\n")) !== -1; buffer = buffer.slice(end + 2)) {
+          const lines = buffer.slice(0, end).split("\n");
+          const data = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
+          if (!data) continue;
+          const id = lines.find(line => line.startsWith("id:"))?.slice(3).trim();
+          const event = lines.find(line => line.startsWith("event:"))?.slice(6).trim();
+          frames.push({ ...(id ? { id: Number(id) } : {}), ...(event ? { event } : {}), data: JSON.parse(data) });
+        }
+      }
+    } catch { /* aborted */ }
+    ended = true;
+  })();
+  else await response.body?.cancel();
+  return { status: response.status, frames, get ended() { return ended; }, close: () => stream.abort() };
+}
