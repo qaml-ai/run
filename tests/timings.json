@@ -2,6 +2,7 @@
   "process": {
     "api.test.ts": 12.4,
     "append-log.test.ts": 0.3,
+    "browser-tokens.test.ts": 9.8,
     "builtins.test.ts": 4.5,
     "channels-discord.test.ts": 3,
     "channels-slack.test.ts": 1.1,
@@ -12,6 +13,7 @@
     "code-mode-source.test.ts": 0.3,
     "compaction.test.ts": 5,
     "config.test.ts": 3,
+    "cors.test.ts": 7.0,
     "db.test.ts": 1.2,
     "definitions.test.ts": 3.4,
     "ecs.test.ts": 0.2,
@@ -34,11 +36,13 @@
     "storage.test.ts": 0.5,
     "stream-deltas.test.ts": 19.5,
     "tenant-reads.test.ts": 3.3,
-    "volumes.test.ts": 6.7
+    "volumes.test.ts": 6.7,
+    "watch.test.ts": 20.3
   },
   "inline": {
     "api.test.ts": 12.1,
     "append-log.test.ts": 0.3,
+    "browser-tokens.test.ts": 8.0,
     "builtins.test.ts": 3.7,
     "channels-discord.test.ts": 3,
     "channels-slack.test.ts": 1.1,
@@ -49,6 +53,7 @@
     "code-mode-source.test.ts": 0.2,
     "compaction.test.ts": 1.3,
     "config.test.ts": 2.4,
+    "cors.test.ts": 6.4,
     "db.test.ts": 1.1,
     "definitions.test.ts": 2.5,
     "ecs.test.ts": 0.2,
@@ -71,6 +76,7 @@
     "storage.test.ts": 0.5,
     "stream-deltas.test.ts": 18.3,
     "tenant-reads.test.ts": 2.7,
-    "volumes.test.ts": 5.3
+    "volumes.test.ts": 5.3,
+    "watch.test.ts": 18.4
   }
 }
