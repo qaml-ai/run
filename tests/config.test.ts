@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveModel } from "../src/session-config.ts";
 import { Tenants } from "../src/tenants.ts";
 
 const tenantsFile = join(mkdtempSync(join(tmpdir(), "agent-config-")), "tenants.json");
@@ -95,4 +96,14 @@ test("a `*` provider key is rejected in a tenant's apiKeys and in platformKeys",
   await assert.rejects(tenants.reload(), /platformKeys cannot have a `\*` key/);
   assert.equal(tenants.apiKey("acme", "anthropic"), "sk-acme", "the last good tenants stay in force");
   assert.equal(tenants.apiKey("acme", "openai"), undefined);
+});
+
+test("a catalog model with a routing variant resolves like its base model and keeps the variant in its id", () => {
+  const plain = resolveModel("openrouter/anthropic/claude-sonnet-5");
+  const nitro = resolveModel("openrouter/anthropic/claude-sonnet-5:nitro");
+  assert.equal(nitro.id, "anthropic/claude-sonnet-5:nitro");
+  assert.equal(nitro.api, plain.api);
+  assert.equal(nitro.contextWindow, plain.contextWindow);
+  assert.equal(resolveModel("openrouter/openai/gpt-6-luna:floor").api, "openai-responses");
+  assert.throws(() => resolveModel("openrouter/nobody/no-such-model:nitro"), /Unknown model/);
 });

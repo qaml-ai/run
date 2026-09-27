@@ -91,8 +91,12 @@ export function resolveModel(reference: string, endpoints?: ModelEndpoints): Age
   if (slash <= 0 || slash === reference.length - 1) throw new Error(`Model "${reference}" must be written as "provider/model-id"; see GET /v1/models`);
   const provider = reference.slice(0, slash);
   if (endpoints && Object.hasOwn(endpoints, provider)) return endpointModel(provider, reference.slice(slash + 1), endpoints[provider]);
-  const model = lookup(provider, reference.slice(slash + 1));
-  if (!model) throw new Error(`Unknown model "${reference}"; see GET /v1/models`);
+  const id = reference.slice(slash + 1);
+  // A routing variant (`…:nitro`) is looked up without it and sent with it; exact ids (`…:batch`) win.
+  const known = lookup(provider, id);
+  const base = known ?? lookup(provider, id.replace(/:[a-z]+$/, ''));
+  if (!base) throw new Error(`Unknown model "${reference}"; see GET /v1/models`);
+  const model = known ? base : { ...base, id } as AgentConfig['model'];
   return provider === 'openrouter' ? { ...model, api: openRouterApi(model.api) } as AgentConfig['model'] : model;
 }
 
