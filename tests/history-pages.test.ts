@@ -237,8 +237,11 @@ test("more unindexed history than a backlog holds is still paged, and indexed fr
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const stopped = () => until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 30_000);
   await stopped();
-  // As for an agent from before the index: its process keeps no backlog, and 10 turns make 9.5 MB unindexed.
+  // As for an agent from before the index (no row, and a header without the mark), once its session has unloaded:
+  // its process keeps no backlog, and 10 turns make 9.5 MB unindexed.
   await r.db.query("delete from agent_history_index where agent = $1", [agent]);
+  await r.db.query("update agents set header = (header::jsonb - 'history')::json where id = $1", [agent]);
+  await sleep(2500);
   for (let turn = 0; turn < 10; turn++) await r.prompt(agent, `q${turn}`);
   await stopped();
   const page = (await r.call(`/v1/agents/${agent}/history?limit=4`)).json;
@@ -259,4 +262,14 @@ test("more unindexed history than a backlog holds is still paged, and indexed fr
   }
   const head = (message: any) => (message.content[0].text as string).slice(0, 10);
   assert.deepEqual(paged.map(entry => head(entry.message)), whole.map(head), "every page of about 4 MB, together, is the whole history");
+});
+
+test("an agent made with a history index whose index row was never written gets it at its next start", async t => {
+  const r = await runtime(t, body => ({ content: `reply ${lastUser(body)}` }), { AGENT_IDLE_MS: "1000" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 20_000);
+  // As if its create wrote the agent but failed before its index row.
+  await r.db.query("delete from agent_history_index where agent = $1", [agent]);
+  await r.prompt(agent, "one");
+  await until(async () => await indexedOf(r, agent) === 2, "the agent to be indexed after all", 20_000);
 });

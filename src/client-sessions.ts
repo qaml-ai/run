@@ -65,6 +65,8 @@ interface SessionHeader {
   identity?: AgentIdentity;
   /** The key scope its model calls take keys from first (key-scopes.ts); set by the tenant, never by the agent. */
   keyScope?: string;
+  /** Made with a history index (history-pages.ts); agents made before it have none, and are never indexed. */
+  history?: true;
 }
 /** Upserts of request records, appended as their state changes. Journals from before tool calls were MCP also hold call records, which are skipped. */
 type JournalRecord = { t: "request"; record: RequestRecord };
@@ -786,7 +788,9 @@ export class ClientSessions {
         search: query => this.searchTools(session, query),
         history: {
           // An agent from before the index has none, and keeps no backlog: its pages come from its log (see `historyPage`).
-          indexed: async () => (await this.historyIndex.indexed(id)) ?? null, write: chunk => this.historyIndex.write(id, session.claim, chunk),
+          // One made with it whose create failed before writing its row begins it now.
+          indexed: async () => (await this.historyIndex.indexed(id)) ?? (session.header.history ? (await this.historyIndex.begin(id), 0) : null),
+          write: chunk => this.historyIndex.write(id, session.claim, chunk),
         },
       }, session.claim);
       // Bootstrap history has been imported into the transcript; keep only one authority.
@@ -1126,7 +1130,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), history: true },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
