@@ -1374,11 +1374,19 @@ export class ClientSessions {
   /** A token for one model call to the agent's tenant's own endpoint: the claims its tool servers' tokens have, for the turn's actor. */
   private modelToken(session: Session) {
     const { header } = session;
-    if (!this.options.modelToken) throw new Error("This runtime cannot sign identity tokens");
+    const endpoint = this.endpoint(session);
+    if (!this.options.modelToken || !endpoint) throw new Error("This agent's model takes no identity token");
     const actor = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began)?.actor;
-    return this.options.modelToken(header.config.model.baseUrl, {
+    return this.options.modelToken(endpoint.baseUrl, {
       tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
     });
+  }
+
+  /** The tenant's own endpoint the agent's model is on, if it is. */
+  private endpoint(session: Session) {
+    const endpoints = this.options.modelEndpoints?.(session.header.tenant);
+    const { provider } = session.header.config.model;
+    return endpoints && Object.hasOwn(endpoints, provider) ? endpoints[provider] : undefined;
   }
 
   /** A referenced file's bytes for the agent's model request, as base64 (only sizes a model can be shown). */
@@ -1437,10 +1445,12 @@ export class ClientSessions {
       return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
       ? event => {
           // Failed calls report zero usage; count only responses the provider completed.
+          // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
+          const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
-            this.options.onUsage?.(session.header.tenant, id, { ...event.message, platform: !!session.platformKey });
+            this.options.onUsage?.(session.header.tenant, id, { ...event.message, provider: via + event.message.provider, platform: !!session.platformKey });
           }
-          if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant, id, { ...event, kind: "compaction", platform: !!session.platformKey });
+          if (event?.type === "compaction_usage" && event.usage) this.options.onUsage?.(session.header.tenant, id, { ...event, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
     } finally { session.retries = undefined; }

@@ -222,7 +222,7 @@ claim deadline, so one node delivers each; a crashed node's claims lapse.
 | `AGENT_ECS_SERVICE`, `AGENT_ECS_CLUSTER` | the ECS service this task belongs to, for retirement (see [Deploys](#deploys)); the cluster defaults to the task's own; without the service, tasks never retire |
 | `AGENT_RETIRE_MAX_MS` | how long a retiring task keeps protection for running turns (default 21600000, 6 h) |
 | `AGENT_ECS_POLL_MS`, `AGENT_PROTECTION_IDLE_MS` | how often to check the service's deployment (default 30000), and how long without work before task protection is cleared (default 30000) |
-| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?, maxMonthlyCost?, billing?, modelEndpoints?}}, platformKeys?}`), re-read on SIGHUP; see [Billing](#billing) for `billing` and `platformKeys`, and [A tenant's own model endpoint](#a-tenants-own-model-endpoint) |
+| `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?, maxMonthlyCost?, billing?, modelEndpoints?}}, platformKeys?}`), re-read on SIGHUP; see [Billing](#billing) for `billing` and `platformKeys`, and [A tenant's own model endpoint](#a-tenants-own-model-endpoint) (pass-through) |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, for development |
 | `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
@@ -393,60 +393,63 @@ user messages; assistant and tool-result history is produced by the runtime.
 
 ### A tenant's own model endpoint
 
-A tenant can have its agents' model calls go to its own OpenAI-compatible
-endpoint (chat completions), e.g. an inference proxy that checks credit per
-call, picks the provider key (its customers' own, Bedrock, a subscription) and
-meters usage. Its entry in the tenants file names the endpoint as a provider:
+A tenant can have its agents' model calls go through its own pass-through
+gateway, e.g. a proxy that checks credit per call, swaps in the real provider
+key (its customers' own, a subscription) and meters usage, the way Cloudflare's
+AI Gateway does. The runtime speaks each provider's native protocol to it, so
+nothing is translated: the gateway forwards the bytes as they are. Its entry in
+the tenants file names the endpoint as a provider:
 
 ```json
 "camel": {"tokenSha256": "…", "modelEndpoints": {"chiridion": {
-  "baseUrl": "https://camelai.com/api/agent-runtime/v1",
-  "models": {"deepseek/deepseek-v4:free": {"contextWindow": 128000, "maxTokens": 8192, "reasoning": true, "input": ["text"]}},
-  "compat": {"maxTokensField": "max_tokens"}
+  "baseUrl": "https://camelai.com/agent-runtime/llm",
+  "models": {"openrouter/deepseek/deepseek-v4:free": {"contextWindow": 128000, "maxTokens": 8192, "reasoning": true, "input": ["text"]}}
 }}}
 ```
 
-- Agents name its models as `<provider>/<model id>`, e.g.
-  `"model": "chiridion/anthropic/claude-opus-5"`, at creation, in a definition or
-  through `PATCH /v1/agents/:id/configuration`. The endpoint gets the model id as
-  it is (`anthropic/claude-opus-5`) and Pi's chat-completions requests, streamed,
-  with tools, tool calls and reasoning (`reasoning_effort`; `compat` takes Pi's
-  `OpenAICompletionsCompat` options for an endpoint that differs).
-- What a model can do (context window, and so when compaction runs; output
-  tokens, reasoning, images) comes from `models`, else from the catalog model its
-  id names: a provider and model (`anthropic/claude-opus-5`), an OpenRouter id, or
-  a bare id (`claude-sonnet-5`). Other ids are refused. `GET /v1/models` lists the
-  declared ones. An endpoint that picks the real model itself should still be
-  told which one it is (`PATCH …/configuration {"model": …}` when a
-  conversation switches), so these stay right and Pi drops reasoning
-  signatures made by another model.
-- Reasoning streams as `delta.reasoning_content`. Signatures come as
-  OpenRouter's `delta.reasoning_details` (e.g. `{"type": "reasoning.encrypted",
-  "id": "<tool call id>", "data": "…"}`, sent once the response is complete); they
-  are kept in the transcript and go back as the assistant message's
-  `reasoning_details` in later requests, after restarts too.
-- Usage comes from the last chunk: `prompt_tokens`, `completion_tokens`,
-  `prompt_tokens_details.cached_tokens` and `.cache_write_tokens`,
-  `completion_tokens_details.reasoning_tokens`.
-- The runtime does not retry the endpoint's errors: a refusal before the stream
-  (an HTTP 402 or 429 with `{"error": {"message", "type", "code"}}`), an error
-  frame mid-stream (`data: {"error": {…}}`) or a 5xx ends the turn, with the
-  endpoint's message as the outcome's `error`. A context overflow still compacts
-  and continues once.
-- Each call carries `Authorization: Bearer <identity token>`: the EdDSA JWT MCP
-  servers with `auth: {"type": "runtime"}` get (see
-  [Identity tokens](#identity-tokens-auth--type-runtime-)), with `aud` the
-  endpoint's `baseUrl` exactly as configured, and the same claims: `tenant`, `agent`, `sub`, `act` (the
-  turn's actor), `ctx` and `definition`. It is minted for every call, compaction
-  summaries included, and lasts two minutes. Verify it against
-  `/.well-known/jwks.json`; the runtime sends no key.
-- Calls to it cost the runtime nothing, so they are counted in `/v1/usage` at
-  zero cost and never charged as platform tokens, nor toward `maxMonthlyCost`.
-  Agent time is charged as with a tenant's own key.
-- The endpoint is the operator's, trusted like `AGENT_ALLOWED_BASE_URLS`: it must
-  be HTTPS (plain HTTP only to localhost, for development), and its name cannot be
-  one of Pi's providers. Changes apply from the next tenants reload to agents
-  created or configured after it.
+- Agents name its models as `<name>/<provider>/<model id>`, e.g.
+  `"chiridion/anthropic/claude-opus-5"` or
+  `"chiridion/openrouter/anthropic/claude-sonnet-5"`, at creation, in a
+  definition or through `PATCH /v1/agents/:id/configuration`. The model is Pi's
+  catalog model `<provider>/<model id>` (metadata, API, compatibility), or one
+  declared in `models` under that name; `GET /v1/models` lists the declared ones.
+- `<baseUrl>/<provider>` stands for the provider's API root below: the gateway
+  strips `<baseUrl>/<provider>` and appends the rest of the path, query
+  included, to the root. The runtime puts its identity token where the provider
+  takes its key.
+
+  | provider | upstream root | requests | key header |
+  |---|---|---|---|
+  | `anthropic` | `https://api.anthropic.com` | `POST /v1/messages?beta=true` | `x-api-key` |
+  | `openai` | `https://api.openai.com/v1` | `POST /responses` | `Authorization: Bearer` |
+  | `openrouter` | `https://openrouter.ai/api` | `POST /v1/responses`; Anthropic models `POST /v1/messages?beta=true` | `Authorization: Bearer`; `x-api-key` |
+  | `google` | `https://generativelanguage.googleapis.com/v1beta` | `POST /models/<id>:streamGenerateContent?alt=sse` | `x-goog-api-key` |
+
+  OpenRouter's models use its Responses API, stateless (`store: false`, the whole
+  conversation each call), with reasoning kept and sent back as it came
+  (`encrypted_content` or `signature`). Its Anthropic models keep its Messages API,
+  as in Pi's catalog, because Responses gets them no prompt caching.
+- Every call also carries the token as `X-Agent-Runtime-Identity`. This is the
+  EdDSA JWT that MCP servers with `auth: {"type": "runtime"}` get (see
+  [Identity tokens](#identity-tokens-auth--type-runtime-)). Its `aud` is the
+  endpoint's `baseUrl` exactly as configured, and it has the same claims:
+  `tenant`, `agent`, `sub`, `act` (the turn's actor), `ctx` and `definition`. A
+  fresh token is minted for every call, compaction summaries included, and lasts
+  two minutes. Verify it against `/.well-known/jwks.json`; the runtime sends no
+  key.
+- The runtime does not retry the endpoint's errors, since the gateway retries
+  itself. A refusal before the stream (e.g. an HTTP 402 or 429 in the
+  provider's error format), a 5xx or an error mid-stream ends the turn, with the
+  message as the outcome's `error`. A context overflow still compacts and
+  continues once.
+- Calls to it cost the runtime nothing. They are counted in `/v1/usage` under
+  `<name>/<provider>/<model id>` at zero cost, and are never charged as platform
+  tokens or counted toward `maxMonthlyCost`. Agent time is charged as with a
+  tenant's own key.
+- The endpoint is the operator's: it must be HTTPS (plain HTTP only to
+  localhost, for development), and its name cannot be one of Pi's providers.
+  Changes apply from the next tenants reload to agents created or configured
+  after it.
 
 ## Agent definitions
 

@@ -1,4 +1,4 @@
-import { getModel, getProviders } from '@earendil-works/pi-ai/compat';
+import { getModel } from '@earendil-works/pi-ai/compat';
 import type { AgentConfig } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';
@@ -20,33 +20,50 @@ export function assertTrustedEndpoint(model: AgentConfig['model'], defaultModel:
   if (!trusted.includes(target)) throw new Error(`Model endpoint ${target} is not trusted by this runtime; add it to AGENT_ALLOWED_BASE_URLS`);
 }
 
-/** What a model on a tenant's own endpoint can do, as the operator declares it. */
+/** What a model on a tenant's own endpoint can do, for a model the catalog lacks. */
 export type EndpointModel = { contextWindow: number; maxTokens: number; reasoning?: boolean; input?: ('text' | 'image')[] };
 /**
- * A tenant's own OpenAI-compatible endpoint (chat completions), named as a provider in the tenants
- * file. Calls carry the runtime's identity token for the agent instead of a key, and cost the
- * runtime nothing. `models` declares models Pi's catalog does not know; `compat` tunes Pi's request format.
+ * A tenant's own model endpoint, named as a provider in the tenants file: a pass-through
+ * gateway where `<baseUrl>/<provider>` stands for that provider's API (`UPSTREAMS`). Pi speaks the
+ * provider's own protocol to it with the runtime's identity token as the key; the endpoint swaps in
+ * the real credential and meters, so calls cost the runtime nothing. `models` declares models Pi's
+ * catalog lacks, by `<provider>/<model id>`.
  */
-export type ModelEndpoint = { baseUrl: string; models?: Record<string, EndpointModel>; compat?: Record<string, unknown> };
+export type ModelEndpoint = { baseUrl: string; models?: Record<string, EndpointModel> };
 /** A tenant's model endpoints by provider name. */
 export type ModelEndpoints = Record<string, ModelEndpoint> | undefined;
+
+/**
+ * The providers an endpoint forwards to: the API root `<endpoint>/<provider>` maps onto, and the API
+ * Pi speaks to it. OpenRouter's models use its Responses API (stateless), except Anthropic's, which
+ * keep its Messages API: Responses gets them no prompt caching.
+ */
+export const UPSTREAMS: Record<string, { root: string; api: string; path?: string }> = {
+  anthropic: { root: 'https://api.anthropic.com', api: 'anthropic-messages' },
+  openai: { root: 'https://api.openai.com/v1', api: 'openai-responses' },
+  openrouter: { root: 'https://openrouter.ai/api', api: 'openai-responses', path: '/v1' },
+  google: { root: 'https://generativelanguage.googleapis.com/v1beta', api: 'google-generative-ai' },
+};
 
 const lookup = getModel as (provider: string, id: string) => AgentConfig['model'] | undefined;
 
 /**
- * A model on a tenant's endpoint. Its id goes to the endpoint as it is; what it can do comes from
- * the endpoint's `models`, else from the catalog model it names (`anthropic/claude-opus-5` as a
- * provider and model, an OpenRouter id, or a bare `claude-opus-5`), and it costs nothing.
+ * `<name>/<provider>/<model id>` on a tenant's endpoint: the catalog's (or the endpoint's declared)
+ * model, called at `<endpoint>/<provider>`, at no cost. Its id keeps the provider, which Pi's calls
+ * take back out (`compaction.ts`).
  */
-function endpointModel(provider: string, id: string, endpoint: ModelEndpoint): AgentConfig['model'] {
+function endpointModel(name: string, id: string, endpoint: ModelEndpoint): AgentConfig['model'] {
   const slash = id.indexOf('/');
-  const known = endpoint.models?.[id] ?? (slash > 0 ? lookup(id.slice(0, slash), id.slice(slash + 1)) : undefined) ?? lookup('openrouter', id) ??
-    getProviders().map(other => lookup(other, id)).find(Boolean);
-  if (!known) throw new Error(`Unknown model "${provider}/${id}": declare it in the ${provider} endpoint's models, or name a model in GET /v1/models`);
+  const provider = id.slice(0, slash);
+  if (slash <= 0 || !Object.hasOwn(UPSTREAMS, provider)) throw new Error(`Model "${name}/${id}" must be "${name}/<provider>/<model id>" with a provider among ${Object.keys(UPSTREAMS).join(', ')}`);
+  const known = lookup(provider, id.slice(slash + 1));
+  const declared = endpoint.models?.[id];
+  if (!known && !declared) throw new Error(`Unknown model "${name}/${id}": declare it in the ${name} endpoint's models, or name a model in GET /v1/models`);
+  const upstream = UPSTREAMS[provider];
+  const api = known?.api === 'anthropic-messages' ? 'anthropic-messages' : upstream.api;
   return {
-    id, name: id, api: 'openai-completions', provider, baseUrl: endpoint.baseUrl, reasoning: known.reasoning ?? false, input: known.input ?? ['text'],
-    contextWindow: known.contextWindow, maxTokens: known.maxTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    ...(endpoint.compat ? { compat: endpoint.compat } : {}),
+    reasoning: false, input: ['text'], ...known, name: known?.name ?? id, ...declared, id, provider: name, api,
+    baseUrl: `${endpoint.baseUrl}/${provider}${api === 'anthropic-messages' ? '' : upstream.path ?? ''}`, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   } as AgentConfig['model'];
 }
 
@@ -71,7 +88,8 @@ export function resolveModel(reference: string, endpoints?: ModelEndpoints): Age
 export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, allowedBaseUrls: string[] = [], endpoints?: ModelEndpoints): SessionConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid session configuration');
   if ('apiKey' in input) throw new Error('Configure credentials on the runtime host, not in agent configuration');
-  const model = typeof input.model === 'string' ? resolveModel(input.model, endpoints) : input.model ?? defaultModel;
+  const named = typeof input.model === 'string';
+  const model = named ? resolveModel(input.model, endpoints) : input.model ?? defaultModel;
   if (!model || typeof model !== 'object' || Array.isArray(model) ||
       ['id', 'name', 'api', 'provider', 'baseUrl'].some(key => typeof model[key] !== 'string' || !model[key]) ||
       typeof model.reasoning !== 'boolean' || !Array.isArray(model.input) || !model.input.every((value: unknown) => value === 'text' || value === 'image') ||
@@ -80,7 +98,9 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
   const url = new URL(model.baseUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Model baseUrl must be an HTTP(S) endpoint without credentials or query parameters');
   if (model.headers || model.apiKey || model.token) throw new Error('Model credentials and custom headers must be configured on the runtime host');
-  assertTrustedEndpoint(model, defaultModel, [...allowedBaseUrls, ...Object.values(endpoints ?? {}).map(endpoint => endpoint.baseUrl)]);
+  // A named model's endpoint is the catalog's or the tenant's own; an endpoint's models can only be named.
+  if (!named && endpoints && Object.hasOwn(endpoints, model.provider)) throw new Error(`Name ${model.provider}'s models as "${model.provider}/<provider>/<model id>"`);
+  if (!named) assertTrustedEndpoint(model, defaultModel, allowedBaseUrls);
   const updates = configurationUpdate({
     ...(input.systemPrompt !== undefined || defaultPrompt !== undefined ? { systemPrompt: input.systemPrompt !== undefined ? input.systemPrompt : defaultPrompt } : {}),
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),

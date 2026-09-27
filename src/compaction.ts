@@ -58,29 +58,46 @@ export function needsCompaction(messages: AgentMessage[], model: Model<Api>, fix
   return false;
 }
 
+/** Where a call to a tenant's own endpoint carries its identity token, besides where the provider takes its key. */
+export const IDENTITY_HEADER = "X-Agent-Runtime-Identity";
+
+/**
+ * A model on a tenant's own endpoint as Pi calls it: `chiridion` / `openrouter/anthropic/claude-sonnet-5`
+ * becomes `openrouter` / `anthropic/claude-sonnet-5`, so Pi speaks that provider's protocol, and the
+ * responses (and their signatures, which Pi keeps only for the same provider and model) are its.
+ */
+function upstream(model: Model<Api>): Model<Api> {
+  const slash = model.id.indexOf("/");
+  return { ...model, provider: model.id.slice(0, slash), id: model.id.slice(slash + 1) };
+}
+
 /**
  * The only way this runtime calls a model: with the tenant's explicit key. Pi-ai
  * falls back to provider keys in the process environment whenever no key is passed
  * (an `env` option only overrides those, it never hides them), which in a shared
- * worker could serve one tenant with another's (or the host's) key.
+ * worker could serve one tenant with another's (or the host's) key. While `identity()`,
+ * the key is an identity token for the tenant's own endpoint.
  */
-export function explicitKeyStream(): StreamFn {
+export function explicitKeyStream(identity?: () => boolean): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent`);
+    if (identity?.()) return streamSimple(upstream(model), context, { ...options, headers: { ...options.headers, [IDENTITY_HEADER]: options.apiKey }, env: {} });
     return streamSimple(model, context, { ...options, env: {} });
   };
 }
 
 /**
- * Pi's summarizer only needs `completeSimple`; bind the tenant's key (or a fresh identity token per
- * request) and never the environment. Every completed request is reported, so chunks and a run that
- * fails after some are billed too.
+ * Pi's summarizer only needs `completeSimple`; bind the tenant's key (or, for its own endpoint, a
+ * fresh identity token per request) and never the environment. Every completed request is
+ * reported, so chunks and a run that fails after some are billed too.
  */
 type ApiKey = string | (() => Promise<string>);
 function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void): Models {
   return {
     completeSimple: async (model: Model<Api>, context: any, options: any) => {
-      const response = await completeSimple(model, context, { ...options, apiKey: typeof apiKey === "string" ? apiKey : await apiKey(), env: {} });
+      const token = typeof apiKey === "string" ? undefined : await apiKey();
+      const response = token === undefined ? await completeSimple(model, context, { ...options, apiKey, env: {} })
+        : await completeSimple(upstream(model), context, { ...options, apiKey: token, headers: { ...options?.headers, [IDENTITY_HEADER]: token }, env: {} });
       if (response.stopReason !== "error") onResponse?.(response);
       return response;
     },

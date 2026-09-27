@@ -393,7 +393,7 @@ export function createAgentHost(io: HostIO) {
         // A model on the tenant's own endpoint gets a fresh identity token for each call.
         getApiKey: () => config.apiKey === IDENTITY_KEY ? io.modelToken() : config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment.
-        streamFn: explicitKeyStream(),
+        streamFn: explicitKeyStream(() => config.apiKey === IDENTITY_KEY),
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
