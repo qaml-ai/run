@@ -1419,15 +1419,38 @@ export class ClientSessions {
 
   /** A tenant's view of one agent's request state and stream cursor (`/clients/:id/state`). */
   async stateFor(id: string, tenant: string) {
-    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
+    if (this.unloaded(id)) {
+      // Its cursor is where a stream of it picks up (see `idleCursor`); undefined: a node has just taken it.
+      const cursor = await this.idleCursor(id);
+      if (cursor !== undefined && this.unloaded(id)) return { cursor, requests: await this.storedRequests(id) };
+    }
+    const session = await this.load(id);
     if (!session) throw new HttpError(404, "Unknown agent");
     return { cursor: session.cursor, requests: [...session.requests.values()].map(visible) };
   }
 
   /** A tenant's view of one agent's history; undefined when the agent is not theirs. */
   async agentHistory(id: string, tenant: string) {
-    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!await this.owns(id, tenant)) return undefined;
+    // An agent no node has loaded is read from storage, not loaded for it (see `unloaded`).
+    if (this.unloaded(id)) return { messages: await this.supervisor.history(id) };
+    const session = await this.load(id);
     return session && this.history(session);
+  }
+
+  /**
+   * Whether this node neither holds nor is loading an agent: then, with no owner elsewhere (whose
+   * requests the server forwards there), it runs nowhere, and reads of it come from storage. A tab
+   * opening, or a watcher recovering from a gap, then costs no load, and ends no other node's watchers.
+   */
+  private unloaded(id: string) { return !this.sessions.has(id) && !this.loading.has(id); }
+
+  /** The requests an unloaded agent's journal keeps, as its session would show them. */
+  private async storedRequests(id: string) {
+    const requests = new Map<string, RequestRecord>();
+    for (const entry of await this.storage.log<JournalRecord>(this.journalKey(id)).read()) if (entry.t === "request") requests.set(entry.record.id, entry.record);
+    return [...requests.values()].map(visible);
   }
 
   /** Abort the running turn of a tenant's agent. Returns false when the agent is not theirs. */
@@ -1489,22 +1512,22 @@ export class ClientSessions {
    * what the running agent has not indexed yet from it. An agent never indexed (it predates the
    * index) is indexed now, from its log, once.
    */
-  private async historyPage(session: Session, query: { before?: string; limit?: string }): Promise<HistoryPage> {
+  private async historyPage(session: Session | { header: { id: string }; unloaded: true }, query: { before?: string; limit?: string }): Promise<HistoryPage> {
     const before = query.before === undefined ? undefined : Number(query.before);
     const limit = query.limit === undefined ? 50 : Number(query.limit);
     if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
     const id = session.header.id;
     // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
-    await session.starting?.catch(() => {});
-    let tail = this.supervisor.agents.has(id) ? await this.supervisor.request(id, "historyTail" as RequestMethod) as HistoryTail | null : undefined;
+    if (!("unloaded" in session)) await session.starting?.catch(() => {});
+    let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.supervisor.request(id, "historyTail" as RequestMethod) as HistoryTail | null : undefined;
     if (!tail) {
       // The index should have every message the agent's runs reported, or the running agent the rest. An agent
       // without one (made before the index), one behind (a stop that could not write its last chunks), or a running
       // agent keeping no backlog: the rest is read from its log, whole, as a full history read does. Nothing is
       // indexed here; an agent's own process indexes from where its index ends, and one without an index never is.
       const indexed = await this.historyIndex.indexed(id);
-      const reported = Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
+      const reported = "unloaded" in session ? await this.historyIndex.reported(id) : Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
       if (tail === null || indexed === undefined || indexed < reported) tail = await this.supervisor.backlog(id, indexed ?? 0);
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
@@ -1512,7 +1535,9 @@ export class ClientSessions {
 
   /** A tenant's view of a page of one agent's history. */
   async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string }) {
-    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
+    if (this.unloaded(id)) return this.historyPage({ header: { id }, unloaded: true }, query);
+    const session = await this.load(id);
     if (!session) throw new HttpError(404, "Unknown agent");
     return this.historyPage(session, query);
   }
@@ -2403,6 +2428,9 @@ export class ClientSessions {
     await session.log.close().catch(() => {});
     // A revoked agent's logs are never read again.
     if (session.header.revoked) await underClaim(this.db, session.claim, sql => deleteTail(sql, session.header.id)).catch(() => {});
+    // What its runs reported, so a page of it unloaded knows whether its index is behind (see `historyPage`).
+    const reported = Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
+    await this.db.query("update agent_history_index set reported = greatest(reported, $2) where agent = $1", [session.header.id, reported]).catch(() => {});
     // Nothing is published after this: the next owner goes on from this cursor.
     await underClaim(this.db, session.claim, sql => sql.query("update agents set last_cursor = $2, cursor_clean = true where id = $1", [session.header.id, session.cursor])).catch(() => {});
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});

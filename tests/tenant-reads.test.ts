@@ -75,3 +75,25 @@ test("a tenant's own watcher bound, from the tenants file, replaces the default"
   assert.equal((await watchEvents(t, events, auth, { query: "" })).status, 200);
   assert.equal((await watchEvents(t, events, auth, { query: "" })).status, 429);
 });
+
+test("an idle agent's history, state and inputs are read without loading it", { timeout: 60_000 }, async t => {
+  const r = await runtime(t, () => ({ content: "hello" }), { AGENT_IDLE_MS: "1000" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const done = await r.prompt(agent, "hi");
+  const owner = async () => (await r.db.query("select node from actor_owners where actor = $1", [agent])).rows[0]?.node ?? null;
+  await until(async () => (await r.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed === 2 && await owner() === null, "the idle agent to be released", 20_000);
+  const { token } = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: {} })).json;
+  for (const reader of [undefined, token]) {
+    assert.deepEqual((await r.call(`/v1/agents/${agent}/history`, { token: reader })).json.messages.map((message: any) => message.role), ["user", "assistant"]);
+    assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=5`, { token: reader })).json.entries.map((entry: any) => entry.index), [0, 1]);
+    const state = (await r.call(`/v1/agents/${agent}/state`, { token: reader })).json;
+    assert.ok(state.requests.some((request: any) => request.id === done.id && request.state === "completed"));
+    assert.ok(state.cursor > 0);
+    assert.deepEqual((await r.call(`/v1/agents/${agent}/inputs?state=pending`, { token: reader })).json, []);
+  }
+  assert.equal(await owner(), null, "nothing loaded it");
+  // Its state's cursor is where a stream of it picks up, with no gap.
+  const cursor = (await r.call(`/v1/agents/${agent}/state`)).json.cursor;
+  const poll = await fetch(`${r.base}/v1/agents/${agent}/events?poll=1`, { headers: { Authorization: `Bearer ${OPERATOR}`, "Last-Event-ID": String(cursor) } });
+  assert.equal(poll.status, 200);
+});

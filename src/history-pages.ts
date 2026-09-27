@@ -80,6 +80,11 @@ export class HistoryIndex {
     return !!(await sql.query(`select 1 from agents where id = $1 and not revoked and purged_at is null${lock ? " for share" : ""}`, [agent])).rowCount;
   }
 
+  /** How many messages the agent's runs had reported when it last unloaded: more than its index has means its last chunks were not written. */
+  async reported(agent: string): Promise<number> {
+    return (await this.db.query("select reported from agent_history_index where agent = $1", [agent])).rows[0]?.reported ?? 0;
+  }
+
   /** Start a new agent's index, empty. */
   async begin(agent: string) {
     await this.db.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);

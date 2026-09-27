@@ -3,3 +3,6 @@
 -- holding it resumes without a gap. A load clears it at once, so a crash never reuses an id.
 alter table agents add column last_cursor bigint;
 alter table agents add column cursor_clean boolean not null default false;
+-- How many messages an agent's runs had reported when it last unloaded (src/history-pages.ts): a page of
+-- it read without loading it compares its index with this, as a loaded one does with its requests.
+alter table agent_history_index add column reported integer not null default 0;

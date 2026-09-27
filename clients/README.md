@@ -365,7 +365,9 @@ and watching keeps neither the agent's process running nor its session loaded.
 An idle agent's session unloads with its watchers still connected, and watching
 an agent no node has loaded loads it nowhere: a watcher or poll of it holds a
 socket and a place, and the agent's next load (a run, anywhere) takes it up, or
-ends it on other nodes so it reconnects to the one that loaded it. An agent that
+ends it on other nodes so it reconnects to the one that loaded it. Reading such an
+agent's history, state or inputs loads it nowhere either: they come from
+storage. An agent that
 stopped cleanly goes on from the same cursor when it loads again, so a watcher
 or poll holding it resumes without a gap; after a crash, one gets `409
 REPLAY_GAP` (asking with `snapshot=1`, a snapshot). Watchers and waiting polls
