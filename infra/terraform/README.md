@@ -13,7 +13,7 @@ else is here.
 | `rds.tf` | control-plane Postgres, its subnet group and security group |
 | `state-bucket.tf` | S3 bucket for agent state and the IAM statements for it |
 | `secrets.tf` | Secrets Manager containers under `camelai/agent-runtime/` |
-| `dns.tf` | Cloudflare CNAME `agents.camelai.dev` to the ALB (DNS only) |
+| `dns.tf` | Cloudflare CNAME `agents.camelai.dev` to the ALB (proxied) |
 | `monitoring.tf` | Route 53 health check, `-healthz` alarm and SNS topic in us-east-1 |
 | `alarms.tf` | ALB/ECS alarms and their us-west-2 SNS topic |
 
@@ -41,7 +41,7 @@ and the RDS instance also have deletion protection in AWS.
 ## Architecture
 
 ```text
-          agents.camelai.dev  (Cloudflare CNAME, DNS only, TTL 60)
+          agents.camelai.dev  (Cloudflare CNAME, proxied)
                    │
                    ▼
    ALB camelai-agent-runtime   (default public subnets, 4 AZs)

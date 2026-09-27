@@ -7,7 +7,7 @@ Resources (AWS account `904534089871`, `us-west-2`), mostly named
 
 - ECS Fargate service and cluster `camelai-agent-runtime` (ARM64, 1 vCPU / 2 GB
   per task). Autoscaling targets average CPU 60% and memory 70%, with 2 to 10 tasks.
-- A public ALB with an ACM certificate. `agents.camelai.dev` is a DNS-only
+- A public ALB with an ACM certificate. `agents.camelai.dev` is a proxied
   Cloudflare CNAME to it, with TTL 60.
 - RDS Postgres (`camelai-agent-runtime-control`, Multi-AZ): the control plane
   (ownership leases, indexes, timers, outboxes, accounts). RDS manages and

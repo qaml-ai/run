@@ -151,13 +151,6 @@ variable "runtime_env" {
   }
 }
 
-# --- DNS (dns.tf) ---
-
-variable "dns_ttl" {
-  description = "TTL of the runtime record."
-  type        = number
-  default     = 60
-}
 
 variable "github_subject" {
   description = "OIDC subject prefix of the repository whose production environment may deploy. The repository uses immutable subjects: gh api repos/<owner>/<repo>/actions/oidc/customization/sub shows sub_claim_prefix."
