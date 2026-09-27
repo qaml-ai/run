@@ -63,7 +63,7 @@ once. The runtime does not start without a database.
 | node heartbeats and actor ownership | agent transcripts and request journals (append logs) |
 | the recent records of each append log (`log_records`) | |
 | agent headers: identity, configuration, mounts; the tenant index | volume trees (append logs) |
-| console tenants, sealed provider keys, API tokens, usage | volume chunks and snapshot file maps (blobs, written once) |
+| console tenants, sealed provider keys and key scopes, API tokens, usage | volume chunks and snapshot file maps (blobs, written once) |
 | agent definitions (tool credentials sealed) | |
 | schedules and their claims | |
 | channels, conversations, the outbox, dedupe markers, rate counters | |
@@ -466,6 +466,47 @@ the tenants file names the endpoint as a provider:
   Changes apply from the next tenants reload to agents created or configured
   after it.
 
+### Key scopes
+
+An application that serves many customers can give each its own provider
+credentials, so its agents call providers directly with that customer's keys: a
+**key scope** per customer (e.g. `org_abc123`), holding one entry per provider.
+
+```http
+PUT /v1/key-scopes/org_abc123/providers/openrouter
+{"apiKey": "sk-or-…", "baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openrouter",
+ "headers": {"cf-aig-authorization": "Bearer <gateway token>"}}
+```
+
+- An entry is `{apiKey, baseUrl?, headers?, region?}`. `baseUrl` stands for the
+  provider's API root (an AI gateway in front of OpenRouter, Anthropic or OpenAI);
+  it must be HTTPS (plain HTTP only to localhost). `headers` are sent with every
+  call, sealed like the key. `region` is Bedrock's: for `amazon-bedrock` the key
+  is a Bedrock API key, sent as a bearer token (no SigV4) to that region's
+  endpoint, or to `baseUrl`. The provider is any model provider of
+  `GET /v1/providers` that takes a key, or `amazon-bedrock`.
+- `GET /v1/key-scopes/:scope` lists the providers set, with each key's last four
+  characters, `baseUrl`, `region` and the extra headers' names, never a secret.
+  `DELETE /v1/key-scopes/:scope/providers/:provider` removes an entry, and
+  `DELETE /v1/key-scopes/:scope` the whole scope. Scope ids are 1–100 letters,
+  digits, `_`, `.` and `-`. Keys and headers are sealed in Postgres under
+  `AGENT_SECRETS_KEY`, bound to the tenant, scope and provider.
+- An agent gets `keyScope` at creation (`POST /v1/agents`, `/client-sessions`,
+  the SDKs' `createAgent`), or through `PATCH /v1/agents/:id/configuration`
+  (`null` clears it; the agent's own token cannot change it). Applying a
+  definition keeps it. Models are named as usual, e.g.
+  `openrouter/anthropic/claude-sonnet-5` (a routing variant like `:nitro` too),
+  `anthropic/claude-opus-5` or `amazon-bedrock/us.anthropic.claude-sonnet-5`.
+- Each model call, compaction summaries included, takes the key of the agent's
+  scope for the model's provider, else the tenant's own key, else an admin's,
+  else (prepaid) the platform's. It is read at the call, so a changed key applies
+  to every agent of the scope from its next call: at once on the node that took
+  the change, and within five seconds (a cache) on the others. An agent may be
+  created on a provider only its scope has a key for.
+- Scope keys are the tenant's own: no platform token charge, like a tenant's key
+  (agent time is charged as usual), and their calls are counted in `/v1/usage`
+  under the model as usual.
+
 ## Agent definitions
 
 A definition is a tenant's reusable agent configuration: name, model, system
@@ -518,7 +559,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt`, `systemPromptAppend` or `thinkingLevel` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel` or `keyScope` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration

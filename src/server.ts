@@ -4,7 +4,8 @@ import { resolve, join, extname, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentSupervisor, type Hosting } from "./supervisor.ts";
 import { configuredModel } from "./model.ts";
-import { errorText, IDENTITY_KEY } from "./protocol.ts";
+import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
+import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { sessionConfig } from "./session-config.ts";
 import { ClientSessions } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -153,24 +154,26 @@ const render = new WebRender({
 });
 const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; }, get volumes() { return volumes; }, get links() { return links; } });
 const definitions = new Definitions({ db, accounts, outbound });
+const keyScopes = new KeyScopes({ db, accounts });
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
-  const { mcp: _mcp, subject: _subject, context: _context, ...rest } = params ?? {};
+  const { mcp: _mcp, subject: _subject, context: _context, keyScope, ...rest } = params ?? {};
   // Who the agent acts for, and context for its tool servers' identity tokens.
   const identity = identityInput(params ?? {});
+  if (keyScope !== undefined) checkScope(keyScope);
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
   const config = sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant));
-  if (!await accounts.hasKey(tenant, config.model.provider)) {
+  if (!(keyScope && await keyScopes.entry(tenant, keyScope, config.model.provider)) && !await accounts.hasKey(tenant, config.model.provider)) {
     throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}; set one with PUT /v1/providers/${config.model.provider}/key`);
   }
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
-    made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity);
+    made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity, { keyScope });
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
@@ -300,11 +303,19 @@ const clients = new ClientSessions(supervisor, {
     const free = tenants.maxAgents(tenant) === undefined ? await accounts.billing.agentLimit(tenant) : undefined;
     return tenants.maxAgents(tenant) ?? (free === undefined ? undefined : Math.min(free, maxAgentsPerTenant));
   },
-  apiKeyFor: async (tenant, provider) => {
+  apiKeyFor: async (tenant, provider, keyScope) => {
     // A tenant's own endpoint gets identity tokens, and its calls cost the runtime nothing.
     if (Object.hasOwn(tenants.modelEndpoints(tenant) ?? {}, provider)) return { key: IDENTITY_KEY, platform: false };
+    // An agent with a key scope resolves its key at each call, so a rotated key applies at once.
+    if (keyScope) return { key: SCOPE_KEY, platform: false };
     const resolved = await accounts.providerKey(tenant, provider);
     return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
+  },
+  scopedKey: async (tenant, keyScope, provider) => {
+    const entry = await keyScopes.entry(tenant, keyScope, provider);
+    if (entry) return { ...entry, platform: false };
+    const resolved = await accounts.providerKey(tenant, provider);
+    return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant" };
   },
   modelEndpoints: tenant => tenants.modelEndpoints(tenant),
   modelToken: (audience, claims) => signer.token(audience, claims),
@@ -416,7 +427,7 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
 app.route("/", channels.app);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, scheduler, channels, volumes, definitions, links, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, scheduler, channels, volumes, definitions, links, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);

@@ -15,13 +15,21 @@ export interface ToolBridge {
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes (base64), for a model request that shows the file. */
   file?(ref: unknown): Promise<string>;
-  /** An identity token for a model call to the agent's tenant's own endpoint. */
-  modelToken?(): Promise<string>;
+  /** Credentials for one model call, for an agent whose key is `IDENTITY_KEY` or `SCOPE_KEY`. */
+  modelAuth?(): Promise<Credentials>;
   /** js_exec's `fs` (`op` is readFile, writeFile, stat, list or remove), answered by the runtime's file tools over the agent's mounts. */
   fs?(op: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
-/** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelToken`). */
+/** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 export const IDENTITY_KEY = "agent-runtime:identity-token";
+/** The `apiKey` of an agent with a key scope: each call reads the scope's current entry (`ToolBridge.modelAuth`), so a rotated key applies at once. */
+export const SCOPE_KEY = "agent-runtime:key-scope";
+/**
+ * What one model call authenticates with: a key, or a tenant endpoint's identity token (`identity`).
+ * A key scope's entry may also put an endpoint in front of the provider (`baseUrl`), add `headers`,
+ * and name Bedrock's `region`.
+ */
+export type Credentials = { apiKey: string; identity?: boolean; baseUrl?: string; headers?: Record<string, string>; region?: string };
 export interface AgentConfig {
   id: string;
   directory: string;

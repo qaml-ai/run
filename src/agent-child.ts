@@ -12,7 +12,7 @@ const host = createAgentHost({
   spendLimit: async () => (await rpc.request("spend-limit")) ?? undefined,
   search: query => rpc.request("search", query),
   file: ref => rpc.request("file", ref),
-  modelToken: () => rpc.request("model-token"),
+  modelAuth: () => rpc.request("model-auth"),
   fs: (op, args) => rpc.request("fs", { op, args }),
   transcript: remoteTranscript(rpc),
 });

@@ -8,6 +8,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { CompactionState } from "./transcript.ts";
 import { messageChars } from "./history.ts";
 import { fileChars as charsOf, validFileRef } from "./files.ts";
+import type { Credentials } from "./protocol.ts";
 
 /**
  * Context compaction on top of pi-agent-core's compaction functions. Pi picks the
@@ -105,33 +106,46 @@ BedrockRuntimeClient.prototype.send = function (this: BedrockRuntimeClient, ...a
   return (send as (...args: unknown[]) => unknown).apply(this, args);
 } as typeof send;
 
+/** Pi's model and options for one call with `credentials`. */
+function authorize(model: Model<Api>, options: any, credentials: Credentials): [Model<Api>, any] {
+  if (credentials.identity) return [upstream(model), identityOptions(model, options, credentials.apiKey)];
+  const { apiKey, baseUrl, headers, region } = credentials;
+  // Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
+  const env = model.api === "bedrock-converse-stream" && baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {};
+  return [baseUrl ? { ...model, baseUrl } : model, { ...options, apiKey, env, ...(headers ? { headers: { ...options?.headers, ...headers } } : {}), ...(region ? { region } : {}) }];
+}
+
 /**
  * The only way this runtime calls a model: with the tenant's explicit key. Pi-ai
  * falls back to provider keys in the process environment whenever no key is passed
  * (an `env` option only overrides those, it never hides them), which in a shared
- * worker could serve one tenant with another's (or the host's) key. While `identity()`,
- * the key is an identity token for the tenant's own endpoint.
+ * worker could serve one tenant with another's (or the host's) key. When `perCall()`
+ * gives credentials, the call uses them: an identity token for the tenant's own
+ * endpoint, or a key scope's current entry.
  */
-export function explicitKeyStream(identity?: () => boolean): StreamFn {
+export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent`);
-    if (identity?.()) return streamSimple(upstream(model), context, identityOptions(model, options, options.apiKey));
-    return streamSimple(model, context, { ...options, env: {} });
+    const call = (credentials: Credentials) => {
+      const [target, callOptions] = authorize(model, options, credentials);
+      return streamSimple(target, context, callOptions);
+    };
+    const credentials = perCall?.();
+    return credentials ? credentials.then(call) : call({ apiKey: options.apiKey });
   };
 }
 
 /**
- * Pi's summarizer only needs `completeSimple`; bind the tenant's key (or, for its own endpoint, a
- * fresh identity token per request) and never the environment. Every completed request is
- * reported, so chunks and a run that fails after some are billed too.
+ * Pi's summarizer only needs `completeSimple`; bind the tenant's key (or per-call credentials:
+ * a fresh identity token for its own endpoint, a key scope's entry) and never the environment.
+ * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
-type ApiKey = string | (() => Promise<string>);
+type ApiKey = string | (() => Promise<Credentials>);
 function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void): Models {
   return {
     completeSimple: async (model: Model<Api>, context: any, options: any) => {
-      const token = typeof apiKey === "string" ? undefined : await apiKey();
-      const response = token === undefined ? await completeSimple(model, context, { ...options, apiKey, env: {} })
-        : await completeSimple(upstream(model), context, identityOptions(model, options, token));
+      const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey());
+      const response = await completeSimple(target, context, callOptions);
       if (response.stopReason !== "error") onResponse?.(response);
       return response;
     },

@@ -40,6 +40,20 @@ export const KeySet = z.object({
   verification: z.object({ status: z.enum(["valid", "unverified", "invalid"]), detail: z.string().optional() }),
 }).openapi("KeySet");
 
+export const KeyScopeEntryInput = z.object({
+  apiKey: z.string().min(1).max(4096).openapi({ description: "The provider's API key (for amazon-bedrock, a Bedrock API key, sent as a bearer token)" }),
+  baseUrl: z.string().optional().openapi({ description: "An HTTPS endpoint that stands for the provider's API root, e.g. an AI gateway's", example: "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openrouter" }),
+  headers: z.record(z.string(), z.string()).optional().openapi({ description: "Extra headers for every call, sealed like the key, e.g. cf-aig-authorization" }),
+  region: z.string().optional().openapi({ description: "amazon-bedrock only: the AWS region to call", example: "us-west-2" }),
+}).strict().openapi("KeyScopeEntryInput");
+export const KeyScope = z.object({
+  scope: z.string(),
+  providers: z.array(z.object({
+    provider: z.string(), last4: z.string(), baseUrl: z.string().optional(), region: z.string().optional(),
+    headers: z.array(z.string()).optional().openapi({ description: "The extra headers' names; never their values" }), setAt: z.number(),
+  })),
+}).openapi("KeyScope");
+
 export const Model = z.object({
   id: z.string().openapi({ description: "Pass this as `model` when creating or configuring an agent", example: "anthropic/claude-sonnet-5" }),
   provider: z.string(),
@@ -85,6 +99,7 @@ export const AgentInput = z.object({
   mounts: z.array(Mount).optional().openapi({ description: "Volumes for the agent's file tools; default: a new workspace volume at /workspace" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
+  keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
 }).openapi("AgentInput");
 
 export const AgentCreated = z.looseObject({
@@ -170,6 +185,7 @@ export const AgentDetail = AgentSummary.extend({
   systemPrompt: z.string(),
   systemPromptAppend: z.string().optional(),
   fileTools: z.literal(false).optional().openapi({ description: "Present when the model gets no file tools but present_file" }),
+  keyScope: z.string().nullable().openapi({ description: "The key scope its model calls take keys from first" }),
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
   requests: z.array(RequestRecord),
@@ -346,7 +362,8 @@ export const ConfigureInput = z.object({
   systemPrompt: z.string().min(1).max(32_000).optional(),
   systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt; empty removes it" }),
   thinkingLevel: ThinkingLevel.optional(),
-}).strict().refine(input => input.model !== undefined || input.systemPrompt !== undefined || input.systemPromptAppend !== undefined || input.thinkingLevel !== undefined, "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
+  keyScope: z.string().nullable().optional().openapi({ description: "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it" }),
+}).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
 
 const ChannelAccess = z.object({
   public: z.boolean().optional().openapi({ description: "Let anyone message the channel; off by default" }),

@@ -218,6 +218,85 @@
           "apiKey"
         ]
       },
+      "KeyScope": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "last4": {
+                  "type": "string"
+                },
+                "baseUrl": {
+                  "type": "string"
+                },
+                "region": {
+                  "type": "string"
+                },
+                "headers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The extra headers' names; never their values"
+                },
+                "setAt": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "provider",
+                "last4",
+                "setAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "scope",
+          "providers"
+        ]
+      },
+      "KeyScopeEntryInput": {
+        "type": "object",
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "The provider's API key (for amazon-bedrock, a Bedrock API key, sent as a bearer token)"
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "An HTTPS endpoint that stands for the provider's API root, e.g. an AI gateway's",
+            "example": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openrouter"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Extra headers for every call, sealed like the key, e.g. cf-aig-authorization"
+          },
+          "region": {
+            "type": "string",
+            "description": "amazon-bedrock only: the AWS region to call",
+            "example": "us-west-2"
+          }
+        },
+        "required": [
+          "apiKey"
+        ],
+        "additionalProperties": false
+      },
       "Model": {
         "type": "object",
         "properties": {
@@ -425,6 +504,11 @@
             "type": "object",
             "additionalProperties": {},
             "description": "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here"
+          },
+          "keyScope": {
+            "type": "string",
+            "description": "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own",
+            "example": "org_abc123"
           }
         }
       },
@@ -517,6 +601,13 @@
                 ],
                 "description": "Present when the model gets no file tools but present_file"
               },
+              "keyScope": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The key scope its model calls take keys from first"
+              },
               "cursor": {
                 "type": "number"
               },
@@ -547,6 +638,7 @@
               "toolSources",
               "mounts",
               "systemPrompt",
+              "keyScope",
               "cursor",
               "events",
               "requests"
@@ -923,6 +1015,13 @@
               "xhigh",
               "max"
             ]
+          },
+          "keyScope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it"
           }
         },
         "additionalProperties": false,
@@ -3413,6 +3512,193 @@
         "responses": {
           "200": {
             "description": "The key is deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/key-scopes/{scope}/providers/{provider}": {
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scope",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyScopeEntryInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The entry is stored; agents in the scope use it from their next model call",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyScope"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scope",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The entry is deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/key-scopes/{scope}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scope",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The providers the scope has entries for, never their secrets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyScope"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scope",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every entry of the scope is deleted",
             "content": {
               "application/json": {
                 "schema": {

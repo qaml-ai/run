@@ -118,7 +118,7 @@ export class AgentSupervisor {
       if (method === "spend-limit") return (await handle.bridge.spendLimit?.()) ?? null;
       if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
-      if (method === "model-token") return this.modelToken(handle);
+      if (method === "model-auth") return this.modelAuth(handle);
       if (method === "fs") return this.dispatchFs(handle, params);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
@@ -145,9 +145,9 @@ export class AgentSupervisor {
     finally { handle.calls.delete(controller); }
   }
 
-  private modelToken(handle: Handle) {
-    if (!handle.bridge.modelToken) throw new Error("This agent's model takes no identity token");
-    return handle.bridge.modelToken();
+  private modelAuth(handle: Handle) {
+    if (!handle.bridge.modelAuth) throw new Error("This agent's model takes no per-call credentials");
+    return handle.bridge.modelAuth();
   }
 
   private file(handle: Handle, ref: unknown) {
@@ -177,7 +177,7 @@ export class AgentSupervisor {
       spendLimit: async () => handle.bridge.spendLimit?.(),
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),
       file: ref => this.file(handle, structuredClone(ref)),
-      modelToken: () => this.modelToken(handle),
+      modelAuth: () => this.modelAuth(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
     });
     this.agents.set(id, handle);

@@ -14,6 +14,7 @@ import { errorStatus, HttpError, readJson, readText } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import type { Definitions } from "./definitions.ts";
+import { scopeEntry, type KeyScopes } from "./key-scopes.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
@@ -29,6 +30,7 @@ export interface ApiContext {
   accounts: Accounts;
   clients: ClientSessions;
   consoleAuth: ConsoleAuth;
+  keyScopes?: KeyScopes;
   /** Provision an agent for a tenant (shared with POST /client-sessions). */
   createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
   verifyKeys?: boolean;
@@ -165,6 +167,27 @@ export function api(context: ApiContext) {
     return json(c, 200, { deleted: true });
   });
 
+  const keyScopes = () => {
+    if (!context.keyScopes) throw new HttpError(404, "Key scopes are not enabled on this runtime");
+    return context.keyScopes;
+  };
+  const scopeProvider = { method: "put", path: "/v1/key-scopes/{scope}/providers/{provider}", request: { params: z.object({ scope: z.string(), provider: z.string() }) } } as const;
+  route(createRoute({ ...scopeProvider, request: { ...scopeProvider.request, body: content(schema.KeyScopeEntryInput) }, responses: { 200: reply("The entry is stored; agents in the scope use it from their next model call", schema.KeyScope) } }), async c => {
+    const entry = scopeEntry(c.req.param("provider")!, await readJson(c.req.raw.body, 64 * 1024, {}));
+    return json(c, 200, await keyScopes().set(c.var.principal.tenant, c.req.param("scope")!, c.req.param("provider")!, entry));
+  });
+  route(createRoute({ ...scopeProvider, method: "delete", responses: { 200: reply("The entry is deleted", schema.Deleted) } }), async c => {
+    if (!await keyScopes().delete(c.var.principal.tenant, c.req.param("scope")!, c.req.param("provider")!)) throw new HttpError(404, `No ${c.req.param("provider")} entry in this key scope`);
+    return json(c, 200, { deleted: true });
+  });
+  const scopePath = { path: "/v1/key-scopes/{scope}", request: { params: z.object({ scope: z.string() }) } } as const;
+  route(createRoute({ ...scopePath, method: "get", responses: { 200: reply("The providers the scope has entries for, never their secrets", schema.KeyScope) } }),
+    async c => json(c, 200, await keyScopes().status(c.var.principal.tenant, c.req.param("scope")!)));
+  route(createRoute({ ...scopePath, method: "delete", responses: { 200: reply("Every entry of the scope is deleted", schema.Deleted) } }), async c => {
+    await keyScopes().delete(c.var.principal.tenant, c.req.param("scope")!);
+    return json(c, 200, { deleted: true });
+  });
+
   route(createRoute({
     method: "get", path: "/v1/models",
     request: { query: z.object({ provider: z.string().optional(), available: z.enum(["true"]).optional().openapi({ description: "Only models this tenant has a key for" }) }) },
@@ -231,7 +254,9 @@ export function api(context: ApiContext) {
     if (params.model !== undefined) {
       let provider: string;
       try { provider = resolveModel(params.model, accounts.tenants.modelEndpoints(tenant)).provider; } catch (error) { throw new HttpError(400, errorText(error)); }
-      if (!await accounts.hasKey(tenant, provider)) throw new HttpError(400, `No ${provider} API key is configured for this tenant; set one with PUT /v1/providers/${provider}/key`);
+      // An agent with a key scope may have the provider's key there; its calls say so if not.
+      const scoped = params.keyScope !== undefined ? params.keyScope : (await clients.inspect(c.req.param("id")!, tenant)).keyScope;
+      if (!scoped && !await accounts.hasKey(tenant, provider)) throw new HttpError(400, `No ${provider} API key is configured for this tenant; set one with PUT /v1/providers/${provider}/key`);
     }
     const submit = context.submit ?? clients.submit.bind(clients);
     return json(c, 202, await submit(c.req.param("id")!, tenant, { id: requestId ?? randomUUID(), method: "configure", params }));

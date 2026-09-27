@@ -4,7 +4,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import type { AgentConfig, ToolDefinition } from "./protocol.ts";
+import type { AgentConfig, Credentials, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { configurationUpdate, type ModelEndpoints } from "./session-config.ts";
@@ -60,6 +60,8 @@ interface SessionHeader {
   overrides?: string[];
   /** Who the agent acts for, and context for its tool servers: set at creation by the tenant, never by the agent. */
   identity?: AgentIdentity;
+  /** The key scope its model calls take keys from first (key-scopes.ts); set by the tenant, never by the agent. */
+  keyScope?: string;
 }
 /** Upserts of request records, appended as their state changes. Journals from before tool calls were MCP also hold call records, which are skipped. */
 type JournalRecord = { t: "request"; record: RequestRecord };
@@ -176,8 +178,13 @@ export interface ClientSessionOptions {
   prefix?: string;
   /** With ownership, each agent is served by one node at a time. */
   ownership?: Ownership;
-  /** The provider key an agent uses, resolved per tenant at process start; never persisted. `platform` keys are not the tenant's own. */
-  apiKeyFor?: (tenant: string, provider: string) => Promise<ProviderKey | string | undefined> | ProviderKey | string | undefined;
+  /**
+   * The provider key an agent uses, resolved per tenant at process start; never persisted. `platform` keys are not the tenant's own.
+   * With a key scope it is `SCOPE_KEY`, and each call resolves through `scopedKey`.
+   */
+  apiKeyFor?: (tenant: string, provider: string, keyScope?: string) => Promise<ProviderKey | string | undefined> | ProviderKey | string | undefined;
+  /** One model call's credentials for an agent with a key scope: the scope's entry, else the tenant's key, else (prepaid) the platform's. */
+  scopedKey?: (tenant: string, keyScope: string, provider: string) => Promise<(Credentials & { platform: boolean }) | undefined>;
   /** The tenant's own model endpoints (tenants file), which its agents' models may name. */
   modelEndpoints?: (tenant: string) => ModelEndpoints;
   /** An identity token for `audience` (the runtime's signer), for model calls to a tenant's own endpoint. */
@@ -508,8 +515,8 @@ export class ClientSessions {
     }
   }
 
-  private async apiKey(session: Session, provider: string): Promise<{ key?: string; platform: boolean }> {
-    const resolved = await this.options.apiKeyFor?.(session.header.tenant, provider);
+  private async apiKey(session: Session, provider: string, keyScope: string | undefined): Promise<{ key?: string; platform: boolean }> {
+    const resolved = await this.options.apiKeyFor?.(session.header.tenant, provider, keyScope);
     return typeof resolved === "object" ? resolved : { key: resolved, platform: false };
   }
 
@@ -521,7 +528,7 @@ export class ClientSessions {
     const id = session.header.id;
     return session.starting ??= (async () => {
       await this.makeRoom(id, session.header.tenant);
-      const { key: apiKey, platform } = await this.apiKey(session, session.header.config.model.provider);
+      const { key: apiKey, platform } = await this.apiKey(session, session.header.config.model.provider, session.header.keyScope);
       session.platformKey = platform;
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: await this.toolset(session),
@@ -531,7 +538,7 @@ export class ClientSessions {
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
         file: ref => this.fileData(session, ref),
-        modelToken: () => this.modelToken(session),
+        modelAuth: () => this.modelAuth(session),
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
       }, session.claim);
@@ -821,7 +828,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string } = {}): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -868,7 +875,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -883,7 +890,7 @@ export class ClientSessions {
         if (!created) {
           this.supervisor.unreserve(id);
           if (claim) await this.options.ownership!.release(claim).catch(() => {});
-          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, identity);
+          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, identity, access);
           throw error;
         }
         await this.discard(session!);
@@ -963,7 +970,7 @@ export class ClientSessions {
     const definition = session.header.definition && { id: session.header.definition.id, revision: session.header.definition.revision };
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
       ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
-      ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [],
+      ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null,
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
@@ -1199,6 +1206,8 @@ export class ClientSessions {
     if (body.method === "resume" && (!trusted || Object.keys(body.params).length !== 1 || !validId(body.params.suspension))) throw new HttpError(400, "Answer the agent's inputs to resume its turn");
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
+    // Which keys an agent calls models with is the tenant's to choose, never the agent's own.
+    if (body.method === "configure" && !trusted && Object.hasOwn(body.params, "keyScope")) throw new HttpError(403, "Only the tenant can change an agent's keyScope");
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
       if (body.method === "configure" && !applying) configurationUpdate(body.params, this.options.modelEndpoints?.(session.header.tenant));
@@ -1371,15 +1380,26 @@ export class ClientSessions {
     return this.options.volumes.tool(this.toolContext(session), `fs.${op}`, args, signal);
   }
 
-  /** A token for one model call to the agent's tenant's own endpoint: the claims its tool servers' tokens have, for the turn's actor. */
-  private modelToken(session: Session) {
+  /**
+   * Credentials for one model call: for the agent's tenant's own endpoint, a token with the claims its tool
+   * servers' tokens have, for the turn's actor; else its key scope's current key for the model's provider.
+   */
+  private async modelAuth(session: Session): Promise<Credentials> {
     const { header } = session;
     const endpoint = this.endpoint(session);
-    if (!this.options.modelToken || !endpoint) throw new Error("This agent's model takes no identity token");
-    const actor = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began)?.actor;
-    return this.options.modelToken(endpoint.baseUrl, {
-      tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
-    });
+    if (endpoint && this.options.modelToken) {
+      const actor = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began)?.actor;
+      return { identity: true, apiKey: await this.options.modelToken(endpoint.baseUrl, {
+        tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
+      }) };
+    }
+    const provider = header.config.model.provider;
+    if (!header.keyScope || !this.options.scopedKey) throw new Error("This agent's model takes no per-call credentials");
+    const resolved = await this.options.scopedKey(header.tenant, header.keyScope, provider);
+    if (!resolved) throw new Error(`No ${provider} API key is configured for key scope ${header.keyScope} or this tenant; set one with PUT /v1/key-scopes/${header.keyScope}/providers/${provider}`);
+    const { platform, ...credentials } = resolved;
+    session.platformKey = platform;
+    return credentials;
   }
 
   /** The tenant's own endpoint the agent's model is on, if it is. */
@@ -1414,11 +1434,11 @@ export class ClientSessions {
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
       const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
-      const update = applied?.update ?? configurationUpdate(params, this.options.modelEndpoints?.(session.header.tenant));
-      // A new model may belong to another provider: the agent needs that provider's key.
-      const resolved = update.model ? await this.apiKey(session, update.model.provider) : undefined;
+      const { keyScope, ...update } = (applied?.update ?? configurationUpdate(params, this.options.modelEndpoints?.(session.header.tenant))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
+      // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
+      const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;
-      if (update.model && this.options.apiKeyFor && !apiKey) throw new Error(`No ${update.model.provider} API key is configured for this tenant; set one with PUT /v1/providers/${update.model.provider}/key`);
+      if (resolved && this.options.apiKeyFor && !apiKey) throw new Error(`No ${(update.model ?? session.header.config.model).provider} API key is configured for this tenant; set one with PUT /v1/providers/${(update.model ?? session.header.config.model).provider}/key`);
       // An agent that is not running takes its new configuration when it next starts.
       const result = live ? await this.supervisor.request(id, "configure", {
         ...update, ...apiKey ? { apiKey } : {},
@@ -1427,6 +1447,7 @@ export class ClientSessions {
       }) : { configured: true };
       const { tools, ...config } = update;
       if (resolved && live) session.platformKey = resolved.platform;
+      if (keyScope) session.header.keyScope = keyScope; else if (keyScope === null) delete session.header.keyScope;
       if (tools !== undefined) session.header.definitions = tools;
       session.header.config = { ...session.header.config, ...config };
       if (applied) {

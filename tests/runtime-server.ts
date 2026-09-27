@@ -42,12 +42,14 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
   const bodies: any[] = [];
   /** The Authorization header of each request: which key the agent called with. */
   const keys: string[] = [];
+  const headers: Record<string, string | string[] | undefined>[] = [];
   const url = await listen(t, async (req, res) => {
     let text = "";
     for await (const chunk of req) text += chunk;
     const body = JSON.parse(text);
     bodies.push(body);
     keys.push(req.headers.authorization ?? "");
+    headers.push(req.headers);
     const { usage, delayMs, ...delta } = respond(body, bodies.length - 1) as any;
     if (delayMs) await sleep(delayMs);
     res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -56,7 +58,7 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
     }
     res.end("data: [DONE]\n\n");
   });
-  return { url: `${url}/v1`, bodies, keys };
+  return { url: `${url}/v1`, bodies, keys, headers };
 }
 export const toolCall = (name: string, args: unknown, id = `call_${name}`) => ({ role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
 export const lastUser = (body: any) => {
