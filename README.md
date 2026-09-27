@@ -347,9 +347,12 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
   few index rows and the chunks it returns, never the whole log (whose snapshot
   is every record in one object). Like the log's segments, chunks are written
   when the agent stops and when what is unindexed passes a chunk's size, never
-  per turn; what is newer comes from the running agent. An agent whose index is
-  missing (made before it) or behind what its runs reported (a stop that could
-  not write) is indexed from its log at its first page or next start.
+  per turn; what is newer comes from the running agent, which keeps at most
+  8 MB of it (past that, and for an agent made before the index, it keeps none
+  and takes up the index again from its working set once it exists). An agent
+  whose index is missing or behind what its runs reported (a stop that could
+  not write) is indexed from its log at its first page, one agent at a time per
+  node, never all at once by their starts after a deploy.
 - `<session>.journal.jsonl`: request state changes. It is fsynced only where
   correctness needs it: accepting a request, a run's start (before its first tool
   call can have an effect), and recording outcomes. Tool calls are not journaled:

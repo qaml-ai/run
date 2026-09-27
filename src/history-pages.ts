@@ -75,6 +75,11 @@ export class HistoryIndex {
 
   private key(agent: string, row: Pick<Row, "start" | "count" | "hash">) { return `sessions/${agent}/history/${row.start}-${row.count}-${row.hash}`; }
 
+  /** Start a new agent's index, empty. */
+  async begin(agent: string) {
+    await this.db.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);
+  }
+
   /** How many of the agent's messages the chunks cover; undefined for an agent never indexed. */
   async indexed(agent: string): Promise<number | undefined> {
     return (await this.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed;

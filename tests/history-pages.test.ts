@@ -10,7 +10,7 @@ import { testDatabase } from "./database.ts";
 import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { AgentRuntime, memoryJournalStore } from "../clients/typescript.ts";
-import { lastUser, OPERATOR, OTHER_OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
+import { lastUser, OPERATOR, OTHER_OPERATOR, runtime, sleep, toolCall, until } from "./runtime-server.ts";
 
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 }) as AgentMessage;
 const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: 0 }) as unknown as AgentMessage;
@@ -168,7 +168,10 @@ test("catching up from the log leaves an interrupted turn unindexed, and an inde
   await r.db.query("insert into agent_history_chunks (agent, start, count, bytes, turns, hash) values ($1, 2, 8, 10, '{2}', 'stale')", [agent]);
   await r.db.query("update agent_history_index set indexed = 10 where agent = $1", [agent]);
   await r.prompt(agent, "three");
-  await until(async () => await indexedOf(r, agent) === (await r.call(`/v1/agents/${agent}/history`)).json.messages.length, "the index to match the transcript after the stop", 20_000);
+  await until(async () => {
+    const history = await r.call(`/v1/agents/${agent}/history`);
+    return history.status === 200 && await indexedOf(r, agent) === history.json.messages.length;
+  }, "the index to match the transcript after the stop", 20_000);
   const rows = (await r.db.query("select start, count from agent_history_chunks where agent = $1 order by start", [agent])).rows;
   assert.deepEqual(rows[0], { start: chunk.start, count: chunk.count });
   assert.ok(!rows.some((row: any) => row.start === 2 && row.count === 8), "the stale chunk is gone");
@@ -189,4 +192,40 @@ test("a chunk a failed writer left in Storage is never served under another writ
   assert.equal(await index.write(agent, undefined, { start: 0, messages: [user("fresh"), assistant("fresh")], turns: [0] }), 2);
   const page = await index.page(agent, { limit: 10 });
   assert.deepEqual(page.entries.map(entry => (entry.message as any).content[0].text), ["fresh", "fresh"]);
+});
+
+test("an agent never indexed is not indexed wholesale by its own start; a page backfills it, and the running agent then keeps it", async t => {
+  const r = await runtime(t, body => ({ content: `reply ${lastUser(body)}` }), { AGENT_IDLE_MS: "1000" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(agent, "one");
+  await r.prompt(agent, "two");
+  await until(async () => await indexedOf(r, agent) === 4, "the turns to be indexed as the agent stops", 20_000);
+  // As for an agent from before the index: starting and stopping it writes no chunks.
+  await r.db.query("delete from agent_history_chunks where agent = $1", [agent]);
+  await r.db.query("delete from agent_history_index where agent = $1", [agent]);
+  await r.prompt(agent, "three");
+  await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 20_000);
+  await sleep(500);
+  assert.equal(await indexedOf(r, agent), undefined, "its start held no whole history to write");
+
+  // Its first page backfills it from the log, even while it runs; the running agent then indexes what follows.
+  const running = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "four" } });
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/${running.json.id}`)).json.state === "completed", "the fourth turn");
+  assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=2`)).json.entries.map((entry: any) => entry.index), [6, 7]);
+  assert.ok(await indexedOf(r, agent) !== undefined);
+  await r.prompt(agent, "five");
+  await until(async () => await indexedOf(r, agent) === 10, "the agent to index its later turns as it stops", 20_000);
+  const whole = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=100`)).json.entries.map((entry: any) => entry.message), whole);
+});
+
+test("a transcript's backlog is dropped past its bound, and adopted again from the working set", async () => {
+  const records: TranscriptRecord[] = [];
+  for (let turn = 0; turn < 12; turn++) records.push({ t: "turn", active: true }, { t: "message", message: user(`q${turn}`) }, { t: "message", message: assistant("x".repeat(1_000_000)) }, { t: "turn", active: false });
+  const transcript = new Transcript(memoryLog(records), 0);
+  await transcript.load();
+  assert.equal(transcript.backlog, undefined, "writes that never land cannot grow it without bound");
+  assert.equal(transcript.adopt(20), true);
+  assert.deepEqual([transcript.backlog!.from, transcript.backlog!.messages.length, transcript.backlog!.turns], [20, 4, [20, 22]]);
+  assert.equal(transcript.adopt(30), false, "past the transcript");
 });

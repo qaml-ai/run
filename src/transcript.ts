@@ -65,6 +65,9 @@ function historyOf(records: TranscriptRecord[]): AgentMessage[] {
  */
 export interface Backlog { from: number; messages: AgentMessage[]; sizes: number[]; bytes: number; turns: number[] }
 
+/** The most a backlog holds; past it the transcript stops keeping one (see `Transcript.adopt`). */
+export const BACKLOG_BYTES = 8_000_000;
+
 /** The history index has a backlog's messages up to `indexed`: drop them from it. */
 export function advance(backlog: Backlog, indexed: number) {
   if (indexed <= backlog.from) return;
@@ -99,6 +102,8 @@ export class Transcript {
   active = false;
   /** `total` when the running turn started. */
   turnStart = 0;
+  /** Where runs began among the working set's messages (absolute indexes), so a backlog can be taken up from it (`adopt`). */
+  starts: number[] = [];
   /** Tool calls waiting on a person's input, in the order they were suspended. */
   awaiting: string[] = [];
   /** What the history index lacks, kept while this transcript is written; undefined when nothing indexes it. */
@@ -112,6 +117,20 @@ export class Transcript {
 
   /** The history index now has messages up to `indexed`: they leave the backlog. */
   indexed(indexed: number) { if (this.backlog) advance(this.backlog, indexed); }
+
+  /**
+   * Keep a backlog from `indexed` on, taken from the working set: for an index that appeared since this
+   * transcript loaded (a backfill), or one it dropped. False when the working set does not reach back to it.
+   */
+  adopt(indexed: number) {
+    if (indexed < this.offset || indexed > this.total) return false;
+    const messages = this.context.slice(indexed - this.offset);
+    const sizes = messages.map(message => JSON.stringify(message).length);
+    const bytes = sizes.reduce((sum, size) => sum + size, 0);
+    if (bytes > BACKLOG_BYTES) return false;
+    this.backlog = { from: indexed, messages, sizes, bytes, turns: this.starts.filter(turn => turn >= indexed) };
+    return true;
+  }
 
   get offset() { return this.total - this.context.length; }
 
@@ -139,6 +158,8 @@ export class Transcript {
         backlog.messages.push(record.message);
         backlog.sizes.push(size);
         backlog.bytes += size;
+        // Its chunks are not being written (or it is an old agent's whole history): stop keeping it; `adopt` takes it up again.
+        if (backlog.bytes > BACKLOG_BYTES) this.backlog = undefined;
       }
       this.context.push(record.message);
       this.total++;
@@ -156,7 +177,7 @@ export class Transcript {
     }
     else if (record.t === "turn") {
       this.active = record.active;
-      if (record.active) this.turnStart = this.total;
+      if (record.active) { this.turnStart = this.total; this.starts.push(this.total); }
       if (record.active && backlog && this.total >= backlog.from) backlog.turns.push(this.total);
     }
     else if (record.t === "awaiting") this.awaiting = record.released ? this.awaiting.filter(id => !record.calls.includes(id)) : [...this.awaiting, ...record.calls.filter(id => !this.awaiting.includes(id))];
@@ -168,10 +189,12 @@ export class Transcript {
         backlog.sizes = messages.map(message => JSON.stringify(message).length);
         backlog.bytes = backlog.sizes.reduce((sum, size) => sum + size, 0);
         backlog.turns = userTurns(backlog.from, messages);
+        if (backlog.bytes > BACKLOG_BYTES) this.backlog = undefined;
       }
       this.total = record.messages.length;
       this.compaction = record.compaction;
       this.context = record.messages.slice(record.compaction?.cut ?? 0);
+      this.starts = userTurns(0, record.messages).filter(turn => turn >= (record.compaction?.cut ?? 0));
       this.system = undefined;
       this.updates = [];
       this.awaiting = [];
@@ -182,6 +205,7 @@ export class Transcript {
       const { t: _type, system, ...state } = record;
       if (state.cut < this.offset || state.cut > this.total) throw new Error(`Compaction cut ${state.cut} is outside the working set (${this.offset}..${this.total})`);
       this.context = this.context.slice(state.cut - this.offset);
+      this.starts = this.starts.filter(turn => turn >= state.cut);
       this.compaction = state;
       if (system) this.system = system;
       this.updates = this.updates.filter(update => update.at > state.cut);
