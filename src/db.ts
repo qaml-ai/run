@@ -165,11 +165,29 @@ function logErrors(pool: Db) {
   return pool;
 }
 
-/** Apply pending `migrations/NNN_name.sql` files in order, one runner at a time per schema. */
-export async function migrate(db: Db, directory = MIGRATIONS) {
+/**
+ * Apply pending `migrations/NNN_name.sql` files in order, one runner at a time per schema. A statement
+ * waiting on a lock (an ALTER behind a long transaction) gives up after `lockTimeoutMs`, so it never
+ * queues every query on that table behind it; the whole run is then tried again, `attempts` times.
+ */
+export async function migrate(db: Db, directory = MIGRATIONS, options: { lockTimeoutMs?: number; attempts?: number; retryMs?: number } = {}): Promise<string[]> {
+  const attempts = options.attempts ?? 10;
+  for (let attempt = 1; ; attempt++) {
+    try { return await migrateOnce(db, directory, options.lockTimeoutMs ?? 5_000); }
+    catch (error) {
+      if ((error as { code?: string }).code !== LOCK_NOT_AVAILABLE || attempt >= attempts) throw error;
+      console.error(JSON.stringify({ type: "migration_lock_timeout", attempt, error: (error as Error).message }));
+      await new Promise(resolve => setTimeout(resolve, options.retryMs ?? 3_000));
+    }
+  }
+}
+const LOCK_NOT_AVAILABLE = "55P03";
+
+async function migrateOnce(db: Db, directory: string, lockTimeoutMs: number) {
   const files = readdirSync(directory).filter(name => /^\d{3}_[a-z0-9_]+\.sql$/.test(name)).sort();
   return transaction(db, async sql => {
     await sql.query("select pg_advisory_xact_lock(hashtext('agent-runtime-migrations:' || coalesce(current_schema(), '')))");
+    await sql.query(`set local lock_timeout = ${Math.max(1, Math.floor(lockTimeoutMs))}`);
     await sql.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
     const applied = new Set((await sql.query("select name from schema_migrations")).rows.map(row => row.name));
     const pending = files.filter(name => !applied.has(name));

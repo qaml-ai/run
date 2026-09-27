@@ -148,3 +148,25 @@ test("the runtime refuses to start without AGENT_DATABASE_URL", async t => {
   assert.notEqual(code, 0);
   assert.match(stderr, /Set AGENT_DATABASE_URL/);
 });
+
+test("a migration waiting on a lock gives up after lock_timeout instead of stalling every query behind it", async () => {
+  const { db, url } = await testDatabase({ migrate: false });
+  await migrateBefore(db, "022_agent_cursor.sql");
+  // A long transaction holds a lock on agents, as a slow query would.
+  const holder = new pg.Client({ connectionString: url });
+  await holder.connect();
+  await holder.query("begin");
+  await holder.query("select * from agents limit 1");
+  try {
+    const started = Date.now();
+    await assert.rejects(migrate(db, undefined, { lockTimeoutMs: 300, attempts: 2, retryMs: 100 }), /lock timeout/);
+    assert.ok(Date.now() - started < 5_000, "it gave up");
+    // Nothing queued behind it: reads of agents go on.
+    await db.query("select count(*) from agents");
+  } finally {
+    await holder.query("rollback");
+    await holder.end();
+  }
+  // Once the lock is gone, it applies.
+  assert.deepEqual(await migrate(db, undefined, { lockTimeoutMs: 300 }), MIGRATIONS.filter(name => name >= "022_agent_cursor.sql"));
+});
