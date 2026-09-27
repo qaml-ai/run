@@ -74,8 +74,24 @@ function upstream(model: Model<Api>): Model<Api> {
   return { ...model, provider, id: rest.join("/") };
 }
 /** Pi's options for a call to a tenant's own endpoint: its token also as `IDENTITY_HEADER`, and Bedrock over HTTP/1.1, as any gateway takes it. */
-const identityOptions = (options: any, token: string) =>
-  ({ ...options, apiKey: token, headers: { ...options?.headers, [IDENTITY_HEADER]: token }, env: { AWS_BEDROCK_FORCE_HTTP1: "1" } });
+const identityOptions = (model: Model<Api>, options: any, token: string) =>
+  ({ ...options, apiKey: token, headers: { ...options?.headers, [IDENTITY_HEADER]: token }, env: { AWS_BEDROCK_FORCE_HTTP1: "1" }, ...(model.api === "openai-codex-responses" ? codexOptions(token) : {}) });
+
+/**
+ * Pi's Codex client reads the `chatgpt-account-id` header from the key, a ChatGPT token, and fails
+ * without that claim. For a tenant's endpoint it decodes a key whose account is a placeholder the
+ * endpoint replaces, and the identity token goes back in as the bearer when the request is sent.
+ * Over SSE, not the WebSocket Pi tries first, and without its retries (none by default).
+ */
+const CODEX_KEY = ["{}", JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "passthrough" } }), "passthrough"].map(part => Buffer.from(part).toString("base64")).join(".");
+const codexOptions = (token: string) => ({
+  apiKey: CODEX_KEY, transport: "sse", maxRetries: 0,
+  fetch: (url: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    return fetch(url, { ...init, headers });
+  },
+});
 
 /**
  * Pi's other clients make one attempt per call and leave retries to the runtime (none for a
@@ -99,7 +115,7 @@ BedrockRuntimeClient.prototype.send = function (this: BedrockRuntimeClient, ...a
 export function explicitKeyStream(identity?: () => boolean): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent`);
-    if (identity?.()) return streamSimple(upstream(model), context, identityOptions(options, options.apiKey));
+    if (identity?.()) return streamSimple(upstream(model), context, identityOptions(model, options, options.apiKey));
     return streamSimple(model, context, { ...options, env: {} });
   };
 }
@@ -115,7 +131,7 @@ function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => 
     completeSimple: async (model: Model<Api>, context: any, options: any) => {
       const token = typeof apiKey === "string" ? undefined : await apiKey();
       const response = token === undefined ? await completeSimple(model, context, { ...options, apiKey, env: {} })
-        : await completeSimple(upstream(model), context, identityOptions(options, token));
+        : await completeSimple(upstream(model), context, identityOptions(model, options, token));
       if (response.stopReason !== "error") onResponse?.(response);
       return response;
     },

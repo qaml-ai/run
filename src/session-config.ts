@@ -38,6 +38,7 @@ export type ModelEndpoints = Record<string, ModelEndpoint> | undefined;
  * Pi speaks to it. OpenRouter's models use its Responses API (stateless), except Anthropic's, which
  * keep its Messages API: Responses gets them no prompt caching. Bedrock's root is regional: its
  * models are named with their region (`amazon-bedrock/<region>/<model id>`), which ends up in the path.
+ * `openai-codex` is ChatGPT's Codex backend, for a ChatGPT subscription.
  */
 export const UPSTREAMS: Record<string, { root: string; api: string; path?: string }> = {
   anthropic: { root: 'https://api.anthropic.com', api: 'anthropic-messages' },
@@ -45,6 +46,7 @@ export const UPSTREAMS: Record<string, { root: string; api: string; path?: strin
   openrouter: { root: 'https://openrouter.ai/api', api: 'openai-responses', path: '/v1' },
   google: { root: 'https://generativelanguage.googleapis.com/v1beta', api: 'google-generative-ai' },
   'amazon-bedrock': { root: 'https://bedrock-runtime.<region>.amazonaws.com', api: 'bedrock-converse-stream' },
+  'openai-codex': { root: 'https://chatgpt.com/backend-api', api: 'openai-codex-responses' },
 };
 
 const lookup = getModel as (provider: string, id: string) => AgentConfig['model'] | undefined;

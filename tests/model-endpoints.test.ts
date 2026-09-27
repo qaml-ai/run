@@ -1,11 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import * as zlib from "node:zlib";
 import { crc32 } from "node:zlib";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { Tenants } from "../src/tenants.ts";
 import { listen, OPERATOR, OTHER_OPERATOR, runtime, until, type T } from "./runtime-server.ts";
 
+/** Node has zstd (Pi's Codex client compresses its bodies with it); this @types/node predates it. */
+const { zstdDecompressSync } = zlib as unknown as { zstdDecompressSync: (data: Buffer) => Buffer };
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 type Reply = { events: object[] } | { eventStream: Buffer } | { status: number; error: object };
@@ -16,9 +19,10 @@ type Reply = { events: object[] } | { eventStream: Buffer } | { status: number; 
 async function gateway(t: T, reply: (body: any, index: number) => Reply) {
   const requests: { path: string; headers: Record<string, any>; body: any }[] = [];
   const url = await listen(t, async (req, res) => {
-    let text = "";
-    for await (const chunk of req) text += chunk;
-    const body = JSON.parse(text);
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
+    const body = JSON.parse((req.headers["content-encoding"] === "zstd" ? zstdDecompressSync(raw) : raw).toString());
     requests.push({ path: req.url!, headers: req.headers, body });
     const next = reply(body, requests.length - 1);
     if ("status" in next) { res.writeHead(next.status, { "Content-Type": "application/json" }).end(JSON.stringify({ error: next.error })); return; }
@@ -190,6 +194,50 @@ test("a Bedrock model on a tenant's endpoint gets Converse's own request at its 
   const outcome = (await r.prompt(agent, "Again?")).outcome;
   assert.match(outcome.result?.error ?? outcome.error, /Upstream provider failed/);
   assert.equal(endpoint.requests.length, 3);
+});
+
+test("a Codex model on a tenant's endpoint gets the ChatGPT backend's own request, with a placeholder account for the endpoint to replace", async t => {
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Let me compute." }], encrypted_content: "opaque-reasoning" };
+  let failing = false;
+  const endpoint = await gateway(t, (_body, index) => failing ? { status: 503, error: { message: "Upstream provider failed" } } : [
+    responses([reasoning, { type: "function_call", id: "fc_1", call_id: "call_calc", name: "js_exec", arguments: JSON.stringify({ code: "return 6 * 7;" }), status: "completed" }]),
+    responses([message("42.")], { input_tokens: 265_000, output_tokens: 10 }),
+  ][index] ?? responses([message("Summary: the user asked for products.")]));
+  const r = await runtime(t, () => ({ role: "assistant", content: "platform model" }), {}, tenantsWith(endpoint.url));
+  const agent = (await r.call("/v1/agents", { body: { model: "chiridion/openai-codex/gpt-5.5", thinkingLevel: "high" } })).json.id;
+  assert.equal((await r.prompt(agent, "6 times 7?")).outcome.result.reply, "42.");
+
+  // The Codex Responses API at <endpoint>/openai-codex, over SSE, stateless, as Pi's Codex client sends it.
+  const [first, second] = endpoint.requests;
+  assert.deepEqual([first.path, first.body.model, first.body.store, first.body.stream, first.body.include], ["/agent-runtime/llm/openai-codex/codex/responses", "gpt-5.5", false, true, ["reasoning.encrypted_content"]]);
+  const keys = createLocalJWKSet((await r.call("/.well-known/jwks.json", { token: null })).json);
+  for (const { headers } of endpoint.requests) {
+    assert.equal(headers.authorization, `Bearer ${headers["x-agent-runtime-identity"]}`);
+    await jwtVerify(headers["x-agent-runtime-identity"], keys, { issuer: "https://agents.example.test", audience: endpoint.url });
+    assert.equal(headers["chatgpt-account-id"], "passthrough");
+    assert.deepEqual([headers.originator, headers["openai-beta"], headers.accept, headers["content-encoding"]], ["pi", "responses=experimental", "text/event-stream", "zstd"]);
+  }
+  assert.deepEqual([first.headers["session-id"], first.headers["x-client-request-id"]], [agent, agent]);
+  assert.deepEqual(second.body.input.find((item: any) => item.type === "reasoning"), reasoning, "the reasoning item goes back whole");
+
+  // The last response filled most of the window: the next turn compacts first, through the endpoint too.
+  await r.prompt(agent, "And 6 times 8?");
+  const summarizing = endpoint.requests[2];
+  assert.equal(summarizing.path, "/agent-runtime/llm/openai-codex/codex/responses");
+  assert.equal(summarizing.headers["chatgpt-account-id"], "passthrough");
+  assert.equal(summarizing.headers.authorization, `Bearer ${summarizing.headers["x-agent-runtime-identity"]}`);
+  assert.match(JSON.stringify(summarizing.body.input), /summar/i);
+  const usage = (await r.call("/v1/usage")).json;
+  const rows = usage.days.filter((entry: any) => entry.model === "chiridion/openai-codex/gpt-5.5");
+  assert.ok(rows.some((entry: any) => entry.kind === "compaction") && rows.every((entry: any) => entry.cost === 0 && entry.platformCost === 0), JSON.stringify(usage));
+  assert.ok(rows.reduce((sum: number, entry: any) => sum + entry.input, 0) >= 265_010, JSON.stringify(usage));
+
+  // No retries in Pi's Codex client either: an error is one request.
+  failing = true;
+  const before = endpoint.requests.length;
+  const outcome = (await r.prompt(agent, "Again?")).outcome;
+  assert.match(outcome.result?.error ?? outcome.error, /Upstream provider failed/);
+  assert.equal(endpoint.requests.length, before + 1);
 });
 
 test("a tenant endpoint's errors end the turn with its message, without retries", async t => {

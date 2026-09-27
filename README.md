@@ -429,6 +429,7 @@ the tenants file names the endpoint as a provider:
   | `openrouter` | `https://openrouter.ai/api` | `POST /v1/responses`; Anthropic models `POST /v1/messages?beta=true` | `Authorization: Bearer`; `x-api-key` |
   | `google` | `https://generativelanguage.googleapis.com/v1beta` | `POST /models/<id>:streamGenerateContent?alt=sse` | `x-goog-api-key` |
   | `amazon-bedrock` | `https://bedrock-runtime.<region>.amazonaws.com`, from `<baseUrl>/amazon-bedrock/<region>` | `POST /model/<URL-encoded id>/converse-stream` | `Authorization: Bearer` (unsigned; no SigV4) |
+  | `openai-codex` | `https://chatgpt.com/backend-api` | `POST /codex/responses` (SSE, body `Content-Encoding: zstd`) | `Authorization: Bearer`, with `chatgpt-account-id: passthrough` |
 
   OpenRouter's models use its Responses API, stateless (`store: false`, the whole
   conversation each call), with reasoning kept and sent back as it came
@@ -437,6 +438,12 @@ the tenants file names the endpoint as a provider:
   requests are HTTP/1.1, and their ids are sent as given: a model id
   (`anthropic.claude-sonnet-5`) or an inference profile's (`us.…`, `eu.…`,
   `global.…`); Pi's catalog has both.
+  `openai-codex` is ChatGPT's Codex backend, e.g.
+  `"chiridion/openai-codex/gpt-5.5"`: the tenant replaces `Authorization` with
+  the user's ChatGPT access token and sets the real `chatgpt-account-id`. Its
+  requests are stateless too, and also carry `originator`, `OpenAI-Beta`, and,
+  in a turn, `session-id` and `x-client-request-id` (the agent's id), which the
+  backend takes as they are.
 - Every call also carries the token as `X-Agent-Runtime-Identity`. This is the
   EdDSA JWT that MCP servers with `auth: {"type": "runtime"}` get (see
   [Identity tokens](#identity-tokens-auth--type-runtime-)). Its `aud` is the
