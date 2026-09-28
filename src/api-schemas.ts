@@ -34,6 +34,28 @@ const KeyStatus = z.object({
   setAt: z.number().optional(),
 }).openapi("KeyStatus");
 
+const CustomModel = z.object({
+  id: z.string().openapi({ description: "The model's id on the server; agents name it <provider>/<id>", example: "llama-4-scout" }),
+  contextWindow: z.number().int().openapi({ description: "Its context window in tokens: compaction keeps each request within it" }),
+  maxOutputTokens: z.number().int().optional().openapi({ description: "The most it writes in a reply; default 8,192, or half a smaller context window" }),
+  input: z.array(z.enum(["text", "image"])).optional().openapi({ description: "[\"text\", \"image\"] for a model that sees images; default [\"text\"]" }),
+  reasoning: z.boolean().optional().openapi({ description: "Whether it reasons (thinkingLevel applies)" }),
+  pricing: z.object({ input: z.number(), output: z.number(), cacheRead: z.number().optional(), cacheWrite: z.number().optional() }).optional().openapi({ description: "USD per million tokens, for usage, spend limits and webhooks; none: free" }),
+  compat: z.object({
+    supportsDeveloperRole: z.boolean().optional(), supportsUsageInStreaming: z.boolean().optional(), supportsReasoningEffort: z.boolean().optional(),
+    maxTokensField: z.enum(["max_tokens", "max_completion_tokens"]).optional(),
+    thinkingFormat: z.enum(["openai", "openrouter", "deepseek", "together", "zai", "qwen", "qwen-chat-template"]).optional(),
+  }).optional().openapi({ description: "Switches for a server that differs from OpenAI's: a developer role, usage in the stream (default true), reasoning_effort, the max tokens field, how thinking is asked for" }),
+}).openapi("CustomModel");
+
+export const CustomProviderInput = z.object({
+  type: z.literal("openai-compatible").openapi({ description: "A server that speaks OpenAI Chat Completions (POST <baseUrl>/chat/completions)" }),
+  baseUrl: z.string().openapi({ description: "Its API root, public and https (the outbound guard checks it when saved and at every call)", example: "https://api.example.com/v1" }),
+  apiKey: z.string().nullable().optional().openapi({ description: "Sent as Authorization: Bearer; left out keeps the stored key, null removes it (a server that takes none)" }),
+  headers: z.record(z.string(), z.string()).nullable().optional().openapi({ description: "Headers for each call, sealed like the key; left out keeps the stored ones, null removes them" }),
+  models: z.array(CustomModel).min(1).max(200),
+}).openapi("CustomProviderInput");
+
 export const Provider = z.object({
   id: z.string(),
   kind: z.enum(["model", "search", "fetch"]).openapi({ description: "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages" }),
@@ -41,6 +63,10 @@ export const Provider = z.object({
   apiKey: z.boolean().openapi({ description: "Whether one API key is enough to use this provider" }),
   requires: z.string().optional().openapi({ description: "What the provider needs instead of an API key" }),
   key: KeyStatus.nullable(),
+  custom: z.object({
+    type: z.literal("openai-compatible"), baseUrl: z.string(), headers: z.array(z.string()).optional().openapi({ description: "The names of its headers, never their values" }),
+    models: z.array(CustomModel),
+  }).optional().openapi({ description: "A provider of the tenant's own (PUT /v1/providers/{name}): where it is, and the models it declares" }),
 }).openapi("Provider");
 
 export const KeyInput = z.object({

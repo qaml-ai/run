@@ -46,9 +46,10 @@ export async function reachableEndpoint(outbound: Outbound, baseUrl: string) {
   }
 }
 
-export function scopeEntry(provider: string, input: any): ScopeEntry {
+/** A scope's entry for `provider`: a built-in model provider, or (`custom`) one of the tenant's own. */
+export function scopeEntry(provider: string, input: any, custom = false): ScopeEntry {
   const info = providerInfo(provider);
-  if (!info || info.kind !== "model" || !(info.apiKey || provider === "amazon-bedrock")) invalid(`${provider} is not a model provider that takes an API key; see GET /v1/providers`);
+  if (!custom && (!info || info.kind !== "model" || !(info.apiKey || provider === "amazon-bedrock"))) invalid(`${provider} is not a model provider that takes an API key, nor one of yours; see GET /v1/providers`);
   if (!input || typeof input !== "object" || Array.isArray(input)) invalid("Body must be {apiKey?, baseUrl?, headers?, region?}");
   for (const key of Object.keys(input)) if (!["apiKey", "baseUrl", "headers", "region"].includes(key)) invalid(`Unknown field ${key}`);
   const { apiKey, baseUrl, headers } = input;
@@ -56,7 +57,7 @@ export function scopeEntry(provider: string, input: any): ScopeEntry {
   const bedrock = provider === "amazon-bedrock";
   if (apiKey !== undefined && (typeof apiKey !== "string" || !apiKey.trim() || apiKey.length > 4096)) invalid("apiKey must be a non-empty string");
   // Without a key, a gateway in front of the provider holds it: only the gateway's headers go.
-  if (apiKey === undefined && (baseUrl === undefined || bedrock || !["openrouter", "anthropic", "openai"].includes(provider))) invalid("apiKey may be left out only for openrouter, anthropic or openai behind a baseUrl (a gateway that holds the key)");
+  if (apiKey === undefined && !custom && (baseUrl === undefined || bedrock || !["openrouter", "anthropic", "openai"].includes(provider))) invalid("apiKey may be left out only for openrouter, anthropic or openai behind a baseUrl (a gateway that holds the key)");
   if (headers !== undefined) {
     if (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.keys(headers).length > 20) invalid("headers must be an object of at most 20 header names and string values");
     for (const [name, value] of Object.entries(headers)) {

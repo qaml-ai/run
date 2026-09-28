@@ -173,6 +173,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.connectAgent(session, { tools, attach, takeover })` | `runtime.connect_agent(session, tools=, attach=, takeover=)` | connect with stored credentials |
 | `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
 | `runtime.me()` | `runtime.me()` | who the API key is: `tenant`, your tenant's id, which `serveTools` takes |
+| `runtime.setProvider(name, config)`, `providers()`, `deleteProvider(name)` | `set_provider(name, base_url=, models=, api_key=, headers=)`, `providers()`, `delete_provider(name)` | a provider of your own: any OpenAI-compatible server and its models; see [Custom models](../guides/custom-models.md) |
 | `runtime.listAgents()` | `runtime.list_agents()` | the tenant's agents, each with the `key` it was made with (`null` without one) and its `name` |
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |

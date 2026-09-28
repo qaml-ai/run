@@ -8,7 +8,7 @@ import type { AgentConfig, Credentials, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
-import { configurationUpdate, type ModelEndpoints } from "./session-config.ts";
+import { configurationUpdate, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { validateDefinitions } from "./tool-policy.ts";
 import { validateUserMessages } from "./history.ts";
 import type { Backlog } from "./transcript.ts";
@@ -295,13 +295,18 @@ export interface ClientSessionOptions {
   ownership?: Ownership;
   /**
    * The provider key an agent uses, resolved per tenant at process start; never persisted. `platform` keys are not the tenant's own.
-   * With a key scope it is `SCOPE_KEY`, and each call resolves through `scopedKey`.
+   * With a key scope, or on the tenant's own provider, it is `SCOPE_KEY`, and each call resolves through `scopedKey`.
    */
   apiKeyFor?: (tenant: string, provider: string, keyScope?: string) => Promise<ProviderKey | string | undefined> | ProviderKey | string | undefined;
-  /** One model call's credentials for an agent with a key scope: the scope's entry, else the tenant's key, else (prepaid) the platform's. */
-  scopedKey?: (tenant: string, keyScope: string, provider: string) => Promise<(Credentials & { platform: boolean }) | undefined>;
+  /**
+   * One model call's credentials for an agent with a key scope, or on the tenant's own provider: the scope's entry, else
+   * the provider's own, else the tenant's key, else (prepaid) the platform's.
+   */
+  scopedKey?: (tenant: string, keyScope: string | undefined, provider: string) => Promise<(Credentials & { platform: boolean }) | undefined>;
   /** The tenant's own model endpoints (tenants file), which its agents' models may name. */
   modelEndpoints?: (tenant: string) => ModelEndpoints;
+  /** The tenant's own OpenAI-compatible providers (model-providers.ts), which its agents' models may name. */
+  customProviders?: (tenant: string) => Promise<CustomProviders>;
   /** An identity token for `audience` (the runtime's signer), for model calls to a tenant's own endpoint. */
   modelToken?: (audience: string, claims: TokenClaims) => Promise<string>;
   /** At most this many hosted agents per tenant at once on this node (default: no per-tenant limit). */
@@ -1976,7 +1981,7 @@ export class ClientSessions {
     try {
       if (body.method === "configure" && !applying) {
         const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, ...update } = body.params;
-        configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant));
+        configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant));
         if (builtins !== undefined && session.header.definition) throw new HttpError(400, "This agent's builtins come from its definition; change them there");
         if (builtins !== undefined) builtinsInput(builtins);
       }
@@ -2221,8 +2226,9 @@ export class ClientSessions {
       }) };
     }
     const provider = header.config.model.provider;
-    if (!header.keyScope || !this.options.scopedKey) throw new Error("This agent's model takes no per-call credentials");
+    if (!this.options.scopedKey) throw new Error("This agent's model takes no per-call credentials");
     const resolved = await this.options.scopedKey(header.tenant, header.keyScope, provider);
+    if (!resolved && !header.keyScope) throw new Error(`The ${provider} provider is gone: set it again with PUT /v1/providers/${provider}, or move this agent to another model`);
     if (!resolved) throw new Error(`No ${provider} API key is configured for key scope ${header.keyScope} or this tenant; set one with PUT /v1/key-scopes/${header.keyScope}/providers/${provider}`);
     const { platform, ...credentials } = resolved;
     session.platformKey = platform;
@@ -2270,7 +2276,7 @@ export class ClientSessions {
       // The agent's own builtins (an agent from a definition has the definition's): its sources, with the tools they offer.
       const sources = builtins === undefined ? session.header.sources : (builtins as string[]).length ? { ...session.header.sources, builtins: builtins as string[] } : undefined;
       const changed = provisionHash === undefined || builtins !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
-      const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
+      const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
       // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
       const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;

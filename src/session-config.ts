@@ -54,6 +54,37 @@ export const UPSTREAMS: Record<string, { root: string; api: string; path?: strin
 
 const lookup = getModel as (provider: string, id: string) => AgentConfig['model'] | undefined;
 
+/**
+ * A model a tenant declares on its own OpenAI-compatible provider (model-providers.ts): its context window, the most
+ * it writes in a reply, what it takes in, whether it reasons, its pricing in USD per million tokens (none: free), and
+ * `compat`, Pi's switches for servers that differ from OpenAI's.
+ */
+export type CustomModel = {
+  id: string; contextWindow: number; maxOutputTokens?: number; input?: ('text' | 'image')[]; reasoning?: boolean;
+  pricing?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; compat?: Record<string, unknown>;
+};
+/** A tenant's OpenAI-compatible provider, as models are resolved from it: where it is, and its models. */
+export type CustomProvider = { type: 'openai-compatible'; baseUrl: string; models: CustomModel[] };
+/** A tenant's custom providers by name. */
+export type CustomProviders = Record<string, CustomProvider> | undefined;
+/** What a model replies at most when its provider declares no maximum: 8,192 tokens, or half a small context. */
+export const DEFAULT_MAX_OUTPUT = 8192;
+
+/** `<name>/<model id>` on a tenant's custom provider: Pi's openai-completions model, as declared. */
+function customModel(name: string, id: string, provider: CustomProvider): AgentConfig['model'] {
+  const declared = provider.models.find(model => model.id === id);
+  if (!declared) throw new Error(`Unknown model "${name}/${id}": ${name} declares ${provider.models.map(model => model.id).join(', ')}; add it with PUT /v1/providers/${name}`);
+  const { pricing, compat } = declared;
+  return {
+    id, name: id, provider: name, api: 'openai-completions', baseUrl: provider.baseUrl,
+    contextWindow: declared.contextWindow, maxTokens: declared.maxOutputTokens ?? Math.min(DEFAULT_MAX_OUTPUT, Math.floor(declared.contextWindow / 2)),
+    reasoning: declared.reasoning ?? false, input: declared.input ?? ['text'],
+    cost: { input: pricing?.input ?? 0, output: pricing?.output ?? 0, cacheRead: pricing?.cacheRead ?? 0, cacheWrite: pricing?.cacheWrite ?? 0 },
+    // Many servers end a stream without finish_reason: Pi then reads the reason from what came (one it is sent still counts).
+    compat: { supportsFinishReason: false, ...compat },
+  } as AgentConfig['model'];
+}
+
 
 /**
  * `<name>/<provider>/<model id>` on a tenant's endpoint: the catalog's (or the endpoint's declared)
@@ -81,16 +112,18 @@ function endpointModel(name: string, id: string, endpoint: ModelEndpoint): Agent
 
 /**
  * Resolve a model reference like `anthropic/claude-sonnet-5` or
- * `openrouter/anthropic/claude-opus-4.8` (provider, then model id) from Pi's catalog, or from
- * the tenant's own `endpoints`. Catalog models use their provider's published endpoint, and
- * endpoints are the operator's, so both are trusted.
+ * `openrouter/anthropic/claude-opus-4.8` (provider, then model id) from Pi's catalog, from
+ * the tenant's own `endpoints`, or from its `custom` providers. Catalog models use their provider's
+ * published endpoint, and endpoints are the operator's, so both are trusted; a custom provider's
+ * endpoint is the tenant's, called only through the outbound guard (compaction.ts).
  */
-export function resolveModel(reference: string, endpoints?: ModelEndpoints): AgentConfig['model'] {
+export function resolveModel(reference: string, endpoints?: ModelEndpoints, custom?: CustomProviders): AgentConfig['model'] {
   if (typeof reference !== 'string') throw new Error('model must be a "provider/model-id" string');
   const slash = reference.indexOf('/');
   if (slash <= 0 || slash === reference.length - 1) throw new Error(`Model "${reference}" must be written as "provider/model-id"; see GET /v1/models`);
   const provider = reference.slice(0, slash);
   if (endpoints && Object.hasOwn(endpoints, provider)) return endpointModel(provider, reference.slice(slash + 1), endpoints[provider]);
+  if (custom && Object.hasOwn(custom, provider)) return customModel(provider, reference.slice(slash + 1), custom[provider]);
   const id = reference.slice(slash + 1);
   // A routing variant (`…:nitro`) is looked up without it and sent with it; exact ids (`…:batch`) win.
   const known = lookup(provider, id);
@@ -121,11 +154,11 @@ export function modelHeadersInput(value: unknown): Record<string, string> | null
 }
 
 /** Only operator-authenticated provisioning may choose a model, and only among trusted endpoints. */
-export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, allowedBaseUrls: string[] = [], endpoints?: ModelEndpoints): SessionConfig {
+export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, allowedBaseUrls: string[] = [], endpoints?: ModelEndpoints, custom?: CustomProviders): SessionConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid session configuration');
   if ('apiKey' in input) throw new Error('Configure credentials on the runtime host, not in agent configuration');
   const named = typeof input.model === 'string';
-  const model = named ? resolveModel(input.model, endpoints) : input.model ?? defaultModel;
+  const model = named ? resolveModel(input.model, endpoints, custom) : input.model ?? defaultModel;
   if (!model || typeof model !== 'object' || Array.isArray(model) ||
       ['id', 'name', 'api', 'provider', 'baseUrl'].some(key => typeof model[key] !== 'string' || !model[key]) ||
       typeof model.reasoning !== 'boolean' || !Array.isArray(model.input) || !model.input.every((value: unknown) => value === 'text' || value === 'image') ||
@@ -136,6 +169,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
   if (model.headers || model.apiKey || model.token) throw new Error('Model credentials and custom headers must be configured on the runtime host');
   // A named model's endpoint is the catalog's or the tenant's own; an endpoint's models can only be named.
   if (!named && endpoints && Object.hasOwn(endpoints, model.provider)) throw new Error(`Name ${model.provider}'s models as "${model.provider}/<provider>/<model id>"`);
+  if (!named && custom && Object.hasOwn(custom, model.provider)) throw new Error(`Name ${model.provider}'s models as "${model.provider}/<model id>"`);
   if (!named) assertTrustedEndpoint(model, defaultModel, allowedBaseUrls);
   if (input.systemPrompt === null) throw new Error('systemPrompt must contain 1–32000 characters');
   const updates = configurationUpdate({
@@ -152,7 +186,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
   for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
@@ -170,5 +204,5 @@ export function configurationUpdate(input: any, endpoints?: ModelEndpoints): Pic
   if (input.systemPromptAppend !== undefined && (typeof input.systemPromptAppend !== 'string' || input.systemPromptAppend.length > 32000)) throw new Error('systemPromptAppend must be at most 32000 characters; empty removes it');
   if (input.thinkingLevel !== undefined && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(input.thinkingLevel)) throw new Error('Invalid thinkingLevel');
   if (input.tools !== undefined) validateDefinitions(input.tools);
-  return { ...input, ...(input.model !== undefined ? { model: resolveModel(input.model, endpoints) } : {}) };
+  return { ...input, ...(input.model !== undefined ? { model: resolveModel(input.model, endpoints, custom) } : {}) };
 }

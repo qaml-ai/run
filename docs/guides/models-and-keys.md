@@ -9,6 +9,10 @@ Agents name a model as `provider/model-id` from the catalog: `GET /v1/models`
 between runs with `upsert` (a changed `model`) or `agent.configure({ model })`;
 its history carries over.
 
+A model on a server of your own that speaks OpenAI Chat Completions (vLLM,
+Ollama, a hosted API the catalog lacks) is named the same way once you add its
+server as a provider: see [Custom OpenAI-compatible models](custom-models.md).
+
 An agent that names no model (and whose definition names none) gets the
 runtime's default: `anthropic/claude-sonnet-5` on agents.camelai.dev. `GET
 /v1/me` says which (`defaultModel`; `runtime.me()` in the SDKs).

@@ -84,12 +84,15 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                  "AGENT_DATABASE_URL": urlunsplit(url._replace(query=urlencode({"options": f"-c search_path={self.schema}"}))),
                  "AGENT_DATA_DIR": self.directory.name, "AGENT_TENANTS_FILE": str(tenants), "AGENT_SESSION_SECRET": self.token, "PORT": "0",
                  "AGENT_PROVIDER": "openrouter", "AGENT_MODEL": "openai/gpt-4o-mini", "AGENT_BASE_URL": f"http://127.0.0.1:{self.model.server_port}/v1",
+                 # Providers of the tenant's own: sealed keys, and the fake model server reachable as one.
+                 "AGENT_SECRETS_KEY": "ab" * 32, "AGENT_OUTBOUND_ALLOW_HTTP": "true", "AGENT_OUTBOUND_ALLOW_CIDRS": "127.0.0.1/32",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
         ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))
         # Keep reading the host's log, so it never writes into a closed pipe as it shuts down.
         self.logs = asyncio.create_task(self.host.stdout.read())
         self.url = f"http://127.0.0.1:{ready['address']['port']}"
+        self.model_url = f"http://127.0.0.1:{self.model.server_port}/v1"
         self.runtime = AgentRuntime(url=self.url, api_key=self.token)
         self.agents = Agents(self.token, url=self.url)
         # The SDK keeps no cursor store: a restarted client resumes from a snapshot.
@@ -206,6 +209,12 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         first, again = await asyncio.gather(agent.run("one", idempotency_key="py-first"), agent.run("one", idempotency_key="py-first"))
         self.assertEqual(first.text, again.text)
         researcher = await self.agents.upsert("py-researcher", builtins=["web_fetch"])
+        # A provider of one's own: here the fake model server (allowed by the operator's outbound policy).
+        own = await self.runtime.set_provider("py-local", base_url=self.model_url, models=[{"id": "fixture-model", "contextWindow": 32768}])
+        self.assertEqual(own["custom"]["models"][0]["id"], "fixture-model")
+        on_own = await self.agents.upsert("py-own-model", model="py-local/fixture-model")
+        self.assertEqual((await on_own.run("hi")).text, "seen")
+        await self.runtime.delete_provider("py-local")
         self.assertEqual(next(entry["key"] for entry in await self.runtime.list_agents() if entry["id"] == researcher.id), "py-researcher")
         defined = await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"])
         self.assertEqual((await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"]))["revision"], defined["revision"])

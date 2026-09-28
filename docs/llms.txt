@@ -21,6 +21,7 @@ error). Install `@camelai/agent-runtime` (npm) or `camelai-agent-runtime` (PyPI)
 - [Agents for many users](https://agents.camelai.dev/docs/guides/multi-user.md): an agent per user or conversation, identity, spend limits and keys per customer
 - [Webhooks](https://agents.camelai.dev/docs/guides/webhooks.md): run and input events, signatures, delivery
 - [Models and keys](https://agents.camelai.dev/docs/guides/models-and-keys.md): the model catalog, your own keys and endpoints, key scopes, model headers, spend limits
+- [Custom OpenAI-compatible models](https://agents.camelai.dev/docs/guides/custom-models.md): any OpenAI-compatible server as a provider of your own: hosted APIs, vLLM, Ollama
 - [Definitions](https://agents.camelai.dev/docs/guides/definitions.md): reusable configurations, and rolling changes out to their agents
 - [Channels](https://agents.camelai.dev/docs/guides/channels.md): Slack, Telegram and Discord
 - [Production checklist](https://agents.camelai.dev/docs/production.md): the checklist before shipping

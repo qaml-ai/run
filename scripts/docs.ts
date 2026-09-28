@@ -19,6 +19,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/multi-user.md", about: "an agent per user or conversation, identity, spend limits and keys per customer" },
   { section: "Guides", path: "guides/webhooks.md", about: "run and input events, signatures, delivery" },
   { section: "Guides", path: "guides/models-and-keys.md", about: "the model catalog, your own keys and endpoints, key scopes, model headers, spend limits" },
+  { section: "Guides", path: "guides/custom-models.md", about: "any OpenAI-compatible server as a provider of your own: hosted APIs, vLLM, Ollama" },
   { section: "Guides", path: "guides/definitions.md", about: "reusable configurations, and rolling changes out to their agents" },
   { section: "Guides", path: "guides/channels.md", about: "Slack, Telegram and Discord" },
   { section: "Guides", path: "production.md", about: "the checklist before shipping" },

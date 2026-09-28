@@ -689,6 +689,39 @@
           },
           "key": {
             "$ref": "#/components/schemas/KeyStatus"
+          },
+          "custom": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "openai-compatible"
+                ]
+              },
+              "baseUrl": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The names of its headers, never their values"
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CustomModel"
+                }
+              }
+            },
+            "required": [
+              "type",
+              "baseUrl",
+              "models"
+            ],
+            "description": "A provider of the tenant's own (PUT /v1/providers/{name}): where it is, and the models it declares"
           }
         },
         "required": [
@@ -727,6 +760,146 @@
         "required": [
           "provider",
           "source"
+        ]
+      },
+      "CustomModel": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The model's id on the server; agents name it <provider>/<id>",
+            "example": "llama-4-scout"
+          },
+          "contextWindow": {
+            "type": "integer",
+            "description": "Its context window in tokens: compaction keeps each request within it"
+          },
+          "maxOutputTokens": {
+            "type": "integer",
+            "description": "The most it writes in a reply; default 8,192, or half a smaller context window"
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "text",
+                "image"
+              ]
+            },
+            "description": "[\"text\", \"image\"] for a model that sees images; default [\"text\"]"
+          },
+          "reasoning": {
+            "type": "boolean",
+            "description": "Whether it reasons (thinkingLevel applies)"
+          },
+          "pricing": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "input",
+              "output"
+            ],
+            "description": "USD per million tokens, for usage, spend limits and webhooks; none: free"
+          },
+          "compat": {
+            "type": "object",
+            "properties": {
+              "supportsDeveloperRole": {
+                "type": "boolean"
+              },
+              "supportsUsageInStreaming": {
+                "type": "boolean"
+              },
+              "supportsReasoningEffort": {
+                "type": "boolean"
+              },
+              "maxTokensField": {
+                "type": "string",
+                "enum": [
+                  "max_tokens",
+                  "max_completion_tokens"
+                ]
+              },
+              "thinkingFormat": {
+                "type": "string",
+                "enum": [
+                  "openai",
+                  "openrouter",
+                  "deepseek",
+                  "together",
+                  "zai",
+                  "qwen",
+                  "qwen-chat-template"
+                ]
+              }
+            },
+            "description": "Switches for a server that differs from OpenAI's: a developer role, usage in the stream (default true), reasoning_effort, the max tokens field, how thinking is asked for"
+          }
+        },
+        "required": [
+          "id",
+          "contextWindow"
+        ]
+      },
+      "CustomProviderInput": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "openai-compatible"
+            ],
+            "description": "A server that speaks OpenAI Chat Completions (POST <baseUrl>/chat/completions)"
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "Its API root, public and https (the outbound guard checks it when saved and at every call)",
+            "example": "https://api.example.com/v1"
+          },
+          "apiKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sent as Authorization: Bearer; left out keeps the stored key, null removes it (a server that takes none)"
+          },
+          "headers": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Headers for each call, sealed like the key; left out keeps the stored ones, null removes them"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomModel"
+            },
+            "minItems": 1,
+            "maxItems": 200
+          }
+        },
+        "required": [
+          "type",
+          "baseUrl",
+          "models"
         ]
       },
       "KeySet": {
@@ -4513,7 +4686,7 @@
       "get": {
         "responses": {
           "200": {
-            "description": "Key status per provider",
+            "description": "Key status per provider, and the tenant's own providers",
             "content": {
               "application/json": {
                 "schema": {
@@ -4521,6 +4694,96 @@
                   "items": {
                     "$ref": "#/components/schemas/Provider"
                   }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/{name}": {
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomProviderInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The provider, never its key or header values; agents name its models <name>/<model id>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider is deleted: agents on its models fail at their next call until it is set again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
                 }
               }
             }

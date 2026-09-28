@@ -3,7 +3,7 @@ import type { Db } from "./db.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { errorText } from "./protocol.ts";
-import { configurationUpdate, resolveModel } from "./session-config.ts";
+import { configurationUpdate, resolveModel, type CustomProviders } from "./session-config.ts";
 import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
@@ -77,12 +77,15 @@ export class Definitions {
   readonly db: Db;
   private readonly accounts?: Accounts;
   private readonly outbound?: Outbound;
+  /** The tenant's own model providers, whose models a definition may name. */
+  private readonly customProviders?: (tenant: string) => Promise<CustomProviders>;
   /** Lists MCP servers as a definition is saved (ToolSources.listed). */
   listMcp?: (tenant: string, definition: string, servers: McpServerSpec[]) => Promise<ToolSourceView[]>;
-  constructor(options: { db: Db; accounts?: Accounts; outbound?: Outbound }) {
+  constructor(options: { db: Db; accounts?: Accounts; outbound?: Outbound; customProviders?: (tenant: string) => Promise<CustomProviders> }) {
     this.db = options.db;
     this.accounts = options.accounts;
     this.outbound = options.outbound;
+    this.customProviders = options.customProviders;
   }
 
   private row(row: any): Definition {
@@ -258,7 +261,7 @@ export class Definitions {
       else if (input[key] !== undefined) (spec as Record<string, unknown>)[key] = input[key];
     }
     try {
-      if (spec.model !== undefined) resolveModel(spec.model, this.accounts?.tenants.modelEndpoints(tenant));
+      if (spec.model !== undefined) resolveModel(spec.model, this.accounts?.tenants.modelEndpoints(tenant), await this.customProviders?.(tenant));
       configurationUpdate({ ...(spec.systemPrompt !== undefined ? { systemPrompt: spec.systemPrompt } : {}), ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}) });
     } catch (error) { throw new HttpError(400, errorText(error)); }
     if (spec.limits !== undefined) {

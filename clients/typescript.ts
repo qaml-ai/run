@@ -376,6 +376,25 @@ export interface ToolSource {
   exposure?: "direct" | "codemode" | "both";
   tools: { name: string; description: string; exposure?: "direct" | "codemode" | "both"; executionMode?: "sequential" | "parallel"; parameters?: Record<string, unknown>; excluded?: string }[];
 }
+/**
+ * A model on a provider of your own: its id on the server, its context window (compaction keeps requests within it),
+ * the most it writes in a reply (default 8,192, or half a smaller window), what it takes in, whether it reasons, its
+ * pricing in USD per million tokens (for usage, spend limits and webhooks; none: free), and `compat` switches for a
+ * server that differs from OpenAI's.
+ */
+export interface CustomModel {
+  id: string; contextWindow: number; maxOutputTokens?: number; input?: ("text" | "image")[]; reasoning?: boolean;
+  pricing?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  compat?: { supportsDeveloperRole?: boolean; supportsUsageInStreaming?: boolean; supportsReasoningEffort?: boolean; maxTokensField?: "max_tokens" | "max_completion_tokens"; thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "qwen-chat-template" };
+}
+/** A provider of your own: a public https server that speaks OpenAI Chat Completions (`POST <baseUrl>/chat/completions`). */
+export interface CustomProviderInput { type: "openai-compatible"; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] }
+/** A provider as GET /v1/providers lists it; never a key or header value. */
+export interface ProviderSummary {
+  id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string;
+  key: { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number } | null;
+  custom?: { type: "openai-compatible"; baseUrl: string; headers?: string[]; models: CustomModel[] };
+}
 /** An agent as GET /v1/agents lists it. */
 export interface AgentSummary { id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null }
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
@@ -630,6 +649,14 @@ export class AgentRuntime {
     if (!this.options.apiKey) throw new AgentError("Set apiKey to manage definitions, volumes and mounts");
     return this.options.apiKey;
   }
+  /**
+   * Add or replace a provider of your own: a server that speaks OpenAI Chat Completions, with the models it has. Agents
+   * name them `<name>/<model id>`. `apiKey` and `headers` left out keep what is stored; null removes them.
+   */
+  setProvider(name: string, config: CustomProviderInput): Promise<ProviderSummary> { return this.transport.json(`/v1/providers/${encodeURIComponent(name)}`, this.operator(), "PUT", config); }
+  deleteProvider(name: string): Promise<{ deleted: true }> { return this.transport.json(`/v1/providers/${encodeURIComponent(name)}`, this.operator(), "DELETE", undefined, false); }
+  /** Every provider: the built-in ones with your keys' status, and your own (`custom`). */
+  providers(): Promise<ProviderSummary[]> { return this.transport.json("/v1/providers", this.operator()); }
   /** The tenant's agents, each with the key it was made with (null for one made without) and its name. */
   listAgents(): Promise<AgentSummary[]> { return this.transport.json("/v1/agents", this.operator()); }
   createVolume(options: { name?: string } = {}): Promise<Volume> { return this.transport.json("/v1/volumes", this.operator(), "POST", options, false); }
