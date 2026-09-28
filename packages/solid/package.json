@@ -1,6 +1,6 @@
 {
   "name": "@camelai/agent-runtime-solid",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Solid bindings for chatting with agents on the camelAI agent runtime.",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@camelai/agent-runtime": "0.9.0"
+    "@camelai/agent-runtime": "0.10.0"
   },
   "peerDependencies": {
     "solid-js": "^1.8.0"

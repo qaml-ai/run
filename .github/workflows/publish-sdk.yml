@@ -1,8 +1,16 @@
 name: Publish SDK
-# Push a tag like sdk-v0.3.1 (matching sdk/package.json) to publish @camelai/agent-runtime to npmjs.
-# Authentication is npm trusted publishing (GitHub OIDC); no npm token is stored anywhere. The package
-# trusts this workflow file in the `npm` environment (npm trust github ... --file publish-sdk.yml --env npm):
-# add required reviewers to that environment in GitHub to gate releases on an approval.
+# Push a tag like sdk-v0.10.0 (matching sdk/package.json) to publish the TypeScript release train to npmjs:
+# @camelai/agent-runtime first, then @camelai/agent-runtime-react, -vue, -svelte, -solid and
+# @camelai/create-agent-app. They share one version and depend on exactly this core; each is built
+# after sdk/dist, which its types come from. A version already on npm is skipped, so a failed run can
+# be run again.
+#
+# Authentication is npm trusted publishing (GitHub OIDC); no npm token is stored anywhere. Each package
+# trusts this workflow file in the `npm` environment, set up once per package by an owner of the npm
+# scope (the core already is; the other five need it before their first publish):
+#   npm trust github @camelai/agent-runtime-react --repo qaml-ai/agent-runtime --file publish-sdk.yml --env npm --allow-publish
+#   (and the same for -vue, -svelte, -solid and @camelai/create-agent-app)
+# Add required reviewers to the `npm` environment in GitHub to gate releases on an approval.
 on:
   push: { tags: ["sdk-v*"] }
 permissions:
@@ -20,6 +28,29 @@ jobs:
       # Trusted publishing needs npm 11.5.1 or later.
       - run: npm install -g npm@latest
       - run: npm ci
-      - run: test "sdk-v$(node -p 'require("./sdk/package.json").version')" = "$GITHUB_REF_NAME"
-      - run: npm publish
-        working-directory: sdk
+      # The tag names the train's version, and every package is at it, on exactly this core.
+      - name: Check versions
+        run: |
+          version="$(node -p 'require("./sdk/package.json").version')"
+          test "sdk-v$version" = "$GITHUB_REF_NAME"
+          for dir in packages/react packages/vue packages/svelte packages/solid packages/create-agent-app; do
+            node -e '
+              const [dir, version] = process.argv.slice(1);
+              const manifest = require(`./${dir}/package.json`);
+              const core = manifest.dependencies?.["@camelai/agent-runtime"];
+              if (manifest.version !== version || (core !== undefined && core !== version)) {
+                console.error(`${manifest.name}: ${manifest.version}, core ${core}; expected ${version}`); process.exit(1);
+              }' "$dir" "$version"
+          done
+      - run: npm run typecheck && npm run test:ui
+      # Core first: the others depend on this exact version being on npm.
+      - name: Publish
+        run: |
+          publish() {
+            name="$(node -p "require('./$1/package.json').name")"; version="$(node -p "require('./$1/package.json').version")"
+            if npm view "$name@$version" version >/dev/null 2>&1; then echo "$name@$version is already published"; return; fi
+            (cd "$1" && npm publish)
+          }
+          (cd sdk && npm run build)
+          publish sdk
+          for dir in packages/react packages/vue packages/svelte packages/solid packages/create-agent-app; do publish "$dir"; done
