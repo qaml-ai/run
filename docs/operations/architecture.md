@@ -144,14 +144,19 @@ SIGTERM, and turns can run far longer, so tasks avoid being stopped mid-turn:
   with its service's primary deployment (task metadata and `ecs:DescribeServices`
   on `AGENT_ECS_SERVICE` in `AGENT_ECS_CLUSTER`, else the task's own cluster).
   When that deployment runs another task definition, or was created after the task
-  started, the task retires: it takes no new agents or volumes (requests for them
-  go to a live peer, as when draining), lets running turns finish for up to
+  started, the task is superseded. It retires once that deployment runs all its
+  tasks (or after `AGENT_RETIRE_WAIT_MS`, default 10 min, so a stuck deployment
+  cannot keep it) and a peer that is not retiring has joined; until then it serves
+  as before, so a deploy never leaves work with nowhere to go. Retiring, it takes no
+  new agents or volumes (requests for them go to a live peer, as when draining; a
+  request a peer forwarded to it by a stale cache goes on once more), lets running turns finish for up to
   `AGENT_RETIRE_MAX_MS` (default 6 h), gives up each agent and volume as soon as
   nothing runs on it (closing its event stream so the client reconnects to the new
   owner), and clears protection once idle. ECS then stops it and the drain finds
   nothing to do. `/healthz` stays 200 while retiring: ECS replaces tasks that fail
   their health check, protected or not, so the task keeps the load balancer's
-  traffic and hands it on.
+  traffic and hands it on. A retiring task that finds no such peer any more serves
+  again (`retire_paused`), and retires once one joins.
 
 <a id="turn-handoff"></a>**Turn handoff.** When a node loads an agent whose last
 run began and never finished (its node crashed, was killed, or drained out of

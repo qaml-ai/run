@@ -223,6 +223,13 @@ export class Ownership {
     await this.db.query("update runtime_nodes set draining = true where node = $1 and session = $2", [this.node, this.session]);
   }
 
+  /** Take actors again, and tell peers so: a retiring node left with no peer to hand them to. */
+  async undrain() {
+    this.draining = false;
+    this.forget();
+    await this.db.query("update runtime_nodes set draining = false where node = $1 and session = $2", [this.node, this.session]);
+  }
+
   /** Leave the cluster: dropping the heartbeat frees every actor this node still names. */
   async close() {
     clearInterval(this.timer);

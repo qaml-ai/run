@@ -100,7 +100,7 @@ export async function until(check: () => boolean | Promise<boolean>, what: strin
 
 /** Stand-ins for what a task sees on ECS: container and task metadata, the ECS API, and the agent's task-protection endpoint. */
 export async function fakeEcs(t: { after(fn: () => Promise<void>): void }) {
-  const state = { revision: 1, created: Date.now() / 1000 - 60, protection: [] as boolean[] };
+  const state = { revision: 1, created: Date.now() / 1000 - 60, running: 1, desired: 1, protection: [] as boolean[] };
   const task = { Cluster: "arn:aws:ecs:us-west-2:123456789012:cluster/runtime", Family: "runtime", Revision: "1", PullStartedAt: new Date().toISOString() };
   const server = createHttpServer(async (req, res) => {
     let text = "";
@@ -110,7 +110,7 @@ export async function fakeEcs(t: { after(fn: () => Promise<void>): void }) {
     if (req.url === "/metadata/task") return json(task);
     if (req.url === "/agent/task-protection/v1/state") { state.protection.push(JSON.parse(text).ProtectionEnabled); return json({ protection: {} }); }
     assert.equal(req.headers["x-amz-target"], "AmazonEC2ContainerServiceV20141113.DescribeServices");
-    json({ services: [{ serviceName: "runtime", deployments: [{ status: "PRIMARY", taskDefinition: `arn:aws:ecs:us-west-2:123456789012:task-definition/runtime:${state.revision}`, createdAt: state.created }] }], failures: [] }, "application/x-amz-json-1.1");
+    json({ services: [{ serviceName: "runtime", deployments: [{ status: "PRIMARY", taskDefinition: `arn:aws:ecs:us-west-2:123456789012:task-definition/runtime:${state.revision}`, createdAt: state.created, runningCount: state.running, desiredCount: state.desired }] }], failures: [] }, "application/x-amz-json-1.1");
   }).listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });

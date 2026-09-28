@@ -314,7 +314,8 @@ const FORWARDED = "x-agent-runtime-forwarded";
 /** Stream a request to the node that owns its actor, and stream the answer back (SSE included). */
 function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor?: string) {
   const target = new URL(req.url ?? "/", owner);
-  const upstream = httpRequest(target, { method: req.method, headers: { ...req.headers, host: target.host, [FORWARDED]: node } }, answer => {
+  const via = req.headers[FORWARDED];
+  const upstream = httpRequest(target, { method: req.method, headers: { ...req.headers, host: target.host, [FORWARDED]: typeof via === "string" ? `${via},${node}` : node } }, answer => {
     // The node no longer serves the actor (it moved, or the node is draining): look it up afresh next time.
     if (answer.statusCode === 503) ownership.forget(actor);
     res.writeHead(answer.statusCode ?? 502, answer.headers);
@@ -479,8 +480,11 @@ app.use(async (c, next) => {
 });
 // One node serves each agent and volume; anything addressed to one another node holds goes there.
 // Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
+// A forwarded request goes no further, but for one that reached a draining node: its sender's cached owner can
+// trail a release by a few seconds, so it goes on once more (to the live owner, or a peer that takes it) instead of a 503.
 app.use(async (c, next) => {
-  const target = !c.req.header(FORWARDED) ? await route(c.env.incoming.url).catch(() => undefined) : undefined;
+  const via = c.req.header(FORWARDED);
+  const target = !via || (ownership.draining && !via.includes(",")) ? await route(c.env.incoming.url).catch(() => undefined) : undefined;
   if (!target) return next();
   forward(c.env.incoming, c.env.outgoing, target.node, target.actor);
   return RESPONSE_ALREADY_SENT;
@@ -610,14 +614,18 @@ setTimeout(chargeStorage, Math.min(billingMs, 60_000)).unref();
 
 /**
  * Deploys and scale-in on ECS. While a turn runs the task is protected, so ECS
- * stops idle tasks instead. A task a newer deployment superseded retires: it takes
- * nothing new (its peers do), lets running turns finish for up to
- * AGENT_RETIRE_MAX_MS, gives up each agent and volume once idle, and drops its
- * protection when nothing runs, so ECS stops it and the SIGTERM drain is empty.
+ * stops idle tasks instead. A task a newer deployment superseded retires once that
+ * deployment runs all its tasks (or AGENT_RETIRE_WAIT_MS has passed) and a peer
+ * that is not retiring has joined: it takes nothing new (its peers do), lets running
+ * turns finish for up to AGENT_RETIRE_MAX_MS, gives up each agent and volume once
+ * idle, and drops its protection when nothing runs, so ECS stops it and the SIGTERM
+ * drain is empty. A retiring task left with no such peer serves again until one joins:
+ * refusing work would leave it nowhere to go.
  */
 const protection = new TaskProtection({ uri: process.env.ECS_AGENT_URI, idleMs: Number(process.env.AGENT_PROTECTION_IDLE_MS ?? 30_000) });
 let retiringSince: number | undefined;
 let retired = false;
+let pausing = false;
 const workTimer = setInterval(() => {
   if (retiringSince !== undefined) {
     void clients.releaseIdle().then(() => volumes.releaseIdle()).catch(error => console.error(JSON.stringify({ type: "retire_release_failed", error: errorText(error) })));
@@ -625,14 +633,25 @@ const workTimer = setInterval(() => {
       retired = true;
       console.log(JSON.stringify({ type: "retired", node, ms: Date.now() - retiringSince }));
     }
+    if (!pausing) {
+      pausing = true;
+      void ownership.peer().then(async peer => {
+        if (peer || retiringSince === undefined || draining) return;
+        console.log(JSON.stringify({ type: "retire_paused", node, ms: Date.now() - retiringSince }));
+        retiringSince = undefined;
+        retired = false;
+        clients.draining = false;
+        await ownership.undrain();
+      }).catch(error => console.error(JSON.stringify({ type: "retire_pause_failed", error: errorText(error) }))).finally(() => { pausing = false; });
+    }
   }
   const capped = retiringSince !== undefined && Date.now() - retiringSince > retireMaxMs;
   void protection.update(clients.inFlight() > 0 && !capped);
 }, 1_000);
 workTimer.unref();
 const superseded = await supersession().catch(error => { console.error(JSON.stringify({ type: "ecs_service_unavailable", error: errorText(error) })); return undefined; });
-const retireTimer = superseded && setInterval(() => void superseded().then(async yes => {
-  if (!yes || retiringSince !== undefined) return;
+const retireTimer = superseded && setInterval(() => void superseded().then(async state => {
+  if (state !== "superseded" || retiringSince !== undefined || draining || !await ownership.peer()) return;
   retiringSince = Date.now();
   console.log(JSON.stringify({ type: "retiring", node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
   clients.draining = true;

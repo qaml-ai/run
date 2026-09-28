@@ -11,7 +11,8 @@
 #
 # Rolling: ECS starts new tasks first (maximumPercent 200) and waits for them to
 # pass /healthz. This script returns then: every new task is healthy in the
-# target group. Old tasks retire in the background. A task running turns
+# target group. Old tasks retire in the background, once the new ones run and
+# have joined (they serve until then). A task running turns
 # protects itself from being stopped, and ECS waits for that protection to end,
 # up to AGENT_RETIRE_MAX_MS (default 6 h). Each old task is then deregistered
 # (15 s on the ALB), gets SIGTERM, and has 120 s to drain. The service's

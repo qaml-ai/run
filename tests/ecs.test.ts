@@ -49,7 +49,7 @@ test("a task is superseded when the service's primary deployment runs another re
   const task = { Cluster: "arn:aws:ecs:us-west-2:123456789012:cluster/camelai-agent-runtime", Family: "camelai-agent-runtime", Revision: "7", PullStartedAt: "2026-09-23T10:00:00.000Z" };
   const endpoint = await fake(t, (req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(req.url!.endsWith("/task") ? task : {})));
   const asked: string[][] = [];
-  let primary: { taskDefinition?: string; createdAt?: Date } | undefined;
+  let primary: { taskDefinition?: string; createdAt?: Date; runningCount?: number; desiredCount?: number } | undefined;
   const describe = async (cluster: string, service: string) => { asked.push([cluster, service]); return primary; };
   const env = { ECS_CONTAINER_METADATA_URI_V4: `${endpoint}/v4/0123`, AGENT_ECS_SERVICE: "camelai-agent-runtime" };
   assert.equal(await supersession({ ECS_CONTAINER_METADATA_URI_V4: env.ECS_CONTAINER_METADATA_URI_V4 }, describe), undefined, "no service named: nothing to watch");
@@ -57,18 +57,46 @@ test("a task is superseded when the service's primary deployment runs another re
   const revision = (n: number) => `arn:aws:ecs:us-west-2:123456789012:task-definition/camelai-agent-runtime:${n}`;
 
   primary = { taskDefinition: revision(7), createdAt: new Date("2026-09-23T09:55:00Z") };
-  assert.equal(await superseded(), false);
+  assert.equal(await superseded(), "current");
   assert.deepEqual(asked[0], [task.Cluster, "camelai-agent-runtime"], "the cluster comes from the task when AGENT_ECS_CLUSTER is unset");
   primary = { taskDefinition: revision(17), createdAt: new Date("2026-09-23T09:55:00Z") };
-  assert.equal(await superseded(), true, "revision 17 does not end with :7");
+  assert.equal(await superseded(), "superseded", "revision 17 does not end with :7");
   primary = { taskDefinition: revision(8), createdAt: new Date("2026-09-23T11:00:00Z") };
-  assert.equal(await superseded(), true);
+  assert.equal(await superseded(), "superseded");
   primary = { taskDefinition: revision(7), createdAt: new Date("2026-09-23T11:00:00Z") };
-  assert.equal(await superseded(), true, "a forced deployment of the same revision");
+  assert.equal(await superseded(), "superseded", "a forced deployment of the same revision");
   primary = undefined;
-  assert.equal(await superseded(), false);
+  assert.equal(await superseded(), "current");
   await supersession({ ...env, AGENT_ECS_CLUSTER: "other" }, describe).then(check => check!());
   assert.equal(asked.at(-1)![0], "other");
+});
+
+test("a superseded task waits for the new deployment to run all its tasks, for at most AGENT_RETIRE_WAIT_MS", async t => {
+  const task = { Cluster: "arn:aws:ecs:us-west-2:123456789012:cluster/runtime", Family: "runtime", Revision: "7", PullStartedAt: "2026-09-23T10:00:00.000Z" };
+  const endpoint = await fake(t, (req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(req.url!.endsWith("/task") ? task : {})));
+  const newer = "arn:aws:ecs:us-west-2:123456789012:task-definition/runtime:8";
+  let primary: { taskDefinition: string; createdAt: Date; runningCount?: number; desiredCount?: number } = { taskDefinition: newer, createdAt: new Date("2026-09-23T11:00:00Z"), runningCount: 0, desiredCount: 2 };
+  let now = 0;
+  const env = { ECS_CONTAINER_METADATA_URI_V4: `${endpoint}/v4/0123`, AGENT_ECS_SERVICE: "runtime" };
+  const check = (await supersession(env, async () => primary, { now: () => now }))!;
+  assert.equal(await check(), "waiting", "its replacements are not running yet");
+  primary = { ...primary, runningCount: 1 };
+  now = 60_000;
+  assert.equal(await check(), "waiting", "one of two");
+  primary = { ...primary, runningCount: 2 };
+  assert.equal(await check(), "superseded");
+  primary = { ...primary, runningCount: 0 };
+  assert.equal(await check(), "waiting");
+  now = 10 * 60_000;
+  assert.equal(await check(), "superseded", "ten minutes superseded: a stuck deployment does not keep it forever");
+  primary = { ...primary, taskDefinition: "arn:aws:ecs:us-west-2:123456789012:task-definition/runtime:7", createdAt: new Date("2026-09-23T09:00:00Z") };
+  assert.equal(await check(), "current", "rolled back");
+  primary = { ...primary, taskDefinition: newer, createdAt: new Date("2026-09-23T12:00:00Z") };
+  assert.equal(await check(), "waiting", "the wait starts again with the next deployment");
+  const short = (await supersession({ ...env, AGENT_RETIRE_WAIT_MS: "1000" }, async () => primary, { now: () => now }))!;
+  assert.equal(await short(), "waiting");
+  now += 1_000;
+  assert.equal(await short(), "superseded");
 });
 
 test("task protection turns on with work, renews before it expires, and turns off only after a quiet period", async t => {

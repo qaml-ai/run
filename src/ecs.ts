@@ -23,15 +23,22 @@ export function nodeUrl(env: NodeJS.ProcessEnv, port: number, address?: string) 
   return `http://${address ?? "127.0.0.1"}:${port}`;
 }
 
+type Deployment = { taskDefinition?: string; createdAt?: Date; runningCount?: number; desiredCount?: number };
+
 /**
  * Whether a newer deployment of this task's ECS service has replaced it: the
  * primary deployment runs another task definition, or was created after this task
- * started (a forced deployment of the same revision). The service is
- * AGENT_ECS_SERVICE; the cluster is AGENT_ECS_CLUSTER or the task's own.
+ * started (a forced deployment of the same revision). "waiting" while that deployment
+ * does not yet run all its tasks, for at most AGENT_RETIRE_WAIT_MS (default 10 min),
+ * so the task keeps serving until its replacements can; then "superseded". The
+ * service is AGENT_ECS_SERVICE; the cluster is AGENT_ECS_CLUSTER or the task's own.
  * Undefined when this is not an ECS service task.
  */
-export async function supersession(env = process.env, describe?: (cluster: string, service: string) => Promise<{ taskDefinition?: string; createdAt?: Date } | undefined>) {
+export async function supersession(env = process.env, describe?: (cluster: string, service: string) => Promise<Deployment | undefined>, options: { now?: () => number } = {}) {
   if (!env.ECS_CONTAINER_METADATA_URI_V4 || !env.AGENT_ECS_SERVICE) return undefined;
+  const waitMs = Number(env.AGENT_RETIRE_WAIT_MS ?? 10 * 60_000);
+  if (!Number.isInteger(waitMs) || waitMs < 0) throw new Error("AGENT_RETIRE_WAIT_MS must be a non-negative integer");
+  const now = options.now ?? Date.now;
   const task = await metadata(`${env.ECS_CONTAINER_METADATA_URI_V4}/task`);
   const cluster = env.AGENT_ECS_CLUSTER ?? task.Cluster;
   const service = env.AGENT_ECS_SERVICE;
@@ -45,10 +52,19 @@ export async function supersession(env = process.env, describe?: (cluster: strin
       return services?.[0]?.deployments?.find(deployment => deployment.status === "PRIMARY");
     };
   }
-  return async () => {
+  // Since when, and by which deployment: a newer one starts the wait again.
+  let since: { deployment: string; at: number } | undefined;
+  return async (): Promise<"current" | "waiting" | "superseded"> => {
     const primary = await describe!(cluster, service);
-    if (!primary?.taskDefinition) return false;
-    return !primary.taskDefinition.endsWith(own) || (started !== undefined && !!primary.createdAt && primary.createdAt.getTime() > started);
+    if (!primary?.taskDefinition) return "current";
+    if (primary.taskDefinition.endsWith(own) && (started === undefined || !primary.createdAt || primary.createdAt.getTime() <= started)) {
+      since = undefined;
+      return "current";
+    }
+    const deployment = `${primary.taskDefinition}@${primary.createdAt?.getTime() ?? ""}`;
+    if (since?.deployment !== deployment) since = { deployment, at: now() };
+    const running = primary.runningCount === undefined || primary.desiredCount === undefined || primary.runningCount >= primary.desiredCount;
+    return running || now() - since.at >= waitMs ? "superseded" : "waiting";
   };
 }
 
