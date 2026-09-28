@@ -512,13 +512,13 @@ test("a request that arrives while its idle agent is being stopped waits and res
 });
 
 test("expired agents are removed, but an agent without a lifetime stays until deleted", async t => {
-  // Longer than an agent process takes to start, so expiry never races provisioning.
-  const f = await fixture(t, { ttlMs: 1_000, idleMs: 100 });
+  // Shorter than an agent takes to start: the agent expires once it is made, never while it is being made.
+  const f = await fixture(t, { ttlMs: 30, idleMs: 100 });
   const config = { model: configuredModel() };
   const brief = await f.sessions.create([], config, "brief", {}, "default");
   const lasting = await f.sessions.create([], config, "lasting", {}, "default", null);
   assert.equal(lasting.expiresAt, null);
-  await sleep(1_500);
+  await sleep(1_000);
   const state = (session: { id: string; token: string }) => fetch(`${f.url}/clients/${session.id}/state`, { headers: { Authorization: `Bearer ${session.token}` } });
   assert.equal((await state(brief)).status, 410);
   assert.equal((await state(lasting)).status, 200);

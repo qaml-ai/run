@@ -1526,7 +1526,8 @@ export class ClientSessions {
     }
     try {
       await this.ensureStarted(session);
-      const status = await this.supervisor.request(id, "status");
+      // An agent whose lifetime ran out as it started has been made, and is already gone: no status to give.
+      const status = await this.supervisor.request(id, "status").catch(error => { if (session.header.revoked) return {}; throw error; });
       return { id, token, expiresAt: session.header.expiresAt, ...status, ...changed };
     } catch (error) {
       // From the caller's view creation is atomic: an agent that never started is gone, so a retry with the same key starts afresh.
@@ -2804,7 +2805,8 @@ export class ClientSessions {
     const idleMs = this.options.idleMs ?? 5 * 60_000;
     for (const session of this.sessions.values()) {
       const id = session.header.id;
-      if (!session.header.revoked && expired(session.header.expiresAt, now)) {
+      // An agent still starting (being made, say) expires at the next tick after: stopping it now would fail its start.
+      if (!session.header.revoked && expired(session.header.expiresAt, now) && !session.starting) {
         void this.remove(id).then(() => this.supervisor.stop(id)).catch(() => {});
         continue;
       }
