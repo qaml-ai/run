@@ -1,0 +1,74 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import { lastUser, runtime, until } from "./runtime-server.ts";
+
+const system = (body: any) => body.messages.find((message: any) => message.role === "system" || message.role === "developer")?.content ?? "";
+
+test("an agent made with an idempotency key lives until deleted by default; one made without lives a day", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const keyed = await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "support-thread-1" } });
+  assert.equal(keyed.status, 201, keyed.text);
+  assert.equal(keyed.json.expiresAt, null);
+  const scratch = await r.call("/v1/agents", { body: {} });
+  assert.ok(scratch.json.expiresAt - Date.now() > 23 * 3_600_000 && scratch.json.expiresAt - Date.now() <= 24 * 3_600_000);
+  const limited = await r.call("/v1/agents", { body: { ttlSeconds: 3600 }, headers: { "Idempotency-Key": "short-lived" } });
+  assert.ok(limited.json.expiresAt - Date.now() <= 3_600_000, "ttlSeconds still sets one");
+});
+
+test("a key whose agent was deleted or expired makes a fresh agent, with a new token; the old one stays gone", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const first = (await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "thread-a" } })).json;
+  await r.prompt(first.id, "remember me");
+  assert.equal((await r.call(`/v1/agents/${first.id}`, { method: "DELETE" })).status, 200);
+  const second = await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "thread-a" } });
+  assert.equal(second.status, 201, second.text);
+  assert.notEqual(second.json.id, first.id);
+  assert.notEqual(second.json.token, first.token);
+  assert.equal((await r.call(`/v1/agents/${second.json.id}/history`)).json.messages.length, 0, "a fresh agent");
+  assert.equal((await r.call(`/v1/agents/${first.id}`)).status, 404, "the deleted one stays deleted");
+  assert.equal((await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "thread-a" } })).json.id, second.json.id, "and the key now means the new one");
+
+  // Expired: the same, on a node that reads it from the database.
+  const lapsing = (await r.call("/v1/agents", { body: { ttlSeconds: 60 }, headers: { "Idempotency-Key": "thread-b" } })).json;
+  const stopped = once(r.child, "exit");
+  r.child.kill("SIGTERM");
+  await stopped;
+  await r.db.query("update agents set expires_at = $2, header = jsonb_set(header::jsonb, '{expiresAt}', to_jsonb($2::bigint))::json where id = $1", [lapsing.id, Date.now() - 1000]);
+  const next = await runtime(t, () => ({ role: "assistant", content: "ok" }), {}, undefined, { databaseUrl: r.databaseUrl });
+  const renewed = await next.call("/v1/agents", { body: { ttlSeconds: 60 }, headers: { "Idempotency-Key": "thread-b" } });
+  assert.equal(renewed.status, 201, renewed.text);
+  assert.notEqual(renewed.json.id, lapsing.id);
+});
+
+test("the same key with a changed configuration reconfigures the agent instead of refusing; what cannot change says so", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const key = { "Idempotency-Key": "assistant-7" };
+  const tool = (description: string) => ({ name: "lookup", description, inputSchema: { type: "object", properties: {} } });
+  const made = (await r.call("/v1/agents", { body: { systemPrompt: "Be brief.", name: "v1", mcp: { tools: [tool("Look up v1")] } }, headers: key })).json;
+  await r.prompt(made.id, "one");
+  assert.match(system(r.model.bodies[0]), /Be brief\./);
+
+  const same = await r.call("/v1/agents", { body: { systemPrompt: "Be brief.", name: "v1", mcp: { tools: [tool("Look up v1")] } }, headers: key });
+  assert.equal(same.status, 201);
+  assert.equal(same.json.id, made.id);
+  assert.equal(same.json.reconfigured, undefined, "nothing changed");
+
+  const edited = await r.call("/v1/agents", { body: { systemPrompt: "Be thorough.", name: "v2", thinkingLevel: "low", mcp: { tools: [tool("Look up v2")] } }, headers: key });
+  assert.equal(edited.status, 201, edited.text);
+  assert.equal(edited.json.id, made.id);
+  assert.equal(edited.json.token, made.token);
+  assert.equal(edited.json.reconfigured.method, "configure");
+  await until(async () => (await r.call(`/v1/agents/${made.id}/requests/${edited.json.reconfigured.id}`)).json.state === "completed", "the reconfiguration");
+  const detail = (await r.call(`/v1/agents/${made.id}`)).json;
+  assert.deepEqual([detail.systemPrompt, detail.name, detail.tools[0].description], ["Be thorough.", "v2", "Look up v2"]);
+  await r.prompt(made.id, "two");
+  assert.match(system(r.model.bodies.at(-1)), /Be thorough\./);
+  assert.equal(lastUser(r.model.bodies.at(-1)), "two");
+  assert.equal((await r.call(`/v1/agents/${made.id}/history`)).json.messages.length, 4, "history kept");
+  assert.equal((await r.call("/v1/agents", { body: { systemPrompt: "Be thorough.", name: "v2", thinkingLevel: "low", mcp: { tools: [tool("Look up v2")] } }, headers: key })).json.reconfigured, undefined, "an upsert repeated is a no-op");
+
+  const moved = await r.call("/v1/agents", { body: { systemPrompt: "Be thorough.", subject: "someone-else" }, headers: key });
+  assert.equal(moved.status, 409);
+  assert.match(moved.json.error, /subject/);
+});

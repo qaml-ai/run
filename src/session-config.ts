@@ -153,7 +153,8 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  */
 export function configurationUpdate(input: any, endpoints?: ModelEndpoints): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
   // Replaced whole; null or {} removes them.
   if (input.modelHeaders !== undefined) input = { ...input, modelHeaders: modelHeadersInput(input.modelHeaders) };
@@ -163,7 +164,8 @@ export function configurationUpdate(input: any, endpoints?: ModelEndpoints): Pic
     input = { ...rest, tools: attachedTools(mcp?.tools) };
   }
   if (input.model !== undefined && typeof input.model !== 'string') throw new Error('model must be a "provider/model-id" string');
-  if (input.systemPrompt !== undefined && (typeof input.systemPrompt !== 'string' || !input.systemPrompt.trim() || input.systemPrompt.length > 32000)) throw new Error('systemPrompt must contain 1–32000 characters');
+  // null returns to the runtime's default prompt.
+  if (input.systemPrompt !== undefined && input.systemPrompt !== null && (typeof input.systemPrompt !== 'string' || !input.systemPrompt.trim() || input.systemPrompt.length > 32000)) throw new Error('systemPrompt must contain 1–32000 characters');
   if (input.systemPromptAppend !== undefined && (typeof input.systemPromptAppend !== 'string' || input.systemPromptAppend.length > 32000)) throw new Error('systemPromptAppend must be at most 32000 characters; empty removes it');
   if (input.thinkingLevel !== undefined && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(input.thinkingLevel)) throw new Error('Invalid thinkingLevel');
   if (input.tools !== undefined) validateDefinitions(input.tools);

@@ -319,8 +319,8 @@ test("a tenant at its agent quota gets 429 with Retry-After and nothing half-cre
     assert.match(JSON.stringify(refused.json), /already has 1 agents running/);
   }
   assert.equal(await agents(), 1, "a refused create persists nothing");
-  // Other statuses keep theirs too: a reused key with other settings conflicts, not "bad request".
-  assert.equal((await call("/client-sessions", { token: bob, body: { name: "different" }, headers: { "Idempotency-Key": "busy" } })).status, 409);
+  // Other statuses keep theirs too: a reused key for someone else conflicts, not "bad request".
+  assert.equal((await call("/client-sessions", { token: bob, body: { mcp: { tools: [hold] }, subject: "someone-else" }, headers: { "Idempotency-Key": "busy" } })).status, 409);
   // The tool times out, the busy agent goes idle, and the refused create's retry takes its slot.
   let retried;
   for (let tries = 0; (retried = await call("/client-sessions", { token: bob, body: {}, headers: { "Idempotency-Key": "second" } })).status === 429; tries++) {

@@ -181,8 +181,17 @@ async function createAgent(tenant: string, params: any, key?: string) {
   }
   const ttl = params.ttlSeconds;
   validTtl(ttl);
-  return clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, ttl === undefined ? undefined : ttl === null ? null : ttl * 1000, params.mounts,
+  // An agent made with a key is one the application comes back to: it lives until deleted, unless it says otherwise.
+  // One made without is a scratch agent nothing can find again once its id is lost: it lives a day, unless it says.
+  const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
+  const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity, { keyScope, spendLimit });
+  if (!reconfigure) return made_;
+  // The key's agent exists with another configuration: bring it to this one, between its turns. The request's id is
+  // the configuration's, so a retry of the same upsert returns the same request.
+  const { provisionHash } = reconfigure as { provisionHash: string };
+  const reconfigured = await submitAnywhere(made_.id, tenant, { id: `upsert-${provisionHash.slice(0, 40)}`, method: "configure", params: reconfigure as Record<string, unknown> });
+  return { ...made_, reconfigured };
 }
 
 const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };

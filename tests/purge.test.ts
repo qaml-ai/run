@@ -43,7 +43,7 @@ async function execute(sessions: ClientSessions, id: string, request: string) {
   }
 }
 
-test("deleting an agent purges everything it stored and leaves a tombstone that keeps its id and key", { timeout: 60_000 }, async t => {
+test("deleting an agent purges everything it stored and leaves a tombstone that keeps its id", { timeout: 60_000 }, async t => {
   const { db } = await testDatabase();
   // Unfenced: the test writes a transcript itself, with no claim.
   const storage = memoryStorage(postgresTail(db, { unfenced: true }));
@@ -77,8 +77,8 @@ test("deleting an agent purges everything it stored and leaves a tombstone that 
   assert.equal(row.header.purged, true);
   assert.equal("config" in row.header || "definitions" in row.header, false, "the tombstone keeps only identity");
 
-  // The id and idempotency key stay taken, and the agent is gone.
-  await assert.rejects(sessions.create([], { model }, "doomed", {}, "default"), (error: any) => error.status === 410);
+  // The id stays taken and the agent is gone; its key makes a fresh agent.
+  assert.notEqual((await sessions.create([], { model }, "doomed", {}, "default")).id, id);
   await assert.rejects(sessions.inspect(id, "default"), (error: any) => error.status === 404);
   assert.equal(await sessions.destroyAgent(id, "default"), false);
   assert.equal(await sessions.purge(), 0, "purging again finds nothing");

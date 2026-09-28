@@ -511,7 +511,7 @@ export function createAgentHost(io: HostIO) {
     if (method === "status") return { pid: process.pid, busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
-      if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt;
+      if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
       if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
       if (params.fileTools !== undefined) config.fileTools = params.fileTools;
       if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; }

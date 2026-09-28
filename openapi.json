@@ -1233,7 +1233,7 @@
               "integer",
               "null"
             ],
-            "description": "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400."
+            "description": "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without"
           },
           "mounts": {
             "type": "array",
@@ -3196,7 +3196,7 @@
               "integer",
               "null"
             ],
-            "description": "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default 86400."
+            "description": "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without"
           }
         }
       },

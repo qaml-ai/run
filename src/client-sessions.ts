@@ -174,6 +174,8 @@ const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].i
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
 const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "history", "steer", "followUp", "configure"];
+/** A configuration's fields only an upsert (the tenant making the agent again with its key) sets: see `reconfiguration`. */
+const UPSERT_KEYS = ["provisionHash", "name", "type", "tools", "fileTools"];
 /** A batch of answers from a request: `{ answers: [{ id, action, content?, from?, actor? }] }`. */
 export const answerList = (body: any) => {
   if (!Array.isArray(body?.answers)) throw new HttpError(400, "Send { answers: [{ id, action, content?, from?, actor? }] }");
@@ -1326,6 +1328,37 @@ export class ClientSessions {
     }
   }
 
+  /**
+   * What an upsert changes on an existing agent: a `configure` request's parameters bringing its configuration to the
+   * one asked for, and its provision hash, so the same upsert again changes nothing. What configuration cannot change
+   * (who it acts for, its definition, its mounts) is refused; initialMessages only apply when an agent is made.
+   */
+  private reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
+    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string) {
+    const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
+    const fixed = [
+      ...differs(header.identity?.subject, identity?.subject) ? ["subject"] : [], ...differs(header.identity?.context, identity?.context) ? ["context"] : [],
+      ...(header.definition?.id ?? null) !== (origin?.definition.id ?? null) ? ["definition"] : [],
+      ...mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (mounts as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" }))) ? ["mounts"] : [],
+    ];
+    if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key`);
+    const current = header.config;
+    const update: Record<string, unknown> = { provisionHash };
+    // Only a definition's own fields are the agent's: the rest follow its definition.
+    if (differs(current.model, config.model)) update.model = `${config.model.provider}/${config.model.id}`;
+    if (current.thinkingLevel !== config.thinkingLevel && (current.thinkingLevel ?? "off") !== (config.thinkingLevel ?? "off")) update.thinkingLevel = config.thinkingLevel ?? "off";
+    if ((current.systemPromptAppend ?? "") !== (config.systemPromptAppend ?? "")) update.systemPromptAppend = config.systemPromptAppend ?? "";
+    if ((current.fileTools !== false) !== (config.fileTools !== false)) update.fileTools = config.fileTools !== false;
+    if (!origin) {
+      if (differs(current.systemPrompt, config.systemPrompt)) update.systemPrompt = config.systemPrompt ?? null;
+      if (differs(current.modelHeaders, config.modelHeaders)) update.modelHeaders = config.modelHeaders ?? null;
+      if (differs(header.definitions, definitions)) update.tools = definitions;
+    }
+    if ((header.metadata?.name ?? null) !== (metadata.name ?? null)) update.name = metadata.name ?? null;
+    if ((header.metadata?.type ?? null) !== (metadata.type ?? null)) update.type = metadata.type ?? null;
+    return update;
+  }
+
   /** The id of the agent `create` makes for a tenant's idempotency key. */
   agentId(tenant: string, key: string) {
     return `client_${hash(`${tenant}:${key}`).slice(0, 40)}`;
@@ -1340,29 +1373,38 @@ export class ClientSessions {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
-    // Idempotency keys are per tenant.
-    const scoped = `${tenant}:${key}`;
-    const id = this.agentId(tenant, key);
+    // A key whose agent was deleted or expired makes a fresh one: the next generation of the key, with an id and token
+    // of its own, so the old agent's id is never reused and its token never works again.
+    let id: string, scoped: string, existing: { value: SessionHeader } | undefined;
+    for (let generation = 0; ; generation++) {
+      // Idempotency keys are per tenant.
+      scoped = `${tenant}:${key}${generation ? `#${generation}` : ""}`;
+      id = this.agentId(tenant, `${key}${generation ? `#${generation}` : ""}`);
+      // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
+      existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
+      const header = this.sessions.get(id)?.header ?? existing?.value;
+      if (!header || !(header.revoked || expired(header.expiresAt))) break;
+    }
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
     const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }, ...(identity ? { identity } : {}) }));
-    // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
-    const existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
+    // The same key with another configuration updates the agent: create or reconfigure.
+    const changes = (header: SessionHeader) => header.provisionHash === provisionHash ? {} : { reconfigure: this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash) };
     if (existing) {
       if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
-      if (existing.value.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
-      if (existing.value.revoked || expired(existing.value.expiresAt)) throw new HttpError(410, "Session expired or revoked");
-      if (await this.ownerElsewhere(id)) return { id, token, expiresAt: existing.value.expiresAt, running: true };
+      const changed = changes(existing.value);
+      if (await this.ownerElsewhere(id)) return { id, token, expiresAt: existing.value.expiresAt, running: true, ...changed };
     }
     let session = await this.load(id);
     // Another create of this agent on this node is provisioning it: wait for what it makes. Two at once
     // would each take the claim, and the second acquire's new epoch would fence the first out.
     while (!session && this.loading.has(id)) session = await this.load(id);
     let created = false;
+    let changed = {};
     if (session) {
       if (session.header.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
-      if (session.header.provisionHash !== provisionHash) throw new HttpError(409, "Idempotency key reused with different configuration");
       if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
+      changed = changes(session.header);
     } else {
       // Loads and creates of this agent here wait for this one (see `load`).
       const provisioned = Promise.withResolvers<Session | undefined>();
@@ -1411,7 +1453,7 @@ export class ClientSessions {
     try {
       await this.ensureStarted(session);
       const status = await this.supervisor.request(id, "status");
-      return { id, token, expiresAt: session.header.expiresAt, ...status };
+      return { id, token, expiresAt: session.header.expiresAt, ...status, ...changed };
     } catch (error) {
       // From the caller's view creation is atomic: an agent that never started is gone, so a retry with the same key starts afresh.
       if (created) await this.discard(session);
@@ -1861,11 +1903,11 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "modelHeaders"]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "modelHeaders", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
-      if (body.method === "configure" && !applying) { const { spendLimit: _limit, ...update } = body.params; configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant)); }
+      if (body.method === "configure" && !applying) { const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, ...update } = body.params; configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant)); }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer", "followUp"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -2122,7 +2164,9 @@ export class ClientSessions {
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
       const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
-      const { keyScope, ...update } = (applied?.update ?? configurationUpdate(params, this.options.modelEndpoints?.(session.header.tenant))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
+      // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
+      const { provisionHash, name, type, ...given } = params;
+      const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
       // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
       const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;
@@ -2131,7 +2175,7 @@ export class ClientSessions {
       const result = live ? await this.supervisor.request(id, "configure", {
         ...update, ...apiKey ? { apiKey } : {},
         // Replacing the application's tools keeps the runtime's own.
-        ...update.tools ? { tools: await this.toolset(session, update.tools, applied ? applied.sources : session.header.sources, "fileTools" in update ? update.fileTools : session.header.config.fileTools) } : {},
+        ...update.tools || "fileTools" in update ? { tools: await this.toolset(session, update.tools ?? session.header.definitions, applied ? applied.sources : session.header.sources, "fileTools" in update ? update.fileTools : session.header.config.fileTools) } : {},
       }) : { configured: true };
       const { tools, ...config } = update;
       if (resolved && live) session.platformKey = resolved.platform;
@@ -2145,6 +2189,11 @@ export class ClientSessions {
         // A model or thinking level configured directly is the agent's own from then on.
         const overrides = new Set([...session.header.overrides ?? [], ...OVERRIDES.filter(key => (update as Record<string, unknown>)[key] !== undefined)]);
         if (overrides.size) session.header.overrides = [...overrides];
+      }
+      if (provisionHash !== undefined) session.header.provisionHash = provisionHash;
+      if (name !== undefined || type !== undefined) {
+        const metadata = { ...session.header.metadata, ...name !== undefined ? { name } : {}, ...type !== undefined ? { type } : {} };
+        session.header.metadata = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)) as AgentMetadata;
       }
       await this.writeHeader(session);
       return result;
@@ -2513,8 +2562,8 @@ export class ClientSessions {
    * returns how many were purged. Everything the agent stored goes: its journal and
    * transcript (segments, snapshots, blobs), tail rows, local directory, schedules,
    * channel bindings and volume watches. The row stays as a tombstone with only the
-   * agent's identity, so its id and idempotency key are never reused and requests
-   * for it get 404 or 410. Nodes claim agents with FOR UPDATE SKIP LOCKED and a
+   * agent's identity, so its id is never reused and requests for it get 404 or 410;
+   * its idempotency key makes a fresh agent (see `create`). Nodes claim agents with FOR UPDATE SKIP LOCKED and a
    * lease, so they share the work; every step is idempotent, and an agent whose
    * purge failed or whose node died is claimed again once the lease lapses.
    */
