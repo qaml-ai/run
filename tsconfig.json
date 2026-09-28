@@ -14,5 +14,6 @@
       "@camelai/agent-runtime/*": ["./clients/*.ts"]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "clients/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "clients/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["examples/frontend"]
 }

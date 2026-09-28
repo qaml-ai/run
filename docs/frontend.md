@@ -23,7 +23,8 @@ cd my-app && npm run dev
 ```
 
 A Next.js app with the chat, its route, a tool drawn by its own component, and a demo sign-in to
-replace with yours. Get an API key in the [console](https://agents.camelai.dev/console).
+replace with yours. Examples with Vite (React, Vue, Svelte, Solid), the read proxy and the AI SDK are in
+[examples/frontend](../examples/frontend). Get an API key in the [console](https://agents.camelai.dev/console).
 
 ## Add it to an app you have
 
