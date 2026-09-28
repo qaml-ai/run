@@ -1,4 +1,4 @@
-import { getModel } from '@earendil-works/pi-ai/compat';
+import { getModel } from './pi-catalog.ts';
 import type { AgentConfig } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';

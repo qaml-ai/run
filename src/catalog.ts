@@ -1,4 +1,5 @@
-import { getModels, getProviders } from "@earendil-works/pi-ai/compat";
+import { getProviders } from "@earendil-works/pi-ai/compat";
+import { getModels } from "./pi-catalog.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { SEARCH_PROVIDERS } from "./web-search.ts";
 
@@ -42,7 +43,7 @@ export interface ModelInfo {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
-const models = (provider: string) => getModels(provider as never) as Model<Api>[];
+const models = (provider: string) => getModels(provider);
 const usableEndpoint = (model: Model<Api>) => !!model.baseUrl && !model.baseUrl.includes("{");
 
 export function listProviders(): ProviderInfo[] {

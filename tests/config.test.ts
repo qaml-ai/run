@@ -7,6 +7,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveModel } from "../src/session-config.ts";
+import { listModels } from "../src/catalog.ts";
 import { Tenants } from "../src/tenants.ts";
 
 const tenantsFile = join(mkdtempSync(join(tmpdir(), "agent-config-")), "tenants.json");
@@ -106,4 +107,29 @@ test("a catalog model with a routing variant resolves like its base model and ke
   assert.equal(nitro.contextWindow, plain.contextWindow);
   assert.equal(resolveModel("openrouter/openai/gpt-6-luna:floor").api, "openai-responses");
   assert.throws(() => resolveModel("openrouter/nobody/no-such-model:nitro"), /Unknown model/);
+});
+
+test("Claude Sonnet 5.5 resolves on Anthropic, OpenRouter and Bedrock, and is listed, while Pi's catalog lacks it", () => {
+  const price = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
+  for (const [reference, id, api] of [
+    ["anthropic/claude-sonnet-5-5", "claude-sonnet-5-5", "anthropic-messages"],
+    ["openrouter/anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5.5", "anthropic-messages"],
+    ["openrouter/anthropic/claude-sonnet-5.5:nitro", "anthropic/claude-sonnet-5.5:nitro", "anthropic-messages"],
+    ["amazon-bedrock/anthropic.claude-sonnet-5-5", "anthropic.claude-sonnet-5-5", "bedrock-converse-stream"],
+    ["amazon-bedrock/us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-sonnet-5-5", "bedrock-converse-stream"],
+    ["amazon-bedrock/eu.anthropic.claude-sonnet-5-5", "eu.anthropic.claude-sonnet-5-5", "bedrock-converse-stream"],
+  ]) {
+    const model = resolveModel(reference);
+    assert.equal(model.id, id, reference);
+    assert.equal(model.api, api, reference);
+    assert.match(model.name, /Sonnet 5\.5/, reference);
+    assert.equal(model.contextWindow, 1_000_000, reference);
+    assert.equal(model.maxTokens, 128_000, reference);
+    assert.equal(model.reasoning, true, reference);
+    if (!reference.includes("/us.") && !reference.includes("/eu.")) assert.deepEqual(model.cost, price, reference);
+  }
+  assert.deepEqual(resolveModel("anthropic/claude-sonnet-5").id, "claude-sonnet-5", "Sonnet 5 stays");
+  assert.ok(listModels("anthropic").some(model => model.id === "anthropic/claude-sonnet-5-5"));
+  assert.ok(listModels("openrouter").some(model => model.id === "openrouter/anthropic/claude-sonnet-5.5"));
+  assert.ok(listModels("amazon-bedrock").some(model => model.id === "amazon-bedrock/us.anthropic.claude-sonnet-5-5"));
 });
