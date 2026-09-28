@@ -162,7 +162,7 @@ export function api(context: ApiContext) {
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
     skip: path => path === "/v1/agents" || /^\/v1\/agents\/[^/]+\/prompt$/.test(path),
     // Answers with a secret shown once: API tokens, signing secrets, browser tokens, signed links.
-    secret: path => /^\/v1\/(?:tokens|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/browser-tokens|volumes\/[^/]+\/links)$/.test(path),
+    secret: path => /^\/v1\/(?:tokens|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), c => {
@@ -529,6 +529,10 @@ export function api(context: ApiContext) {
     const { name, snapshot } = await readJson(c.req.raw.body, 4096, {});
     return json(c, 201, await target.call("fork", { name, snapshot }));
   });
+  route(createRoute({
+    method: "post", path: "/v1/agents/{id}/links", request: { params: agentId, body: content(schema.LinkInput.extend({ path: z.string().openapi({ description: "The file's path as the agent sees it, in one of its mounts (e.g. /workspace/report.pdf)" }) })) },
+    responses: { 201: reply("A signed URL for one of the agent's files, usable without a token until it expires", schema.Link) },
+  }), async c => json(c, 201, await clients.agentLink(c.req.param("id")!, c.var.principal.tenant, parse(schema.LinkInput, await readJson(c.req.raw.body, 4096, {})))));
   route(createRoute({
     method: "post", path: "/v1/volumes/{id}/links", request: { params: volumeId, body: content(schema.LinkInput) },
     responses: { 201: reply("A signed URL for one file, usable without a token until it expires", schema.Link) },

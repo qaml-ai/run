@@ -1884,18 +1884,7 @@ export class ClientSessions {
       const { chunks: _chunks, path, ...entry } = await this.options.volumes!.put(session.header.tenant, target.mount.volumeId, target.path, body(c) as AsyncIterable<Uint8Array>, { contentType: c.req.header("content-type") });
       return json(c, 201, { path: target.show(path), ...entry });
     });
-    app.post(`${agent}/links`, async c => {
-      const session = c.var.session;
-      const input = await readJson(body(c), 4096);
-      const method = input?.method ?? "GET";
-      if (method !== "GET" && method !== "PUT") throw new HttpError(400, "method must be GET or PUT");
-      const target = this.mounted(session, input?.path, method === "PUT");
-      if (!this.options.links) throw new HttpError(404, "Links are not enabled on this runtime");
-      const contentType = input.contentType === undefined ? undefined : declaredType(input.contentType);
-      if (input.contentType !== undefined && !contentType) throw new HttpError(400, "contentType must be a specific content type");
-      const { tenant: _tenant, volume: _volume, path: _path, ...link } = this.options.links.sign({ tenant: session.header.tenant, volume: target.mount.volumeId, path: target.path, method, expiresIn: input.expiresIn, ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}), ...(contentType ? { contentType } : {}) });
-      return json(c, 201, { ...link, path: target.show(target.path) });
-    });
+    app.post(`${agent}/links`, async c => json(c, 201, this.signLink(c.var.session, await readJson(body(c), 4096))));
     // A file for request `:request` to attach by the path this answers with; the body streams to storage.
     app.put(`${agent}/uploads/:request/:name`, async c => json(c, 201, await this.upload(c.var.session, c.req.param("request"), c.req.param("name"), body(c) as AsyncIterable<Uint8Array>, c.req.header("content-type"))));
     app.get(`${agent}/state`, c => {
@@ -2072,6 +2061,23 @@ export class ClientSessions {
     const target = this.uploadTarget(session, requestId, name);
     const { chunks: _chunks, path, ...entry } = await this.options.volumes!.put(session.header.tenant, target.mount.volumeId, target.path, source, { contentType, by: session.header.id });
     return { path: target.show(path), ...entry };
+  }
+
+  /** A signed link to a file in the agent's mounts (`POST /clients/:id/links`, `POST /v1/agents/:id/links`): as a volume link, by the agent's path. */
+  private signLink(session: Pick<Session, "header">, input: any) {
+    const method = input?.method ?? "GET";
+    if (method !== "GET" && method !== "PUT") throw new HttpError(400, "method must be GET or PUT");
+    const target = this.mounted(session, input?.path, method === "PUT");
+    if (!this.options.links) throw new HttpError(404, "Links are not enabled on this runtime");
+    const contentType = input.contentType === undefined ? undefined : declaredType(input.contentType);
+    if (input.contentType !== undefined && !contentType) throw new HttpError(400, "contentType must be a specific content type");
+    const { tenant: _tenant, volume: _volume, path: _path, ...link } = this.options.links.sign({ tenant: session.header.tenant, volume: target.mount.volumeId, path: target.path, method, expiresIn: input.expiresIn, ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}), ...(contentType ? { contentType } : {}) });
+    return { ...link, path: target.show(target.path) };
+  }
+
+  /** A tenant's signed link to a file of its agent's, as the agent would sign it (`POST /v1/agents/:id/links`). */
+  async agentLink(id: string, tenant: string, input: unknown) {
+    return this.signLink(await this.headerFor(id, tenant), input);
   }
 
   /** A path as the agent sees it, resolved to its mount (writable, for `write`). */
