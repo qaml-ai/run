@@ -10,7 +10,7 @@ locals {
 variable "spend_alarm_usd_per_hour" {
   description = "Model spend (all tenants, usage.recorded costs) in one hour that raises the spend alarm."
   type        = number
-  default     = 50
+  default     = 100
 }
 
 # More than a fifth of turns failed over 10 minutes (with at least 10 turns).
@@ -266,11 +266,12 @@ resource "aws_cloudwatch_dashboard" "launch" {
       { type = "metric", x = 16, y = 20, width = 8, height = 6, properties = { title = "Model spend by tenant (USD/hour)", region = var.region, view = "timeSeries", stacked = true,
       metrics = [[{ expression = local.search.cost_by_tenant, id = "ct", label = "" }]] } },
 
-      { type = "metric", x = 0, y = 26, width = 8, height = 6, properties = { title = "Agents, running turns, watchers (per node, max)", region = var.region, view = "timeSeries",
+      { type = "metric", x = 0, y = 26, width = 8, height = 6, properties = { title = "Agents, running turns, watchers (per node, max); 429s", region = var.region, view = "timeSeries",
         metrics = [
           [local.ns, "hostedAgents", "ServiceName", local.svc, { stat = "Maximum", label = "hosted agents" }],
           [local.ns, "runningTurns", "ServiceName", local.svc, { stat = "Maximum", label = "running turns" }],
           [local.ns, "watchers", "ServiceName", local.svc, { stat = "Maximum", label = "watchers" }],
+          [local.ns, "WatchersRefused", "ServiceName", local.svc, { stat = "Sum", label = "watchers refused (429)", yAxis = "right" }],
       ], period = 60 } },
       { type = "metric", x = 8, y = 26, width = 8, height = 6, properties = { title = "Task memory and CPU", region = var.region, view = "timeSeries",
         metrics = [

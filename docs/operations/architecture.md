@@ -186,6 +186,7 @@ dimension sets listed:
 | `model_cost` | usage events are written | `ModelCostUsd`, `ModelUsageEvents` | `Tenant`, `Provider`+`Model` |
 | `webhook_delivered` / `webhook_failed` | a delivery succeeds / fails | `WebhooksDelivered`, `WebhookDeliveryLagMs`, `WebhookAttempts` / `WebhooksFailed` | `Kind` (endpoint, usage) |
 | `webhook_backlog` | every minute, from each node (read with Maximum) | `WebhookBacklog`, `WebhookOldestPendingMs` | |
+| `watch_refused` | an event stream subscriber is refused (429) at a limit | `WatchersRefused` | `Scope` (agent, tenant, node), `Tenant` |
 
 `ErrorClass` is one of rate_limit, overloaded, context_overflow, auth, billing, timeout,
 provider_5xx, network, runtime_restart, exception, other (none for a success). A failed
