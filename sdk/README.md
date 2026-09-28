@@ -48,8 +48,12 @@ await agents.close();
   `timeoutMs` and `context.progress()` handle long calls. One process at a time
   serves an agent's tools; serverless and multi-user backends serve them over
   HTTP with `serveTools` (`@camelai/agent-runtime/server`).
-- **Browsers.** `watchAgent` (`@camelai/agent-runtime/watch`) shows an agent
-  live with a browser token your server mints.
+- **Browsers.** A chat in your app: one route with `createAgentHandler`
+  (`@camelai/agent-runtime/server`) and `<AgentChat>` or the hooks from
+  `@camelai/agent-runtime-react` (or `/chat` without React, `/ai-sdk` with the AI
+  SDK's `useChat`); see the Frontend guide (`docs/frontend.md`), or start with
+  `npm create @camelai/agent-app`. `watchAgent` (`@camelai/agent-runtime/watch`)
+  shows an agent live with a browser token your server mints.
 
 Documentation: [Quickstart](https://agents.camelai.dev/docs/quickstart.md),
 [Concepts](https://agents.camelai.dev/docs/concepts.md),

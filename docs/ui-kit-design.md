@@ -1,6 +1,6 @@
 # Frontend and server kits: design
 
-Status: building on `feat/ui-kit` (from `feat/dx-sdk`). Goal: a developer gets a
+Status: built on `feat/ui-kit` (from `feat/dx-sdk`); the developer guide is `docs/frontend.md`. Goal: a developer gets a
 working, streaming agent chat in their app in minutes, in any common stack, on
 APIs we can keep for years.
 
@@ -19,7 +19,8 @@ the same tag, and depends on the exact same version of the core.
 | Package | Import | What |
 | --- | --- | --- |
 | `@camelai/agent-runtime` (exists) | `/server` | + `createAgentHandler`: the developer's server route (fetch-standard) |
-| | `/chat` | **new**: the headless store `createAgentChat`, message parts, `answerValue`, a streaming-safe markdown tokenizer. No dependencies, no Node APIs |
+| | `/chat` | **new**: the headless store `createAgentChat`, message parts, `answerValue`. No dependencies, no Node APIs |
+| | `/markdown` | **new**: the streaming-safe markdown parser (an AST any framework renders) |
 | | `/watch` (exists) | the browser watcher `/chat` is built on |
 | | `/ai-sdk` | **new**: `AgentRuntimeChatTransport` for the AI SDK's `useChat` (structural types; no `ai` dependency) |
 | `@camelai/agent-runtime-react` | `.` | `AgentProvider`, `useAgent`, `useMessages`, `useSend`, `useInputs`, `useAgentStatus`, `useToolRenderer` |
@@ -207,8 +208,9 @@ inside a custom card trivial.
 
 ## 7. Bundle size
 
-Budgets (min+gzip, checked by a test with esbuild): `/chat` + `/watch` ≤ 9 KB,
-React hooks ≤ 2 KB, `/ui` ≤ 14 KB including markdown, CSS ≤ 4 KB. No runtime
+Budgets (min+gzip, checked by tests with esbuild): `/chat` + `/watch` ≤ 9 KB
+(7.5 KB), React hooks ≤ 2 KB (1.5 KB), `/ui` ≤ 14 KB including markdown (9.3 KB),
+CSS ≤ 4 KB. No runtime
 dependencies besides React (peer). Everything is ESM with `sideEffects` limited
 to the CSS files, so unused components tree-shake.
 
