@@ -13,7 +13,7 @@ changes it. `createDefinition` makes a new one each time.
 
 ```ts
 const definition = await agents.runtime.upsertDefinition("support", {
-  name: "Support", model: "anthropic/claude-sonnet-5", systemPrompt: "You answer support tickets.",
+  name: "Support", model: "anthropic/claude-sonnet-5-5", systemPrompt: "You answer support tickets.",
   builtins: ["web_search", "ask_user"],
   mcpServers: [{ name: "app", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],
 });

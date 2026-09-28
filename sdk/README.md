@@ -25,7 +25,7 @@ const weather = tool({
 });
 
 const agent = await agents.upsert("quickstart", {
-  model: "anthropic/claude-sonnet-5",
+  model: "anthropic/claude-sonnet-5-5",
   instructions: "You are a concise assistant.",
   tools: { weather },
 });

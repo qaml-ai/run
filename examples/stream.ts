@@ -8,7 +8,7 @@ import { Agents, schema, tool } from "../clients/typescript.ts";
 const stock: Record<string, number> = { "BEAN-01": 8, "OAT-02": 6, "CUP-03": 200 };
 const agents = new Agents();
 const agent = await agents.upsert("stream-example", {
-  model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5",
+  model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5-5",
   instructions: "You manage a cafe's stock. Use the tools; keep replies to two sentences.",
   tools: {
     stock_level: tool({

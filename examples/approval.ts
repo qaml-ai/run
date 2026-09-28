@@ -9,7 +9,7 @@ import { Agents, schema, tool } from "../clients/typescript.ts";
 const deleted: string[] = [];
 const agents = new Agents();
 const agent = await agents.upsert("approval-example", {
-  model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5",
+  model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5-5",
   instructions: "You manage preview environments. Delete the ones you are asked to, with the tool.",
   tools: {
     delete_environment: tool({

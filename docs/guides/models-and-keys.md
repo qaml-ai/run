@@ -4,7 +4,7 @@
 
 Agents name a model as `provider/model-id` from the catalog: `GET /v1/models`
 (`?available=true` for the ones your account can use now), or the console's
-**Models & keys**. For example `anthropic/claude-sonnet-5`,
+**Models & keys**. For example `anthropic/claude-sonnet-5-5`,
 `openai/gpt-5.2`, `openrouter/anthropic/claude-sonnet-5`. Change an agent's model
 between runs with `upsert` (a changed `model`) or `agent.configure({ model })`;
 its history carries over.

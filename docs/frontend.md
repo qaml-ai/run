@@ -49,7 +49,7 @@ export const POST = createAgentHandler({
   },
   agent: {
     instructions: "You help customers with their orders.",
-    model: "anthropic/claude-sonnet-5",           // optional; any model from GET /v1/models
+    model: "anthropic/claude-sonnet-5-5",           // optional; any model from GET /v1/models
   },
 });
 ```

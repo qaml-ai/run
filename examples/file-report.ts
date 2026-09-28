@@ -23,7 +23,7 @@ const target = 30_000;
 const agents = new Agents();
 const agent = await agents.upsert("file-report", {
   name: "File report example",
-  model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5",
+  model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5-5",
   instructions: "You are an analyst. Do arithmetic in js_exec with fs, never in your head. Keep replies short.",
   onEvent(event) {
     if (event.type === "file_presented") console.log(`presented ${event.file.path} (${event.file.contentType}, ${event.file.size} B): ${event.url?.slice(0, 60)}…`);

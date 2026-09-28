@@ -19,7 +19,7 @@ def weather(city: str) -> dict:
 
 async def main():
     async with Agents() as agents:  # reads CAMELAI_API_KEY (and CAMELAI_BASE_URL, for a runtime of your own)
-        agent = await agents.upsert("quickstart-py", model=os.environ.get("AGENT_MODEL", "anthropic/claude-sonnet-5"),
+        agent = await agents.upsert("quickstart-py", model=os.environ.get("AGENT_MODEL", "anthropic/claude-sonnet-5-5"),
                                     instructions="You are a concise assistant.", tools=[weather])
         run = await agent.run("Should I bring an umbrella in Lisbon today?")
         print(run.text)

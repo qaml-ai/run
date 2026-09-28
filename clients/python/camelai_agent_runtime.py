@@ -1,7 +1,7 @@
 """The camelAI agent runtime's Python SDK: keyed agents you upsert and run, with tools in your process.
 
     async with Agents() as agents:  # CAMELAI_API_KEY
-        agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5", instructions="...")
+        agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5-5", instructions="...")
         run = await agent.run("Summarize ticket 123")
         print(run.text)
 
@@ -413,7 +413,7 @@ class AgentRuntime:
         self.agents = []
 
     async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, on_input=None, builtins=None):
-        """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
+        """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
         `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: until deleted with an
@@ -1519,7 +1519,7 @@ class Agents:
     """Keyed agents you upsert and run.
 
         async with Agents() as agents:
-            agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5", instructions="...")
+            agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5-5", instructions="...")
             print((await agent.run("Hello")).text)
 
     api_key defaults to CAMELAI_API_KEY; url to CAMELAI_BASE_URL, else https://agents.camelai.dev."""

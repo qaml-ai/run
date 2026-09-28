@@ -53,7 +53,7 @@ const weather = tool({
 
 // The same key is the same agent, with its history, every time you run this.
 const agent = await agents.upsert("quickstart", {
-  model: "anthropic/claude-sonnet-5",
+  model: "anthropic/claude-sonnet-5-5",
   instructions: "You are a concise assistant.",
   tools: { weather },
 });
@@ -81,7 +81,7 @@ def weather(city: str) -> dict:
 
 async def main():
     async with Agents() as agents:  # reads CAMELAI_API_KEY
-        agent = await agents.upsert("quickstart", model="anthropic/claude-sonnet-5",
+        agent = await agents.upsert("quickstart", model="anthropic/claude-sonnet-5-5",
                                     instructions="You are a concise assistant.", tools=[weather])
         run = await agent.run("Should I bring an umbrella in Lisbon today?")
         print(run.text)
@@ -100,7 +100,7 @@ SDK, or a server of your own, see [Tools](guides/tools.md)):
 BASE=https://agents.camelai.dev; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
 # The Idempotency-Key is the agent's key: the same key is the same agent.
 AGENT=$(curl -s $BASE/v1/agents -H "$AUTH" -H "Content-Type: application/json" -H "Idempotency-Key: quickstart" \
-  -d '{"model": "anthropic/claude-sonnet-5", "systemPrompt": "You are a concise assistant."}' | jq -r .id)
+  -d '{"model": "anthropic/claude-sonnet-5-5", "systemPrompt": "You are a concise assistant."}' | jq -r .id)
 REQ=$(curl -s $BASE/v1/agents/$AGENT/prompt -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"text": "Write a haiku about durable agents."}' | jq -r .id)
 until curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -e '.state == "completed"' > /dev/null; do sleep 1; done

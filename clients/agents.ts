@@ -2,7 +2,7 @@
  * The SDK's simple interface: keyed agents you upsert and run.
  *
  *   const agents = new Agents({ apiKey: process.env.CAMELAI_API_KEY });
- *   const agent = await agents.upsert("support-triage", { model: "anthropic/claude-sonnet-5", instructions: "…" });
+ *   const agent = await agents.upsert("support-triage", { model: "anthropic/claude-sonnet-5-5", instructions: "…" });
  *   const run = await agent.run("Summarize ticket 123");
  *   console.log(run.text);
  *   await agents.close();
@@ -32,7 +32,7 @@ export interface AgentsOptions {
 
 /** An agent's configuration: what `upsert` makes it, or changes it to. */
 export interface AgentConfig {
-  /** A model from the catalog (GET /v1/models) as "provider/model-id", e.g. "anthropic/claude-sonnet-5". */
+  /** A model from the catalog (GET /v1/models) as "provider/model-id", e.g. "anthropic/claude-sonnet-5-5". */
   model?: string;
   /** The system prompt. */
   instructions?: string;

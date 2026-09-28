@@ -1,6 +1,5 @@
 import asyncio
 from pathlib import Path
-import httpx
 from camelai_agent_runtime import Agents
 
 async def main():
@@ -16,9 +15,8 @@ async def main():
                               files=[Path("sales.csv")])
         print(run.text)
         for f in run.raw.get("presented", []):  # the files the agent handed over with present_file
-            # agent.files.download(path) is simpler, but 0.5.0 raises on a compressed file's weak ETag.
-            link = await agent.files.link(f["path"])
-            Path(Path(f["path"]).name).write_bytes(httpx.get(link["url"]).content)
+            downloaded = await agent.files.download(f["path"])
+            Path(Path(f["path"]).name).write_bytes(downloaded.data)
             print("saved", Path(f["path"]).name)
 
 asyncio.run(main())

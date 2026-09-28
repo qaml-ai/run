@@ -23,7 +23,7 @@ def weather(city: str) -> dict:
 
 async def main():
     async with Agents() as agents:
-        agent = await agents.upsert("quickstart", model="anthropic/claude-sonnet-5",
+        agent = await agents.upsert("quickstart", model="anthropic/claude-sonnet-5-5",
                                     instructions="You are a concise assistant.", tools=[weather])
         run = await agent.run("Should I bring an umbrella in Lisbon today?")
         print(run.text)

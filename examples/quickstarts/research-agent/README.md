@@ -1,6 +1,6 @@
 # research-agent
 
-The runtime's built-in `web_search` and `web_fetch` tools, enabled through a definition, answering a question with
+The runtime's built-in `web_search` and `web_fetch` tools, given to the agent with `builtins`, answering a question with
 cited sources. No tools of your own and nothing to host.
 
 ```sh

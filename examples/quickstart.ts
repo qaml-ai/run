@@ -18,7 +18,7 @@ const weather = tool({
 
 // The same key is the same agent, with its history, every time you run this.
 const agent = await agents.upsert("quickstart", {
-  model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5",
+  model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5-5",
   instructions: "You are a concise assistant.",
   tools: { weather },
 });

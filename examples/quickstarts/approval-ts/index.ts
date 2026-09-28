@@ -31,7 +31,7 @@ const cli = createInterface({ input: process.stdin, output: process.stdout });
 let run = await agent.run(process.argv.slice(2).join(" ") || "Delete the temporary files.", { user: "me" });
 while (run.status === "input_required") {
   const input = run.inputs[0];
-  const yes = (await cli.question(`${input.message} ${input.detail.arguments} [y/N] `)).trim() === "y";
+  const yes = (await cli.question(`${input.message} ${input.detail.argumentsPreview ?? JSON.stringify(input.detail.arguments)} [y/N] `)).trim() === "y";
   run = await input.answer(yes, { from: "me" });
 }
 console.log(run.text, "\nleft:", await readdir(dir));

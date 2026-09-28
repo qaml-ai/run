@@ -14,7 +14,7 @@ Live at <https://agents.camelai.dev> (REST API under `/v1`, described by
 import { Agents } from "@camelai/agent-runtime";
 
 const agents = new Agents(); // CAMELAI_API_KEY
-const agent = await agents.upsert("support-triage", { model: "anthropic/claude-sonnet-5", instructions: "Be concise." });
+const agent = await agents.upsert("support-triage", { model: "anthropic/claude-sonnet-5-5", instructions: "Be concise." });
 console.log((await agent.run("Which tickets look urgent?")).text);
 await agents.close();
 ```

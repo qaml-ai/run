@@ -334,7 +334,7 @@ export interface CreateAgentOptions extends AgentOptions {
   type?: string;
   /**
    * A model from the runtime's catalog as "provider/model-id" (see GET /v1/models),
-   * e.g. "anthropic/claude-sonnet-5" or "openrouter/openai/gpt-5.2". A full Pi
+   * e.g. "anthropic/claude-sonnet-5-5" or "openrouter/openai/gpt-5.2". A full Pi
    * model object is also accepted if its endpoint is trusted by the runtime.
    */
   model?: string | Record<string, unknown>;

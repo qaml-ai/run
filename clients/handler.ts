@@ -40,7 +40,7 @@ export interface AgentAuth {
 
 /** What an agent is made with: the parts of `AgentConfig` a handler sets. Its `subject` is always the user. */
 export type AgentSetup = Pick<AgentConfig,
-  "model" | "instructions" | "tools" | "mcp" | "definition" | "thinkingLevel" | "context" | "keyScope" | "spendLimit" | "modelHeaders" | "mounts" | "name">;
+  "model" | "instructions" | "tools" | "mcp" | "definition" | "builtins" | "thinkingLevel" | "context" | "keyScope" | "spendLimit" | "modelHeaders" | "mounts" | "name">;
 
 export interface SendEvent<A extends AgentAuth = AgentAuth> {
   auth: A;
