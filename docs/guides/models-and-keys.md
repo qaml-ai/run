@@ -14,8 +14,13 @@ Ollama, a hosted API the catalog lacks) is named the same way once you add its
 server as a provider: see [Custom OpenAI-compatible models](custom-models.md).
 
 An agent that names no model (and whose definition names none) gets the
-runtime's default: `anthropic/claude-sonnet-5-5` on agents.camelai.dev. `GET
-/v1/me` says which (`defaultModel`; `runtime.me()` in the SDKs).
+runtime's default: Claude Sonnet 5.5 on agents.camelai.dev, on the first of
+Anthropic (`anthropic/claude-sonnet-5-5`), OpenRouter
+(`openrouter/anthropic/claude-sonnet-5.5`) and Bedrock
+(`amazon-bedrock/global.anthropic.claude-sonnet-5-5`) you have a key for (its
+key scope's keys count too), else `openrouter/openai/gpt-6-luna`. It is chosen
+when the agent is made and stays its model. `GET /v1/me` says which
+(`defaultModel`; `runtime.me()` in the SDKs).
 
 A model call uses, in order: the key of the agent's [key scope](#key-scopes) for
 the model's provider, else your account's own key for the provider

@@ -9,6 +9,8 @@
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_DATABASE_QUERY_TIMEOUT_MS` | how long a query may take before it fails and its connection is replaced (default 30000; 0 for none), so a connection that went dark in a failover cannot hang a request |
 | `AGENT_TOOL_SEARCH` | ranking by meaning for `tools.search` after keywords: `keyword` (default, none), `embeddings`, or `embeddings,jev` (Jev also drops irrelevant tools); with the platform's OpenRouter key or `AGENT_TOOL_SEARCH_API_KEY`, `AGENT_TOOL_SEARCH_URL` (default OpenRouter) and `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` / `_JEV_MODEL` (see [Tool search](../guides/tools.md#tool-search)) |
+| `AGENT_PROVIDER`, `AGENT_MODEL` | the default model, for agents that name none (e.g. `anthropic` and `claude-sonnet-5-5`); `AGENT_BASE_URL` overrides its endpoint |
+| `AGENT_MODEL_FALLBACKS` | the defaults after it, as `provider/model` references, comma-separated (default Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock's global profile, then `openrouter/openai/gpt-6-luna`; empty for none): an agent that names no model gets the first its tenant or key scope has a key for |
 | `AGENT_STORAGE` | `file` (default; one node only), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |

@@ -39,7 +39,8 @@ export interface ApiContext {
   /** Tenants' own OpenAI-compatible providers (`/v1/providers/{name}`). */
   modelProviders?: ModelProviders;
   /** The model an agent gets when it names none, as provider/model-id. */
-  defaultModel: string;
+  /** The model an agent of the tenant that names none gets. */
+  defaultModel: (tenant: string) => Promise<string>;
   /** Provision an agent for a tenant. */
   createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
   verifyKeys?: boolean;
@@ -170,9 +171,9 @@ export function api(context: ApiContext) {
     secret: path => /^\/v1\/(?:tokens|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
-  route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), c => {
+  route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {
     const principal = c.var.principal;
-    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: context.defaultModel });
+    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
   });
 
   route(createRoute({ method: "get", path: "/v1/providers", responses: { 200: reply("Key status per provider, and the tenant's own providers", z.array(schema.Provider)) } }), async c => {

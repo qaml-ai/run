@@ -24,7 +24,7 @@ export const Me = z.object({
   via: z.enum(["operator", "token", "console"]),
   login: z.string().optional().openapi({ description: "GitHub login, for console sessions" }),
   canStoreKeys: z.boolean(),
-  defaultModel: z.string().openapi({ description: "The model an agent gets when it names none, as provider/model-id", example: "anthropic/claude-sonnet-5" }),
+  defaultModel: z.string().openapi({ description: "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (Claude Sonnet 5.5 on Anthropic, OpenRouter, then Bedrock, ...) the tenant has a key for. An agent with a key scope counts the scope's keys too", example: "anthropic/claude-sonnet-5-5" }),
 }).openapi("Me");
 
 const KeyStatus = z.object({
