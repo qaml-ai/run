@@ -412,7 +412,7 @@ class AgentRuntime:
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, on_input=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, on_input=None, builtins=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -425,7 +425,7 @@ class AgentRuntime:
             raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to provision an agent")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
-                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers)
+                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers, builtins=builtins)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
@@ -537,11 +537,11 @@ class AgentRuntime:
 
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
-                  subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, system_prompt_append=None, file_tools=None):
+                  subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "modelHeaders": model_headers,
-                "systemPromptAppend": system_prompt_append, "fileTools": file_tools}
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "builtins": builtins}
     return {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
 
 
@@ -1492,17 +1492,18 @@ class Agents:
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
-                     on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
+                     builtins=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
         then answers the agent's tool calls, one process at a time: serverless or several processes, serve tools over
-        HTTP (serve_tools) and name them in a definition instead. attach=False declares the tools without serving them
-        (another process does); takeover=True replaces the process serving them now."""
+        HTTP (serve_tools) and name them in a definition instead. `builtins` are tools the runtime answers itself
+        ("web_fetch", "web_search", "schedule", "ask_user"), without a definition. attach=False declares the tools
+        without serving them (another process does); takeover=True replaces the process serving them now."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers,
-                                                  mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools)
+                                                  mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, _sync=False)
 

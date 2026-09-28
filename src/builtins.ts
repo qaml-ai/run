@@ -8,6 +8,7 @@ import { readableText } from "./html-text.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { jsonResult } from "./tool-servers.ts";
 import { readCapped, type ToolFiles } from "./tool-files.ts";
+import { HttpError } from "./http.ts";
 import { textual } from "./files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 import { questionsInput } from "./inputs.ts";
@@ -30,6 +31,13 @@ export const BUILTINS = {
   ask_user: ["ask_user"],
 } as const;
 export type Builtin = keyof typeof BUILTINS;
+/** `builtins` as a definition or an agent gives them: distinct names of BUILTINS. */
+export function builtinsInput(value: unknown): Builtin[] {
+  if (!Array.isArray(value) || new Set(value).size !== value.length || value.some(name => typeof name !== "string" || !Object.hasOwn(BUILTINS, name))) {
+    throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);
+  }
+  return value as Builtin[];
+}
 export const builtinNames = (builtins: string[] = []) => builtins.flatMap(builtin => (BUILTINS as Record<string, readonly string[]>)[builtin] ?? []);
 
 const FETCH = { timeoutMs: 20_000, maxBytes: 5 * 1024 * 1024, maxRedirects: 5, characters: 20_000, maxCharacters: 100_000, htmlBytes: 2 * 1024 * 1024 };

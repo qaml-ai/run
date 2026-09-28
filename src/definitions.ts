@@ -8,7 +8,7 @@ import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
-import { BUILTINS } from "./builtins.ts";
+import { builtinsInput } from "./builtins.ts";
 import { searchOrder } from "./web-search.ts";
 import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
 import { mcpServersInput, mcpServerView, openApiInput, openApiView, type McpServerSpec, type OpenApiSpec, type Sources } from "./tool-sources.ts";
@@ -244,9 +244,7 @@ export class Definitions {
     }
     if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
-    if (spec.builtins !== undefined && (!Array.isArray(spec.builtins) || new Set(spec.builtins).size !== spec.builtins.length || spec.builtins.some(name => !Object.hasOwn(BUILTINS, name)))) {
-      throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);
-    }
+    if (spec.builtins !== undefined) builtinsInput(spec.builtins);
     if (spec.webSearch !== undefined) {
       const webSearch = spec.webSearch as unknown;
       if (!webSearch || typeof webSearch !== "object" || Array.isArray(webSearch) || Object.keys(webSearch).some(key => key !== "providers")) throw new HttpError(400, "webSearch is { providers }");

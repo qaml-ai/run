@@ -245,3 +245,9 @@ test("the lower-level createAgent makes a scratch agent (a day's lifetime) unles
   t.after(() => keyed.close());
   assert.equal(keyed.session.expiresAt, null, "a key of the caller's makes a durable agent");
 });
+
+test("upsert gives an agent builtins without a definition", async t => {
+  const { r, agents } = await setup(t, () => ({ role: "assistant", content: "ok" }));
+  const agent = await agents.upsert("researcher", { builtins: ["web_fetch", "ask_user"] });
+  assert.deepEqual((await r.call(`/v1/agents/${agent.id}`)).json.builtins, ["web_fetch", "ask_user"]);
+});

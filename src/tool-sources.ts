@@ -76,8 +76,12 @@ export interface OpenApiSpec {
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
 /** `humanInput`: how long inputs wait, what happens when they expire, and who else may answer them (inputs.ts). */
 export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings }
-/** The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal, its mounts (for files in and out), and who hears of files saved. */
-export type SourceContext = { tenant: string; agent: string; definition: string; claim?: Claim; identity?: AgentIdentity; mounts?: Mount[]; onWrite?: ToolContext["onWrite"] };
+/**
+ * The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal (MCP servers and
+ * OpenAPI specs come only from one; an agent's own builtins have none), its mounts (for files in and out), and who
+ * hears of files saved.
+ */
+export type SourceContext = { tenant: string; agent: string; definition?: string; claim?: Claim; identity?: AgentIdentity; mounts?: Mount[]; onWrite?: ToolContext["onWrite"] };
 
 const SERVER_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -297,7 +301,7 @@ export class ToolSources {
     return this.signer.token(audience, { tenant: context.tenant, agent: context.agent, definition: context.definition, ...(context.identity ? { identity: context.identity } : {}), ...call });
   }
   private endpoint(context: SourceContext, spec: McpServerSpec): McpServer {
-    const headers = this.headers(sealedAad(context.definition, spec.name), spec.sealed);
+    const headers = this.headers(sealedAad(context.definition!, spec.name), spec.sealed);
     if (spec.auth?.type !== "runtime") return { url: spec.url, headers };
     // Each request is signed for the turn it is made in (callScope), and each agent has its own session.
     return { url: spec.url, headers, token: () => this.identityToken(context, audienceOf(spec.audience, spec.url)), scope: context.agent };
@@ -411,7 +415,7 @@ export class ToolSources {
         if (api && operation) {
           if (apiAsks(api, operation) && !approval) return APPROVAL_REQUIRED;
           const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
-          const secrets = this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed);
+          const secrets = this.headers(sealedAad(context.definition!, api.name, "openapi"), api.sealed);
           if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl), turn)}`;
           // The call's key, as APIs that dedupe writes take one (Stripe's convention).
           if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };

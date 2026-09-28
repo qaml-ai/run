@@ -205,6 +205,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         # The same key sent again while its run goes on joins that run.
         first, again = await asyncio.gather(agent.run("one", idempotency_key="py-first"), agent.run("one", idempotency_key="py-first"))
         self.assertEqual(first.text, again.text)
+        researcher = await self.agents.upsert("py-researcher", builtins=["web_fetch"])
+        self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{researcher.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["builtins"], ["web_fetch"])
         joined = await asyncio.gather(agent.client.request("status", idempotency_key="py-status"), agent.client.request("status", idempotency_key="py-status"))
         self.assertEqual(joined[0], joined[1])
         page = await agent.history_page(limit=1)

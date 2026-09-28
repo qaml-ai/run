@@ -48,6 +48,7 @@ import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
+import { builtinsInput } from "./builtins.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
@@ -174,12 +175,15 @@ setInterval(() => void expireIdempotencyKeys(db).catch(error => console.error(JS
 /** Provision an agent for `tenant` (POST /v1/agents). */
 async function createAgent(tenant: string, params: any, key?: string) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
-  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, ...rest } = params ?? {};
+  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, ...rest } = params ?? {};
   // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
   const mcpTools = params?.mcp?.tools;
   // Who the agent acts for, and context for its tool servers' identity tokens.
   const identity = identityInput(params ?? {});
   if (keyScope !== undefined) checkScope(keyScope);
+  // An agent's own built-in tools; one made from a definition has its definition's.
+  if (asked !== undefined && params.definition !== undefined) throw new HttpError(400, "builtins come from the definition; change them there");
+  const builtins = asked === undefined ? undefined : builtinsInput(asked);
   const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
   const modelHeaders = headers === undefined ? null : modelHeadersInput(headers);
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -196,7 +200,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-    { keyScope, spendLimit, ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) });
+    { keyScope, spendLimit, builtins, ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) });
   if (!reconfigure) return made_;
   // The key's agent exists: bring it to this configuration between its turns. Every upsert queues its own request, so
   // the last one sent wins; one whose configuration the agent has already changes nothing when it runs.

@@ -37,8 +37,8 @@ print(run.text)
   approved call runs with exactly those arguments, and carries the approval
   (`context.identity.approval`), so a tool can require it; a declined call never
   runs.
-- **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` in a
-  definition) lets the model ask 1 to 4 multiple-choice questions, with free text
+- **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` on the
+  agent or its definition) lets the model ask 1 to 4 multiple-choice questions, with free text
   allowed where it says so.
 - **The tool itself.** `context.confirm(message)`, `context.ask(message,
   schema)` (a flat form) and `context.requireUrl(url, message)` (a step on an

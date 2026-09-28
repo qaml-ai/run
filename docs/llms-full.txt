@@ -250,7 +250,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 | A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time |
 | Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for |
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
-| Web search, fetching pages, scheduling, asking the user | **Built-ins** in a definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
+| Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
 
 The same `tool({...})` definitions work attached and served, so you can start
 attached and move to served without changing a tool. Every agent also has file
@@ -611,9 +611,13 @@ Every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   saved to the workspace); any other status is a tool error quoting the method,
   path, status and the start of the body.
 
-## Built-ins a definition enables
+## Built-ins
 
-`"builtins": ["web_fetch", "web_search", "schedule", "ask_user"]`:
+Tools the runtime answers itself, given to an agent as `builtins` when it is
+made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
+"web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
+it is made from (whose builtins it then has):
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -727,8 +731,8 @@ print(run.text)
   approved call runs with exactly those arguments, and carries the approval
   (`context.identity.approval`), so a tool can require it; a declined call never
   runs.
-- **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` in a
-  definition) lets the model ask 1 to 4 multiple-choice questions, with free text
+- **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` on the
+  agent or its definition) lets the model ask 1 to 4 multiple-choice questions, with free text
   allowed where it says so.
 - **The tool itself.** `context.confirm(message)`, `context.ask(message,
   schema)` (a flat form) and `context.requireUrl(url, message)` (a step on an

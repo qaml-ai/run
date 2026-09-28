@@ -1257,6 +1257,14 @@
             "additionalProperties": {},
             "description": "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here"
           },
+          "builtins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Builtin"
+            },
+            "maxItems": 8,
+            "description": "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
+          },
           "keyScope": {
             "type": "string",
             "description": "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own",
@@ -1300,6 +1308,15 @@
           "volumeId",
           "path",
           "mode"
+        ]
+      },
+      "Builtin": {
+        "type": "string",
+        "enum": [
+          "web_fetch",
+          "web_search",
+          "schedule",
+          "ask_user"
         ]
       },
       "SpendLimitInput": {
@@ -1401,6 +1418,13 @@
                   }
                 ]
               },
+              "builtins": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Builtin"
+                },
+                "description": "The tools the runtime answers itself: its own, or its definition's"
+              },
               "spendLimit": {
                 "type": [
                   "object",
@@ -1452,6 +1476,7 @@
               "systemPrompt",
               "keyScope",
               "modelHeaders",
+              "builtins",
               "spendLimit",
               "cursor",
               "events",
@@ -2076,6 +2101,14 @@
               "type": "string"
             },
             "description": "Replaces the agent's model headers; null or {} removes them"
+          },
+          "builtins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Builtin"
+            },
+            "maxItems": 8,
+            "description": "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's"
           }
         },
         "additionalProperties": false,
@@ -3102,13 +3135,7 @@
           "builtins": {
             "type": "array",
             "items": {
-              "type": "string",
-              "enum": [
-                "web_fetch",
-                "web_search",
-                "schedule",
-                "ask_user"
-              ]
+              "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
@@ -3474,13 +3501,7 @@
           "builtins": {
             "type": "array",
             "items": {
-              "type": "string",
-              "enum": [
-                "web_fetch",
-                "web_search",
-                "schedule",
-                "ask_user"
-              ]
+              "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
@@ -3929,13 +3950,7 @@
               "null"
             ],
             "items": {
-              "type": "string",
-              "enum": [
-                "web_fetch",
-                "web_search",
-                "schedule",
-                "ask_user"
-              ]
+              "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"

@@ -11,7 +11,7 @@
  */
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
-  type AgentFiles, type AgentInput, type AgentHistory, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
+  type AgentFiles, type Builtin, type AgentInput, type AgentHistory, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type ToolServer, type Tools, type AgentFile,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
@@ -50,6 +50,8 @@ export interface AgentConfig {
   mcp?: ToolServer;
   /** A definition (reusable configuration with tool sources: MCP servers, OpenAPI specs, built-ins) to make it from. */
   definition?: string;
+  /** Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user), without a definition. */
+  builtins?: Builtin[];
   thinkingLevel?: ThinkingLevel;
   /** Who the agent acts for (a user id in your app): `identity.subject` in its tool calls. Set when it is made. */
   subject?: string;

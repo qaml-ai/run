@@ -278,9 +278,13 @@ Every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   saved to the workspace); any other status is a tool error quoting the method,
   path, status and the start of the body.
 
-## Built-ins a definition enables
+## Built-ins
 
-`"builtins": ["web_fetch", "web_search", "schedule", "ask_user"]`:
+Tools the runtime answers itself, given to an agent as `builtins` when it is
+made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
+"web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
+it is made from (whose builtins it then has):
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or

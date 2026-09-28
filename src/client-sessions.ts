@@ -25,6 +25,7 @@ import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.t
 import { deleteTail } from "./log-tail.ts";
 import { OVERRIDES, type DefinitionRef } from "./definitions.ts";
 import type { Sources, ToolSources } from "./tool-sources.ts";
+import { builtinsInput } from "./builtins.ts";
 import { callParams, contentResult, type McpResult } from "./mcp-results.ts";
 import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
@@ -1088,7 +1089,7 @@ export class ClientSessions {
    * send_message), the application's attached server, file tools over its mounts, then its
    * definition's built-ins, OpenAPI specs and remote MCP servers.
    */
-  private async servers(session: Session, tools = session.header.definitions, sources = session.header.sources, fileTools = session.header.config.fileTools): Promise<ToolServer[]> {
+  private async servers(session: Session, tools: ToolDefinition[], sources: Sources | undefined, fileTools: boolean | undefined): Promise<ToolServer[]> {
     const header = session.header;
     const tenant = header.tenant;
     const agent: AgentRef = { id: header.id, tenant, claim: session.claim };
@@ -1101,7 +1102,7 @@ export class ClientSessions {
       ...feature ? [view("channel", feature)] : [],
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
       ...volumes && header.mounts?.length ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
-      ...sources && header.definition && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, definition: header.definition.id, claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
+      ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
     ];
   }
 
@@ -1130,9 +1131,13 @@ export class ClientSessions {
     };
   }
 
-  /** The agent's tools from its servers (see `servers`). Records the route, and the servers for `toolSources`. */
-  private async toolset(session: Session, tools = session.header.definitions, sources = session.header.sources, fileTools = session.header.config.fileTools) {
-    const servers = await this.servers(session, tools, sources, fileTools);
+  /**
+   * The agent's tools from its servers (see `servers`), or from the ones `next` gives it (a configuration it is about to
+   * take). Records the route, and the servers for `toolSources`.
+   */
+  private async toolset(session: Session, next: { tools?: ToolDefinition[]; sources?: Sources; fileTools?: boolean } = {}) {
+    const { header } = session;
+    const servers = await this.servers(session, next.tools ?? header.definitions, "sources" in next ? next.sources : header.sources, "fileTools" in next ? next.fileTools : header.config.fileTools);
     const { tools: definitions, route } = await compose(servers);
     session.route = route;
     session.servers = servers;
@@ -1154,7 +1159,7 @@ export class ClientSessions {
   async toolSources(id: string, tenant: string, options: { refresh?: boolean; schemas?: boolean } = {}) {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Agent not found");
-    const servers = this.supervisor.agents.has(id) && session.servers ? session.servers : await this.servers(session);
+    const servers = this.supervisor.agents.has(id) && session.servers ? session.servers : await this.servers(session, session.header.definitions, session.header.sources, session.header.config.fileTools);
     const sources = (await Promise.all(servers.map(server => server.sources?.({ refresh: options.refresh }) ?? [])));
     return describeSources(sources.flat(), options.schemas);
   }
@@ -1380,7 +1385,7 @@ export class ClientSessions {
    * apply when an agent is made.
    */
   private reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
-    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string) {
+    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, builtins?: string[]) {
     const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
     const fixed = [
       ...differs(header.identity?.subject, identity?.subject) ? ["subject"] : [], ...differs(header.identity?.context, identity?.context) ? ["context"] : [],
@@ -1392,7 +1397,7 @@ export class ClientSessions {
       provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
       systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, name: metadata.name ?? null, type: metadata.type ?? null,
       // Only a definition's own fields are the agent's: the rest follow its definition.
-      ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions },
+      ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: builtins ?? [] },
     };
   }
 
@@ -1408,6 +1413,7 @@ export class ClientSessions {
     if ("systemPrompt" in target && differs(current.systemPrompt, target.systemPrompt)) changes.systemPrompt = target.systemPrompt;
     if ("modelHeaders" in target && differs(current.modelHeaders, target.modelHeaders)) changes.modelHeaders = target.modelHeaders;
     if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
+    if (target.builtins !== undefined && differs(header.sources?.builtins ?? [], target.builtins)) changes.builtins = target.builtins;
     return changes;
   }
 
@@ -1421,7 +1427,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string } = {}): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[] } = {}): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
@@ -1439,9 +1445,11 @@ export class ClientSessions {
     }
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
-    const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }, ...(identity ? { identity } : {}) }));
+    const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...(access.builtins?.length ? { builtins: access.builtins } : {}) }, ...(identity ? { identity } : {}) }));
     // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
-    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
+    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, access.builtins), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
+    // An agent's own sources are its builtins; one made from a definition has the definition's.
+    const sources: Sources | undefined = origin ? origin.sources : access.builtins?.length ? { builtins: access.builtins } : undefined;
     if (existing) {
       if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       const changed = changes(existing.value);
@@ -1477,7 +1485,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -1583,6 +1591,7 @@ export class ClientSessions {
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
       ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
       ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
+      builtins: session.header.sources?.builtins ?? [],
       spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }),
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
@@ -1951,11 +1960,16 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "modelHeaders", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "modelHeaders", "builtins", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
-      if (body.method === "configure" && !applying) { const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, ...update } = body.params; configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant)); }
+      if (body.method === "configure" && !applying) {
+        const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, ...update } = body.params;
+        configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant));
+        if (builtins !== undefined && session.header.definition) throw new HttpError(400, "This agent's builtins come from its definition; change them there");
+        if (builtins !== undefined) builtinsInput(builtins);
+      }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -2242,24 +2256,27 @@ export class ClientSessions {
       const { provisionHash, name, type, toolsHash: declared, ...asked } = params;
       // The hash of the tools as the application declared them: given by an upsert, else of a configure's own mcp.tools.
       const toolsHash = declared ?? (asked.mcp?.tools !== undefined ? hash(JSON.stringify(asked.mcp.tools)) : undefined);
-      const given = provisionHash !== undefined ? this.upsertChanges(session.header, asked) : asked;
-      const changed = provisionHash === undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
+      const { builtins, ...given } = provisionHash !== undefined ? this.upsertChanges(session.header, asked) : asked;
+      // The agent's own builtins (an agent from a definition has the definition's): its sources, with the tools they offer.
+      const sources = builtins === undefined ? session.header.sources : (builtins as string[]).length ? { ...session.header.sources, builtins: builtins as string[] } : undefined;
+      const changed = provisionHash === undefined || builtins !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
       const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
       // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
       const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;
       if (resolved && this.options.apiKeyFor && !apiKey) throw new Error(`No ${(update.model ?? session.header.config.model).provider} API key is configured for this tenant; set one with PUT /v1/providers/${(update.model ?? session.header.config.model).provider}/key`);
       // An agent that is not running takes its new configuration when it next starts.
-      const result = !Object.keys(update).length && !keyScope && keyScope !== null ? { configured: true } : live ? await this.supervisor.request(id, "configure", {
+      const result = !Object.keys(update).length && !keyScope && keyScope !== null && builtins === undefined ? { configured: true } : live ? await this.supervisor.request(id, "configure", {
         ...update, ...apiKey ? { apiKey } : {},
         // Replacing the application's tools keeps the runtime's own.
-        ...update.tools || "fileTools" in update ? { tools: await this.toolset(session, update.tools ?? session.header.definitions, applied ? applied.sources : session.header.sources, "fileTools" in update ? update.fileTools : session.header.config.fileTools) } : {},
+        ...update.tools || "fileTools" in update || builtins !== undefined ? { tools: await this.toolset(session, { ...update.tools ? { tools: update.tools } : {}, sources: applied ? applied.sources : sources, ..."fileTools" in update ? { fileTools: update.fileTools } : {} }) } : {},
       }) : { configured: true };
       const { tools, ...config } = update;
       if (resolved && live) session.platformKey = resolved.platform;
       if (keyScope) session.header.keyScope = keyScope; else if (keyScope === null) delete session.header.keyScope;
       if (tools !== undefined) session.header.definitions = tools;
       session.header.config = { ...session.header.config, ...config };
+      if (builtins !== undefined) { if (sources) session.header.sources = sources; else delete session.header.sources; }
       if (applied) {
         session.header.definition = applied.definition;
         if (applied.sources) session.header.sources = applied.sources; else delete session.header.sources;

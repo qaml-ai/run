@@ -99,3 +99,35 @@ test("a node that lost the agent can no longer schedule for it", async t => {
   await assert.rejects(runBuiltin(services, context, "cancel_schedule", { id: only.id }, signal), LostClaim);
   assert.deepEqual((await scheduler.list("client_x")).map(schedule => schedule.text), ["first"]);
 });
+
+test("an agent takes builtins without a definition: at creation, by upsert and by configuration, and only from its tenant", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const tools = () => (r.model.bodies.at(-1).tools ?? []).map((tool: any) => tool.function.name).filter((name: string) => ["web_fetch", "schedule", "list_schedules", "ask_user"].includes(name)).sort();
+  assert.equal((await r.call("/v1/agents", { body: { builtins: ["web_browse"] } })).status, 400);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Planner", builtins: ["schedule"] } })).json;
+  assert.equal((await r.call("/v1/agents", { body: { definition: definition.id, builtins: ["web_fetch"] } })).status, 400, "a definition's agent has its definition's builtins");
+
+  const key = { "Idempotency-Key": "researcher" };
+  const made = (await r.call("/v1/agents", { body: { builtins: ["web_fetch"] }, headers: key })).json;
+  await r.prompt(made.id, "one");
+  assert.deepEqual(tools(), ["web_fetch"]);
+  assert.deepEqual((await r.call(`/v1/agents/${made.id}`)).json.builtins, ["web_fetch"]);
+
+  const upserted = (await r.call("/v1/agents", { body: { builtins: ["web_fetch", "schedule"] }, headers: key })).json;
+  assert.equal(upserted.id, made.id);
+  await until(async () => (await r.call(`/v1/agents/${made.id}/requests/${upserted.reconfigured.id}`)).json.state === "completed", "the upsert");
+  await r.prompt(made.id, "two");
+  assert.deepEqual(tools(), ["list_schedules", "schedule", "web_fetch"]);
+  const repeated = (await r.call("/v1/agents", { body: { builtins: ["web_fetch", "schedule"] }, headers: key })).json.reconfigured;
+  const settled = await until(async () => { const record = (await r.call(`/v1/agents/${made.id}/requests/${repeated.id}`)).json; return record.state === "completed" && record; }, "the repeated upsert");
+  assert.equal(settled.outcome.result.changed, false, "the same builtins change nothing");
+
+  const configured = await r.call(`/v1/agents/${made.id}/configuration`, { method: "PATCH", body: { builtins: [] } });
+  assert.equal(configured.status, 202, configured.text);
+  await until(async () => (await r.call(`/v1/agents/${made.id}/requests/${configured.json.id}`)).json.state === "completed", "the configuration");
+  assert.deepEqual((await r.call(`/v1/agents/${made.id}`)).json.builtins, []);
+  await r.prompt(made.id, "three");
+  assert.deepEqual(tools(), []);
+  const own = await fetch(`${r.base}/clients/${made.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${made.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: "own", method: "configure", params: { builtins: ["web_fetch"] } }) });
+  assert.equal(own.status, 403, "the agent cannot give itself builtins");
+});
