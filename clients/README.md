@@ -58,8 +58,9 @@ Keep `agent.session` in secret storage and reconnect with
 `history()`, `continue()`, `steer(text)`, `followUp(text)`, and `configure(...)`
 operate on the same persistent agent. `steer` and `followUp` are accepted while
 the agent is idle and delivered to its next run. `prompt`, `steer` and `followUp`
-take `meta`, the application's own data about the message: the stored message
-carries it, with its request's id, in history and events. `prompt(text, { whileRunning: "steer" })`
+take `metadata`, the application's own key-value data about the message (at most
+16 string values): the stored message and its request carry it, with the request's
+id, in history, events and webhooks. `prompt(text, { whileRunning: "steer" })`
 hands the message to a running turn instead of queueing it, and resolves with that
 turn's outcome; with no turn running it starts one.
 

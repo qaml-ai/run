@@ -301,14 +301,19 @@ API token; applications attach to their agents with the SDKs (`/clients/*`,
 authenticated by each agent's own token). Each agent admits one prompt or code
 execution at a time; later ones queue.
 
-A prompt sent while a turn runs waits for it by default (`whileRunning: "queue"`).
-With `POST /v1/agents/:id/prompt {text, whileRunning: "steer"}` the running turn
-takes the message instead, reading it after its current step (a model response and
-its tool calls), and the request ends with that turn: it completes with the turn's
-outcome and `steeredInto` naming the turn's request. If the turn ends or stops
-before taking it (it finishes, is aborted, or waits on input), the message runs as a
-turn of its own, once; with no turn running it starts one. Either way the request is
-idempotent by `requestId`, and the message is recorded once, with its `requestId`.
+**Sending while the agent is working.** `whileRunning` says what happens to a
+message sent while a turn runs, as a chat UI chooses when its user types during a
+reply:
+
+- `"queue"` (the default): it waits, and runs as the next turn.
+- `"steer"`: the running turn takes it, reading it after its current step (a
+  model response and its tool calls), and answers with it in mind. The request
+  ends with that turn: it completes with the turn's outcome and `steeredInto`
+  naming the turn's request. If the turn ends before taking it (it finishes, is
+  aborted, or waits on input), the message runs as a turn of its own instead.
+
+With no turn running, both start one. Either way the request is idempotent by
+`requestId`, and the message is recorded once.
 
 A server that relays agents to its own users needs no per-agent tokens: with its
 tenant token it prompts (`POST /v1/agents/:id/prompt`), answers inputs, aborts, and
@@ -1093,18 +1098,20 @@ or `prompt(text, { from })` in the SDKs (`from_=` in Python; also on `steer` and
 - Channels set it for every message: `from.id` is `<type>:<the service's user id>`
   (`telegram:42`, `slack:U0123ABCD`), with the sender's display name and username.
 
-### Matching a message to its request (`requestId`, `meta`)
+### Matching a message to its request (`requestId`, `metadata`)
 
 Each user message the runtime records carries the `requestId` of the request
-that sent it (given, or generated) and, if the request gave one, `meta`: the
-application's own JSON object about the message (its source, a client-side id),
-at most 4 KB. `POST /v1/agents/:id/prompt {text, requestId?, meta?}`, or
-`prompt(text, { meta })` in the SDKs (also on `steer` and `followUp`).
+that sent it (the idempotency key you gave, or a generated one) and, if the request gave it,
+`metadata`: your own key-value data about the message (its source, a client-side
+id), as on Stripe and OpenAI objects: at most 16 keys of 1–64 characters, string
+values of at most 512. `POST /v1/agents/:id/prompt {text, requestId?, metadata?}`, or
+`prompt(text, { metadata })` in the SDKs (also on `steer` and `followUp`).
 
 - Both are on the message wherever it appears: history (`/history` and its
-  pages), `message_start`/`message_end` events and snapshots. A UI that showed an
-  optimistic bubble matches the stored message by its own id, and tells the
-  message's source from `meta`.
+  pages), `message_start`/`message_end` events and snapshots. The request
+  (`GET /v1/agents/:id/requests/:requestId`) and its run's webhook events carry
+  `metadata` too. A UI that showed an optimistic bubble matches the stored
+  message by its own id, and tells the message's source from `metadata`.
 - The model sees neither: they are dropped when the message is rendered for it.
 
 ### Tool search

@@ -38,11 +38,19 @@ export function senderInput(value: unknown): Sender | undefined {
   return { id, ...(name ? { name: name as string } : {}), ...(username ? { username: username as string } : {}) };
 }
 
-/** An application's own data about a message (`meta`): a JSON object of at most 4 KB, kept on the message but never shown to the model. */
-export function metaInput(value: unknown): Record<string, unknown> | undefined {
+/** Limits on `metadata`, as Stripe's: keys and values are strings. */
+export const METADATA_LIMITS = Object.freeze({ keys: 16, keyChars: 64, valueChars: 512 });
+const METADATA_ERROR = `metadata must be an object of at most ${METADATA_LIMITS.keys} string values, keys of 1–${METADATA_LIMITS.keyChars} characters and values of at most ${METADATA_LIMITS.valueChars}`;
+
+/** An application's own key-value data about a message (`metadata`), kept on it and its request but never shown to the model. */
+export function metadataInput(value: unknown): Record<string, string> | undefined {
   if (value === undefined) return undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > 4096) throw new HttpError(400, "meta must be a JSON object of at most 4 KB");
-  return value as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, METADATA_ERROR);
+  const entries = Object.entries(value);
+  if (entries.length > METADATA_LIMITS.keys || entries.some(([key, text]) => !key || key.length > METADATA_LIMITS.keyChars || typeof text !== "string" || text.length > METADATA_LIMITS.valueChars)) {
+    throw new HttpError(400, METADATA_ERROR);
+  }
+  return value as Record<string, string>;
 }
 
 function contextBlock(from: Sender): string {
@@ -64,19 +72,19 @@ export function renderMessage(message: AgentMessage): AgentMessage {
   const from = (message as { from?: Sender }).from;
   const parts = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
   const content = [...(from ? [{ type: "text", text: contextBlock(from) }] : []), ...escapeParts(parts)];
-  const { from: _, requestId: _request, meta: _meta, ...rest } = message as typeof message & Stamp;
+  const { from: _, requestId: _request, metadata: _metadata, ...rest } = message as typeof message & Stamp;
   return { ...rest, content } as AgentMessage;
 }
 
 export const renderMessages = (messages: AgentMessage[]) => messages.map(renderMessage);
 
-/** What the runtime records on a user message beside its content: its sender, the request that sent it, and the application's `meta`. */
-export type Stamp = { from?: Sender; requestId?: string; meta?: Record<string, unknown> };
+/** What the runtime records on a user message beside its content: its sender, the request that sent it, and the application's `metadata`. */
+export type Stamp = { from?: Sender; requestId?: string; metadata?: Record<string, string> };
 
 /** Mark user messages with their stamp, clearing any a caller tried to set another way. */
-export function stamp<T extends AgentMessage>(messages: T[], { from, requestId, meta }: Stamp): T[] {
+export function stamp<T extends AgentMessage>(messages: T[], { from, requestId, metadata }: Stamp): T[] {
   return messages.map(message => {
-    const { from: _, requestId: _request, meta: _meta, ...rest } = message as T & Stamp;
-    return { ...rest, ...(from ? { from } : {}), ...(requestId ? { requestId } : {}), ...(meta ? { meta } : {}) } as T;
+    const { from: _, requestId: _request, metadata: _metadata, ...rest } = message as T & Stamp;
+    return { ...rest, ...(from ? { from } : {}), ...(requestId ? { requestId } : {}), ...(metadata ? { metadata } : {}) } as T;
   });
 }

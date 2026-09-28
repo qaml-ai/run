@@ -41,9 +41,9 @@ export interface WatchOptions {
 export interface AgentView {
   /**
    * The agent's messages, oldest first, each at its index in the agent's history (`indexes`). A user
-   * message carries its `requestId` and the application's `meta`, to match a bubble shown before it arrived.
+   * message carries its `requestId` and the application's `metadata`, to match a bubble shown before it arrived.
    */
-  messages: (AgentMessage & { requestId?: string; meta?: Record<string, unknown> })[];
+  messages: (AgentMessage & { requestId?: string; metadata?: Record<string, string> })[];
   indexes: number[];
   /** The assistant message streaming now, folded from its deltas (tool arguments as partial JSON). */
   partial: AssistantMessage | null;

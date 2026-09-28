@@ -29,7 +29,7 @@ import { callParams, contentResult, type McpResult } from "./mcp-results.ts";
 import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
-import { metaInput, senderInput } from "./sender.ts";
+import { metadataInput, senderInput } from "./sender.ts";
 import { callMeta, compose, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
@@ -1875,14 +1875,14 @@ export class ClientSessions {
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     const isMessage = ["prompt", "steer", "followUp"].includes(body.method);
     if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer, followUp)");
-    if (params.meta !== undefined && !isMessage) throw new HttpError(400, "meta is only for messages (prompt, steer, followUp)");
+    if (params.metadata !== undefined && !isMessage) throw new HttpError(400, "metadata is only for messages (prompt, steer, followUp)");
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     if (params.whileRunning === "queue") delete params.whileRunning;
     // A message records the request that sent it, so an application can match it to its own.
     if (isMessage) params.requestId = body.id;
     try {
       if (params.from !== undefined) params.from = senderInput(params.from);
-      if (params.meta !== undefined) params.meta = metaInput(params.meta);
+      if (params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
       // The sender acts, unless the application names someone else.
       actor = actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
       // A resumed turn acts for whoever the suspended one did.
@@ -1916,7 +1916,7 @@ export class ClientSessions {
     const record = this.upsertRequest(session, {
       startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
       ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-      id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}),
+      id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
       ...(body.method === "resume" ? { suspension: params.suspension } : {}),
     });
     await this.commit(session, true);

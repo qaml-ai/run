@@ -18,6 +18,8 @@ export type RequestRecord = {
   actor?: string;
   /** A `resume` run's suspension: the run whose turn waited on human input, which this one continues. */
   suspension?: string;
+  /** The application's key-value data sent with a message (prompt, steer, followUp), also kept on the message. */
+  metadata?: Record<string, string>;
   /** A prompt sent with `whileRunning: "steer"` that a running turn took: that turn's request, whose outcome it shares. */
   steeredInto?: string;
   /** The runtime's own: a finished run whose `run.finished` webhook event is not written yet. */

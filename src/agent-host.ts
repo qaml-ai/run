@@ -320,9 +320,9 @@ export function createAgentHost(io: HostIO) {
     }));
   }
 
-  /** The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request and meta. */
+  /** The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request and metadata. */
   function userMessages(params: Record<string, any>): AgentMessage[] {
-    const marks = { from: senderInput(params.from), requestId: params.requestId, meta: params.meta };
+    const marks = { from: senderInput(params.from), requestId: params.requestId, metadata: params.metadata };
     if (params.message !== undefined) {
       const messages = (Array.isArray(params.message) ? params.message : [params.message]) as AgentMessage[];
       validateUserMessages(messages);

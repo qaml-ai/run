@@ -90,7 +90,7 @@ export function tool<S extends TSchema>(definition: Omit<Tool<Static<S>>, "input
 }
 export type Tools = Record<string, Tool>;
 /** A tool as an MCP server lists it (`tools/list`). Runtime options ride in `_meta` under "agent-runtime/". */
-export interface McpTool { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown>; _meta?: Record<string, unknown> }
+export interface McpTool { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown>; _metadata?: Record<string, string> }
 /** An MCP `tools/call` result: complete, or (MCP's multi round-trip requests) asking for input to retry with. */
 export type CallToolResult = { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean; resultType?: "complete" }
   | { resultType: "input_required"; inputRequests?: Record<string, { method: string; params?: Record<string, unknown> }>; requestState?: string; content?: never };
@@ -307,8 +307,8 @@ export interface VolumeChanges { seq: number; changes: { seq: number; path: stri
 export interface FileLink { url: string; method: "GET" | "PUT"; path: string; expiresAt: number; maxBytes?: number; contentType?: string }
 /** A link's options: `expiresIn` seconds (default 900, at most 86400); for PUT, the largest upload and its content type. */
 export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBytes?: number; contentType?: string }
-/** A message as the runtime records it: a user message also names its sender (if given), the request that sent it, and the application's `meta`. */
-export type RecordedMessage = AgentMessage & { from?: Sender; requestId?: string; meta?: Record<string, unknown> };
+/** A message as the runtime records it: a user message also names its sender (if given), the request that sent it, and the application's `metadata`. */
+export type RecordedMessage = AgentMessage & { from?: Sender; requestId?: string; metadata?: Record<string, string> };
 export interface AgentHistory { messages: RecordedMessage[] }
 /** A page of history: whole turns, oldest first, each message at its index in the agent's history. `next` is the older page's `before` (null at the start). */
 export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true }
@@ -821,11 +821,11 @@ export class AgentClient {
   /**
    * `from` says who sent the message: the model sees it in a block only the runtime can write, and
    * `from.id` is the turn's actor. `actor` names someone else acting (`act` in identity tokens) without telling the model.
-   * `meta` is the application's own data about the message (at most 4 KB as JSON): the stored message
-   * carries it, with the request's id, in history and events; the model never sees it.
+   * `metadata` is the application's own key-value data about the message (at most 16 string values): the
+   * stored message and its request carry it, with the request's id, in history, events and webhooks; the model never sees it.
    * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome.
    */
-  prompt(text: string, options?: RequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender; meta?: Record<string, unknown>; whileRunning?: "queue" | "steer" }) {
+  prompt(text: string, options?: RequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer" }) {
     return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}) });
   }
 
@@ -833,10 +833,10 @@ export class AgentClient {
    * Send a message with its files: each is uploaded to the agent's workspace under the request's
    * id first, then attached by path. `images` (base64 blocks) are sent inline and saved as files.
    */
-  private async message(method: "prompt" | "steer" | "followUp", text: string, options: (RequestOptions & { files?: Attachment[]; images?: ImageContent[]; from?: Sender; meta?: Record<string, unknown> }) | undefined, extra: Record<string, unknown> = {}) {
+  private async message(method: "prompt" | "steer" | "followUp", text: string, options: (RequestOptions & { files?: Attachment[]; images?: ImageContent[]; from?: Sender; metadata?: Record<string, string> }) | undefined, extra: Record<string, unknown> = {}) {
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
-    return this.request(method, { text, ...(files ? { files } : {}), ...(options?.images ? { images: options.images } : {}), ...extra, ...(options?.from ? { from: options.from } : {}), ...(options?.meta ? { meta: options.meta } : {}) }, { ...options, idempotencyKey: id });
+    return this.request(method, { text, ...(files ? { files } : {}), ...(options?.images ? { images: options.images } : {}), ...extra, ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}) }, { ...options, idempotencyKey: id });
   }
 
   private async attach(requestId: string, files: Attachment[]): Promise<{ path: string }[]> {
@@ -879,8 +879,8 @@ export class AgentClient {
     return this.http(`/history?${query}`);
   }
   continue(options?: RequestOptions & { actor?: string }) { return this.request("continue", options?.actor ? { actor: options.actor } : {}, options); }
-  steer(text: string, options?: { from?: Sender; files?: Attachment[]; meta?: Record<string, unknown> }) { return this.message("steer", text, options); }
-  followUp(text: string, options?: { from?: Sender; files?: Attachment[]; meta?: Record<string, unknown> }) { return this.message("followUp", text, options); }
+  steer(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("steer", text, options); }
+  followUp(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("followUp", text, options); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string }) {
     const { tools, mcp, ...rest } = options;
