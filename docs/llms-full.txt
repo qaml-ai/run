@@ -2016,8 +2016,9 @@ application's MCP answers (`POST /clients/:id/mcp`) must carry it as
 ### `event: closed`
 
 `{"reason": "replaced"}`: another process took over this agent's tools
-(`?takeover=true`), and this stream ends. Stop; do not reconnect and take them
-back. The SDKs raise `APPLICATION_REPLACED`.
+(`?takeover=true`), and this stream ends. Do not take them back: to keep
+following the agent, reconnect as a watcher (`?watch=1`), as the SDKs do (they
+report `APPLICATION_REPLACED` to `onError`).
 
 ### Cursors and gaps
 
@@ -2034,7 +2035,7 @@ lost in a gap: only display events are.
 One process at a time serves an agent's tools (the application connection that
 answered MCP's `initialize`). Another application connection is refused with
 **409 `APPLICATION_CONNECTED`**, unless it asks `?takeover=true` (the one serving
-gets `event: closed` and stops) or names the connection it held
+gets `event: closed`) or names the connection it held
 (`X-Agent-Connection`, reconnecting). Watchers and a connection that serves no
 tools hold nothing. See [Concepts](../concepts.md) and [Errors](errors.md).
 
@@ -2466,7 +2467,7 @@ by it, and a call that runs twice acts once.
 | --- | --- | --- |
 | Any failure | `AgentError`: `message`, `status` (HTTP status, or 0 for a run's or the connection's), `code?`, `requestId?`, `uncertain?`, `retryAfterMs?` | `AgentError`: `status`, `code`, `request_id`, `uncertain`, `retry_after` (seconds) |
 | A failed run | `RunError extends AgentError`: `run` (the `Run`, `status: "failed"`, `error: {code, message, uncertain?}`) | `RunError`: `run` |
-| Another process took the agent's tools | `code: "APPLICATION_REPLACED"`, through `onError`; the client stops | the same, through `on_error` |
+| Another process took the agent's tools | `code: "APPLICATION_REPLACED"`, through `onError`; the client goes on without serving them | the same, through `on_error` |
 | A tool server's token check | `RuntimeTokenError` (`serveTools`, `verifyRuntimeToken`): the call gets 401 | `RuntimeTokenError` |
 
 Stopping a wait (`signal`, `timeoutMs`; Python `timeout`) throws the signal's

@@ -53,8 +53,9 @@ application's MCP answers (`POST /clients/:id/mcp`) must carry it as
 ### `event: closed`
 
 `{"reason": "replaced"}`: another process took over this agent's tools
-(`?takeover=true`), and this stream ends. Stop; do not reconnect and take them
-back. The SDKs raise `APPLICATION_REPLACED`.
+(`?takeover=true`), and this stream ends. Do not take them back: to keep
+following the agent, reconnect as a watcher (`?watch=1`), as the SDKs do (they
+report `APPLICATION_REPLACED` to `onError`).
 
 ### Cursors and gaps
 
@@ -71,7 +72,7 @@ lost in a gap: only display events are.
 One process at a time serves an agent's tools (the application connection that
 answered MCP's `initialize`). Another application connection is refused with
 **409 `APPLICATION_CONNECTED`**, unless it asks `?takeover=true` (the one serving
-gets `event: closed` and stops) or names the connection it held
+gets `event: closed`) or names the connection it held
 (`X-Agent-Connection`, reconnecting). Watchers and a connection that serves no
 tools hold nothing. See [Concepts](../concepts.md) and [Errors](errors.md).
 

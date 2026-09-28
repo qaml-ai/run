@@ -106,7 +106,7 @@ by it, and a call that runs twice acts once.
 | --- | --- | --- |
 | Any failure | `AgentError`: `message`, `status` (HTTP status, or 0 for a run's or the connection's), `code?`, `requestId?`, `uncertain?`, `retryAfterMs?` | `AgentError`: `status`, `code`, `request_id`, `uncertain`, `retry_after` (seconds) |
 | A failed run | `RunError extends AgentError`: `run` (the `Run`, `status: "failed"`, `error: {code, message, uncertain?}`) | `RunError`: `run` |
-| Another process took the agent's tools | `code: "APPLICATION_REPLACED"`, through `onError`; the client stops | the same, through `on_error` |
+| Another process took the agent's tools | `code: "APPLICATION_REPLACED"`, through `onError`; the client goes on without serving them | the same, through `on_error` |
 | A tool server's token check | `RuntimeTokenError` (`serveTools`, `verifyRuntimeToken`): the call gets 401 | `RuntimeTokenError` |
 
 Stopping a wait (`signal`, `timeoutMs`; Python `timeout`) throws the signal's
