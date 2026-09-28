@@ -53,12 +53,13 @@ export function idempotency(options: { db: () => Db; tenant: (c: Context) => str
       if (response.ok) {
         // A secret shown once is never stored: the key only records that its request succeeded.
         const body = options.secret(c.req.path) || !response.body ? null : await response.clone().text();
-        await db.query("update idempotency_keys set status = $3, body = $4, content_type = $5 where tenant = $1 and key = $2",
-          [tenant, key, response.status, body, body === null ? null : response.headers.get("content-type")]);
+        await db.query("update idempotency_keys set status = $3, body = $4, content_type = $5 where tenant = $1 and key = $2 and created_at = $6",
+          [tenant, key, response.status, body, body === null ? null : response.headers.get("content-type"), now]);
         kept = true;
       }
     } finally {
-      if (!kept) await db.query("delete from idempotency_keys where tenant = $1 and key = $2 and status is null", [tenant, key]).catch(() => {});
+      // Only its own hold: a retry may have taken the key over (see `lockMs`).
+      if (!kept) await db.query("delete from idempotency_keys where tenant = $1 and key = $2 and status is null and created_at = $3", [tenant, key, now]).catch(() => {});
     }
   };
 }
