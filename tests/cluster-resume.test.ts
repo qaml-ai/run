@@ -22,6 +22,7 @@ test("a turn whose node died between model steps resumes on the next owner, call
   const result = await run;
   assert.equal(result.reply, "all done");
   assert.equal(result.error, null);
+  await client.close();
 
   const observer = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: lookup([]) });
   t.after(() => observer.close());

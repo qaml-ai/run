@@ -19,7 +19,7 @@ import { configuredModel } from "../src/model.ts";
 import { AgentClient, AgentRuntime, tool, schema, type AgentOptions, type RuntimeOptions, type Tool } from "../clients/node.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { testDatabase } from "./database.ts";
-import { attachSilently, until, watchEvents } from "./runtime-server.ts";
+import { attach, attachSilently, until, watchEvents } from "./runtime-server.ts";
 
 const token = "fixture-operator-secret-32-characters";
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -179,6 +179,8 @@ test("a dropped connection ends the tool calls on it as unknown, never running t
   assert.equal(writes, 1, "the call was not sent again");
   assert.equal((await agent.status()).pid, pid);
   assert.ok(events.length >= 1);
+  // Another process takes the agent over once this one has gone.
+  await agent.close();
   const again = Promise.withResolvers<void>();
   const next = await new AgentRuntime(f.runtimeOptions).connectAgent(agent.session, { tools: { echo: echo(() => { again.resolve(); return "later"; }) } });
   f.clients.push(next);
@@ -217,7 +219,7 @@ test("a run stays in flight until its outcome is durable and published, so a dra
   assert.deepEqual((await running).output, ["done"]);
 });
 
-test("a call goes to one connection: a client that connects meanwhile never runs it, and the first one's ends as unknown", async t => {
+test("a call goes to one connection: another client is refused while it serves, and one that takes over never runs it; the first one's ends as unknown", async t => {
   const f = await fixture(t, { timeout: 5000 });
   let executions = 0;
   const entered = Promise.withResolvers<void>();
@@ -227,9 +229,13 @@ test("a call goes to one connection: a client that connects meanwhile never runs
   const first = await f.start(tools);
   const running = first.execute('return await tools.echo({value:"once"})');
   await entered.promise;
-  // A second process (a new container, say) attaches with an empty journal and replays everything buffered.
-  const second = await new AgentRuntime({ ...f.runtimeOptions, stateDirectory: join(f.root, "second-sdk") }).connectAgent(first.session, { tools });
-  t.after(() => second.close());
+  // A second process (a new container, say) is refused while the first serves the agent's tools...
+  const refused = await attach(t, f.url, first.session.id, first.session.token);
+  assert.equal(refused.status, 409);
+  assert.match(refused.body, /APPLICATION_CONNECTED/);
+  // ...and one that takes over gets calls from then on, never the one in flight.
+  const second = await attach(t, f.url, first.session.id, first.session.token, () => { executions++; }, "?takeover=true");
+  assert.equal(second.status, 200);
   await assert.rejects(running, /outcome is unknown/);
   gate.resolve();
   await sleep(300);
