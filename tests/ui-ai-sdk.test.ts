@@ -11,7 +11,7 @@ void _typed;
 const _chunk = (chunk: import("../clients/ai-sdk.ts").AgentUIMessageChunk): UIMessageChunk => chunk;
 void _chunk;
 
-async function streamingModel(t: { after(fn: () => Promise<void> | void): void }, script: (index: number, body: any) => object[]) {
+async function streamingModel(t: { after(fn: () => Promise<void> | void): void }, script: (index: number, body: any) => object[], pace = 10) {
   let calls = 0;
   const url = await listen(t, async (req, res) => {
     let text = "";
@@ -19,7 +19,7 @@ async function streamingModel(t: { after(fn: () => Promise<void> | void): void }
     const deltas = script(calls++, JSON.parse(text));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const chunk = (delta: object, finish_reason: string | null = null) => res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
-    for (const delta of deltas) { chunk(delta); await sleep(10); }
+    for (const delta of deltas) { chunk(delta); await sleep(pace); }
     chunk({}, deltas.some(delta => "tool_calls" in delta) ? "tool_calls" : "stop");
     res.end("data: [DONE]\n\n");
   });
@@ -31,14 +31,20 @@ const callDeltas = (id: string, name: string, args: object) => [
   { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] },
 ];
 
-async function setup(t: Parameters<typeof runtime>[0], script: (index: number, body: any) => object[], agent: (r: Awaited<ReturnType<typeof runtime>>) => Promise<object> = async () => ({ instructions: "You help." })) {
+async function setup(t: Parameters<typeof runtime>[0], script: (index: number, body: any) => object[], agent: (r: Awaited<ReturnType<typeof runtime>>) => Promise<object> = async () => ({ instructions: "You help." }),
+  options: { pace?: number; stateDelayMs?: number } = {}) {
   // Tool servers on this machine are allowed (the shop below).
-  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: await streamingModel(t, script), AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" });
+  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: await streamingModel(t, script, options.pace), AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" });
   const handler = createAgentHandler({ apiKey: OPERATOR, url: r.base, browserToken: { url: r.base }, authorize: () => ({ userId: "alice" }), agent: await agent(r) });
   t.after(() => handler.close());
   const transport = new AgentRuntimeChatTransport({
     endpoint: "/api/agent",
-    fetch: async (input, init) => String(input) === "/api/agent" ? handler(new Request("https://app.test/api/agent", init)) : fetch(input, init),
+    fetch: async (input, init) => {
+      if (String(input) === "/api/agent") return handler(new Request("https://app.test/api/agent", init));
+      // A slow read of the agent's state, while the run it asks about goes on streaming.
+      if (options.stateDelayMs && String(input).endsWith("/state")) await sleep(options.stateDelayMs);
+      return fetch(input, init);
+    },
   });
   return { r, transport };
 }
@@ -137,4 +143,23 @@ test("resumeStream() after the resumed run already finished still ends, with wha
   assert.deepEqual(resumed.parts.filter(part => part.type === "text").map(part => (part as any).text), ["Deploying to US."]);
   const call = resumed.parts.find(part => part.type === "dynamic-tool") as any;
   assert.equal(call?.state, "output-available", JSON.stringify(resumed.parts));
+});
+
+test("resumeStream() joining a run mid-answer shows each word once, whatever arrived while it looked", async t => {
+  const ASK = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
+  const { transport } = await setup(t, (index, body) => {
+    if (index === 0) return callDeltas("call_ask", "ask_user", ASK);
+    const answer = JSON.parse(body.messages.filter((message: any) => message.role === "tool").at(-1).content).answers["Which region?"];
+    return words(`Deploying the release to ${answer} now.`);
+  }, async r => ({ definition: (await r.call("/v1/definitions", { body: { name: "Asker", builtins: ["ask_user"] } })).json.id }), { pace: 120, stateDelayMs: 400 });
+  const first = await reply(await transport.sendMessages({ trigger: "submit-message", chatId: "join", messageId: undefined, messages: [userMessage("msg_00000005", "Deploy it")], abortSignal: undefined }));
+  const asked = first.parts.find(part => part.type === "data-agent-input") as any;
+  await transport.answer(asked.data, "EU", { chatId: "join" });
+  // The run is answering when the stream joins it, and goes on while the join looks up the run.
+  await sleep(300);
+  const rest = await transport.reconnectToStream({ chatId: "join" });
+  assert.ok(rest);
+  const resumed = await reply(rest!, first);
+  assert.deepEqual(resumed.parts.filter(part => part.type === "text").map(part => (part as any).text), ["Deploying the release to EU now."]);
+  assert.equal((resumed.parts.find(part => part.type === "dynamic-tool") as any)?.state, "output-available");
 });
