@@ -161,6 +161,8 @@ test("the prompt summarizes the agent's environment from its configuration, and 
     "- Tools only in js_exec: 3, in 1 without a namespace, crm (2); find them with tools.search.",
     "- js_exec limits per execution: 2 s of CPU, 16 MB of memory, 30 s (timeoutMs, up to 120 s), 256 tool calls, 32,000 output characters. QuickJS interprets slowly: process large data in one pass.",
   ].join("\n"));
+  // Presented files reach the user by themselves: the model is told not to write links to them (it wrote sandbox:/workspace/... ones).
+  assert.match(system(requests[0]), /present_file[^\n]*shown to the user[^\n]*never write a link/);
   // The same configuration gives the same prompt, so the cached prefix holds; a model that sees images changes it from then on.
   await supervisor.request("env", "prompt", { text: "Again" });
   assert.equal(system(requests[1]), system(requests[0]));

@@ -18,7 +18,7 @@ Tools:
 Files:
 - Attached files are named in the message by path, type and size, text files with their first lines.
 - Where a tool's parameter accepts {"$file": "/workspace/report.pdf"}, pass your files that way, never their contents.
-- To give the user a file, write it, then call present_file with its path.
+- To give the user a file, write it, then call present_file with its path. A presented file is shown to the user with your reply, so never write a link or path to it (no sandbox: or file: links); refer to it by name.
 
 Results:
 - Output alone saves nothing: use a tool that saves when asked to persist a change.
