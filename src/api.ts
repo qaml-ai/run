@@ -21,6 +21,7 @@ import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
 import { declaredType, fileResponse, type FileLinks } from "./files.ts";
+import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 
 /**
@@ -78,6 +79,8 @@ function parse<T extends z.ZodType>(type: T, value: unknown): z.infer<T> {
   return result.data;
 }
 
+const IDEMPOTENCY_HEADER = z.object({ "idempotency-key": z.string().max(255).optional().openapi({ description: "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409" }) });
+
 export function api(context: ApiContext) {
   const app = new OpenAPIHono<Env>();
   const { accounts, clients } = context;
@@ -85,7 +88,9 @@ export function api(context: ApiContext) {
   // a size limit, so routes are documented here rather than validated by middleware.
   // `path` overrides the handler's path, for parameters that span segments.
   const route = (config: RouteConfig, handler: (c: Context<Env>) => Promise<Response> | Response, path = config.path.replaceAll(/{(\w+)}/g, ":$1")) => {
-    app.openAPIRegistry.registerPath({ ...config, responses: { ...config.responses, ...failure } });
+    // Every POST takes an Idempotency-Key (see idempotency.ts).
+    const documented = config.method === "post" && !config.request?.headers ? { ...config, request: { ...config.request, headers: IDEMPOTENCY_HEADER } } : config;
+    app.openAPIRegistry.registerPath({ ...documented, responses: { ...config.responses, ...failure } });
     app.on(config.method.toUpperCase(), path, handler);
   };
   app.openAPIRegistry.registerComponent("securitySchemes", "bearer", { type: "http", scheme: "bearer", description: "Operator or API token" });
@@ -150,6 +155,8 @@ export function api(context: ApiContext) {
     if (!await clients.owns(c.req.param("id")!, c.var.principal.tenant)) throw new HttpError(404, "Unknown agent");
     await next();
   });
+  // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
+  app.use("/v1/*", idempotency(() => clients.db, c => c.var.principal.tenant, (_method, path) => path === "/v1/agents" || /^\/v1\/agents\/[^/]+\/prompt$/.test(path)));
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), c => {
     const principal = c.var.principal;
@@ -350,7 +357,7 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
-    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, { id: body.requestId ?? randomUUID(), method: "prompt", params: { text: body.text, ...(body.actor !== undefined ? { actor: body.actor } : {}), ...(body.from !== undefined ? { from: body.from } : {}), ...(body.metadata !== undefined ? { metadata: body.metadata } : {}), ...(body.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(body.files !== undefined ? { files: body.files } : {}) } }));
+    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, { id: body.requestId ?? c.req.header("idempotency-key") ?? randomUUID(), method: "prompt", params: { text: body.text, ...(body.actor !== undefined ? { actor: body.actor } : {}), ...(body.from !== undefined ? { from: body.from } : {}), ...(body.metadata !== undefined ? { metadata: body.metadata } : {}), ...(body.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(body.files !== undefined ? { files: body.files } : {}) } }));
   });
   route(createRoute({
     method: "put", path: "/v1/agents/{id}/uploads/{requestId}/{name}", request: { params: agentId.extend({ requestId: z.string(), name: z.string() }), body: binary("The file's bytes, streamed") },
@@ -371,7 +378,7 @@ export function api(context: ApiContext) {
       if (!scoped && !await accounts.hasKey(tenant, provider)) throw new HttpError(400, `No ${provider} API key is configured for this tenant; set one with PUT /v1/providers/${provider}/key`);
     }
     const submit = context.submit ?? clients.submit.bind(clients);
-    return json(c, 202, await submit(c.req.param("id")!, tenant, { id: requestId ?? randomUUID(), method: "configure", params }));
+    return json(c, 202, await submit(c.req.param("id")!, tenant, { id: requestId ?? c.req.header("idempotency-key") ?? randomUUID(), method: "configure", params }));
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/requests/{requestId}", request: { params: agentId.extend({ requestId: z.string() }) },

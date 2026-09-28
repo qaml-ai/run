@@ -7,6 +7,7 @@ import { configuredModel } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
+import { expireIdempotencyKeys } from "./idempotency.ts";
 import { modelHeadersInput, sessionConfig } from "./session-config.ts";
 import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -162,6 +163,8 @@ const keyScopes = new KeyScopes({ db, accounts });
 const subscribers = new Subscribers(db);
 const webhooks = new Webhooks({ db, accounts, outbound, subscribers, ...(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS) } : {}) });
 webhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
+// Idempotency keys' answers are kept a day.
+setInterval(() => void expireIdempotencyKeys(db).catch(error => console.error(JSON.stringify({ type: "idempotency_expiry_failed", error: errorText(error) }))), 60 * 60_000).unref();
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
