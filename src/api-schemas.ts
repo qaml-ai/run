@@ -227,9 +227,6 @@ export const BrowserTokenInput = z.object({
   redact: z.array(z.enum(["usage.cost"])).optional().openapi({ description: "Fields it does not see: usage.cost, a response's provider cost, in messages, snapshots and history" }),
   subject: z.string().max(200).optional().openapi({ description: "Whom it is for, in your app (a user id)" }),
 }).openapi("BrowserTokenInput");
-export const CorsOrigins = z.object({
-  origins: z.array(z.string()).max(32).openapi({ description: "https://host[:port], https://*.host (any subdomain), or http://localhost[:port]. A browser at one of them may call GET /v1/agents/{id}/{events,state,history,inputs} with a browser token; nothing else is allowed cross-origin" }),
-}).openapi("CorsOrigins");
 export const BrowserToken = z.object({
   token: z.string().openapi({ description: "Send as Authorization: Bearer <token>, never in a URL" }),
   expiresAt: z.number(), agentId: z.string(), url: z.string().optional().openapi({ description: "Where the browser reaches the runtime" }),

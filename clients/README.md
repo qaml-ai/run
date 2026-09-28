@@ -429,7 +429,8 @@ where it used to get `replay_gap`.
 `@camelai/agent-runtime/watch` reads one agent from a browser with a browser token
 (see "Browser tokens" in the runtime's README), which your server mints for each
 user after its own access checks; the browser never holds a tenant or agent
-token. It has no dependencies and no Node APIs.
+token. It works from any origin (the token grants the read, so there is no origin
+list to keep). It has no dependencies and no Node APIs.
 
 ```ts
 import { watchAgent } from "@camelai/agent-runtime/watch";
@@ -500,9 +501,9 @@ turn is indexed. `/history` without paging shows it as the log has it.
   argument, result and concurrency limits remain enforced. JSON frames are
   capped at 1.1 MB, with bounded SSE output buffering and no event compression.
 - TLS is required remotely. Redirects are disabled. Credentials are headers,
-  never URL parameters. The host rejects browser `Origin` headers for now;
-  browser SDK packaging, CORS and a user-authenticated credential handoff remain
-  separate work. No browser or production application route has been switched.
+  never URL parameters. `/clients/*` refuses requests with a browser `Origin`: a
+  browser reads an agent with a browser token instead (see "Watching from a
+  browser").
 
 The wire transport is ordinary HTTP: `GET /clients/:id/events` streams SSE;
 `POST /clients/:id/requests` accepts idempotent requests; `POST /clients/:id/mcp`
