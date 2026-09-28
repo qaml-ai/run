@@ -63,24 +63,38 @@ export type CustomModel = {
   id: string; contextWindow: number; maxOutputTokens?: number; input?: ('text' | 'image')[]; reasoning?: boolean;
   pricing?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; compat?: Record<string, unknown>;
 };
-/** A tenant's OpenAI-compatible provider, as models are resolved from it: where it is, and its models. */
-export type CustomProvider = { type: 'openai-compatible'; baseUrl: string; models: CustomModel[] };
+/** The APIs a custom provider may speak, as Pi names them. */
+export const CUSTOM_APIS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
+/** A tenant's or key scope's own provider, as models are resolved from it: its API, where it is, and its models. */
+export type CustomProvider = { type: typeof CUSTOM_APIS[number]; baseUrl: string; models: CustomModel[] };
 /** A tenant's custom providers by name. */
 export type CustomProviders = Record<string, CustomProvider> | undefined;
 /** What a model replies at most when its provider declares no maximum: 8,192 tokens, or half a small context. */
 export const DEFAULT_MAX_OUTPUT = 8192;
 
-/** `<name>/<model id>` on a tenant's custom provider: Pi's openai-completions model, as declared. */
+/** Whose catalog model a custom provider's model of the same id behaves as, by the API it speaks. */
+const CATALOG_FOR: Record<CustomProvider['type'], string> = { 'anthropic-messages': 'anthropic', 'openai-responses': 'openai', 'openai-completions': 'openai' };
+
+/**
+ * `<name>/<model id>` on a custom provider: Pi's model for its API, as declared. A model the catalog knows by
+ * that id (Anthropic's for Anthropic Messages, OpenAI's for OpenAI's APIs: a gateway in front of them) keeps
+ * how it is called there, such as which thinking it takes; what is declared wins, and its price is the declared one.
+ */
 function customModel(name: string, id: string, provider: CustomProvider): AgentConfig['model'] {
   const declared = provider.models.find(model => model.id === id);
-  if (!declared) throw new Error(`Unknown model "${name}/${id}": ${name} declares ${provider.models.map(model => model.id).join(', ')}; add it with PUT /v1/providers/${name}`);
+  if (!declared) throw new Error(`Unknown model "${name}/${id}": ${name} declares ${provider.models.map(model => model.id).join(', ')}; add it to the provider where it is set (PUT /v1/providers/${name}, or a key scope's /model-providers/${name})`);
   const { pricing, compat } = declared;
+  // Providers stored before there were three APIs say openai-compatible: Chat Completions.
+  const api = (provider.type as string) === 'openai-compatible' ? 'openai-completions' : provider.type;
+  const known = lookup(CATALOG_FOR[api], id);
+  const behaviour = known?.api === api ? known : undefined;
   return {
-    id, name: id, provider: name, api: 'openai-completions', baseUrl: provider.baseUrl,
-    contextWindow: declared.contextWindow, maxTokens: declared.maxOutputTokens ?? Math.min(DEFAULT_MAX_OUTPUT, Math.floor(declared.contextWindow / 2)),
-    reasoning: declared.reasoning ?? false, input: declared.input ?? ['text'],
+    ...behaviour,
+    id, name: id, provider: name, api, baseUrl: provider.baseUrl,
+    contextWindow: declared.contextWindow, maxTokens: declared.maxOutputTokens ?? behaviour?.maxTokens ?? Math.min(DEFAULT_MAX_OUTPUT, Math.floor(declared.contextWindow / 2)),
+    reasoning: declared.reasoning ?? behaviour?.reasoning ?? false, input: declared.input ?? behaviour?.input ?? ['text'],
     cost: { input: pricing?.input ?? 0, output: pricing?.output ?? 0, cacheRead: pricing?.cacheRead ?? 0, cacheWrite: pricing?.cacheWrite ?? 0 },
-    ...(compat ? { compat } : {}),
+    ...(compat || behaviour?.compat ? { compat: { ...behaviour?.compat, ...compat } } : {}),
   } as AgentConfig['model'];
 }
 

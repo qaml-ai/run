@@ -696,7 +696,9 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "openai-compatible"
+                  "openai-completions",
+                  "openai-responses",
+                  "anthropic-messages"
                 ]
               },
               "baseUrl": {
@@ -721,7 +723,7 @@
               "baseUrl",
               "models"
             ],
-            "description": "A provider of the tenant's own (PUT /v1/providers/{name}): where it is, and the models it declares"
+            "description": "A provider of the tenant's own (PUT /v1/providers/{name}) or of a key scope (PUT /v1/key-scopes/{scope}/model-providers/{name}): its API, where it is, and the models it declares"
           }
         },
         "required": [
@@ -864,13 +866,15 @@
           "type": {
             "type": "string",
             "enum": [
-              "openai-compatible"
+              "openai-completions",
+              "openai-responses",
+              "anthropic-messages"
             ],
-            "description": "A server that speaks OpenAI Chat Completions (POST <baseUrl>/chat/completions)"
+            "description": "The API the server speaks: openai-completions, OpenAI Chat Completions (POST <baseUrl>/chat/completions); openai-responses, OpenAI Responses (POST <baseUrl>/responses); anthropic-messages, Anthropic Messages (POST <baseUrl>/v1/messages)"
           },
           "baseUrl": {
             "type": "string",
-            "description": "Its API root, public and https (the outbound guard checks it when saved and at every call)",
+            "description": "Its API root, public and https (the outbound guard checks it when saved and at every call): with /v1 for the OpenAI APIs, without for Anthropic's",
             "example": "https://api.example.com/v1"
           },
           "apiKey": {
@@ -878,7 +882,7 @@
               "string",
               "null"
             ],
-            "description": "Sent as Authorization: Bearer; left out keeps the stored key, null removes it (a server that takes none)"
+            "description": "Sent as Authorization: Bearer (x-api-key for Anthropic Messages); left out keeps the stored key, null removes it (a server that takes none)"
           },
           "headers": {
             "type": [
@@ -5028,6 +5032,151 @@
         }
       }
     },
+    "/v1/key-scopes/{scope}/model-providers/{name}": {
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scope",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomProviderInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The provider, never its key or header values; the scope's agents name its models <name>/<model id>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scope",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider is deleted: the scope's agents on its models call the tenant's of that name, if any, or fail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/key-scopes/{scope}/model-providers": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scope",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The scope's own model providers, never their key or header values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Provider"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/key-scopes/{scope}": {
       "get": {
         "parameters": [
@@ -5076,7 +5225,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Every entry of the scope is deleted",
+            "description": "Every entry and model provider of the scope is deleted",
             "content": {
               "application/json": {
                 "schema": {
@@ -5510,6 +5659,16 @@
             "required": false,
             "description": "Only models this tenant has a key for",
             "name": "available",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Include this key scope's own providers' models, as its agents see them"
+            },
+            "required": false,
+            "description": "Include this key scope's own providers' models, as its agents see them",
+            "name": "keyScope",
             "in": "query"
           }
         ],

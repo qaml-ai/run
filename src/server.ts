@@ -201,7 +201,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
-  const custom = await modelProviders.resolvable(tenant);
+  const custom = await modelProviders.resolvable(tenant, keyScope);
   const fallback = params.model === undefined ? await defaultModelFor(tenant, keyScope) : model;
   const config = { ...sessionConfig(params, fallback, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
   // A custom provider's models need no key of the tenant's: the provider has its own, or takes none.
@@ -367,8 +367,8 @@ const clients = new ClientSessions(supervisor, {
   },
   scopedKey: async (tenant, keyScope, provider) => {
     const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
-    // The tenant's own provider: the scope's key or address where it gives one, else the provider's; never the platform's.
-    const own = await modelProviders.credentials(tenant, provider);
+    // The key scope's or the tenant's own provider: the scope's key or address where it gives one, else the provider's; never the platform's.
+    const own = await modelProviders.credentials(tenant, provider, keyScope);
     if (own) return { ...own, ...entry, baseUrl: entry?.baseUrl ?? own.baseUrl, apiKey: entry?.apiKey ?? own.apiKey ?? "", platform: false };
     // A scope's entry for a provider that is neither built in nor the tenant's any more (deleted) is nothing to call.
     if (entry && !providerInfo(provider)) return undefined;
@@ -377,7 +377,7 @@ const clients = new ClientSessions(supervisor, {
     return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant" };
   },
   modelEndpoints: tenant => tenants.modelEndpoints(tenant),
-  customProviders: tenant => modelProviders.resolvable(tenant),
+  customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),
   modelToken: (audience, claims) => signer.token(audience, claims),
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
   onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),

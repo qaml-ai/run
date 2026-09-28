@@ -388,12 +388,14 @@ export interface CustomModel {
   compat?: { supportsDeveloperRole?: boolean; supportsUsageInStreaming?: boolean; supportsFinishReason?: boolean; supportsReasoningEffort?: boolean; maxTokensField?: "max_tokens" | "max_completion_tokens"; thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "qwen-chat-template" };
 }
 /** A provider of your own: a public https server that speaks OpenAI Chat Completions (`POST <baseUrl>/chat/completions`). */
-export interface CustomProviderInput { type: "openai-compatible"; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] }
+/** The API a custom provider speaks. */
+export type CustomProviderType = "openai-completions" | "openai-responses" | "anthropic-messages";
+export interface CustomProviderInput { type: CustomProviderType; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] }
 /** A provider as GET /v1/providers lists it; never a key or header value. */
 export interface ProviderSummary {
   id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string;
   key: { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number } | null;
-  custom?: { type: "openai-compatible"; baseUrl: string; headers?: string[]; models: CustomModel[] };
+  custom?: { type: CustomProviderType; baseUrl: string; headers?: string[]; models: CustomModel[] };
 }
 /** An agent as GET /v1/agents lists it. */
 export interface AgentSummary { id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null }

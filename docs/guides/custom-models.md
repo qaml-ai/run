@@ -1,13 +1,15 @@
-# Custom OpenAI-compatible models
+# Custom models
 
-Any server that speaks OpenAI Chat Completions can be a provider of your own:
-a hosted API the catalog lacks, a model the catalog has not caught up with yet,
-or your own vLLM, Ollama or LM Studio. You name the provider, list its models,
-and your agents use them like catalog models: `<name>/<model id>`.
+Any server that speaks OpenAI Chat Completions, OpenAI Responses or Anthropic
+Messages can be a provider of your own: a hosted API the catalog lacks, a model
+the catalog has not caught up with yet, a gateway, or your own vLLM, Ollama or
+LM Studio. You name the provider, list its models, and your agents use them
+like catalog models: `<name>/<model id>`. A provider can be your account's, or
+one [key scope](#in-a-key-scope)'s, for one customer's agents only.
 
 ```ts
 await agents.runtime.setProvider("acme-llm", {
-  type: "openai-compatible",
+  type: "openai-completions",
   baseUrl: "https://llm.acme.example/v1",
   apiKey: process.env.ACME_LLM_KEY,
   models: [{ id: "acme-70b", contextWindow: 131072, maxOutputTokens: 8192, pricing: { input: 0.6, output: 0.8 } }],
@@ -24,9 +26,9 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
 
 | Field | |
 | --- | --- |
-| `type` | `"openai-compatible"`: the runtime calls `POST <baseUrl>/chat/completions`, streaming |
-| `baseUrl` | the API root, public and `https` (see [Where the server can be](#where-the-server-can-be)) |
-| `apiKey` | sent as `Authorization: Bearer <apiKey>`. Leave it out when you save again to keep the stored key; `null` removes it, for a server that takes none |
+| `type` | the API it speaks: `"openai-completions"`, OpenAI Chat Completions (`POST <baseUrl>/chat/completions`); `"openai-responses"`, OpenAI Responses (`POST <baseUrl>/responses`); `"anthropic-messages"`, Anthropic Messages (`POST <baseUrl>/v1/messages`). All stream |
+| `baseUrl` | the API root, public and `https` (see [Where the server can be](#where-the-server-can-be)): with `/v1` for OpenAI's APIs (`https://api.example.com/v1`), without for Anthropic's (`https://api.example.com`) |
+| `apiKey` | sent as `Authorization: Bearer <apiKey>` (`x-api-key` for Anthropic Messages). Leave it out when you save again to keep the stored key; `null` removes it, for a server that takes none |
 | `headers` | more headers for each call, e.g. `{"api-key": "…"}` for a server that takes its key that way. Stored sealed like the key; left out keeps them, `null` removes them. The runtime sets `Authorization` itself |
 | `models` | the models to use, 1 to 200 (below) |
 
@@ -51,6 +53,35 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
   provider's own (its `headers` all of the provider's); what it leaves out is the
   provider's, the key included. Deleting the provider deletes its scopes' entries.
 
+## In a key scope
+
+A [key scope](models-and-keys.md#key-scopes) can have providers of its own, for
+its agents only: each customer's own endpoint, under the same name in every
+scope.
+
+```bash
+curl -X PUT https://agents.camelai.dev/v1/key-scopes/org_42/model-providers/custom \
+  -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
+  -d '{"type": "openai-responses", "baseUrl": "https://bedrock-mantle.us-west-2.api.aws/openai/v1",
+       "apiKey": "'"$ORG_42_BEDROCK_API_KEY"'", "models": [{"id": "openai.gpt-5.6-terra", "contextWindow": 200000, "reasoning": true}]}'
+```
+
+An agent in `org_42` (`keyScope: "org_42"`) then names `custom/openai.gpt-5.6-terra`.
+
+- The body, the name's rules and the limits are those of your own providers
+  (above): up to 20 per scope, besides your account's 20.
+- Only agents in the scope see its providers. An agent elsewhere, in another
+  scope or none, that names the model gets `Unknown model`, and its calls never
+  use the scope's key. In its scope, a provider shadows one of your account's
+  with the same name.
+- A model is resolved in the agent's scope when it is made or configured, and
+  in the new scope when `PATCH /v1/agents/:id/configuration` moves it (give the
+  `model` there too). Definitions name your account's providers only.
+- `GET /v1/key-scopes/{scope}/model-providers` lists the scope's (never their
+  key or header values), `DELETE …/model-providers/{name}` deletes one, and
+  deleting the scope (`DELETE /v1/key-scopes/{scope}`) deletes them all.
+  `GET /v1/models?keyScope={scope}` lists models as the scope's agents see them.
+
 ## Models
 
 Each model is `{id, contextWindow, maxOutputTokens?, input?, reasoning?, pricing?, compat?}`:
@@ -67,9 +98,15 @@ Each model is `{id, contextWindow, maxOutputTokens?, input?, reasoning?, pricing
 
 `GET /v1/models` lists your providers' models before the catalog's, all `available`.
 
+A model whose id the catalog knows for the provider's API (Anthropic's models
+over Anthropic Messages, OpenAI's over OpenAI's APIs: a gateway in front of
+them) is called as the catalog calls it, such as which thinking settings it
+takes. What you declare wins, and its price is yours (`pricing`), not the
+catalog's.
+
 ### Servers that differ from OpenAI's
 
-The runtime streams, sends tools as OpenAI function tools and reads tool calls
+For Chat Completions servers. The runtime streams, sends tools as OpenAI function tools and reads tool calls
 as they arrive in pieces. It copes with what many servers leave out:
 
 - A stream without usage costs nothing and counts no tokens. Set
@@ -103,6 +140,12 @@ A server on your own machine or network needs a public `https` address in front
 of it, such as a tunnel. Keep it behind a key: anyone with the address can call
 it.
 
+A [self-hosted runtime](../operations/self-host.md#networking) can call servers
+on its own network: its operator names their range in
+`AGENT_OUTBOUND_ALLOW_CIDRS` (e.g. `10.1.2.0/24` for a vLLM or Ollama host), and
+sets `AGENT_OUTBOUND_ALLOW_HTTP=true` if they have no TLS. That opens the range
+to every agent's tools too, so keep it narrow.
+
 ## Billing
 
 Your own providers are yours: their calls never use the platform's keys, and
@@ -121,7 +164,7 @@ add Groq's API under a name of your own:
 ```bash
 curl -X PUT https://agents.camelai.dev/v1/providers/groq-preview \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
-  -d '{"type": "openai-compatible", "baseUrl": "https://api.groq.com/openai/v1", "apiKey": "'"$GROQ_API_KEY"'",
+  -d '{"type": "openai-completions", "baseUrl": "https://api.groq.com/openai/v1", "apiKey": "'"$GROQ_API_KEY"'",
        "models": [{"id": "new-model-preview", "contextWindow": 131072, "maxOutputTokens": 8192,
                    "pricing": {"input": 0.2, "output": 0.6}}]}'
 ```
@@ -138,7 +181,7 @@ in front with a service token, so only calls carrying the token get through:
 
 ```ts
 await agents.runtime.setProvider("home-ollama", {
-  type: "openai-compatible",
+  type: "openai-completions",
   baseUrl: "https://ollama.example.com/v1",
   apiKey: null,
   headers: { "CF-Access-Client-Id": process.env.ACCESS_CLIENT_ID!, "CF-Access-Client-Secret": process.env.ACCESS_CLIENT_SECRET! },

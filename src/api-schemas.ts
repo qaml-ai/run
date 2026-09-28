@@ -49,9 +49,9 @@ const CustomModel = z.object({
 }).openapi("CustomModel");
 
 export const CustomProviderInput = z.object({
-  type: z.literal("openai-compatible").openapi({ description: "A server that speaks OpenAI Chat Completions (POST <baseUrl>/chat/completions)" }),
-  baseUrl: z.string().openapi({ description: "Its API root, public and https (the outbound guard checks it when saved and at every call)", example: "https://api.example.com/v1" }),
-  apiKey: z.string().nullable().optional().openapi({ description: "Sent as Authorization: Bearer; left out keeps the stored key, null removes it (a server that takes none)" }),
+  type: z.enum(["openai-completions", "openai-responses", "anthropic-messages"]).openapi({ description: "The API the server speaks: openai-completions, OpenAI Chat Completions (POST <baseUrl>/chat/completions); openai-responses, OpenAI Responses (POST <baseUrl>/responses); anthropic-messages, Anthropic Messages (POST <baseUrl>/v1/messages)" }),
+  baseUrl: z.string().openapi({ description: "Its API root, public and https (the outbound guard checks it when saved and at every call): with /v1 for the OpenAI APIs, without for Anthropic's", example: "https://api.example.com/v1" }),
+  apiKey: z.string().nullable().optional().openapi({ description: "Sent as Authorization: Bearer (x-api-key for Anthropic Messages); left out keeps the stored key, null removes it (a server that takes none)" }),
   headers: z.record(z.string(), z.string()).nullable().optional().openapi({ description: "Headers for each call, sealed like the key; left out keeps the stored ones, null removes them" }),
   models: z.array(CustomModel).min(1).max(200),
 }).openapi("CustomProviderInput");
@@ -64,9 +64,9 @@ export const Provider = z.object({
   requires: z.string().optional().openapi({ description: "What the provider needs instead of an API key" }),
   key: KeyStatus.nullable(),
   custom: z.object({
-    type: z.literal("openai-compatible"), baseUrl: z.string(), headers: z.array(z.string()).optional().openapi({ description: "The names of its headers, never their values" }),
+    type: z.enum(["openai-completions", "openai-responses", "anthropic-messages"]), baseUrl: z.string(), headers: z.array(z.string()).optional().openapi({ description: "The names of its headers, never their values" }),
     models: z.array(CustomModel),
-  }).optional().openapi({ description: "A provider of the tenant's own (PUT /v1/providers/{name}): where it is, and the models it declares" }),
+  }).optional().openapi({ description: "A provider of the tenant's own (PUT /v1/providers/{name}) or of a key scope (PUT /v1/key-scopes/{scope}/model-providers/{name}): its API, where it is, and the models it declares" }),
 }).openapi("Provider");
 
 export const KeyInput = z.object({
