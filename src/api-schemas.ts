@@ -524,14 +524,14 @@ const ChannelLimits = z.object({
 });
 const channelFields = {
   name: z.string().trim().min(1).max(120).optional(),
-  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Stored encrypted and never returned" }),
+  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned" }),
   definition: z.string().optional().openapi({ description: "The definition each conversation's agent is made from (GET /v1/definitions); a channel created without one gets an empty definition of its own" }),
   access: ChannelAccess.optional(),
   limits: ChannelLimits.optional(),
   greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start (Telegram)" }),
-  settings: z.record(z.string(), z.unknown()).optional().openapi({ description: "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }" }),
+  settings: z.record(z.string(), z.unknown()).optional().openapi({ description: "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName? }" }),
 };
-export const ChannelInput = z.object({ type: z.enum(["telegram", "slack", "discord", "github"]), ...channelFields, credentials: channelFields.credentials.unwrap() }).openapi("ChannelInput");
+export const ChannelInput = z.object({ type: z.enum(["telegram", "slack", "discord", "github", "webhook", "email"]), ...channelFields }).openapi("ChannelInput");
 export const ChannelUpdate = z.object(channelFields).openapi("ChannelUpdate");
 export const Channel = z.object({
   id: z.string(),

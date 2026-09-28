@@ -28,6 +28,10 @@
 | `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
 | `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead (see [Billing](billing.md)) |
 | `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | how old a GitHub account must be for a new tenant's starting credit (default 30) |
+| `AGENT_EMAIL_DOMAIN` | the domain SES receives mail for (e.g. `in.agents.camelai.dev`); set, it offers `email` channels, each with an address on it (see [Email](../guides/channels.md#email)). `infra/terraform/email.tf` sets these four |
+| `AGENT_EMAIL_SNS_TOPICS` | SNS topic ARNs (comma-separated) whose notifications `/channels/email/inbound` accepts; with none, no mail is received |
+| `AGENT_EMAIL_BUCKET` | the bucket an SES S3 receipt action stores mail in (the runtime reads messages and their attachments from it, under the task role); without it, only mail SES puts in the SNS notification itself (up to 150 KB) arrives |
+| `AGENT_EMAIL_REGION` | SES and S3's region (default `AWS_REGION`) |
 | `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
 | `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
 | `AGENT_PRICE_WEB_SEARCH_EXA_USD`, `AGENT_PRICE_WEB_SEARCH_BRAVE_USD`, `AGENT_PRICE_WEB_SEARCH_PARALLEL_USD`, `AGENT_PRICE_WEB_RENDER_USD` | per platform-key `web_search` by the provider that answered, and per page `web_fetch` has Firecrawl render (defaults 0.007, 0.005, 0.001, 0.00083); `AGENT_PRICE_WEB_SEARCH_USD` sets all three search prices at once |

@@ -35,6 +35,7 @@ import { slack } from "./channels-slack.ts";
 import { discord } from "./channels-discord.ts";
 import { github as githubChannel } from "./channels-github.ts";
 import { webhook } from "./channels-webhook.ts";
+import { email, emailReceiver, type EmailOptions } from "./channels-email.ts";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -407,6 +408,11 @@ const scheduler = new Scheduler({
   also: now => clients.expireInputs(now),
 });
 scheduler.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
+// Email channels, when the runtime has a domain SES receives for: mail arrives through SNS at one shared route.
+const emailOptions: EmailOptions | undefined = process.env.AGENT_EMAIL_DOMAIN ? {
+  db, domain: process.env.AGENT_EMAIL_DOMAIN, topics: (process.env.AGENT_EMAIL_SNS_TOPICS ?? "").split(",").map(topic => topic.trim()).filter(Boolean),
+  ...(process.env.AGENT_EMAIL_BUCKET ? { bucket: process.env.AGENT_EMAIL_BUCKET } : {}), region: process.env.AGENT_EMAIL_REGION ?? process.env.AWS_REGION,
+} : undefined;
 // Messaging channels: webhooks (or a gateway socket one node holds) in, replies out through a durable queue any node can drain.
 const channels = new Channels({
   db, accounts, definitions, node, publicUrl, ownership,
@@ -416,6 +422,7 @@ const channels = new Channels({
     discord: discord({ apiUrl: process.env.AGENT_DISCORD_API_URL }),
     github: githubChannel({ apiUrl: process.env.AGENT_GITHUB_API_URL }),
     webhook: webhook({ outbound }),
+    ...(emailOptions ? { email: email(emailOptions) } : {}),
   },
   createAgent: (tenant, params, key) => createAgent(tenant, params, key) as Promise<{ id: string }>,
   agentId: (tenant, key) => clients.agentId(tenant, key),
@@ -518,6 +525,8 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 });
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
+// Before channels.app, whose /channels/:type/:id would take /channels/email/inbound.
+if (emailOptions) app.route("/", emailReceiver(channels, emailOptions));
 app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);

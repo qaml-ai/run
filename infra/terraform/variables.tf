@@ -158,3 +158,9 @@ variable "github_subject" {
   type        = string
   default     = "qaml-ai@151090534/agent-runtime@1384214784"
 }
+
+variable "email_domain" {
+  description = "Domain whose mail SES receives for email channels (e.g. in.agents.camelai.dev), in the Cloudflare zone. Empty disables email channels and everything in email.tf."
+  type        = string
+  default     = ""
+}

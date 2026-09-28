@@ -3170,7 +3170,9 @@
               "telegram",
               "slack",
               "discord",
-              "github"
+              "github",
+              "webhook",
+              "email"
             ]
           },
           "name": {
@@ -3183,7 +3185,8 @@
             "additionalProperties": {
               "type": "string",
               "maxLength": 4096
-            }
+            },
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -3234,12 +3237,11 @@
           "settings": {
             "type": "object",
             "additionalProperties": {},
-            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }"
+            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName? }"
           }
         },
         "required": [
-          "type",
-          "credentials"
+          "type"
         ]
       },
       "ChannelUpdate": {
@@ -3256,7 +3258,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -3307,7 +3309,7 @@
           "settings": {
             "type": "object",
             "additionalProperties": {},
-            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }"
+            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName? }"
           }
         }
       },

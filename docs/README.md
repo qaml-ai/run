@@ -18,7 +18,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
    - [Models and keys](guides/models-and-keys.md): the catalog, your own keys and endpoints, key scopes, spend limits
    - [Definitions](guides/definitions.md): reusable configurations and rolling out changes
-   - [Channels](guides/channels.md): Slack, Telegram, Discord and any service that sends webhooks
+   - [Channels](guides/channels.md): Slack, Telegram, Discord, GitHub, email and any service that sends webhooks
 4. **[Production checklist](production.md)**
 5. **Reference**
    - [Events](reference/events.md): every event on an agent's stream, and a run's outcome

@@ -89,7 +89,11 @@ export interface ChannelProvider {
   /** The largest webhook body the service sends (default 1 MB). */
   readonly maxBodyBytes?: number;
   /** Validate a channel's settings (`current` on an update, merged over by `input`); a provider without it takes none. */
-  settings?(input: ChannelSettings | undefined, current?: ChannelSettings): ChannelSettings;
+  settings?(input: ChannelSettings | undefined, current?: ChannelSettings, channel?: { id: string }): ChannelSettings;
+  /** False for a service whose channels need no credentials of their own (the runtime's email domain). */
+  readonly needsCredentials?: boolean;
+  /** Whether an allowlist entry admits a sender, for services whose entries are not ids or @usernames (whole email domains). */
+  allows?(entry: string, sender: Sender): boolean;
   /** Access and limits a new channel of this type starts with, before the ones it is created with. */
   readonly defaults?: { access?: Partial<Channel["access"]>; limits?: Partial<Channel["limits"]> };
   /** Hold a connection that delivers the channel's messages, reconnecting on its own, until closed. */
@@ -203,6 +207,11 @@ export const sizeText = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 10
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const held = (row: any): Held => ({ item: { ...row.item, due: row.due }, revision: row.revision });
 const validConversation = (value: string) => /^[A-Za-z0-9_.-]{1,64}$/.test(value);
+/** A write that broke a unique index on channels (a provider's settings that must be unique, like an email address). */
+const taken = (error: unknown): never => {
+  if ((error as { code?: string }).code === "23505") throw new HttpError(409, "Another channel already has these settings (is the address taken?)");
+  throw error;
+};
 
 /** Split text for a service's message limit, at a line or word break when one is near. */
 export function chunks(text: string, max: number): string[] {
@@ -312,28 +321,29 @@ export class Channels {
     if (!this.options.accounts.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store channel credentials");
     const type = input.type ?? "";
     const provider = this.provider(type);
-    if (!input.credentials) throw new HttpError(400, "A channel needs credentials");
+    if (!input.credentials && provider.needsCredentials !== false) throw new HttpError(400, "A channel needs credentials");
+    const credentials = input.credentials ?? {};
     const id = `ch_${randomBytes(10).toString("hex")}`;
     const secret = randomBytes(32).toString("hex");
     const webhookUrl = `${this.options.publicUrl}/channels/${type}/${id}`;
-    const settings = this.settings(provider, input);
-    const { account, masked } = await provider.setup(input.credentials, { url: webhookUrl, secret });
+    const settings = this.settings(provider, input, id);
+    const { account, masked } = await provider.setup(credentials, { url: webhookUrl, secret });
     const now = Date.now();
     const name = input.name ?? `${provider.label} ${account.username ? `@${account.username}` : id}`;
     const channel: Channel = {
       id, tenant, type, name, ...(provider.verify ? { webhookUrl } : {}),
       definition: await this.definition(tenant, id, name, input), access: { public: false, allow: [], ...provider.defaults?.access, ...settings.access }, limits: { ...DEFAULT_LIMITS, ...provider.defaults?.limits, ...settings.limits },
       ...(settings.greeting ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), account, masked,
-      sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials: input.credentials, secret })), createdAt: now, updatedAt: now,
+      sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials, secret })), createdAt: now, updatedAt: now,
     };
-    await this.db.query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]);
+    await this.db.query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]).catch(taken);
     return this.view(channel);
   }
 
   async update(tenant: string, id: string, input: ChannelInput) {
     const channel = await this.owned(tenant, id);
     if (input.type !== undefined && input.type !== channel.type) throw new HttpError(400, "A channel's type cannot change");
-    const settings = this.settings(this.provider(channel.type), input, channel.settings);
+    const settings = this.settings(this.provider(channel.type), input, id, channel.settings);
     const next: Channel = {
       ...channel, ...(input.name !== undefined ? { name: input.name } : {}),
       definition: await this.definition(tenant, id, input.name ?? channel.name, input, channel.definition),
@@ -349,7 +359,7 @@ export class Channels {
       // A different bot keeps its webhook pointed here otherwise.
       if (next.account.id !== channel.account.id) await provider.teardown(old).catch(() => {});
     }
-    await this.db.query("update channels set channel = $2 where id = $1", [id, JSON.stringify(next)]);
+    await this.db.query("update channels set channel = $2 where id = $1", [id, JSON.stringify(next)]).catch(taken);
     return this.view(next);
   }
 
@@ -364,9 +374,9 @@ export class Channels {
     }
   }
 
-  private settings(provider: ChannelProvider, input: ChannelInput, current?: ChannelSettings) {
+  private settings(provider: ChannelProvider, input: ChannelInput, id: string, current?: ChannelSettings) {
     if (input.settings !== undefined && !provider.settings) throw new HttpError(400, `${provider.label} channels take no settings`);
-    const settings = provider.settings && (input.settings !== undefined || !current) ? provider.settings(input.settings, current) : undefined;
+    const settings = provider.settings && (input.settings !== undefined || !current) ? provider.settings(input.settings, current, { id }) : undefined;
     return { access: input.access, limits: input.limits, greeting: input.greeting, settings };
   }
 
@@ -437,7 +447,9 @@ export class Channels {
   allowed(channel: Channel, sender: Sender) {
     if (channel.access.public) return true;
     const username = sender.username?.toLowerCase();
+    const allows = this.provider(channel.type).allows;
     return channel.access.allow.some(entry => {
+      if (allows) return allows(entry, sender);
       const normalized = entry.trim().replace(/^@/, "");
       // Ids match exactly (Slack's are upper case); usernames in any case.
       return normalized === sender.id || (!!username && normalized.toLowerCase() === username);
