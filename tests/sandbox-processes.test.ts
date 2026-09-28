@@ -119,7 +119,8 @@ test("timeouts and aborts cancel the execution in the sandbox process, which kee
     definitions: [{ name: "hang", description: "", parameters: { type: "object" } }],
     call: (_name, _args, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => { aborted++; reject(new Error("aborted")); }, { once: true })),
   };
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool: sandbox, timeoutMs: 300 }), /timed out after 300ms;/);
+  // Long enough for the call to reach the tool however slow the machine (under load, 300 ms once timed out before it had).
+  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool: sandbox, timeoutMs: 2000 }), /timed out after 2000ms;/);
   const controller = new AbortController();
   const spinning = executeCode({ code: "while (true) {}", bridge: hang, pool: sandbox, signal: controller.signal, timeoutMs: 60_000 });
   await sleep(200);
