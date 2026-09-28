@@ -1,9 +1,9 @@
 {
   "process": {
-    "agent-lifetime.test.ts": 5.7,
+    "agent-lifetime.test.ts": 6.9,
     "api.test.ts": 12.4,
     "append-log.test.ts": 0.3,
-    "attach.test.ts": 1.2,
+    "attach.test.ts": 14.5,
     "browser-tokens.test.ts": 9.8,
     "builtins.test.ts": 4.5,
     "channels-discord.test.ts": 3,
@@ -43,16 +43,16 @@
     "storage.test.ts": 0.5,
     "stream-deltas.test.ts": 19.5,
     "tenant-reads.test.ts": 3.3,
-    "tool-calls.test.ts": 8.3,
+    "tool-calls.test.ts": 11.5,
     "volumes.test.ts": 6.7,
     "watch.test.ts": 20.3,
     "webhooks.test.ts": 12.0
   },
   "inline": {
-    "agent-lifetime.test.ts": 3.2,
+    "agent-lifetime.test.ts": 4.0,
     "api.test.ts": 12.1,
     "append-log.test.ts": 0.3,
-    "attach.test.ts": 0.8,
+    "attach.test.ts": 12.7,
     "browser-tokens.test.ts": 8.0,
     "builtins.test.ts": 3.7,
     "channels-discord.test.ts": 3,
@@ -92,7 +92,7 @@
     "storage.test.ts": 0.5,
     "stream-deltas.test.ts": 18.3,
     "tenant-reads.test.ts": 2.7,
-    "tool-calls.test.ts": 7.4,
+    "tool-calls.test.ts": 9.8,
     "volumes.test.ts": 5.3,
     "watch.test.ts": 18.4,
     "webhooks.test.ts": 10.7

@@ -49,17 +49,20 @@ test("a run for an agent whose tools need its application is refused while none 
   assert.match(refused.json.error, /^APPLICATION_NOT_CONNECTED/);
   const viaClient = await fetch(`${r.base}/clients/${created.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: "c-1", method: "execute", params: { code: "return 1" } }) });
   assert.equal(viaClient.status, 409);
-  assert.equal((await r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "anyway", allowDisconnected: true } })).status, 202, "unless the caller says it may run without");
+  const anyway = await r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "anyway", allowDisconnected: true } });
+  assert.equal(anyway.status, 202, "unless the caller says it may run without");
 
   // An application that connects while the request waits takes it.
   const waiting = r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "soon" } });
   await new Promise(resolve => setTimeout(resolve, 500));
   await attach(t, r.base, created.id, created.token);
-  assert.equal((await waiting).status, 202);
+  const soon = await waiting;
+  assert.equal(soon.status, 202);
+  for (const id of [anyway.json.id, soon.json.id]) await until(async () => (await r.call(`/v1/agents/${created.id}/requests/${id}`)).json.state === "completed", "the run");
 
   // An agent with no tools of its application's runs without one.
   const plain = (await r.call("/v1/agents", { body: {} })).json;
-  assert.equal((await r.call(`/v1/agents/${plain.id}/prompt`, { body: { text: "hi" } })).status, 202);
+  assert.equal((await r.prompt(plain.id, "hi")).state, "completed");
 });
 
 test("the application's ready event carries the hash of the tools it last declared, so an SDK reconfigures only on a change; a run's outcome carries its usage", async t => {
