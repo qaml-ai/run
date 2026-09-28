@@ -3,7 +3,7 @@
  * with a key of its own and serves its keys to `serveTools` / `verifyRuntimeToken` through `fetch`.
  *
  *   const runtime = await testRuntime();
- *   const handler = serveTools(tools, runtime.options);
+ *   const handler = serveTools(tools, runtime.options); // tenant "test", as the tokens it signs say by default
  *   const result = await runtime.callTool(handler, "https://app.test/mcp", "list_todos", {}, { subject: "alice" });
  */
 export interface TestIdentity {
@@ -62,5 +62,5 @@ export async function testRuntime(options: { url?: string } = {}) {
     return body.result as { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean };
   }
 
-  return { url, jwk, token, request, callTool, fetch: fetcher, options: { runtime: url, fetch: fetcher } };
+  return { url, jwk, token, request, callTool, fetch: fetcher, options: { runtime: url, fetch: fetcher, tenant: "test" } };
 }

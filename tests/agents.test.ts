@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
-import { Agents, RunError, schema, tool, toolServer, type StreamPart } from "../clients/node.ts";
+import { AgentRuntime, Agents, RunError, schema, tool, toolServer, type StreamPart } from "../clients/node.ts";
 import { OPERATOR, runtime, sleep, toolCall, toolResults, until } from "./runtime-server.ts";
 
 /** A runtime whose model answers with `respond`, and an Agents client for it. */
@@ -217,4 +217,15 @@ test("steer and followUp are runs: with no turn running, each starts one and res
   assert.equal((await agent.steer("Also check the logs")).text, "noted");
   assert.equal((await agent.followUp("And then summarize")).text, "noted");
   assert.equal(r.model.bodies.length, 2);
+});
+
+test("the lower-level createAgent makes a scratch agent (a day's lifetime) unless the caller gives it a key", async t => {
+  const { r } = await setup(t, () => ({ role: "assistant", content: "ok" }));
+  const runtime = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const scratch = await runtime.createAgent({});
+  t.after(() => scratch.close());
+  assert.ok(scratch.session.expiresAt && Math.abs(scratch.session.expiresAt - Date.now() - 86_400_000) < 60_000, `expires in a day: ${scratch.session.expiresAt}`);
+  const keyed = await runtime.createAgent({ idempotencyKey: "mine" });
+  t.after(() => keyed.close());
+  assert.equal(keyed.session.expiresAt, null, "a key of the caller's makes a durable agent");
 });

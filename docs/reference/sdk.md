@@ -174,6 +174,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.createAgent({ tools, ttlSeconds, idempotencyKey, … })` | `runtime.create_agent(tools=[...], …)` | provision and connect; with `idempotencyKey`, the same as an upsert |
 | `runtime.connectAgent(session, { tools, attach, takeover })` | `runtime.connect_agent(session, tools=, attach=, takeover=)` | connect with stored credentials |
 | `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
+| `runtime.me()` | `runtime.me()` | who the API key is: `tenant`, your tenant's id, which `serveTools` takes |
 | `runtime.createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `create_definition`, … | definitions |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
@@ -292,7 +293,16 @@ application keeps serving its tools.
 - The types no longer come from Pi: `Message`, `AgentEvent` and the rest are the
   SDK's own.
 - Keyed agents (made with an idempotency key) live until deleted, and upsert
-  instead of failing when their configuration changes (server-side).
+  instead of failing when their configuration changes (server-side). The
+  lower-level `createAgent` / `create_agent` without a key of yours still makes a
+  scratch agent that lives a day.
+- `serveTools`, `runtimeAuth`, `verifyRuntimeToken` (`serve_tools`,
+  `verify_runtime_token`) require `tenant`, and refuse other tenants' tokens.
+- `nodeListener` no longer trusts `X-Forwarded-*` unless `trustProxy: true`; set
+  `origin` behind a proxy.
+- The session's token is left out of its JSON (TypeScript) and it is not
+  JSON-serializable (Python): store credentials explicitly,
+  `{ id: session.id, token: session.token }` or `session.credentials()`.
 
 ## Examples
 

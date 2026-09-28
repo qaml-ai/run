@@ -12,15 +12,18 @@ const forwarded = (value: string | string[] | undefined) => (Array.isArray(value
 
 /**
  * A fetch-style handler (e.g. `serveTools(...)`) as a `node:http` request listener:
- * `createServer(nodeListener(serveTools(tools, { runtime })))`. Identity tokens are checked against
- * the URL the runtime called, which this rebuilds from the request: behind a proxy or load balancer
- * that ends TLS, from its X-Forwarded-Proto and X-Forwarded-Host. `origin` pins it to your public URL instead.
+ * `createServer(nodeListener(serveTools(tools, { runtime, tenant }), { origin: "https://tools.example.com" }))`.
+ * Identity tokens are checked against the URL the runtime called. Set `origin` to your public URL; without
+ * it the URL is this server's own (its socket's scheme and the Host header). Behind a proxy that ends TLS,
+ * set `origin`, or `trustProxy: true` to read X-Forwarded-Proto and X-Forwarded-Host, but only where the
+ * proxy overwrites those headers: otherwise any client could choose the URL tokens are checked against.
  */
-export function nodeListener(handler: (request: Request) => Promise<Response>, options: { origin?: string } = {}) {
+export function nodeListener(handler: (request: Request) => Promise<Response>, options: { origin?: string; trustProxy?: boolean } = {}) {
   return async (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => {
     try {
-      const protocol = forwarded(req.headers["x-forwarded-proto"]) ?? ((req.socket as { encrypted?: boolean }).encrypted ? "https" : "http");
-      const origin = options.origin ?? `${protocol === "https" ? "https" : "http"}://${forwarded(req.headers["x-forwarded-host"]) ?? req.headers.host ?? "localhost"}`;
+      const proxied = (name: string) => options.trustProxy ? forwarded(req.headers[name]) : undefined;
+      const protocol = proxied("x-forwarded-proto") ?? ((req.socket as { encrypted?: boolean }).encrypted ? "https" : "http");
+      const origin = options.origin ?? `${protocol === "https" ? "https" : "http"}://${proxied("x-forwarded-host") ?? req.headers.host ?? "localhost"}`;
       const controller = new AbortController();
       res.on("close", () => { if (!res.writableFinished) controller.abort(); });
       const headers = new Headers();

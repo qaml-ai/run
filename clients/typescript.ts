@@ -302,7 +302,7 @@ export interface CreateAgentOptions extends AgentOptions {
    * as the agent's attached server.
    */
   definition?: string;
-  /** Agent lifetime in seconds (60 to 366 days), or null to keep the agent until it is deleted. Default one day. */
+  /** Agent lifetime in seconds (60 to 366 days), or null to keep it until deleted. Default: until deleted with an `idempotencyKey` of yours, else one day. */
   ttlSeconds?: number | null;
   /** Who the agent acts for (a user id in your app): `sub` in the identity tokens its tool servers get. Set only at creation. */
   subject?: string;
@@ -595,7 +595,10 @@ export class AgentRuntime {
     const key = this.options.apiKey;
     if (!key) throw new AgentError("Set apiKey to provision an agent");
     const server = options.mcp ?? toolServer(options.tools ?? {});
-    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
+    // A key makes the agent durable (it lives until deleted): one the SDK makes up, only so a retried create
+    // finds the same agent, keeps a scratch agent's day unless the caller sets its lifetime.
+    const ttlSeconds = options.ttlSeconds !== undefined ? options.ttlSeconds : options.idempotencyKey === undefined ? 86_400 : undefined;
+    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }
@@ -640,6 +643,8 @@ export class AgentRuntime {
   browserToken(agentId: string, options: { ttlSeconds?: number; scopes?: ("events" | "state" | "history" | "inputs")[]; events?: string[]; redact?: "usage.cost"[]; subject?: string } = {}): Promise<{ token: string; expiresAt: number; agentId: string; url?: string }> {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/browser-tokens`, this.operator(), "POST", options, false);
   }
+  /** Who the API key is: `tenant` is your tenant's id, which serveTools and verifyRuntimeToken take. */
+  me(): Promise<{ tenant: string; via: string; login?: string }> { return this.transport.json("/v1/me", this.operator()); }
   /** Inputs waiting on someone across all the tenant's agents (`pending` ones, say), newest first. */
   inbox(state?: AgentInput["state"]): Promise<AgentInput[]> { return this.transport.json(`/v1/inputs${state ? `?state=${state}` : ""}`, this.operator()); }
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {

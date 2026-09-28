@@ -28,8 +28,8 @@ test("serveTools answers each call as the user the runtime's token names, and re
   const list = async (who: Parameters<typeof rt.callTool>[4]) => (await rt.callTool(handler, APP, "list_todos", {}, who)).structuredContent;
   assert.deepEqual(await list({ subject: "alice", context: { team: "acme" } }), { todos: ["ship it"] });
   assert.deepEqual(await list({ subject: "team-acme", actor: "bob", context: { team: "acme" } }), { todos: ["review it"] }, "the actor, not the agent's subject");
-  const me = (await rt.callTool(handler, APP, "whoami", {}, { subject: "alice", actor: "bob", tenant: "t1", agent: "client_1", definition: "def_1", context: { team: "acme" }, origin: { channel: "slack" } })).structuredContent;
-  assert.deepEqual(me, { user: "bob", subject: "alice", actor: "bob", tenant: "t1", agent: "client_1", definition: "def_1", context: { team: "acme" }, origin: { channel: "slack" } });
+  const me = (await rt.callTool(handler, APP, "whoami", {}, { subject: "alice", actor: "bob", tenant: "test", agent: "client_1", definition: "def_1", context: { team: "acme" }, origin: { channel: "slack" } })).structuredContent;
+  assert.deepEqual(me, { user: "bob", subject: "alice", actor: "bob", tenant: "test", agent: "client_1", definition: "def_1", context: { team: "acme" }, origin: { channel: "slack" } });
 
   // MCP over stateless HTTP: initialize, tools/list, batches, notifications.
   const post = async (message: unknown, who: Parameters<typeof rt.request>[2] = {}) => handler(await rt.request(APP, message, who));
@@ -90,7 +90,7 @@ test("through a real runtime: served tools get its signed identity, attached too
   }, { ...LOCAL, AGENT_PUBLIC_URL: "" });
   base = r.base;
   // The application's server, trusting only the runtime at `base`.
-  const server = createServer(nodeListener(serveTools(todoTools(todos), { runtime: base })));
+  const server = createServer(nodeListener(serveTools(todoTools(todos), { runtime: base, tenant: "alice" })));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => server.close());
@@ -118,7 +118,7 @@ test("through a real runtime: served tools get its signed identity, attached too
 test("nodeListener checks tokens against the URL the runtime called, behind a proxy that ends TLS", async t => {
   const runtime = await testRuntime();
   const handler = serveTools(todoTools(todos), runtime.options);
-  const server = createServer(nodeListener(handler));
+  const server = createServer(nodeListener(handler, { trustProxy: true }));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
@@ -132,4 +132,41 @@ test("nodeListener checks tokens against the URL the runtime called, behind a pr
   assert.equal(await call("https://tools.example.com/mcp", { "X-Forwarded-Proto": "https, http", "X-Forwarded-Host": "tools.example.com, internal" }), 200);
   assert.equal(await call("https://tools.example.com/mcp"), 401, "without the proxy's headers it is another URL");
   assert.equal(await call(`${local}/mcp`), 200);
+});
+
+test("a token from another tenant is refused, whatever it says about the user; tenant is required", async () => {
+  const rt = await testRuntime();
+  const handler = serveTools(todoTools(todos), rt.options); // tenant "test"
+  // Another tenant's agent, pointed at this server, claiming to act for alice.
+  const forged = await rt.request(APP, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_todos", arguments: {} } }, { tenant: "mallory", subject: "alice", context: { team: "acme" } });
+  const refused = await handler(forged);
+  assert.equal(refused.status, 401);
+  assert.match((await refused.json() as { error: string }).error, /another tenant/);
+  await assert.rejects(verifyRuntimeToken(await rt.token({ tenant: "mallory" }, APP), { ...rt.options, audience: APP }), /another tenant/);
+  assert.ok(await verifyRuntimeToken(await rt.token({ tenant: "b" }, APP), { ...rt.options, tenant: ["a", "b"], audience: APP }), "an allow-list");
+  const { tenant: _tenant, ...without } = rt.options;
+  assert.throws(() => serveTools(todoTools(todos), without as never), /tenant: your tenant's id/);
+  await assert.rejects(verifyRuntimeToken(await rt.token({}, APP), { ...without, audience: APP } as never), /tenant: your tenant's id/);
+  await assert.rejects(runtimeAuth(await rt.request(APP, {}), without as never), /tenant: your tenant's id/);
+});
+
+test("nodeListener trusts X-Forwarded-Proto and -Host only when told to", async t => {
+  const rt = await testRuntime();
+  const listen = async (options: Parameters<typeof nodeListener>[1]) => {
+    const server = createServer(nodeListener(serveTools(todoTools(todos), rt.options), options));
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+    return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  };
+  const call = async (base: string, audience: string, headers: Record<string, string>) => (await fetch(`${base}/mcp`, {
+    method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_todos", arguments: {} } }),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${await rt.token({ subject: "alice", context: { team: "acme" } }, audience)}`, ...headers },
+  })).status;
+  const forwarded = { "X-Forwarded-Proto": "https", "X-Forwarded-Host": "tools.example.com" };
+  const plain = await listen({});
+  assert.equal(await call(plain, "https://tools.example.com/mcp", forwarded), 401, "by default a client cannot choose the audience with headers");
+  assert.equal(await call(plain, `${plain}/mcp`, forwarded), 200, "the socket's own address is the audience");
+  assert.equal(await call(await listen({ trustProxy: true }), "https://tools.example.com/mcp", forwarded), 200);
+  assert.equal(await call(await listen({ origin: "https://tools.example.com" }), "https://tools.example.com/mcp", {}), 200);
 });

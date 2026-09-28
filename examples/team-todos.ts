@@ -38,14 +38,15 @@ const tools = {
   }),
 };
 
-// Serve them, trusting only the runtime's tokens for this server's URL.
+// Serve them, trusting only the runtime's tokens for this server's URL, made for this tenant's agents.
 const runtimeUrl = process.env.CAMELAI_BASE_URL ?? "https://agents.camelai.dev";
 const publicUrl = process.env.PUBLIC_URL ?? "http://127.0.0.1:8788";
-const server = createServer(nodeListener(serveTools(tools, { runtime: runtimeUrl }), { origin: publicUrl }));
+const agents = new Agents({ url: runtimeUrl });
+const { tenant } = await agents.runtime.me(); // in a server of your own, a constant: your tenant's id
+const server = createServer(nodeListener(serveTools(tools, { runtime: runtimeUrl, tenant }), { origin: publicUrl }));
 server.listen(Number(new URL(publicUrl).port || 8788));
 
 // One definition names the server; each team gets an agent whose context says which team it is.
-const agents = new Agents({ url: runtimeUrl });
 const definition = await agents.runtime.createDefinition({
   name: "Team to-dos", systemPrompt: "You help people with their to-dos. Keep replies short.",
   ...(process.env.AGENT_MODEL ? { model: process.env.AGENT_MODEL } : {}),

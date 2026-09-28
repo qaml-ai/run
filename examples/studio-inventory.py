@@ -50,7 +50,7 @@ async def main():
             agent = await runtime.create_agent(name='Downtown cafe', type='inventory-planner', system_prompt='Help plan cafe inventory using SQLite tools. This is synthetic local data; planning does not place orders.', **options)
             fd = os.open(session_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, 'w') as f:
-                json.dump(agent.session, f)
+                json.dump(agent.session.credentials(), f)
         await agent.set_metadata(name='Downtown cafe', type='inventory-planner')
         try:
             # The SDK keeps its SSE tool receiver connected; Studio observes the runtime.

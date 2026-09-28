@@ -28,7 +28,8 @@ const options = {
 };
 const session = stored('typescript-session.json', null);
 client = session ? await runtime.connectAgent(session, options) : await runtime.createAgent({ ...options, name: 'September release', type: 'release-reviewer', systemPrompt: 'Review release readiness using the issue board. Save clear, concise release notes. Only synthetic local data is modified.' });
-writeDurableJson(join(root, 'typescript-session.json'), client.session);
+// The token is left out of the session's JSON, so a store of it names it.
+writeDurableJson(join(root, 'typescript-session.json'), { ...client.session, token: client.session.token });
 await client.setMetadata({ name: 'September release', type: 'release-reviewer' });
 process.on('SIGTERM', async () => { await client.close(); process.exit(0); });
 setInterval(() => {}, 60000);

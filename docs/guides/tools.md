@@ -102,20 +102,27 @@ saying which agent it is for, whom that agent acts for, and who is acting.
 import { serveTools } from "@camelai/agent-runtime/server";
 
 // A fetch handler: Cloudflare Workers, Bun and Deno serve it as is.
-export default { fetch: serveTools({ refund }, { runtime: "https://agents.camelai.dev" }) };
+// tenant: your tenant's id (GET /v1/me, or `await agents.runtime.me()`): tokens for other tenants' agents are refused.
+export default { fetch: serveTools({ refund }, { runtime: "https://agents.camelai.dev", tenant: "acme" }) };
 ```
 
-On Node, wrap it: `createServer(nodeListener(serveTools(tools, { runtime })))`
-with `nodeListener` from `@camelai/agent-runtime/node`. Behind a load balancer or
-proxy that ends TLS, `nodeListener` rebuilds the URL the runtime called from
-`X-Forwarded-Proto` and `X-Forwarded-Host`; pass `{ origin: "https://tools.example.com" }`
-to pin it.
+On Node, wrap it: `createServer(nodeListener(handler, { origin: "https://tools.example.com" }))`
+with `nodeListener` from `@camelai/agent-runtime/node`. Tokens are checked
+against the URL the runtime called, so set `origin` to your public URL. Without
+it, the URL is the server's own (its socket's scheme and the Host header), which
+is wrong behind a load balancer or proxy that ends TLS. `trustProxy: true` reads
+`X-Forwarded-Proto` and `X-Forwarded-Host` instead, but only set it where the
+proxy overwrites those headers: otherwise any client could choose the URL tokens
+are checked against.
 
 ```python
 from camelai_agent_runtime import serve_tools
 
-app = serve_tools([refund], runtime="https://agents.camelai.dev")  # ASGI: uvicorn, or mount in FastAPI
+app = serve_tools([refund], runtime="https://agents.camelai.dev", tenant="acme")  # ASGI: uvicorn, or mount in FastAPI
 ```
+
+Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
+naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 
 (`pip install "camelai-agent-runtime[server]"` for the token checks.)
 
@@ -130,9 +137,15 @@ const agent = await agents.upsert(`user-${user.id}`, { definition: definition.id
 ```
 
 Every request without a valid token for your server gets a 401: the signature
-(the runtime's published Ed25519 keys), the issuer, the audience (your server's
-URL as the runtime calls it) and the expiry are checked, and nothing per user is
-stored anywhere. To test your authorization without a runtime,
+(the runtime's published Ed25519 keys), the issuer, the **tenant** (yours), the
+audience (your server's URL as the runtime calls it) and the expiry are checked,
+and nothing per user is stored anywhere.
+
+`tenant` is required, and it matters: an identity means something only within
+your own tenant. Any tenant can make agents, give them any `subject` and
+`context`, and point them at your server's URL; the runtime signs their tokens
+too. Only the tenant check tells your agents from theirs. Pass your tenant's id
+(or a list, if several of your tenants share the server). To test your authorization without a runtime,
 `testRuntime()` (`@camelai/agent-runtime/testing`; `TestRuntime()` in Python)
 signs tokens with a key of its own:
 
@@ -142,9 +155,10 @@ const result = await rt.callTool(serveTools(tools, rt.options), "https://app.tes
 ```
 
 Built with the MCP SDK or Cloudflare's `createMcpHandler` instead? Verify with
-`runtimeAuth(request, { runtime })`, pass the result as the request's `auth`, and
+`runtimeAuth(request, { runtime, tenant })`, pass the result as the request's `auth`, and
 read `runtimeIdentity(extra)` in a handler. `verifyRuntimeToken(token, { runtime,
-audience })` checks a token on its own.
+tenant, audience })` checks a token on its own. `testRuntime()`'s tokens name
+tenant `test`, which `rt.options` passes.
 
 ## Identity: who a call is for
 
@@ -163,9 +177,11 @@ either way:
 | `approval` | the person's approval, for a call that needed one |
 
 `subject` and `context` are set with your API key when the agent is made, and the
-agent's own token cannot change them; the model cannot touch any of it. So a
-tool can trust `identity`, and should never take a user id from the model's
-arguments. See [Many users](multi-user.md).
+agent's own token cannot change them; the model cannot touch any of it. So,
+once the token is checked to be from your own tenant (served tools), a tool can
+trust `identity`, and should never take a user id from the model's arguments.
+Another tenant's agents can claim any `subject`: `identity` is only meaningful
+within your tenant. See [Many users](multi-user.md).
 
 The token itself (for servers that verify it by hand, e.g. with `jose`):
 

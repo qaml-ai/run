@@ -14,9 +14,11 @@ Before you ship an application on the runtime, check each of these.
       `identity.context`, never from ids in the model's arguments. `subject` and
       `context` are set when the agent is made. See [Identity](guides/tools.md#identity-who-a-call-is-for).
 - [ ] Served tools verify the runtime's token (`serveTools`, `serve_tools`,
-      `runtimeAuth` do), and behind a TLS-terminating proxy the audience is your
-      public URL (`nodeListener` reads `X-Forwarded-Proto`/`Host`; or pass
-      `origin`). Test with `testRuntime()`.
+      `runtimeAuth` do) with `tenant` set to your own tenant, so another tenant's
+      agents cannot act as your users.
+- [ ] Behind a TLS-terminating proxy the audience is your public URL: pass
+      `origin` to `nodeListener` (or `trustProxy: true` only where the proxy
+      overwrites `X-Forwarded-*`). Test with `testRuntime()`.
 
 ## Agents
 

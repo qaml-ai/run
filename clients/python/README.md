@@ -71,13 +71,14 @@ async def list_todos(context: ToolContext) -> dict:
     who = context.identity  # user (the actor, else the agent's subject), subject, tenant, agent, context
     return {"todos": await db.todos(user=who.user, team=who.context["team"])}
 
-app = serve_tools([list_todos], runtime="https://agents.camelai.dev")  # uvicorn, or mount in FastAPI
+# tenant: yours (GET /v1/me): tokens for other tenants' agents, which may claim any user, are refused.
+app = serve_tools([list_todos], runtime="https://agents.camelai.dev", tenant="acme")  # uvicorn, or mount in FastAPI
 ```
 
 Name the server in a definition with `mcpServers=[{"name": "todos", "url": ..., "auth": {"type": "runtime"}}]`,
 create agents with `subject=` and `context=`, and run them with `user=`.
 The same `@tool` functions get the same identity when attached to an agent.
-`verify_runtime_token(token, runtime=..., audience=...)` checks a token on its own,
+`verify_runtime_token(token, runtime=..., tenant=..., audience=...)` checks a token on its own,
 and `TestRuntime()` signs tokens for tests: `await TestRuntime().call_tool(app, url, "list_todos", {}, subject="alice")`.
 
 Keep the API key on your backend: it can create and control every

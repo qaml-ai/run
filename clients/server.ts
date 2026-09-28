@@ -4,12 +4,20 @@
  * whom it acts for and who is acting; these helpers verify it and hand your tools the identity.
  * Portable: fetch-style handlers and WebCrypto (Ed25519), so it runs on Workers, Node 22+, Bun and Deno.
  *
- *   export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev" }) };
+ *   export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev", tenant: "acme" }) };
+ *
+ * An identity means something only within your own tenant: other tenants' agents can be pointed at your
+ * server too, so every check here requires `tenant`, and refuses tokens made for anyone else's agents.
  */
 import { answerMcp, identityFromClaims, toolContext, toolServer, type RuntimeIdentity, type ToolServer, type Tools } from "./typescript.ts";
 export type { RuntimeIdentity };
 
 export interface VerifyOptions {
+  /**
+   * Your tenant's id (GET /v1/me answers it), or those you accept: tokens from other tenants' agents are
+   * refused. Required: another tenant can point its agents at your server and say they act for anyone.
+   */
+  tenant: string | string[];
   /** The runtime's URL (e.g. https://agents.camelai.dev): its keys are at /.well-known/jwks.json. */
   runtime: string;
   /** The issuer tokens must name; the runtime's URL by default. */
@@ -73,7 +81,16 @@ async function publicKey(url: string, kid: string, fetcher: typeof globalThis.fe
  * Verify an identity token and return who the call is for. Checks the signature against the runtime's
  * published Ed25519 keys (EdDSA only), the issuer, that the audience is yours, and the times.
  */
+/** Refuse to check tokens without the tenant they must come from. */
+function requireTenant(options: { tenant?: unknown }) {
+  const valid = (value: unknown) => typeof value === "string" && value.length > 0;
+  if (!(valid(options.tenant) || (Array.isArray(options.tenant) && options.tenant.length > 0 && options.tenant.every(valid)))) {
+    throw new TypeError("Pass tenant: your tenant's id (GET /v1/me answers it), or a list of those you accept. Without it, another tenant's agents could act as your users");
+  }
+}
+
 export async function verifyRuntimeToken(token: string, options: VerifyOptions): Promise<RuntimeIdentity & { claims: Record<string, unknown> }> {
+  requireTenant(options);
   const pieces = token.split(".");
   if (pieces.length !== 3) throw new RuntimeTokenError("Malformed token");
   const header = part(pieces[0]);
@@ -85,6 +102,7 @@ export async function verifyRuntimeToken(token: string, options: VerifyOptions):
   const claims = part(pieces[1]);
   const now = Math.floor(Date.now() / 1000), skew = options.clockTolerance ?? 30;
   if (claims.iss !== trim(options.issuer ?? runtime)) throw new RuntimeTokenError("Token is from another issuer");
+  if (![options.tenant].flat().includes(claims.tenant)) throw new RuntimeTokenError("Token is for another tenant's agent");
   const audiences = new Set((Array.isArray(options.audience) ? options.audience : [options.audience]).map(trim));
   if (![claims.aud].flat().some(audience => typeof audience === "string" && audiences.has(trim(audience)))) throw new RuntimeTokenError("Token is for another server");
   if (typeof claims.exp !== "number" || claims.exp + skew < now) throw new RuntimeTokenError("Token has expired");
@@ -109,6 +127,7 @@ const requestAudience = (request: Request) => { const url = new URL(request.url)
  * { authContext })`), and a tool handler reads `runtimeIdentity(extra)`.
  */
 export async function runtimeAuth(request: Request, options: Omit<VerifyOptions, "audience"> & { audience?: string | string[] }) {
+  requireTenant(options);
   const token = bearerToken(request);
   if (!token) throw new RuntimeTokenError("No bearer token");
   const { claims, ...identity } = await verifyRuntimeToken(token, { ...options, audience: options.audience ?? requestAudience(request) });
@@ -136,6 +155,7 @@ export interface ServeOptions extends Omit<VerifyOptions, "audience"> {
  * requests without a valid token get a 401. The same tools can be attached to an agent instead.
  */
 export function serveTools(tools: Tools | ToolServer, options: ServeOptions): (request: Request) => Promise<Response> {
+  requireTenant(options);
   const server: ToolServer = typeof (tools as ToolServer).listTools === "function" && typeof (tools as ToolServer).callTool === "function" ? tools as ToolServer : toolServer(tools as Tools);
   const issuer = trim(options.issuer ?? options.runtime);
   const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>

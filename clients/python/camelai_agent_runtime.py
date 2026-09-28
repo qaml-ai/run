@@ -9,6 +9,7 @@ AgentRuntime and AgentClient are the lower-level interface it is built on.
 """
 import asyncio
 import base64
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -331,11 +332,28 @@ def _arity(function):
     return sum(1 for parameter in parameters if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD))
 
 
-class _Session(dict):
-    """An agent's credentials ({"id", "token", "expiresAt"}), whose repr leaves the token out."""
+class _Session(Mapping):
+    """An agent's credentials: session["id"], session["token"], session["expiresAt"]. Its repr leaves the token out, and
+    it is not JSON-serializable, so it cannot end up in a log whole: store it with credentials(), in secret storage."""
+
+    def __init__(self, values):
+        self._values = dict(values)
+
+    def __getitem__(self, key):
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    def credentials(self):
+        """The id, token and expiry as a plain dict, to keep in secret storage and connect with again."""
+        return dict(self._values)
 
     def __repr__(self):
-        return repr({key: ("<redacted>" if key == "token" else value) for key, value in self.items()})
+        return repr({key: ("<redacted>" if key == "token" else value) for key, value in self._values.items()})
 
     __str__ = __repr__
 
@@ -418,7 +436,8 @@ class AgentRuntime:
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
-        `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: one day).
+        `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: until deleted with an
+        idempotency_key of yours, else one day).
         `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
         file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
         (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `model_headers` non-secret headers for each model call."""
@@ -427,8 +446,12 @@ class AgentRuntime:
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers)
+        # A key makes the agent durable (it lives until deleted): one the SDK makes up, only so a retried create finds
+        # the same agent, keeps a scratch agent's day unless the caller sets its lifetime.
         if ttl_seconds is not _DEFAULT:
             body["ttlSeconds"] = ttl_seconds
+        elif idempotency_key is None:
+            body["ttlSeconds"] = 86400
         session = await _http(self.http, self.base, "/client-sessions", self.api_key, "POST", body,
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input)
@@ -499,6 +522,10 @@ class AgentRuntime:
     async def set_mounts(self, agent_id, mounts):
         """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
         return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator(), "PUT", {"mounts": mounts}, retry=False)
+
+    async def me(self):
+        """Who the API key is: {"tenant", "via", ...}; tenant is your tenant's id, which serve_tools and verify_runtime_token take."""
+        return await _http(self.http, self.base, "/v1/me", self._operator())
 
     async def browser_token(self, agent_id, *, ttl_seconds=None, scopes=None, events=None, redact=None, subject=None):
         """A token a browser reads one agent with (the TypeScript SDK's watchAgent): mint one per user, after your own
@@ -1603,10 +1630,21 @@ async def _public_key(url, kid, http):
     return key
 
 
-async def verify_runtime_token(token, *, runtime, audience, issuer=None, http=None, clock_tolerance=30):
+def _require_tenant(tenant):
+    """Refuse to check tokens without the tenant they must come from."""
+    valid = lambda value: isinstance(value, str) and value
+    if not (valid(tenant) or (isinstance(tenant, (list, tuple, set)) and tenant and all(valid(value) for value in tenant))):
+        raise TypeError("Pass tenant=: your tenant's id (GET /v1/me answers it, or await AgentRuntime().me()), or a list of those you accept. "
+                        "Without it, another tenant's agents could act as your users")
+    return {tenant} if isinstance(tenant, str) else set(tenant)
+
+
+async def verify_runtime_token(token, *, runtime, audience, tenant=None, issuer=None, http=None, clock_tolerance=30):
     """Verify an identity token and return who the call is for (a RuntimeIdentity, with the token's
     claims): the signature against the runtime's published Ed25519 keys (EdDSA only), the issuer,
-    that the audience is yours (a string or a list), and the times."""
+    that it was made for an agent of `tenant` (your tenant's id, or a list: required, since another
+    tenant can point its agents at your server), that the audience is yours (a string or a list), and the times."""
+    tenants = _require_tenant(tenant)
     import time
     from cryptography.exceptions import InvalidSignature
     pieces = token.split(".")
@@ -1625,6 +1663,8 @@ async def verify_runtime_token(token, *, runtime, audience, issuer=None, http=No
     now = time.time()
     if claims.get("iss") != (issuer or runtime).rstrip("/"):
         raise RuntimeTokenError("Token is from another issuer")
+    if claims.get("tenant") not in tenants:
+        raise RuntimeTokenError("Token is for another tenant's agent")
     wanted = {value.rstrip("/") for value in ([audience] if isinstance(audience, str) else audience)}
     given = claims.get("aud")
     if not any(isinstance(value, str) and value.rstrip("/") in wanted for value in (given if isinstance(given, list) else [given])):
@@ -1640,11 +1680,12 @@ async def verify_runtime_token(token, *, runtime, audience, issuer=None, http=No
     return identity
 
 
-def serve_tools(tools, *, runtime, audience=None, issuer=None, metadata=True, http=None, server_name="agent-runtime-tools"):
+def serve_tools(tools, *, runtime, tenant=None, audience=None, issuer=None, metadata=True, http=None, server_name="agent-runtime-tools"):
     """Serve tools (@tool functions, a list or a dict) as a stateless MCP server over Streamable HTTP for
     the runtime to call with its identity tokens: an ASGI app (mount it in FastAPI or Starlette, or run it
     with uvicorn). Every call's ToolContext carries the verified identity; requests without a valid token
     get a 401. `audience` is your server's URL as the runtime calls it; by default the request's URL."""
+    _require_tenant(tenant)
     table = tools if isinstance(tools, dict) else {item.name: item for item in tools}
     issuer = (issuer or runtime).rstrip("/")
     well_known = "/.well-known/oauth-protected-resource"
@@ -1686,7 +1727,7 @@ def serve_tools(tools, *, runtime, audience=None, issuer=None, metadata=True, ht
             match = headers.get("authorization", "").split(" ", 1)
             if len(match) != 2 or match[0].lower() != "bearer" or not match[1].strip():
                 raise RuntimeTokenError("No bearer token")
-            identity = await verify_runtime_token(match[1].strip(), runtime=runtime, audience=audience or f"{origin}{path}", issuer=issuer, http=http)
+            identity = await verify_runtime_token(match[1].strip(), runtime=runtime, tenant=tenant, audience=audience or f"{origin}{path}", issuer=issuer, http=http)
         except RuntimeTokenError as error:
             challenge = 'Bearer error="invalid_token"' + (f', resource_metadata="{origin}{well_known}{"" if path == "/" else path}"' if metadata else "")
             return await respond(401, {"error": str(error)}, [("www-authenticate", challenge)])
@@ -1734,7 +1775,8 @@ class TestRuntime:
         jwks = f"{self.url}/.well-known/jwks.json"
         self.http = httpx.AsyncClient(transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json={"keys": [self.jwk]}) if str(request.url) == jwks else httpx.Response(404)))
-        self.options = {"runtime": self.url, "http": self.http}
+        # Its tokens name tenant "test" unless told otherwise.
+        self.options = {"runtime": self.url, "http": self.http, "tenant": "test"}
 
     def token(self, audience, *, subject=None, actor=None, tenant="test", agent="client_test", definition=None, context=None, origin=None,
               expires_in=120, claims=None, header=None):

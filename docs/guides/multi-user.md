@@ -41,7 +41,8 @@ const tools = {
     execute: (_args, { identity }) => db.todos({ user: identity!.user, org: identity!.context.org }),
   }),
 };
-export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev" }) };
+// tenant: yours (GET /v1/me). Other tenants' agents can reach this URL too, claiming any user: their tokens are refused.
+export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev", tenant: "acme" }) };
 ```
 
 ```ts
@@ -52,7 +53,8 @@ const definition = await agents.runtime.createDefinition({
 ```
 
 Authorize every call as `identity.user` within `identity.context`, never from
-the model's arguments. See [Tools](tools.md#served-tools-over-http-for-serverless-and-many-users)
+the model's arguments. That identity is only meaningful within your own tenant,
+which is why `serveTools` requires `tenant`. See [Tools](tools.md#served-tools-over-http-for-serverless-and-many-users)
 and [Identity](tools.md#identity-who-a-call-is-for).
 
 Your request handlers can be serverless: an agent upserted without local tools

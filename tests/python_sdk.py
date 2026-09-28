@@ -112,6 +112,13 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         token = agent.session["token"]
         for shown in (repr(agent), repr(agent.session), str(agent.session), repr(agent.client)):
             self.assertNotIn(token, shown)
+        with self.assertRaises(TypeError):
+            json.dumps(agent.session)
+        self.assertEqual(agent.session.credentials()["token"], token)
+        scratch = await self.runtime.create_agent(tools=[])
+        self.assertAlmostEqual(scratch.session["expiresAt"] / 1000 - __import__("time").time(), 86400, delta=60)
+        durable = await self.runtime.create_agent(tools=[], idempotency_key="py-durable")
+        self.assertIsNone(durable.session["expiresAt"])
         self.assertEqual(self.bodies[-1]["messages"][-1]["role"], "user")
 
     async def test_a_failed_run_raises_run_error_or_returns_it(self):
@@ -492,8 +499,8 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         call = lambda name, **who: self.runtime.call_tool(self.app, self.APP, name, {}, **who)
         self.assertEqual((await call("list_todos", subject="alice", context={"team": "acme"}))["structuredContent"], {"todos": ["ship it"]})
         self.assertEqual((await call("list_todos", subject="team-acme", actor="bob", context={"team": "acme"}))["structuredContent"], {"todos": ["review it"]})
-        me = (await call("whoami", subject="alice", actor="bob", tenant="t1", agent="client_1", context={"team": "acme"}, origin={"channel": "slack"}))["structuredContent"]
-        self.assertEqual(me, {"user": "bob", "subject": "alice", "actor": "bob", "tenant": "t1", "agent": "client_1", "context": {"team": "acme"}, "origin": {"channel": "slack"}})
+        me = (await call("whoami", subject="alice", actor="bob", tenant="test", agent="client_1", context={"team": "acme"}, origin={"channel": "slack"}))["structuredContent"]
+        self.assertEqual(me, {"user": "bob", "subject": "alice", "actor": "bob", "tenant": "test", "agent": "client_1", "context": {"team": "acme"}, "origin": {"channel": "slack"}})
         listed = (await self.runtime.post(self.app, self.APP, [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, {"jsonrpc": "2.0", "method": "notifications/initialized"}], subject="alice")).json()
         self.assertEqual([entry["name"] for entry in listed[0]["result"]["tools"]], ["list_todos", "whoami"])
         self.assertEqual((await self.runtime.post(self.app, self.APP, {"jsonrpc": "2.0", "method": "notifications/initialized"}, subject="alice")).status_code, 202)
@@ -525,6 +532,18 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
             await verify_runtime_token("not-a-token", audience=self.APP, **self.runtime.options)
         identity = await verify_runtime_token(self.runtime.token("https://app.test/mcp/", actor="bob"), audience=self.APP, **self.runtime.options)
         self.assertEqual(identity.user, "bob")
+
+    async def test_a_token_from_another_tenant_is_refused_and_tenant_is_required(self):
+        response = await self.runtime.post(self.app, self.APP, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_todos", "arguments": {}}},
+                                           tenant="mallory", subject="alice", context={"team": "acme"})
+        self.assertEqual((response.status_code, response.json()["error"]), (401, "Token is for another tenant's agent"))
+        options = {key: value for key, value in self.runtime.options.items() if key != "tenant"}
+        with self.assertRaisesRegex(TypeError, "Pass tenant="):
+            serve_tools([list_todos], **options)
+        with self.assertRaisesRegex(TypeError, "Pass tenant="):
+            await verify_runtime_token(self.runtime.token(self.APP), audience=self.APP, **options)
+        identity = await verify_runtime_token(self.runtime.token(self.APP, tenant="b"), audience=self.APP, **{**options, "tenant": ["a", "b"]})
+        self.assertEqual(identity.tenant, "b")
 
     async def test_a_tool_that_needs_approval_asks_first_and_runs_once_approved(self):
         app = serve_tools([delete_todo], **self.runtime.options)
