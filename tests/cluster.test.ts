@@ -43,7 +43,7 @@ test("any node serves any agent: requests are forwarded to the owner, and a surv
   calls.splice(calls.indexOf("timer"), 1);
 
   // Re-provisioning through B returns the same agent without starting a second copy.
-  const again = await fetch(`${b.url}/client-sessions`, {
+  const again = await fetch(`${b.url}/v1/agents`, {
     method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": "shared-agent" },
     body: JSON.stringify({ mcp: { tools: [{ name: "lookup", description: "Look up a value", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"], additionalProperties: false } }] } }),
   });

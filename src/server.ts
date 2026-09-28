@@ -171,8 +171,8 @@ webhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 // Idempotency keys' answers are kept a day.
 setInterval(() => void expireIdempotencyKeys(db).catch(error => console.error(JSON.stringify({ type: "idempotency_expiry_failed", error: errorText(error) }))), 60 * 60_000).unref();
 
-/** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
-async function createAgent(tenant: string, params: any, key?: string, legacy = false) {
+/** Provision an agent for `tenant` (POST /v1/agents). */
+async function createAgent(tenant: string, params: any, key?: string) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
   const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, ...rest } = params ?? {};
   // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
@@ -193,8 +193,7 @@ async function createAgent(tenant: string, params: any, key?: string, legacy = f
   validTtl(ttl);
   // An agent made with a key is one the application comes back to: it lives until deleted, unless it says otherwise.
   // One made without is a scratch agent nothing can find again once its id is lost: it lives a day, unless it says.
-  // So does one made on the legacy route (/client-sessions), whose published SDKs invent a key for every agent.
-  const lifetime = ttl === undefined ? (key !== undefined && !legacy ? null : undefined) : ttl === null ? null : ttl * 1000;
+  const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
     { keyScope, spendLimit, ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) });
@@ -517,11 +516,6 @@ app.get(registered, async c => c.json(await clients.inspect(c.req.param("id"), c
 app.post(`${registered}/requests`, c => clients.app.request(`/clients/${c.req.param("id")}/requests`,
   { method: "POST", headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit, { ...c.env, operatorTenant: c.var.tenant }));
 for (const path of [registered, `${registered}/requests`]) app.all(path, c => c.body(null, 405));
-app.post("/client-sessions", async c => {
-  const params = await readJson(c.req.raw.body, 18 * 1024 * 1024, {});
-  const result = await createAgent(c.var.tenant, params, c.req.header("idempotency-key"), true);
-  return c.json(result, 201, { "Cache-Control": "no-store" });
-});
 app.notFound(c => c.body(null, 404));
 // Errors keep their own status (429 quota, 409 conflict, 410 revoked, 503 retry...); an unreachable database is 503, and
 // anything else is a request the runtime could not accept (invalid configuration or tools): 400.

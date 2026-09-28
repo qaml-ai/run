@@ -446,13 +446,13 @@ class AgentRuntime:
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers)
-        # A key of the caller's makes the agent durable (it lives until deleted, said explicitly: this route keeps a day
-        # by default); one the SDK makes up, only so a retried create finds the same agent, keeps a scratch agent's day.
+        # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
+        # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
             body["ttlSeconds"] = ttl_seconds
-        else:
-            body["ttlSeconds"] = 86400 if idempotency_key is None else None
-        session = await _http(self.http, self.base, "/client-sessions", self.api_key, "POST", body,
+        elif idempotency_key is None:
+            body["ttlSeconds"] = 86400
+        session = await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", body,
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input)
 

@@ -595,10 +595,10 @@ export class AgentRuntime {
     const key = this.options.apiKey;
     if (!key) throw new AgentError("Set apiKey to provision an agent");
     const server = options.mcp ?? toolServer(options.tools ?? {});
-    // A key of the caller's makes the agent durable (it lives until deleted, said explicitly: this route keeps a day by
-    // default); one the SDK makes up, only so a retried create finds the same agent, keeps a scratch agent's day.
-    const ttlSeconds = options.ttlSeconds !== undefined ? options.ttlSeconds : options.idempotencyKey === undefined ? 86_400 : null;
-    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}) }, true,
+    // A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
+    // create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
+    const ttlSeconds = options.ttlSeconds !== undefined ? options.ttlSeconds : options.idempotencyKey === undefined ? 86_400 : undefined;
+    const session = await this.transport.json("/v1/agents", key, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }

@@ -301,7 +301,7 @@ test("the OpenAPI document is served without credentials", async t => {
 test("a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees", async t => {
   const { db, base, call } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "4", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "3000" });
   const hold = { name: "hold", description: "Never answered", inputSchema: { type: "object", properties: {}, additionalProperties: false } };
-  const busy = await call("/client-sessions", { token: bob, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": "busy" } });
+  const busy = await call("/v1/agents", { token: bob, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": "busy" } });
   assert.equal(busy.status, 201);
   // A call sent to an application that never answers keeps the agent busy until the tool timeout, so it cannot be evicted.
   const app = await attachSilently(t, base, busy.json.id, busy.json.token);
@@ -312,18 +312,18 @@ test("a tenant at its agent quota gets 429 with Retry-After and nothing half-cre
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   const agents = async () => Number((await db.query("select count(*) as count from agents where tenant = 'bob'")).rows[0].count);
-  for (const [path, key] of [["/client-sessions", "second"], ["/v1/agents", "third"]]) {
-    const refused = await call(path, { token: bob, body: {}, headers: { "Idempotency-Key": key } });
-    assert.equal(refused.status, 429, path);
+  for (const key of ["second", "third"]) {
+    const refused = await call("/v1/agents", { token: bob, body: {}, headers: { "Idempotency-Key": key } });
+    assert.equal(refused.status, 429, key);
     assert.equal(refused.headers.get("retry-after"), "5");
     assert.match(JSON.stringify(refused.json), /already has 1 agents running/);
   }
   assert.equal(await agents(), 1, "a refused create persists nothing");
   // Other statuses keep theirs too: a reused key for someone else conflicts, not "bad request".
-  assert.equal((await call("/client-sessions", { token: bob, body: { mcp: { tools: [hold] }, subject: "someone-else" }, headers: { "Idempotency-Key": "busy" } })).status, 409);
+  assert.equal((await call("/v1/agents", { token: bob, body: { mcp: { tools: [hold] }, subject: "someone-else" }, headers: { "Idempotency-Key": "busy" } })).status, 409);
   // The tool times out, the busy agent goes idle, and the refused create's retry takes its slot.
   let retried;
-  for (let tries = 0; (retried = await call("/client-sessions", { token: bob, body: {}, headers: { "Idempotency-Key": "second" } })).status === 429; tries++) {
+  for (let tries = 0; (retried = await call("/v1/agents", { token: bob, body: {}, headers: { "Idempotency-Key": "second" } })).status === 429; tries++) {
     assert.ok(tries < 100, "the slot frees");
     await new Promise(resolve => setTimeout(resolve, 100));
   }
@@ -339,7 +339,7 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
   // The held calls are never answered: shut down without draining them for the tool timeout.
   const { root, base, call, child, logged } = await runtime(t, undefined, { AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "1", AGENT_TOOL_TIMEOUT_MS: "20000", AGENT_DRAIN_TIMEOUT_MS: "0" }, tenants(2));
   const hold = { name: "hold", description: "Never answered", inputSchema: { type: "object", properties: {}, additionalProperties: false } };
-  const create = (token: string, key: string) => call("/client-sessions", { token, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": key } });
+  const create = (token: string, key: string) => call("/v1/agents", { token, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": key } });
   const statuses = (results: { status: number }[]) => results.map(result => result.status).sort();
 
   // Three concurrent starts for bob (his own limit, 2), two for alice (the default, 1).

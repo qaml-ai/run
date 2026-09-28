@@ -1389,7 +1389,7 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
   `DELETE /v1/key-scopes/:scope/providers/:provider` removes an entry, and
   `DELETE /v1/key-scopes/:scope` the whole scope. Scope ids are 1–100 letters,
   digits, `_`, `.` and `-`. Keys and headers are stored sealed, bound to your account, the scope and the provider.
-- An agent gets `keyScope` at creation (`POST /v1/agents`, `/client-sessions`,
+- An agent gets `keyScope` at creation (`POST /v1/agents`,
   the SDKs' `createAgent`), or through `PATCH /v1/agents/:id/configuration`
   (`null` clears it; the agent's own token cannot change it). Applying a
   definition keeps it. Models are named as usual, e.g.

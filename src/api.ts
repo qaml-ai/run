@@ -35,7 +35,7 @@ export interface ApiContext {
   consoleAuth: ConsoleAuth;
   keyScopes?: KeyScopes;
   webhooks?: Webhooks;
-  /** Provision an agent for a tenant (shared with POST /client-sessions). */
+  /** Provision an agent for a tenant. */
   createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
   verifyKeys?: boolean;
   scheduler?: Scheduler;

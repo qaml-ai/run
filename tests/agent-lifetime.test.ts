@@ -12,10 +12,7 @@ test("an agent made with an idempotency key lives until deleted by default; one 
   assert.equal(keyed.json.expiresAt, null);
   const scratch = await r.call("/v1/agents", { body: {} });
   assert.ok(scratch.json.expiresAt - Date.now() > 23 * 3_600_000 && scratch.json.expiresAt - Date.now() <= 24 * 3_600_000);
-  // The legacy create route, whose published SDKs invent a key for every agent, keeps the day.
-  const legacy = await r.call("/client-sessions", { body: {}, headers: { "Idempotency-Key": "sdk-invented" } });
-  assert.equal(legacy.status, 201, legacy.text);
-  assert.ok(legacy.json.expiresAt - Date.now() > 23 * 3_600_000 && legacy.json.expiresAt - Date.now() <= 24 * 3_600_000);
+  assert.equal((await r.call("/client-sessions", { body: {}, headers: { "Idempotency-Key": "sdk-invented" } })).status, 404, "agents are made on /v1/agents only");
   const limited = await r.call("/v1/agents", { body: { ttlSeconds: 3600 }, headers: { "Idempotency-Key": "short-lived" } });
   assert.ok(limited.json.expiresAt - Date.now() <= 3_600_000, "ttlSeconds still sets one");
 });

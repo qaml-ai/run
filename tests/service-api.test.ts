@@ -44,7 +44,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: 
 test('operator provisioning imports native history once; scoped reads do not journal transcript copies', async t => {
   const f = await fixture(t);
   const initialMessages = [{ role: 'user', content: 'preserve-native-history', timestamp: 1 }];
-  const response = await f.post('/client-sessions', { model: configuredModel(), thinkingLevel: 'low', initialMessages });
+  const response = await f.post('/v1/agents', { model: configuredModel(), thinkingLevel: 'low', initialMessages });
   assert.equal(response.status, 201);
   const session = await response.json() as any;
   const path = `/clients/${session.id}`;
@@ -62,7 +62,7 @@ test('operator provisioning imports native history once; scoped reads do not jou
 
 test('scoped configuration persists allowed fields and rejects provider credentials or endpoints', async t => {
   const f = await fixture(t);
-  const response = await f.post('/client-sessions', {});
+  const response = await f.post('/v1/agents', {});
   const session = await response.json() as any;
   const path = `/clients/${session.id}`;
   for (const params of [{ model: configuredModel() }, { apiKey: 'secret' }, { initialMessages: [] }]) {
@@ -95,7 +95,7 @@ test('operator model configuration accepts endpoints but never persists supplied
     { model: { ...configuredModel(), baseUrl: 'https://collector.example.test/v1' } },
     { model: { ...configuredModel(), maxTokens: -1 } },
     { thinkingLevel: 'invalid' },
-  ]) assert.equal((await f.post('/client-sessions', { ...extra })).status, 400);
+  ]) assert.equal((await f.post('/v1/agents', { ...extra })).status, 400);
 });
 
 test('trusted endpoints are the default model, Pi published endpoints, and the operator allowlist', () => {
@@ -122,11 +122,11 @@ test('tenants provision and see only their own agents, billed to their own provi
     return { AGENT_TENANTS_FILE: path };
   });
   assert.equal((await fetch(new URL('/healthz', (await f.get('/registry', alice)).url))).status, 200);
-  assert.equal((await f.post('/client-sessions', {}, 'operator-fixture-secret-at-least-24-chars')).status, 401, 'a token no tenant has is refused');
-  const created = await f.post('/client-sessions', { name: 'Alice agent' }, alice);
+  assert.equal((await f.post('/v1/agents', {}, 'operator-fixture-secret-at-least-24-chars')).status, 401, 'a token no tenant has is refused');
+  const created = await f.post('/v1/agents', { name: 'Alice agent' }, alice);
   assert.equal(created.status, 201);
   const agent = await created.json() as any;
-  const missingKey = await f.post('/client-sessions', {}, bob);
+  const missingKey = await f.post('/v1/agents', {}, bob);
   assert.equal(missingKey.status, 400);
   assert.match((await missingKey.json() as any).error, /No .* API key is configured for tenant bob/);
   assert.deepEqual((await (await f.get('/registry', alice)).json() as any[]).map(a => a.name), ['Alice agent']);
@@ -135,7 +135,7 @@ test('tenants provision and see only their own agents, billed to their own provi
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'cross', method: 'status', params: {} }, bob)).status, 401);
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'own', method: 'status', params: {} }, alice)).status, 202);
   // The same idempotency key in another tenant is a different agent.
-  const sameKey = (token: string) => fetch(new URL('/client-sessions', (created as Response).url), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'shared-key' }, body: JSON.stringify({}) });
+  const sameKey = (token: string) => fetch(new URL('/v1/agents', (created as Response).url), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'shared-key' }, body: JSON.stringify({}) });
   await writeFile(path, tenants({ carol: { tokenSha256: sha(carol), apiKeys: { [configuredModel().provider]: 'carol-provider-key' } } }));
   f.child.kill('SIGHUP');
   let carolAgent: Response | undefined;

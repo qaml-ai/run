@@ -602,7 +602,7 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
   const hold = { name: "hold", description: "Never answered", inputSchema: { type: "object", properties: {}, additionalProperties: false } };
   const busy: { id: string; token: string }[] = [];
   for (const key of ["a", "b"]) {
-    const created = await call("/client-sessions", { token, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": key } });
+    const created = await call("/v1/agents", { token, body: { mcp: { tools: [hold] } }, headers: { "Idempotency-Key": key } });
     assert.equal(created.status, 201, created.text);
     busy.push(created.json);
     const app = await attachSilently(t, base, created.json.id, created.json.token);

@@ -242,7 +242,7 @@ test("HTTP control plane authenticates operators, provisions agents, and deletes
   child.on("exit", code => ready.reject(new Error(`HTTP server exited: ${code}`)));
   const base = `http://127.0.0.1:${await ready.promise}`;
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-  const clientBase = `${base}/client-sessions`;
+  const clientBase = `${base}/v1/agents`;
   assert.equal((await fetch(clientBase, { method: "POST", body: JSON.stringify({}) })).status, 401);
   assert.equal((await fetch(clientBase, { method: "POST", headers, body: JSON.stringify({ tools: [{}] }) })).status, 400);
   for (const systemPrompt of [null, 123, "", "x".repeat(32001)]) {

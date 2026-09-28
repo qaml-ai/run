@@ -94,7 +94,7 @@ test("with no live peer, a draining node answers 503 with Retry-After for anythi
   a.child.kill("SIGTERM");
   for (let tries = 0; (await fetch(`${a.url}/healthz`)).status !== 503; tries++) { assert.ok(tries < 50); await sleep(50); }
 
-  const created = await fetch(`${a.url}/client-sessions`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": "during-drain" }, body: "{}" });
+  const created = await fetch(`${a.url}/v1/agents`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": "during-drain" }, body: "{}" });
   assert.equal(created.status, 503, await created.clone().text());
   assert.equal(created.headers.get("retry-after"), "1");
   const loaded = await fetch(`${a.url}/clients/${idle.session.id}/state`, { headers: { Authorization: `Bearer ${idle.session.token}` } });

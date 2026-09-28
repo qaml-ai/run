@@ -166,7 +166,7 @@ for (const how of ["reset", "stall"] as const) {
 
     await eventually(async () => (await fetch(`${n.url}/v1/agents`, { headers: operator })).status === 200, 5_000, "requests succeed once the database is back");
     assert.equal((await agent.execute('return "after"')).output[0], "after");
-    const created = await fetch(`${n.url}/client-sessions`, { method: "POST", headers: { ...operator, "Content-Type": "application/json", "Idempotency-Key": `new-${how}` }, body: "{}" });
+    const created = await fetch(`${n.url}/v1/agents`, { method: "POST", headers: { ...operator, "Content-Type": "application/json", "Idempotency-Key": `new-${how}` }, body: "{}" });
     assert.equal(created.status, 201, await created.clone().text());
     await sleep(TTL_MS);
     assert.ok(!n.logs.some(entry => entry.type === "self_fence"), "the node did not fence");
