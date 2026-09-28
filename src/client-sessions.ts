@@ -1367,9 +1367,11 @@ export class ClientSessions {
   }
 
   /**
-   * What an upsert changes on an existing agent: a `configure` request's parameters bringing its configuration to the
-   * one asked for, and its provision hash, so the same upsert again changes nothing. What configuration cannot change
-   * (who it acts for, its definition, its mounts) is refused; initialMessages only apply when an agent is made.
+   * An upsert's target for an existing agent: a `configure` request's parameters carrying the whole configuration
+   * asked for, and its provision hash. It is queued whether or not the agent has it already (an earlier upsert may be
+   * queued), so the last upsert wins; when it runs, what the agent already has is left (see `upsertChanges`). What
+   * configuration cannot change (who it acts for, its definition, its mounts) is refused now; initialMessages only
+   * apply when an agent is made.
    */
   private reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
     mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string) {
@@ -1380,21 +1382,27 @@ export class ClientSessions {
       ...mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (mounts as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" }))) ? ["mounts"] : [],
     ];
     if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key`);
+    return {
+      provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
+      systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, name: metadata.name ?? null, type: metadata.type ?? null,
+      // Only a definition's own fields are the agent's: the rest follow its definition.
+      ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions },
+    };
+  }
+
+  /** Of an upsert's target, the fields the agent does not have already. */
+  private upsertChanges(header: SessionHeader, target: Record<string, any>) {
+    const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
     const current = header.config;
-    const update: Record<string, unknown> = { provisionHash };
-    // Only a definition's own fields are the agent's: the rest follow its definition.
-    if (differs(current.model, config.model)) update.model = `${config.model.provider}/${config.model.id}`;
-    if (current.thinkingLevel !== config.thinkingLevel && (current.thinkingLevel ?? "off") !== (config.thinkingLevel ?? "off")) update.thinkingLevel = config.thinkingLevel ?? "off";
-    if ((current.systemPromptAppend ?? "") !== (config.systemPromptAppend ?? "")) update.systemPromptAppend = config.systemPromptAppend ?? "";
-    if ((current.fileTools !== false) !== (config.fileTools !== false)) update.fileTools = config.fileTools !== false;
-    if (!origin) {
-      if (differs(current.systemPrompt, config.systemPrompt)) update.systemPrompt = config.systemPrompt ?? null;
-      if (differs(current.modelHeaders, config.modelHeaders)) update.modelHeaders = config.modelHeaders ?? null;
-      if (differs(header.definitions, definitions)) update.tools = definitions;
-    }
-    if ((header.metadata?.name ?? null) !== (metadata.name ?? null)) update.name = metadata.name ?? null;
-    if ((header.metadata?.type ?? null) !== (metadata.type ?? null)) update.type = metadata.type ?? null;
-    return update;
+    const changes: Record<string, unknown> = {};
+    if (target.model !== undefined && target.model !== `${current.model.provider}/${current.model.id}`) changes.model = target.model;
+    if (target.thinkingLevel !== undefined && target.thinkingLevel !== (current.thinkingLevel ?? "off")) changes.thinkingLevel = target.thinkingLevel;
+    if (target.systemPromptAppend !== undefined && target.systemPromptAppend !== (current.systemPromptAppend ?? "")) changes.systemPromptAppend = target.systemPromptAppend;
+    if (target.fileTools !== undefined && target.fileTools !== (current.fileTools !== false)) changes.fileTools = target.fileTools;
+    if ("systemPrompt" in target && differs(current.systemPrompt, target.systemPrompt)) changes.systemPrompt = target.systemPrompt;
+    if ("modelHeaders" in target && differs(current.modelHeaders, target.modelHeaders)) changes.modelHeaders = target.modelHeaders;
+    if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
+    return changes;
   }
 
   /** The id of the agent `create` makes for a tenant's idempotency key. */
@@ -1426,8 +1434,8 @@ export class ClientSessions {
     const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
     const { apiKey: _key, ...safeConfig } = config;
     const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}) }, ...(identity ? { identity } : {}) }));
-    // The same key with another configuration updates the agent: create or reconfigure.
-    const changes = (header: SessionHeader) => header.provisionHash === provisionHash ? {} : { reconfigure: this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash) };
+    // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
+    const changes = (header: SessionHeader) => ({ reconfigure: this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash) });
     if (existing) {
       if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       const changed = changes(existing.value);
@@ -2208,14 +2216,17 @@ export class ClientSessions {
     if (record.method === "configure") {
       const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
       // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
-      const { provisionHash, name, type, ...given } = params;
+      // Of its target, only what the agent does not have already is applied.
+      const { provisionHash, name, type, ...asked } = params;
+      const given = provisionHash !== undefined ? this.upsertChanges(session.header, asked) : asked;
+      const changed = provisionHash === undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
       const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
       // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
       const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;
       if (resolved && this.options.apiKeyFor && !apiKey) throw new Error(`No ${(update.model ?? session.header.config.model).provider} API key is configured for this tenant; set one with PUT /v1/providers/${(update.model ?? session.header.config.model).provider}/key`);
       // An agent that is not running takes its new configuration when it next starts.
-      const result = live ? await this.supervisor.request(id, "configure", {
+      const result = !Object.keys(update).length && !keyScope && keyScope !== null ? { configured: true } : live ? await this.supervisor.request(id, "configure", {
         ...update, ...apiKey ? { apiKey } : {},
         // Replacing the application's tools keeps the runtime's own.
         ...update.tools || "fileTools" in update ? { tools: await this.toolset(session, update.tools ?? session.header.definitions, applied ? applied.sources : session.header.sources, "fileTools" in update ? update.fileTools : session.header.config.fileTools) } : {},
@@ -2239,7 +2250,7 @@ export class ClientSessions {
         session.header.metadata = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)) as AgentMetadata;
       }
       await this.writeHeader(session);
-      return result;
+      return provisionHash !== undefined ? { ...result, changed } : result;
     }
     if (record.method === "resume") params = await this.resumeParams(session, record.suspension!);
     try {

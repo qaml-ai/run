@@ -52,7 +52,7 @@ test("the same key with a changed configuration reconfigures the agent instead o
   const same = await r.call("/v1/agents", { body: { systemPrompt: "Be brief.", name: "v1", mcp: { tools: [tool("Look up v1")] } }, headers: key });
   assert.equal(same.status, 201);
   assert.equal(same.json.id, made.id);
-  assert.equal(same.json.reconfigured, undefined, "nothing changed");
+  assert.ok(same.json.reconfigured, "an upsert always queues its target");
 
   const edited = await r.call("/v1/agents", { body: { systemPrompt: "Be thorough.", name: "v2", thinkingLevel: "low", mcp: { tools: [tool("Look up v2")] } }, headers: key });
   assert.equal(edited.status, 201, edited.text);
@@ -66,9 +66,36 @@ test("the same key with a changed configuration reconfigures the agent instead o
   assert.match(system(r.model.bodies.at(-1)), /Be thorough\./);
   assert.equal(lastUser(r.model.bodies.at(-1)), "two");
   assert.equal((await r.call(`/v1/agents/${made.id}/history`)).json.messages.length, 4, "history kept");
-  assert.equal((await r.call("/v1/agents", { body: { systemPrompt: "Be thorough.", name: "v2", thinkingLevel: "low", mcp: { tools: [tool("Look up v2")] } }, headers: key })).json.reconfigured, undefined, "an upsert repeated is a no-op");
+  const repeated = (await r.call("/v1/agents", { body: { systemPrompt: "Be thorough.", name: "v2", thinkingLevel: "low", mcp: { tools: [tool("Look up v2")] } }, headers: key })).json.reconfigured;
+  const settled = await until(async () => { const record = (await r.call(`/v1/agents/${made.id}/requests/${repeated.id}`)).json; return record.state === "completed" && record; }, "the repeated upsert");
+  assert.equal(settled.outcome.result.changed, false, "an upsert repeated changes nothing");
 
   const moved = await r.call("/v1/agents", { body: { systemPrompt: "Be thorough.", subject: "someone-else" }, headers: key });
   assert.equal(moved.status, 409);
   assert.match(moved.json.error, /subject/);
+});
+
+test("the last upsert wins: back to an earlier configuration, and upserts queued behind a running turn", async t => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  let holding = false;
+  const r = await runtime(t, async () => { if (holding) await gate.promise; return { role: "assistant", content: "ok" }; });
+  const key = { "Idempotency-Key": "last-wins" };
+  const upsert = async (systemPrompt: string) => (await r.call("/v1/agents", { body: { systemPrompt }, headers: key })).json;
+  const settle = async (made: any) => until(async () => (await r.call(`/v1/agents/${made.id}/requests/${made.reconfigured.id}`)).json.state === "completed", "the upsert");
+  const prompt = async (id: string) => (await r.call(`/v1/agents/${id}`)).json.systemPrompt;
+  const a = await upsert("A.");
+  for (const target of ["B.", "A.", "B."]) await settle(await upsert(target));
+  assert.equal(await prompt(a.id), "B.", "B, then A, then B again: B");
+
+  // Behind a running turn, upserts queue: the last one sent is what the agent ends up with, whatever the header says meanwhile.
+  holding = true;
+  await r.call(`/v1/agents/${a.id}/prompt`, { body: { text: "hold" } });
+  await until(() => r.model.bodies.length === 1, "the turn to start");
+  await upsert("C.");
+  const last = await upsert("B.");
+  holding = false;
+  gate.resolve();
+  await settle(last);
+  assert.equal(await prompt(a.id), "B.", "C was queued, then B (the header's own value) again: B");
 });

@@ -29,7 +29,7 @@ import { applicationTools } from "./mcp-results.ts";
 import { telegram } from "./channels-telegram.ts";
 import { slack } from "./channels-slack.ts";
 import { discord } from "./channels-discord.ts";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
@@ -192,10 +192,9 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity, { keyScope, spendLimit });
   if (!reconfigure) return made_;
-  // The key's agent exists with another configuration: bring it to this one, between its turns. The request's id is
-  // the configuration's, so a retry of the same upsert returns the same request.
-  const { provisionHash } = reconfigure as { provisionHash: string };
-  const reconfigured = await submitAnywhere(made_.id, tenant, { id: `upsert-${provisionHash.slice(0, 40)}`, method: "configure", params: reconfigure as Record<string, unknown> });
+  // The key's agent exists: bring it to this configuration between its turns. Every upsert queues its own request, so
+  // the last one sent wins; one whose configuration the agent has already changes nothing when it runs.
+  const reconfigured = await submitAnywhere(made_.id, tenant, { id: `upsert-${randomUUID()}`, method: "configure", params: reconfigure as Record<string, unknown> });
   return { ...made_, reconfigured };
 }
 
