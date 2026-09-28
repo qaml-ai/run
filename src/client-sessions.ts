@@ -30,7 +30,7 @@ import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
-import { callMeta, compose, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { callMeta, compose, toolCallKey, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
@@ -1160,6 +1160,7 @@ export class ClientSessions {
     try {
       result = await server.call({
         ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}),
+        ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.toolCallId, call.innerCallId) } : {}),
         ...(plan?.approval ? { approval: { input: plan.approval.input, by: this.approver(plan.approval.by), at: plan.approval.at } } : {}),
         ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),
         ...(this.humanSurface(session) ? { elicit: true } : {}),
@@ -2473,7 +2474,7 @@ export class ClientSessions {
     });
   }
 
-  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, origin, actor, onProgress, approval, inputResponses, requestState, elicit }: ToolCall): Promise<McpResult> {
+  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, idempotencyKey, origin, actor, onProgress, approval, inputResponses, requestState, elicit }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
     const timeout = this.options.toolTimeoutMs ?? 15_000;
@@ -2486,7 +2487,7 @@ export class ClientSessions {
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
     };
     const _meta = {
-      "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity, ...callMeta({ toolCallId, innerCallId, origin, actor }),
+      "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity, ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }),
       ...(approval ? { "agent-runtime/approval": approval } : {}),
     };
     session.inflight++;

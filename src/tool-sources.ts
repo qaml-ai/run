@@ -369,7 +369,7 @@ export class ToolSources {
           ...mcp,
         ];
       },
-      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, onProgress, approval, inputResponses, requestState, elicit }) => {
+      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, idempotencyKey, onProgress, approval, inputResponses, requestState, elicit }) => {
         // An approved call proves it to the tool: in its identity token and its `_meta`.
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}) };
         const callFiles = files(name, runId);
@@ -384,6 +384,8 @@ export class ToolSources {
           const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
           const secrets = this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed);
           if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, api.audience ?? api.baseUrl, turn)}`;
+          // The call's key, as APIs that dedupe writes take one (Stripe's convention).
+          if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };
           // Text answers are capped lower as they are read (openapi.ts).
           const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes, secrets });
           return operationResult(operation, response, callFiles);
@@ -395,7 +397,7 @@ export class ToolSources {
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
         if (needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true) && !approval) return APPROVAL_REQUIRED;
         const resolved = await resolveFiles(args, tool.inputSchema, callFiles) as Record<string, unknown>;
-        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTotalMs: MAX_TIMEOUT_MS }, { ...callMeta({ toolCallId, innerCallId, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}) }, onProgress, { inputResponses, requestState, elicit })) as McpResult;
+        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTotalMs: MAX_TIMEOUT_MS }, { ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}) }, onProgress, { inputResponses, requestState, elicit })) as McpResult;
         return savedContent(result, callFiles);
       },
     };

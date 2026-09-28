@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ToolDefinition } from "./protocol.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { compiles, validateDefinitions } from "./tool-policy.ts";
@@ -13,16 +14,24 @@ import { validFileRef } from "./files.ts";
  */
 export type ToolCall = {
   name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; innerCallId?: string; run?: string; origin?: Record<string, unknown>; actor?: string;
+  /** The same for every attempt of this call (a retry, a call run again after a person answered): a tool dedupes its effect by it. */
+  idempotencyKey?: string;
   onProgress?: (progress: Progress) => void;
   /** A call run again after a person answered (inputs.ts): proof of their approval, and the answers to the tool's own requests. */
   approval?: { input: string; by: Record<string, unknown>; at: number }; inputResponses?: Record<string, unknown>; requestState?: string;
   /** The agent has someone to ask: the call may answer MCP's `input_required` with elicitations. */
   elicit?: boolean;
 };
-/** What a tool server is told about a call in its `_meta`: the call's ids, where its turn came from and who acts in it. */
-export function callMeta({ toolCallId, innerCallId, origin, actor }: Pick<ToolCall, "toolCallId" | "innerCallId" | "origin" | "actor">) {
+/** A call's idempotency key: the agent's and the model's ids for the call (and its place in js_exec's code), hashed. */
+export function toolCallKey(agent: string, toolCallId: string, innerCallId?: string) {
+  return createHash("sha256").update(`${agent}:${toolCallId}:${innerCallId ?? ""}`).digest("hex").slice(0, 32);
+}
+
+/** What a tool server is told about a call in its `_meta`: the call's ids and idempotency key, where its turn came from and who acts in it. */
+export function callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }: Pick<ToolCall, "toolCallId" | "innerCallId" | "idempotencyKey" | "origin" | "actor">) {
   return {
     ...(toolCallId ? { "agent-runtime/toolCallId": toolCallId } : {}), ...(innerCallId ? { "agent-runtime/innerCallId": innerCallId } : {}),
+    ...(idempotencyKey ? { "agent-runtime/idempotencyKey": idempotencyKey } : {}),
     ...(origin ? { "agent-runtime/origin": origin } : {}), ...(actor ? { "agent-runtime/actor": actor } : {}),
   };
 }
