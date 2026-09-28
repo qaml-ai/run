@@ -288,9 +288,9 @@ authorize: async (request, { thread }) => {
   lives. Never build it from untrusted input without checking access first, as above.
 - Each message is sent as its user (`from`), so the model knows who said what and the chat shows each
   sender's name; tools get the sender as `identity.actor`.
-- The agent's `subject` (what its tools see as `identity.subject`) is the user who first opened it,
-  and it never changes. For a shared agent, give it a stable subject of its own, e.g. make the
-  first `authorize` for a team return the team's owner, or use `context` in `agent` for the team.
+- The agent's `subject` (what its tools see as `identity.subject`) is set when it is made and never
+  changes: for an agent you name, it is the key (`team-acme`), not whoever opened it first; return
+  `subject` from `authorize` to choose it, and put what tools need (the team) in `agent.context`.
 - Answers to the agent's questions are checked against who may answer: by default the person whose
   message started the turn.
 - Everyone watching sees the same conversation, live.

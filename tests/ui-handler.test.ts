@@ -190,3 +190,30 @@ test("an agent's own tools run in the handler's process, for the user it acts fo
   assert.deepEqual(seen, ["alice"]);
   await handler.close();
 });
+
+test("an agent several users share (authorize names its key) takes each user's messages as theirs", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const team: Partial<AgentHandlerOptions> = {
+    authorize: request => {
+      const user = USERS[request.headers.get("cookie") ?? ""];
+      return user ? { userId: user.id, name: user.name, agentKey: "team-acme" } : null;
+    },
+  };
+  const handler = handlerFor(t, r, team);
+  // Bob comes through another process, which has not seen the agent: it upserts it again.
+  const elsewhere = handlerFor(t, r, team);
+  const alice = await post(handler, { action: "token" });
+  const bob = await post(elsewhere, { action: "token" }, { cookie: "cookie-bob" });
+  assert.equal(bob.status, 200, JSON.stringify(bob.json));
+  assert.equal(alice.json.agentId, bob.json.agentId, "one agent");
+  const first = await post(handler, { action: "send", text: "from alice", clientId: "cm_team_0001" });
+  await record(r, alice.json.agentId, first.json.requestId);
+  const second = await post(elsewhere, { action: "send", text: "from bob", clientId: "cm_team_0002" }, { cookie: "cookie-bob" });
+  assert.equal(second.status, 200, JSON.stringify(second.json));
+  await record(r, alice.json.agentId, second.json.requestId);
+  const senders = (await r.call(`/v1/agents/${alice.json.agentId}/history`)).json.messages.filter((message: any) => message.role === "user").map((message: any) => message.from.id);
+  assert.deepEqual(senders, ["alice", "bob"]);
+  // Its subject is the team's, whoever opened it first.
+  const keyed = await r.call("/v1/agents", { body: { systemPrompt: "You help.", subject: "team-acme" }, headers: { "Idempotency-Key": "team-acme" } });
+  assert.equal(keyed.status, 201, keyed.text);
+});

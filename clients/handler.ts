@@ -22,7 +22,7 @@ const env = (name: string): string | undefined => (globalThis as { process?: { e
 
 /** Who is asking, as your `authorize` found: the user, and optionally which of their agents. */
 export interface AgentAuth {
-  /** Your user's id: the agent's `subject`, and `from.id` on everything this user sends or answers. */
+  /** Your user's id: `from.id` on everything this user sends or answers, and the subject of their own agent. */
   userId: string;
   /** Their display name, shown to the model and in the transcript as the sender's. */
   name?: string;
@@ -31,6 +31,11 @@ export interface AgentAuth {
    * agent per user and thread. Give your own to share an agent between users (a team's agent, say).
    */
   agentKey?: string;
+  /**
+   * Who the agent acts for (its tools' `identity.subject`), set when it is made and never changed. Default:
+   * the user, for their own agent; the `agentKey`, for an agent you name (one several people share).
+   */
+  subject?: string;
 }
 
 /** What an agent is made with: the parts of `AgentConfig` a handler sets. Its `subject` is always the user. */
@@ -164,7 +169,8 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
   }
 
   async function upsert(key: string, setup: AgentSetup, auth: A): Promise<Cached> {
-    const config: AgentConfig = { ...setup, subject: auth.userId };
+    // A shared agent's subject cannot be whoever opened it first: it is set once, and never changes.
+    const config: AgentConfig = { ...setup, subject: auth.subject ?? (auth.agentKey ? key : auth.userId) };
     const serves = !!setup.mcp || Object.keys(setup.tools ?? {}).length > 0;
     try {
       if (serves) {
