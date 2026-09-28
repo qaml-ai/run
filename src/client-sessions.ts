@@ -66,8 +66,6 @@ interface SessionHeader {
   identity?: AgentIdentity;
   /** The key scope its model calls take keys from first (key-scopes.ts); set by the tenant, never by the agent. */
   keyScope?: string;
-  /** Made with a history index (history-pages.ts); agents made before it have none, and are never indexed. */
-  history?: true;
   /** sha256 of the application's tools as it last declared them (its tools/list as JSON): its ready event tells it, so it reconfigures only on a change. */
   toolsHash?: string;
 }
@@ -1066,9 +1064,8 @@ export class ClientSessions {
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
         history: {
-          // An agent from before the index has none, and keeps no backlog: its pages come from its log (see `historyPage`).
-          // One made with it whose create failed before writing its row begins it now.
-          indexed: async () => (await this.historyIndex.indexed(id)) ?? (session.header.history ? (await this.historyIndex.begin(id), 0) : null),
+          // One whose create failed before writing its row begins it now, and is indexed from its log.
+          indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0),
           write: chunk => this.historyIndex.write(id, session.claim, chunk),
         },
       }, session.claim);
@@ -1480,7 +1477,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), history: true },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(origin?.sources ? { sources: origin.sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -1491,7 +1488,7 @@ export class ClientSessions {
         if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
         // A conditional create: if a concurrent request made this agent first, retry as a load.
         await this.writeHeader(session);
-        // A new agent's history is indexed from its first message; only agents from before the index have none.
+        // A new agent's history is indexed from its first message.
         await this.historyIndex.begin(id);
         this.sessions.set(id, session);
         created = true;
@@ -1771,8 +1768,7 @@ export class ClientSessions {
 
   /**
    * A page of the agent's history (see HistoryIndex.page): settled messages from their chunks, and
-   * what the running agent has not indexed yet from it. An agent never indexed (it predates the
-   * index) is indexed now, from its log, once.
+   * what the running agent has not indexed yet from it.
    */
   private async historyPage(session: Session | { header: { id: string }; unloaded: true }, query: { before?: string; limit?: string }): Promise<HistoryPage> {
     const before = query.before === undefined ? undefined : Number(query.before);
@@ -1784,13 +1780,13 @@ export class ClientSessions {
     if (!("unloaded" in session)) await session.starting?.catch(() => {});
     let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.supervisor.request(id, "historyTail") as HistoryTail | null : undefined;
     if (!tail) {
-      // The index should have every message the agent's runs reported, or the running agent the rest. An agent
-      // without one (made before the index), one behind (a stop that could not write its last chunks), or a running
-      // agent keeping no backlog: the rest is read from its log, whole, as a full history read does. Nothing is
-      // indexed here; an agent's own process indexes from where its index ends, and one without an index never is.
-      const indexed = await this.historyIndex.indexed(id);
+      // The index should have every message the agent's runs reported, or the running agent the rest. An index
+      // behind (a stop that could not write its last chunks), or a running agent keeping no backlog: the rest is read
+      // from its log, whole, as a full history read does. Nothing is indexed here; an agent's own process indexes
+      // from where its index ends.
+      const indexed = (await this.historyIndex.indexed(id)) ?? 0;
       const reported = "unloaded" in session ? await this.historyIndex.reported(id) : Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
-      if (tail === null || indexed === undefined || indexed < reported) tail = await this.supervisor.backlog(id, indexed ?? 0);
+      if (tail === null || indexed < reported) tail = await this.supervisor.backlog(id, indexed);
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
   }

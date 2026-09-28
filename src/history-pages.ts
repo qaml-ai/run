@@ -90,7 +90,7 @@ export class HistoryIndex {
     await this.db.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);
   }
 
-  /** How many of the agent's messages the chunks cover; undefined for an agent never indexed. */
+  /** How many of the agent's messages the chunks cover; undefined for an agent whose index has not begun. */
   async indexed(agent: string): Promise<number | undefined> {
     return (await this.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed;
   }

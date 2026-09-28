@@ -424,7 +424,7 @@ export function createAgentHost(hostIO: HostIO) {
       config = params;
       await mkdir(config.directory, { recursive: true, mode: 0o700 });
       // Messages the history index lacks are kept from here, as the log is read: all of them for an agent never indexed.
-      // An agent from before the index has none (null), and one that cannot be read now is left for the next start.
+      // One whose index cannot be read now (null) is left for the next start.
       const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
       transcript = new Transcript(io.transcript, indexed ?? undefined);
       await transcript.load();

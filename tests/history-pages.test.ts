@@ -107,7 +107,7 @@ test("history comes in pages of whole turns, newest first, from chunks rather th
   assert.equal((await r.call(`/v1/agents/${agent}/history?limit=3`, { token: OTHER_OPERATOR })).status, 404);
 });
 
-test("the newest page has the running turn; an agent without an index gets pages from its log and is never indexed; purging removes its chunks", async t => {
+test("the newest page has the running turn; an index behind reads the rest from the log; purging removes its chunks", async t => {
   const r = await runtime(t, body => {
     if (body.messages.at(-1).role === "tool") return { content: "finished", delayMs: lastUser(body) === "slow" ? 1500 : 0 };
     return lastUser(body) === "slow" ? toolCall("js_exec", { code: "return 2" }) : { content: `reply ${lastUser(body)}` };
@@ -115,19 +115,15 @@ test("the newest page has the running turn; an agent without an index gets pages
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(agent, "first");
   await r.prompt(agent, "second");
-  // Undo the index of the stopped agent, as for one from before the index: its pages come from its log, and it stays unindexed.
+  // An index behind what the agent's runs reported (its stop could not write the last chunks) reads the rest from the log;
+  // the agent's next start indexes it.
   await until(async () => (await r.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed === 4, "the stopping agent to index its turns", 20_000);
   await r.db.query("delete from agent_history_chunks where agent = $1", [agent]);
-  await r.db.query("delete from agent_history_index where agent = $1", [agent]);
+  await r.db.query("update agent_history_index set indexed = 0 where agent = $1", [agent]);
   const rebuilt = await r.call(`/v1/agents/${agent}/history?limit=2`);
   assert.deepEqual(rebuilt.json.entries.map((entry: any) => entry.index), [2, 3]);
   assert.equal(rebuilt.json.next, 2);
-  assert.equal(await indexedOf(r, agent), undefined);
   assert.deepEqual((await r.call(`/v1/agents/${agent}/history?before=2&limit=2`)).json.entries.map((entry: any) => entry.message.role), ["user", "assistant"]);
-  // An index behind what the agent's runs reported (its stop could not write the last chunks) reads the rest from the log;
-  // the agent's next start indexes it.
-  await r.db.query("insert into agent_history_index (agent, indexed) values ($1, 0)", [agent]);
-  assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=2`)).json.entries.map((entry: any) => entry.index), [2, 3]);
   assert.equal(await indexedOf(r, agent), 0);
 
   // While a turn runs, its finished messages are on the newest page, at their indexes.
@@ -237,21 +233,17 @@ test("more unindexed history than a backlog holds is still paged, and indexed fr
   const r = await runtime(t, body => ({ content: `${lastUser(body)} ${"x".repeat(30_000)}` }), { AGENT_IDLE_MS: "1000", AGENT_HISTORY_BACKLOG_BYTES: "100000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const stopped = () => until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 30_000);
-  await stopped();
-  // As for an agent from before the index (no row, and a header without the mark), once its session has unloaded:
-  // its process keeps no backlog, and 10 turns make 300 KB unindexed.
-  await r.db.query("delete from agent_history_index where agent = $1", [agent]);
-  await r.db.query("update agents set header = (header::jsonb - 'history')::json where id = $1", [agent]);
-  await sleep(2500);
   for (let turn = 0; turn < 10; turn++) await r.prompt(agent, `q${turn}`);
   await stopped();
+  // As if its stops wrote none of it: 10 turns make 300 KB unindexed, past what a backlog holds.
+  await until(async () => await indexedOf(r, agent) === 20, "the stopping agent to index its turns", 30_000);
+  await r.db.query("delete from agent_history_chunks where agent = $1", [agent]);
+  await r.db.query("update agent_history_index set indexed = 0 where agent = $1", [agent]);
   const page = (await r.call(`/v1/agents/${agent}/history?limit=4`)).json;
   assert.equal(page.total, 20);
   assert.deepEqual(page.entries.map((entry: any) => entry.index), [16, 17, 18, 19]);
-  assert.equal(await indexedOf(r, agent), undefined);
 
   // An index that lags that far behind is caught up by the agent's next start, from its log.
-  await r.db.query("insert into agent_history_index (agent, indexed) values ($1, 0)", [agent]);
   await r.prompt(agent, "again");
   await until(async () => await indexedOf(r, agent) === 22, "the lagging index to catch up as the agent runs and stops", 30_000);
   const whole = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
@@ -265,14 +257,20 @@ test("more unindexed history than a backlog holds is still paged, and indexed fr
   assert.deepEqual(paged.map(entry => head(entry.message)), whole.map(head), "every page of about 4 MB, together, is the whole history");
 });
 
-test("an agent made with a history index whose index row was never written gets it at its next start", async t => {
+test("an agent without an index row gets one at its next start, indexed from its log", async t => {
   const r = await runtime(t, body => ({ content: `reply ${lastUser(body)}` }), { AGENT_IDLE_MS: "1000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
-  await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 20_000);
-  // As if its create wrote the agent but failed before its index row.
-  await r.db.query("delete from agent_history_index where agent = $1", [agent]);
   await r.prompt(agent, "one");
-  await until(async () => await indexedOf(r, agent) === 2, "the agent to be indexed after all", 20_000);
+  await until(async () => await indexedOf(r, agent) === 2, "the stopping agent to index its turn", 20_000);
+  await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 20_000);
+  // As if its create failed before its index row, or it predates the index (its header without the old mark).
+  await r.db.query("delete from agent_history_chunks where agent = $1", [agent]);
+  await r.db.query("delete from agent_history_index where agent = $1", [agent]);
+  await r.db.query("update agents set header = (header::jsonb - 'history')::json where id = $1", [agent]);
+  await sleep(2500);
+  await r.prompt(agent, "two");
+  await until(async () => await indexedOf(r, agent) === 4, "the agent to be indexed after all", 20_000);
+  assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=1&before=2`)).json.entries.map((entry: any) => entry.index), [0, 1]);
 });
 
 test("a transcript knows which message made each tool call, over its whole log, compacted part included", async () => {
