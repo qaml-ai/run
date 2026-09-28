@@ -150,6 +150,23 @@ test("a watcher whose token does not read history follows the stream without it"
   assert.ok(errors.length <= 2, `no retrying: ${errors.map(error => error.message).join("; ")}`);
 });
 
+test("a watcher whose token hides the running turn still knows a turn runs", { timeout: 60_000 }, async t => {
+  const model = await scriptedModel(t, () => ({ deltas: words.map(word => ({ content: word })), hold: 2 }));
+  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go" } });
+  await until(async () => (await (await fetch(`${r.base}/v1/agents/${agent}/events?poll=1&snapshot=1`, { headers: { Authorization: `Bearer ${OPERATOR}` } })).json() as any).events[0].data.turn?.partial, "the answer to start");
+  const { token } = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: { scopes: ["events", "state"], events: ["agent_end"] } })).json;
+  const watcher = watchAgent({ url: r.base, agentId: agent, token });
+  t.after(() => watcher.close());
+  await until(() => watcher.state.connected, "the watcher to connect");
+  await sleep(300);
+  assert.equal(watcher.state.running, true, "its snapshot has no turn, but its state has the run");
+  model.release();
+  await until(() => watcher.state.lastOutcome?.id === accepted.json.id, "the outcome");
+  assert.equal(watcher.state.running, false);
+});
+
 test("a watcher starts from the newest page and loads older pages on request", { timeout: 60_000 }, async t => {
   const r = await runtime(t, body => ({ content: `reply ${body.messages.length}` }));
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
