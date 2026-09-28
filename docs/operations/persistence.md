@@ -141,7 +141,11 @@ refers to any more, so they stop being stored and billed:
   period; a deleted snapshot's map at once.
 - **Switches.** Off unless `AGENT_GC_ENABLED=true`; `AGENT_GC_DRY_RUN=true` marks and
   logs what it would delete (`storage_gc_dry_run`) without deleting. Pins and which
-  chunks writes created are recorded either way.
+  chunks writes created are recorded either way. To roll it out: deploy with it off,
+  enable it with the dry run and watch the logs for a few intervals, then unset the dry run.
+- **Accepted gap.** A collector that crashes after deleting a chunk and before putting
+  it back for a writer that touched it meanwhile loses that chunk. The window is one
+  delete and one query long, and needs a writer storing the same bytes at that moment.
 
 ## File references in the transcript
 
