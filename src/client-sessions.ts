@@ -723,6 +723,8 @@ export class ClientSessions {
       return kind === "poll" ? this.poll(c, session, reader) : this.subscribe(c, session, "watch", reader);
     };
     if (this.sessions.has(id) || this.loading.has(id) || this.closed) return live();
+    // One with work left is loaded, which resumes it, and watched live.
+    if (await this.orphaned(id)) return live();
     const cursor = await this.idleCursor(id);
     // Loaded meanwhile, here or on another node (whose stream this one does not have): take the loaded path, or retry there.
     if (this.sessions.has(id) || this.loading.has(id)) return live();
@@ -1421,7 +1423,8 @@ export class ClientSessions {
   /** A tenant's view of one agent's request state and stream cursor (`/clients/:id/state`). */
   async stateFor(id: string, tenant: string) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
-    if (this.unloaded(id)) {
+    // One with work left is loaded (resuming it), and answers from its session.
+    if (this.unloaded(id) && !await this.orphaned(id)) {
       // Its cursor is where a stream of it picks up (see `idleCursor`); undefined: a node has just taken it.
       const cursor = await this.idleCursor(id);
       if (cursor !== undefined && this.unloaded(id)) return { cursor, requests: await this.storedRequests(id) };
@@ -1434,8 +1437,11 @@ export class ClientSessions {
   /** A tenant's view of one agent's history; undefined when the agent is not theirs. */
   async agentHistory(id: string, tenant: string) {
     if (!await this.owns(id, tenant)) return undefined;
-    // An agent no node has loaded is read from storage, not loaded for it (see `unloaded`).
-    if (this.unloaded(id)) return { messages: await this.supervisor.history(id) };
+    // An agent no node has loaded is read from storage, not loaded for it (see `unloaded`); one with work left is loaded meanwhile.
+    if (this.unloaded(id)) {
+      if (await this.orphaned(id)) this.resumeSoon(id);
+      return { messages: await this.supervisor.history(id) };
+    }
     const session = await this.load(id);
     return session && this.history(session);
   }
@@ -1446,6 +1452,48 @@ export class ClientSessions {
    * opening, or a watcher recovering from a gap, then costs no load, and ends no other node's watchers.
    */
   private unloaded(id: string) { return !this.sessions.has(id) && !this.loading.has(id); }
+
+  /**
+   * Whether an agent no node holds has work left: runs its last owner left queued, or an owner that died
+   * holding it (its turn may be half done). Loading it resumes them; nothing else would.
+   */
+  private async orphaned(id: string) {
+    const { rows } = await this.db.query(`
+      select a.pending_runs or (o.session is not null and not exists (
+        select from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())) as orphaned
+      from agents a left join actor_owners o on o.actor = a.id where a.id = $1`, [id]);
+    return !!rows[0]?.orphaned;
+  }
+
+  /** Load an agent with work left, in the background; a failed load is tried again by the next read or sweep. */
+  private resumeSoon(id: string) {
+    void this.load(id).catch(error => console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, error: errorText(error) })));
+  }
+
+  /**
+   * Load agents no node holds that have work left (see `orphaned`), `limit` at a time, so their runs
+   * resume even when no one reads them. Every node sweeps; taking ownership decides which loads each.
+   */
+  async resumeOrphans(limit = 10) {
+    if (this.closed || this.draining) return 0;
+    const { rows } = await this.db.query(`
+      select a.id from agents a
+      where not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $1)
+        and a.id in (
+          select id from agents where pending_runs
+          union
+          select o.actor from actor_owners o where o.session is not null and o.actor like 'client\\_%'
+            and not exists (select from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now()))
+      order by random() limit $2`, [Date.now(), limit]);
+    let loaded = 0;
+    for (const { id } of rows) {
+      if (this.sessions.has(id) || this.loading.has(id)) continue;
+      try { if (await this.load(id)) loaded++; }
+      catch (error) { if (!(error instanceof NotOwner)) console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, error: errorText(error) })); }
+    }
+    if (loaded) console.log(JSON.stringify({ type: "agents_resumed", count: loaded }));
+    return loaded;
+  }
 
   /** The requests an unloaded agent's journal keeps, as its session would show them. */
   private async storedRequests(id: string) {
@@ -1537,7 +1585,10 @@ export class ClientSessions {
   /** A tenant's view of a page of one agent's history. */
   async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string }) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
-    if (this.unloaded(id)) return this.historyPage({ header: { id }, unloaded: true }, query);
+    if (this.unloaded(id)) {
+      if (await this.orphaned(id)) this.resumeSoon(id);
+      return this.historyPage({ header: { id }, unloaded: true }, query);
+    }
     const session = await this.load(id);
     if (!session) throw new HttpError(404, "Unknown agent");
     return this.historyPage(session, query);
@@ -2433,7 +2484,9 @@ export class ClientSessions {
     const reported = Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
     await this.db.query("update agent_history_index set reported = greatest(reported, $2) where agent = $1", [session.header.id, reported]).catch(() => {});
     // Nothing is published after this: the next owner goes on from this cursor.
-    await underClaim(this.db, session.claim, sql => sql.query("update agents set last_cursor = $2, cursor_clean = true where id = $1", [session.header.id, session.cursor])).catch(() => {});
+    // Runs still open (queued ones a drain leaves for the next owner) mark it for a sweep to load (see `resumeOrphans`).
+    await underClaim(this.db, session.claim, sql => sql.query("update agents set last_cursor = $2, cursor_clean = true, pending_runs = $3 where id = $1",
+      [session.header.id, session.cursor, session.running.size > 0])).catch(() => {});
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
   }
 

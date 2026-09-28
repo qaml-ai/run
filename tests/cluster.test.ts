@@ -120,6 +120,59 @@ test("watching an idle agent loads it nowhere; when a node loads it, other nodes
   await until(() => moved.frames.some(frame => frame.data.type === "response" && frame.data.id === "after"), "the reconnected watcher to see the run on A");
 });
 
+/** A tenant's agent whose first model call hangs on node A, which then dies: its turn is left unfinished, owned by a dead node. */
+async function orphaned(t: Parameters<typeof cluster>[0], env: Record<string, string>) {
+  const c = await cluster(t);
+  const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "resumed" });
+  const a = await c.start("a", { ...model.env, ...env });
+  const b = await c.start("b", { ...model.env, ...env });
+  const call = (base: string, path: string, body?: unknown) => fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
+  const agent = (await call(a.url, "/v1/agents", {})).id as string;
+  await call(a.url, `/v1/agents/${agent}/prompt`, { text: "go", requestId: "turn-1" });
+  await until(() => model.bodies.length === 1, "A to call the model");
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  await sleep(1500 + 500);
+  return { c, b, model, agent, call };
+}
+
+test("a tenant's read of an agent whose node died resumes its turn, not only an application reconnecting", { timeout: 90_000 }, async t => {
+  const { b, model, agent, call } = await orphaned(t, { AGENT_ORPHAN_SWEEP_MS: "0" });
+  // Only reads, as a REST tenant with browser watchers makes: history, and state.
+  await call(b.url, `/v1/agents/${agent}/history?limit=10`);
+  const state = await call(b.url, `/v1/agents/${agent}/state`);
+  assert.ok(state.requests.some((request: any) => request.id === "turn-1"));
+  await until(async () => (await call(b.url, `/v1/agents/${agent}/state`)).requests.find((request: any) => request.id === "turn-1")?.state === "completed", "the turn to resume and finish", 20_000);
+  assert.equal(model.bodies.length, 2, "the model was asked once more");
+});
+
+test("an agent whose node died is resumed by the others' sweep, with no one reading it", { timeout: 90_000 }, async t => {
+  const { c, b, model, agent, call } = await orphaned(t, { AGENT_ORPHAN_SWEEP_MS: "500" });
+  await until(() => model.bodies.length === 2, "a sweep to resume the turn", 20_000);
+  assert.equal(await c.owner(agent), b.url);
+  await until(async () => (await call(b.url, `/v1/agents/${agent}/state`)).requests.find((request: any) => request.id === "turn-1")?.state === "completed", "the turn to finish", 20_000);
+});
+
+test("a run a drain left queued runs on another node's sweep, with no one reading the agent", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, async (_body, index) => { if (index === 0) await sleep(2_000); return { role: "assistant", content: `answer ${index}` }; });
+  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: "500" };
+  const a = await c.start("a", env);
+  await c.start("b", env);
+  const call = (path: string, body?: unknown) => fetch(a.url + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
+  const agent = (await call("/v1/agents", {})).id as string;
+  await call(`/v1/agents/${agent}/prompt`, { text: "first", requestId: "first" });
+  await call(`/v1/agents/${agent}/prompt`, { text: "second", requestId: "second" });
+  await until(() => model.bodies.length === 1, "the first run to call the model");
+  // A drains: the first run finishes there; the second, never begun, is left queued for the next owner.
+  const exited = once(a.child, "exit");
+  a.child.kill("SIGTERM");
+  await exited;
+  assert.equal(model.bodies.length, 1);
+  await until(() => model.bodies.length === 2, "B's sweep to run the queued prompt", 20_000);
+  assert.match(JSON.stringify(model.bodies[1].messages), /second/);
+});
+
 test("a volume is served by one node: other nodes forward to it, agents anywhere reach it, and a survivor takes over", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const a = await c.start("a");

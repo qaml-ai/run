@@ -113,6 +113,13 @@ keeps at most a snapshot and 8 segments per log; reads fetch them 8 at a time.
 Tail rows of revoked agents and deleted volumes are dropped with them, and an
 hourly sweep drops any a dead node left.
 
+**Work no one is watching.** An agent with work left and no node holding it (its
+owner died mid-turn, or a drain left runs queued for the next owner) resumes when
+a node loads it: any request for it, a read of it included, or a sweep every node
+runs (`AGENT_ORPHAN_SWEEP_MS`, default 30 s, 0 for none) that loads up to 10 such
+agents at a time. So a turn finishes even when no application or tab is there to
+reconnect.
+
 **Deleting agents.** `DELETE /v1/agents/:id` (or `/clients/:id`) revokes the
 agent, stops it and unloads it at once. A sweep every node runs
 (`AGENT_PURGE_INTERVAL_MS`, default a minute; started at once after a delete)

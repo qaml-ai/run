@@ -534,6 +534,12 @@ const purgeMs = Number(process.env.AGENT_PURGE_INTERVAL_MS ?? 60_000);
 if (!Number.isInteger(purgeMs) || purgeMs < 1000) throw new Error("AGENT_PURGE_INTERVAL_MS must be an integer of at least 1000");
 const purgeTimer = setInterval(() => void clients.sweep(), purgeMs);
 purgeTimer.unref();
+// Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
+// so their runs resume even when no one reads them.
+const orphanMs = Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000);
+if (!Number.isInteger(orphanMs) || orphanMs < 0) throw new Error("AGENT_ORPHAN_SWEEP_MS must be a non-negative integer (0: no sweep)");
+const orphanTimer = orphanMs ? setInterval(() => void clients.resumeOrphans().catch(error => console.error(JSON.stringify({ type: "orphan_sweep_failed", error: errorText(error) }))), orphanMs) : undefined;
+orphanTimer?.unref();
 // Storage is charged to prepaid tenants once a UTC day, by whichever node claims the day's job first.
 const billingMs = Number(process.env.AGENT_BILLING_INTERVAL_MS ?? 60 * 60_000);
 if (!Number.isInteger(billingMs) || billingMs < 1000) throw new Error("AGENT_BILLING_INTERVAL_MS must be an integer of at least 1000");
@@ -598,6 +604,7 @@ async function drain(signal: string) {
   clearInterval(loadTimer);
   clearInterval(sweepTimer);
   clearInterval(purgeTimer);
+  clearInterval(orphanTimer);
   clearInterval(billingTimer);
   clearInterval(workTimer);
   if (retireTimer) clearInterval(retireTimer);
