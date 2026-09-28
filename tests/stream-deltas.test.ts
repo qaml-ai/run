@@ -108,22 +108,24 @@ test("the SDK's events carry no partial message, and it starts from a snapshot",
 });
 
 test("a snapshot too large for one frame drops the turn's finished messages first, keeping the message still streaming", async t => {
-  const words = Array.from({ length: 30 }, (_, index) => `${String(index).padStart(2, "0")}${"y".repeat(9_998)}`);
+  const words = Array.from({ length: 30 }, (_, index) => `${String(index).padStart(2, "0")}${"y".repeat(998)}`);
   const model = await streamingModel(t, words, 15);
-  // A model with a context large enough to take the prompt whole, without compacting.
-  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url, AGENT_MODEL: "openai/gpt-4.1-mini" });
+  // Frames of 20 KB (a megabyte in production): a 12 KB prompt and 15 KB streamed so far are together past one, apart each fits.
+  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url, AGENT_SNAPSHOT_BYTES: "20000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const events = `${r.base}/v1/agents/${agent}/events`;
   const auth = { Authorization: `Bearer ${OPERATOR}` };
-  // A 950 KB prompt and 150 KB streamed so far: together past a frame, apart each fits.
-  assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "z".repeat(950_000) } })).status, 202);
+  const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "z".repeat(12_000) } });
+  assert.equal(accepted.status, 202);
   const watching = await watchEvents(t, events, auth, { query: "watch=1" });
-  await until(() => deltaText(watching.frames).length >= 150_000, "half the answer to stream");
+  await until(() => deltaText(watching.frames).length >= 15_000, "half the answer to stream");
   const snapshot = (await (await fetch(`${events}?poll=1&snapshot=1`, { headers: auth })).json() as any).events[0].data;
   assert.equal(snapshot.turn.truncated, true);
   assert.deepEqual(snapshot.turn.messages, []);
   assert.equal(text(snapshot.turn.partial), words.slice(0, 15).join(""));
+  // The turn ends before the model server closes, so shutting down waits on nothing.
   model.release();
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/${accepted.json.id}`)).json.state === "completed", "the turn");
 });
 
 test("a tool call's updates are Pi's, less the message: toolcall_start names the call, toolcall_end carries it", async t => {

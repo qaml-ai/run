@@ -276,6 +276,8 @@ const visible = ({ params: _params, announce: _announce, ...record }: RequestRec
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
+  /** The most a snapshot takes, one frame (default FRAME_BYTES); tests make it small. */
+  snapshotBytes?: number;
   /** Read-only subscribers (watchers and waiting polls) one agent's event stream may have at once (default 32), a tenant's agents on this node (1024), and this node (4096). */
   maxWatchers?: number; maxTenantWatchers?: number; maxNodeWatchers?: number;
   /** How often nodes sweep for agents with work left (`resumeOrphans`): the unit of a failed load's backoff. */
@@ -688,8 +690,9 @@ export class ClientSessions {
       start: turn.start ?? null, count: turn.count, messages: turn.messages, partial: session.partial ?? null, ...(turn.truncated ? { truncated: true as const } : {}),
     } : null };
     // Too large for one frame: the finished messages go first (they are in history), then the streaming message.
-    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > FRAME_BYTES) snapshot.turn = { ...snapshot.turn, messages: [], truncated: true };
-    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > FRAME_BYTES) snapshot.turn = { ...snapshot.turn, partial: null };
+    const frame = this.options.snapshotBytes ?? FRAME_BYTES;
+    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > frame) snapshot.turn = { ...snapshot.turn, messages: [], truncated: true };
+    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > frame) snapshot.turn = { ...snapshot.turn, partial: null };
     return snapshot;
   }
 
