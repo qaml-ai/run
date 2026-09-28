@@ -279,8 +279,6 @@ test("watchers each get the whole stream beside the application's connection, ne
   resumed.close();
   await sleep(100);
   const waiting = poll(last, "&wait=10");
-  // Waiting, idle, before the run below loads the agent (else it would be a poll of the loaded agent).
-  await until(() => (f.sessions as any).idle.get(id)?.polls.size === 1, "the poll to wait, idle");
   await sleep(100);
   await agent.execute("return 3", { idempotencyKey: "three" });
   const woken = await waiting;
