@@ -69,7 +69,7 @@ const BROWSER_ROUTE = /^\/v1\/agents\/([^/]+)\/(events|state|history|inputs)$/;
 
 const DOCUMENT = {
   openapi: "3.1.0",
-  info: { title: "Agent runtime API", version: "1.0.0" },
+  info: { title: "camelRun API", version: "1.0.0" },
   security: [{ bearer: [] }, { console: [] }] as Record<string, string[]>[],
 };
 const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });

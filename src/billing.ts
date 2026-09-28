@@ -254,7 +254,7 @@ export class Billing {
     const session = await stripe.post<{ id: string; url: string }>("/v1/checkout/sessions", {
       mode: "payment", customer, client_reference_id: tenant, metadata, payment_intent_data: { metadata },
       line_items: [
-        { quantity: 1, price_data: { currency: "usd", unit_amount: amount / CENT, product_data: { name: "Agent runtime credit" } } },
+        { quantity: 1, price_data: { currency: "usd", unit_amount: amount / CENT, product_data: { name: "camelRun credit" } } },
         ...(fee ? [{ quantity: 1, price_data: { currency: "usd", unit_amount: fee / CENT, product_data: { name: `Processing fee (${purchaseFeeBps / 100}%)` } } }] : []),
       ],
       // Stripe fills in the session id, so the console can wait for this purchase rather than any.
