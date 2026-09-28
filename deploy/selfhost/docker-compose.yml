@@ -1,0 +1,90 @@
+# A self-hosted agent runtime: one node, Postgres, and the agents' data on a volume.
+#   cp .env.example .env   # then fill it in
+#   docker compose up -d
+# With `--profile s3`, an S3-compatible service (SeaweedFS) holds the data instead (set the AGENT_S3_* lines in .env).
+# See docs/operations/self-host.md.
+name: agent-runtime
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agent_runtime
+      POSTGRES_DB: agent_runtime
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_runtime -d agent_runtime"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  runtime:
+    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/agent-runtime:latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      s3-bucket:
+        condition: service_completed_successfully
+        required: false
+    # Everything in .env reaches the runtime: tenant, secrets, keys, storage (see .env.example).
+    env_file: .env
+    environment:
+      AGENT_DATABASE_URL: postgres://agent_runtime:${POSTGRES_PASSWORD}@postgres:5432/agent_runtime
+    ports:
+      # On loopback: put the reverse proxy that terminates TLS in front of it.
+      - "${AGENT_RUNTIME_BIND:-127.0.0.1}:${AGENT_RUNTIME_PORT:-8790}:8790"
+    volumes:
+      - data:/data
+    # SIGTERM lets running turns finish (AGENT_DRAIN_TIMEOUT_MS, default 100 s) before the node stops.
+    stop_grace_period: 130s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # S3-compatible storage (SeaweedFS), for `--profile s3`. It takes only the key in .env.
+  s3:
+    profiles: [s3]
+    image: chrislusf/seaweedfs:4.48
+    command: server -s3 -dir=/data
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-agent-runtime}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    volumes:
+      - s3:/data
+    restart: unless-stopped
+
+  # Makes the bucket once, with the runtime image's own S3 client, before the runtime starts.
+  s3-bucket:
+    profiles: [s3]
+    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/agent-runtime:latest}
+    depends_on: [s3]
+    env_file: .env
+    entrypoint:
+      - node
+      - -e
+      - |
+        const { S3Client, CreateBucketCommand } = require("@aws-sdk/client-s3");
+        const client = new S3Client({ region: process.env.AWS_REGION, endpoint: process.env.AGENT_S3_ENDPOINT, forcePathStyle: true });
+        const make = async tries => {
+          try { await client.send(new CreateBucketCommand({ Bucket: process.env.AGENT_S3_BUCKET })); }
+          catch (error) {
+            if (/BucketAlready/.test(error.name)) return;
+            if (tries > 30) throw error;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return make(tries + 1);
+          }
+        };
+        make(0).then(() => console.log("bucket ready"));
+    restart: "no"
+
+volumes:
+  postgres:
+  data:
+  s3:

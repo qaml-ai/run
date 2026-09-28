@@ -1,0 +1,43 @@
+name: Publish image
+# Push a tag like runtime-v1.2.0, on a commit already on main, to publish the runtime's image for
+# self-hosting to ghcr.io/qaml-ai/agent-runtime:1.2.0 (and :latest), for linux/amd64 and linux/arm64.
+# See docs/operations/self-host.md. Production on ECS builds its own image (deploy.yml).
+#
+# The package inherits this private repository's visibility. For installs that pull without a login,
+# an owner makes it public once: GitHub > qaml-ai > Packages > agent-runtime > Package settings.
+on:
+  push: { tags: ["runtime-v*"] }
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci && npm run build:console
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#runtime-v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+        with: { platforms: arm64,amd64 }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          provenance: false
+          push: true
+          tags: |
+            ghcr.io/qaml-ai/agent-runtime:${{ steps.version.outputs.version }}
+            ghcr.io/qaml-ai/agent-runtime:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/qaml-ai/agent-runtime
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=image-arm64

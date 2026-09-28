@@ -7,10 +7,11 @@ import { meteredSegments, PreconditionFailed, removeSegments, segmentLog, validK
  * Storage on S3. Logs are `<prefix>/<key>.log/` holding immutable segment objects,
  * with their recent records in `tail` (see `segmentLog`). Blobs are `<prefix>/<key>`,
  * created with If-None-Match. Credentials come from the default AWS chain. With a
- * `meter`, every object created or deleted is reported to it, with its size.
+ * `meter`, every object created or deleted is reported to it, with its size. `endpoint`
+ * (and `forcePathStyle`) name an S3-compatible service instead: MinIO, R2.
  */
-export function s3Storage(options: { bucket: string; prefix?: string; region?: string; client?: S3Client; tail: LogTail; meter?: StorageMeter }): Storage {
-  const client = options.client ?? new S3Client({ region: options.region });
+export function s3Storage(options: { bucket: string; prefix?: string; region?: string; endpoint?: string; forcePathStyle?: boolean; client?: S3Client; tail: LogTail; meter?: StorageMeter }): Storage {
+  const client = options.client ?? new S3Client({ region: options.region, ...(options.endpoint ? { endpoint: options.endpoint } : {}), ...(options.forcePathStyle ? { forcePathStyle: true } : {}) });
   const bucket = options.bucket;
   const base = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
   const objectKey = (key: string) => (base ? `${base}/${key}` : key);
