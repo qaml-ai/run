@@ -3234,7 +3234,7 @@
           "settings": {
             "type": "object",
             "additionalProperties": {},
-            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }"
+            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }"
           }
         },
         "required": [
@@ -3256,7 +3256,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -3307,7 +3307,7 @@
           "settings": {
             "type": "object",
             "additionalProperties": {},
-            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }"
+            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }"
           }
         }
       },
