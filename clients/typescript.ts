@@ -1,10 +1,11 @@
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
+import type { AgentEvent, ImageContent, Message, ThinkingLevel } from "./types.ts";
+import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
 import { Check } from "typebox/value";
 import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
 export { Type as schema };
 export type { SessionCredentials, SessionState };
+export type * from "./types.ts";
 
 /**
  * Who a tool call is for, as the runtime says: from its signed identity token when the tools are
@@ -43,7 +44,21 @@ export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity
   };
 }
 export interface ToolContext {
-  signal: AbortSignal; callId: string; toolCallId?: string;
+  signal: AbortSignal;
+  /**
+   * The same for every attempt at this call (a retry after a lost connection, a call run again once the
+   * user answered): key your side effects by it, so a call that runs twice acts once.
+   */
+  idempotencyKey: string;
+  /** This attempt's id (a JSON-RPC id): a new one each attempt, so never a key for side effects. */
+  callId: string;
+  /** The model's tool call this is (or, from code, the code's call). */
+  toolCallId?: string;
+  /**
+   * Report progress: people watching see it, and each report restarts the tool's timeout (`timeoutMs`),
+   * so a long call that keeps reporting is not cut off. A message, or how far it is (`progress` of `total`).
+   */
+  progress(update: string | { progress: number; total?: number; message?: string }): void;
   /** Set by the runtime, e.g. `{ channel, conversationId, sender }` for a turn a channel message started. */
   origin?: Record<string, unknown>;
   /** Who the call is for: always set by `serveTools`; set for attached tools by runtimes that send it. */
@@ -73,10 +88,16 @@ export class InputRequired extends Error {
 }
 export interface Tool<T = any> {
   description: string;
+  /**
+   * How long one call may take before the runtime gives up on it (default 15 s, at most 15 minutes).
+   * Each `context.progress()` restarts it. A call cut off is an error the model sees; it may still finish here.
+   */
+  timeoutMs?: number;
   resultFormat?: "json" | "content";
   exposure?: "direct" | "codemode" | "both";
   executionMode?: "sequential" | "parallel";
   input: Record<string, unknown>;
+  /** Return any JSON value (`undefined` is sent as null); throw to tell the model the call failed. */
   execute: (args: T, context: ToolContext) => unknown | Promise<unknown>;
   /**
    * Ask the user to approve each call before it runs (or only the calls this says need it). The runtime
@@ -110,7 +131,7 @@ function isRecord(value: unknown): value is Record<string, unknown> { return !!v
  * A call's context from its params: ids, origin, and the identity the runtime sent in `_meta` (or
  * `identity`, from a verified token); its asks answer from the retry's `inputResponses`, by position.
  */
-export function toolContext(params: Record<string, any>, fallbackId: string, signal: AbortSignal, identity?: RuntimeIdentity): ToolContext {
+export function toolContext(params: Record<string, any>, fallbackId: string, signal: AbortSignal, identity?: RuntimeIdentity, notify?: (message: Record<string, unknown>) => void): ToolContext {
   const meta: Record<string, any> = isRecord(params._meta) ? params._meta : {};
   const sent = isRecord(meta[`${META}identity`]) ? identityFromClaims(meta[`${META}identity`]) : undefined;
   const who = identity ?? sent;
@@ -125,9 +146,23 @@ export function toolContext(params: Record<string, any>, fallbackId: string, sig
     if (isRecord(responses[key])) return responses[key];
     throw new InputRequired({ [key]: { method: "elicitation/create", params: input } }, Object.keys(responses).length ? btoa(JSON.stringify(responses)) : undefined);
   };
+  const callId = typeof meta[`${META}callId`] === "string" ? meta[`${META}callId`] : fallbackId;
+  const toolCallId = typeof meta[`${META}toolCallId`] === "string" ? meta[`${META}toolCallId`] : undefined;
+  const innerCallId = typeof meta[`${META}innerCallId`] === "string" ? meta[`${META}innerCallId`] : undefined;
+  // The runtime's stable key; from a runtime that sends none, the model's call (and the code's call within it).
+  const idempotencyKey = typeof meta[`${META}idempotencyKey`] === "string" ? meta[`${META}idempotencyKey`]
+    : toolCallId ? [who?.agent ?? "", toolCallId, innerCallId ?? ""].join(":") : callId;
+  const progressToken = meta.progressToken;
+  let reported = 0;
   return {
-    callId: typeof meta[`${META}callId`] === "string" ? meta[`${META}callId`] : fallbackId, signal,
-    ...(typeof meta[`${META}toolCallId`] === "string" ? { toolCallId: meta[`${META}toolCallId`] } : {}),
+    callId, idempotencyKey, signal,
+    ...(toolCallId ? { toolCallId } : {}),
+    progress(update) {
+      if (progressToken === undefined || !notify || signal.aborted) return;
+      const value = typeof update === "string" ? { progress: ++reported, message: update } : { ...update, progress: Math.max(update.progress, reported) };
+      reported = value.progress;
+      notify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken, ...value } });
+    },
     ...(origin ? { origin } : {}), ...(who ? { identity: who } : {}),
     confirm: async message => (await request({ mode: "form", message, requestedSchema: { type: "object", properties: {} } })).action === "accept",
     ask: async (message, schema) => { const answer = await request({ mode: "form", message, requestedSchema: schema }); return answer.action === "accept" ? answer.content : undefined; },
@@ -161,9 +196,9 @@ export function toolServer(tools: Tools): ToolServer {
   return {
     listTools: () => Object.entries(tools).map(([name, tool]) => ({
       name, description: tool.description, inputSchema: tool.input,
-      ...(tool.exposure || tool.executionMode || tool.needsApproval ? { _meta: {
+      ...(tool.exposure || tool.executionMode || tool.needsApproval || tool.timeoutMs ? { _meta: {
         ...(tool.exposure ? { [`${META}exposure`]: tool.exposure } : {}), ...(tool.executionMode ? { [`${META}executionMode`]: tool.executionMode } : {}),
-        ...(tool.needsApproval ? { [`${META}needsApproval`]: true } : {}),
+        ...(tool.needsApproval ? { [`${META}needsApproval`]: true } : {}), ...(tool.timeoutMs ? { [`${META}timeoutMs`]: tool.timeoutMs } : {}),
       } } : {}),
     })),
     async callTool(name, args, context) {
@@ -180,16 +215,21 @@ export function toolServer(tools: Tools): ToolServer {
         if (context.signal.aborted) throw error;
         return { content: [{ type: "text", text: String(error).slice(0, 2048) }], isError: true };
       }
-      if (result === undefined || byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("Tool must return a bounded JSON value");
+      // A tool that returns nothing did its work: the model hears null, not a failure it would retry.
+      if (result === undefined) result = null;
+      if (byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("Tool must return a bounded JSON value");
       if (definition.resultFormat === "content") return result as CallToolResult;
       return { content: [{ type: "text", text: JSON.stringify(result) }], ...(isRecord(result) ? { structuredContent: result } : {}) };
     },
   };
 }
+/** The hosted runtime; `url` points elsewhere (a self-hosted runtime, or http://127.0.0.1:8790 in development). */
+export const DEFAULT_URL = "https://agents.camelai.dev";
 export interface RuntimeOptions {
+  /** The runtime's origin. Default https://agents.camelai.dev. */
   url?: string;
   apiKey?: string;
-  /** Persist tool receipts and event cursors before acknowledging work. Default: memory only. */
+  /** Where the event cursor is kept, so a restarted client resumes its stream where it was. Default: memory only. */
   journalStore?: JournalStore;
   /** Injectable for tests, observability, or an application's HTTP stack. */
   fetch?: typeof globalThis.fetch;
@@ -204,12 +244,14 @@ export interface AgentOptions {
   /** Or an MCP server of the application's own (see `clients/mcp.ts` for MCP SDK servers). */
   mcp?: ToolServer;
   /**
-   * The agent's events. A `message_update` is its delta alone (`assistantMessageEvent`), without the
+   * The agent's events, for display: a run's result is the truth. They are delivered in order, one at a
+   * time, apart from the connection (a slow or failing handler never holds up tool calls); an error it
+   * throws goes to `onError`. A `message_update` is its delta alone (`assistantMessageEvent`), without the
    * message it updates: fold that from its `message_start` and the deltas since. Where the stream
    * cannot replay (a first connect, or a reconnect after the host's buffer moved on), the first event
    * is a `{ type: "snapshot", turn }` of the running turn to fold from.
    */
-  onEvent?: (event: any, requestId?: string) => unknown | Promise<unknown>;
+  onEvent?: (event: AgentEvent, requestId?: string) => unknown | Promise<unknown>;
   /**
    * A question, approval or setup step the agent's turn now waits on. Return an answer to give it
    * at once, or nothing to answer later with `agent.answer` (from any process, via connectAgent).
@@ -217,6 +259,12 @@ export interface AgentOptions {
   onInput?: (input: AgentInput, requestId?: string) => InputAnswer | void | Promise<InputAnswer | void>;
   onConnection?: (connected: boolean) => void;
   onError?: (error: Error) => void;
+  /**
+   * Whether this client answers the agent's tool calls (its attached MCP server). Default: true. One
+   * process is the agent's application at a time; `false` connects to follow the agent and run it only,
+   * as any number of processes may (serverless functions, a second service), and answers no tool calls.
+   */
+  attach?: boolean;
 }
 /**
  * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
@@ -263,9 +311,9 @@ export interface CreateAgentOptions extends AgentOptions {
    * e.g. "anthropic/claude-sonnet-5" or "openrouter/openai/gpt-5.2". A full Pi
    * model object is also accepted if its endpoint is trusted by the runtime.
    */
-  model?: string | Model<Api>;
+  model?: string | Record<string, unknown>;
   thinkingLevel?: ThinkingLevel;
-  initialMessages?: AgentMessage[];
+  initialMessages?: Message[];
   /** Volumes for the agent's file tools (read, write, edit, ls, glob, grep). Default: its own workspace volume at /workspace. */
   mounts?: Mount[];
 }
@@ -308,7 +356,7 @@ export interface FileLink { url: string; method: "GET" | "PUT"; path: string; ex
 /** A link's options: `expiresIn` seconds (default 900, at most 86400); for PUT, the largest upload and its content type. */
 export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBytes?: number; contentType?: string }
 /** A message as the runtime records it: a user message also names its sender (if given), the request that sent it, and the application's `metadata`. */
-export type RecordedMessage = AgentMessage & { from?: Sender; requestId?: string; metadata?: Record<string, string> };
+export type RecordedMessage = Message & { from?: Sender; requestId?: string; metadata?: Record<string, string> };
 export interface AgentHistory { messages: RecordedMessage[] }
 /** A page of history: whole turns, oldest first, each message at its index in the agent's history. `next` is the older page's `before` (null at the start). */
 export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true }
@@ -339,15 +387,53 @@ export type Attachment = Uint8Array | Blob | string | { name?: string; data: Uin
 /** A file in the agent's mounts, at the path the agent sees it. */
 export interface AgentFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 export interface Schedule { id: string; agent: string; text?: string; code?: string; dueAt: number; everySeconds?: number; createdAt: number }
-export interface RequestOptions { idempotencyKey?: string; timeoutMs?: number }
+/**
+ * `idempotencyKey`: the request's id; sending the same key again returns the same request, never a second one.
+ * `signal`: stop waiting (the request goes on; `abort()` stops the agent's turn). `timeoutMs`: the same, after a time.
+ */
+export interface RequestOptions { idempotencyKey?: string; timeoutMs?: number; signal?: AbortSignal }
 /** Who sent a message: `id` is yours and the model may rely on it; the names are the sender's own. */
 export interface Sender { id: string; name?: string; username?: string }
 export class AgentError extends Error {
+  /** The HTTP status, or 0 for a failure that is not an HTTP response's (a run's, the connection's). */
   status: number;
   requestId?: string;
+  /** A stable name for the failure where the runtime gives one, e.g. APPLICATION_NOT_CONNECTED. */
+  code?: string;
+  /** The runtime could not tell whether the work took effect (a restart cut it short). */
+  uncertain?: boolean;
   /** Milliseconds the runtime asked to wait before retrying (its Retry-After), for 429 and 503. */
   retryAfterMs?: number;
   constructor(message: string, status = 0, requestId?: string) { super(message); this.name = "AgentError"; this.status = status; this.requestId = requestId; }
+}
+/** A run that failed (`agent.run` throws it unless `throwOnError: false`): `run` is how it ended, `code` why. */
+export class RunError extends AgentError {
+  readonly run: Run;
+  constructor(run: Run) {
+    super(run.error?.message ?? "The run failed", 0, run.id);
+    this.name = "RunError";
+    this.run = run;
+    this.code = run.error?.code;
+    if (run.error?.uncertain) this.uncertain = true;
+  }
+}
+/** What a run produced: its reply, how it stopped, the inputs it waits on and the files it wrote. */
+export interface RunResult {
+  /** The final assistant message's text ("" when it said nothing). */
+  reply?: string;
+  /** The model's error, or null. */
+  error: string | null;
+  /** Why it stopped early: waiting on human input (`inputs`), or its spend limit. */
+  stopped?: "input_required" | "spend_limit";
+  inputs?: AgentInput[];
+  replyIndex?: number;
+  /** Messages in the agent's history after it. */
+  messages?: number;
+  files?: AgentFile[];
+  presented?: unknown[];
+  usage?: RunUsage | null;
+  /** A stable name for `error`, where the runtime gives one. */
+  code?: string;
 }
 /** Retry-After as milliseconds (seconds or an HTTP date), capped so a bad value cannot stall a caller. */
 function retryAfter(response: Response): number | undefined {
@@ -374,7 +460,7 @@ class Transport {
   readonly base: string;
   readonly fetcher: typeof globalThis.fetch;
   constructor(options: RuntimeOptions) {
-    const url = new URL(options.url ?? "http://127.0.0.1:8790");
+    const url = new URL(options.url ?? DEFAULT_URL);
     if (url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error("Use a runtime origin without credentials, path, or query");
     if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("Remote runtimes require https://");
     this.base = url.origin;
@@ -392,7 +478,7 @@ class Transport {
         });
         await rejectRedirect(response);
         const value = await (response.ok ? response.json() : response.json().catch(() => ({}))) as any;
-        if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response) });
+        if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...(typeof value.code === "string" ? { code: value.code } : {}) });
         return value;
       } catch (error) {
         const limited = error instanceof AgentError && error.status === 429;
@@ -442,16 +528,33 @@ class Transport {
   }
 }
 
+/** A create request's fields, from the options given. */
+function provisioning(options: CreateAgentOptions) {
+  const fields = ["subject", "context", "keyScope", "spendLimit", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt"] as const;
+  return Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]]));
+}
+
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
 export class AgentRuntime {
   readonly options: RuntimeOptions;
   private readonly transport: Transport;
   constructor(options: RuntimeOptions = {}) { this.options = options; this.transport = new Transport(options); }
+  /**
+   * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;
+   * connect with `connectAgent`. Keyed agents live until they are deleted.
+   */
+  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; created: boolean }> {
+    const apiKey = this.options.apiKey;
+    if (!apiKey) throw new AgentError("Set apiKey to provision an agent");
+    const server = options.mcp ?? toolServer(options.tools ?? {});
+    const answer = await this.transport.json(`/v1/agents/by-key/${encodeURIComponent(key)}`, apiKey, "PUT", { mcp: { tools: await server.listTools() }, ...provisioning(options) });
+    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, created: answer.created === true };
+  }
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
     const key = this.options.apiKey;
     if (!key) throw new AgentError("Set apiKey to provision an agent");
     const server = options.mcp ?? toolServer(options.tools ?? {});
-    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...(options.subject !== undefined ? { subject: options.subject } : {}), ...(options.context !== undefined ? { context: options.context } : {}), ...(options.keyScope !== undefined ? { keyScope: options.keyScope } : {}), ...(options.spendLimit !== undefined ? { spendLimit: options.spendLimit } : {}), ...(options.modelHeaders !== undefined ? { modelHeaders: options.modelHeaders } : {}), ...(options.definition !== undefined ? { definition: options.definition } : {}), ...(options.mounts !== undefined ? { mounts: options.mounts } : {}), ...(options.model !== undefined ? { model: options.model } : {}), ...(options.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}), ...(options.initialMessages !== undefined ? { initialMessages: options.initialMessages } : {}), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.type !== undefined ? { type: options.type } : {}), ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
+    const session = await this.transport.json("/client-sessions", key, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options), ...(options.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }
@@ -551,6 +654,17 @@ export function memoryJournalStore(): JournalStore {
   };
 }
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
+/** Requests one client may wait on at once. */
+const MAX_PENDING = 1000;
+/** Events waiting for a slow onEvent; past this, streamed deltas are dropped (the messages they build still arrive). */
+const MAX_QUEUED_EVENTS = 10_000;
+const INSPECT = Symbol.for("nodejs.util.inspect.custom");
+/** Credentials whose token stays out of logs: not enumerable, so JSON.stringify and console.log leave it out. */
+function redacted(session: SessionCredentials): SessionCredentials {
+  const value = { id: session.id, expiresAt: session.expiresAt } as SessionCredentials;
+  Object.defineProperty(value, "token", { value: session.token, enumerable: false });
+  return value;
+}
 const encodePath = (path: string) => path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 
 /**
@@ -581,6 +695,9 @@ export class AgentFiles {
 }
 
 export class AgentClient {
+  /** The agent's id (client_…): safe to log and to store. */
+  readonly id: string;
+  /** The agent's id and its token: keep the token secret (it is left out of logs and JSON). */
   readonly session: SessionCredentials;
   readonly tools: Tools;
   private server: ToolServer;
@@ -604,10 +721,18 @@ export class AgentClient {
   private closed = false;
   private fatal?: Error;
   private ready = Promise.withResolvers<void>();
+  /** onEvent's queue: events wait here, in order, so the stream never waits on the application. */
+  private dispatching: Promise<void> = Promise.resolve();
+  private queued = 0;
+  private dropped = 0;
+  private readonly listeners = new Set<(event: AgentEvent, requestId?: string) => void>();
+  private readonly attaching: boolean;
 
   constructor(runtime: RuntimeOptions, session: SessionCredentials, options: AgentOptions) {
     if (!/^client_[a-f0-9]{40}$/.test(session.id)) throw new AgentError("Invalid session id");
-    this.session = { id: session.id, token: session.token, expiresAt: session.expiresAt };
+    this.id = session.id;
+    this.session = redacted(session);
+    this.attaching = options.attach !== false;
     this.tools = { ...options.tools };
     this.server = options.mcp ?? toolServer(this.tools);
     this.options = options;
@@ -652,7 +777,7 @@ export class AgentClient {
       const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => this.stream?.abort(), 20_000); };
       touch();
       try {
-        const response = await this.transport.fetcher(this.transport.base + this.path("/events?snapshot=1"), {
+        const response = await this.transport.fetcher(this.transport.base + this.path(`/events?snapshot=1${this.attaching ? "" : "&watch=1"}`), {
           headers: { Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor) },
           signal: this.stream.signal, redirect: "manual",
         });
@@ -661,7 +786,7 @@ export class AgentClient {
           await response.body?.cancel();
           const snapshot = await this.sync();
           this.journal.cursor = snapshot.cursor; await this.save();
-          await this.options.onEvent?.({ type: "replay_gap", cursor: snapshot.cursor });
+          this.emit({ type: "replay_gap", cursor: snapshot.cursor });
           continue;
         }
         if (!response.ok) { await response.body?.cancel(); throw new AgentError(`Event stream HTTP ${response.status}`, response.status); }
@@ -701,7 +826,7 @@ export class AgentClient {
               // A snapshot restarts the stream at its cursor, even one below the saved cursor (a restarted host).
               if (event.type === "snapshot") {
                 this.journal.cursor = id; await this.save();
-                await this.options.onEvent?.(event);
+                this.emit(event as AgentEvent);
                 continue;
               }
               if (id <= this.journal.cursor) continue;
@@ -732,10 +857,36 @@ export class AgentClient {
     return this.transport.json(this.path('/metadata'), this.session.token, 'POST', metadata);
   }
 
+  /** Hand an event to the listeners, and queue it for onEvent: the stream goes on without waiting for either. */
+  private emit(event: AgentEvent, requestId?: string) {
+    for (const listener of this.listeners) {
+      try { listener(event, requestId); } catch (error) { this.report(error); }
+    }
+    const onEvent = this.options.onEvent;
+    if (!onEvent) return;
+    if (this.queued >= MAX_QUEUED_EVENTS && event.type === "message_update") {
+      if (this.dropped++ === 0) this.report(new AgentError(`onEvent is falling behind: over ${MAX_QUEUED_EVENTS} events wait, so streamed deltas are dropped until it catches up`));
+      return;
+    }
+    this.queued++;
+    this.dispatching = this.dispatching.then(async () => {
+      try { await onEvent(event, requestId); }
+      catch (error) { this.report(error); }
+      finally { if (--this.queued === 0) this.dropped = 0; }
+    });
+  }
+  /** @internal Hear every event as it arrives (synchronously, before onEvent); returns the unsubscribe. */
+  listen(listener: (event: AgentEvent, requestId?: string) => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+  /** Resolves once onEvent has handled every event received so far. */
+  drained(): Promise<void> { return this.dispatching; }
+
   private async receive(event: ClientEvent) {
     if (event.type === "response") this.settle(event.id, event.outcome);
     else if (event.type === "event") {
-      await this.options.onEvent?.(event.event, event.requestId);
+      this.emit(event.event, event.requestId);
       const onInput = this.options.onInput;
       if (onInput && event.event?.type === "input_required") void (async () => {
         const answer = await onInput(event.event.input, event.requestId);
@@ -747,7 +898,12 @@ export class AgentClient {
     const waiter = this.pending.get(id);
     if (!waiter) return;
     this.pending.delete(id);
-    if ("error" in value) waiter.reject(new AgentError(value.error ?? "Unknown failure", 0, id)); else waiter.resolve(value.result);
+    if ("error" in value) {
+      const outcome = value as { error?: string; code?: unknown; uncertain?: boolean };
+      waiter.reject(Object.assign(new AgentError(outcome.error ?? "Unknown failure", 0, id), {
+        ...(typeof outcome.code === "string" ? { code: outcome.code } : {}), ...(outcome.uncertain ? { uncertain: true } : {}),
+      }));
+    } else waiter.resolve(value.result);
   }
 
   /**
@@ -780,50 +936,62 @@ export class AgentClient {
     const key = String(message.id);
     const controller = new AbortController();
     if (message.method === "tools/call") this.active.set(key, controller);
+    const notify = (notification: Record<string, unknown>) => void this.transport.json(this.path("/mcp"), this.session.token, "POST", notification, false, { "X-Agent-Connection": connection ?? "" }).catch(() => {});
     try {
-      const answer = await answerMcp(message, this.server, params => toolContext(params, key, controller.signal));
+      const answer = await answerMcp(message, this.server, params => toolContext(params, key, controller.signal, undefined, notify));
       await this.transport.json(this.path("/mcp"), this.session.token, "POST", { jsonrpc: "2.0", id: message.id, ...answer }, true, { "X-Agent-Connection": connection ?? "" });
     } finally { this.active.delete(key); }
   }
 
+  /**
+   * Send a request and wait for its outcome, however long the run takes: there is no timeout unless
+   * `timeoutMs` or `signal` says so, and either only stops the wait (the request goes on).
+   */
   async request(method: RequestMethod, params: Record<string, unknown> = {}, options: RequestOptions = {}): Promise<any> {
     if (this.closed || this.fatal) throw this.fatal ?? new AgentError("Client closed");
-    if (this.pending.size >= 8) throw new AgentError("Too many outstanding requests");
+    if (this.pending.size >= MAX_PENDING) throw new AgentError("Too many outstanding requests");
     const id = options.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (this.pending.has(id)) throw new AgentError("Request already pending", 409, id);
-    const deferred = Promise.withResolvers<any>();
-    // Attach immediately, even while the POST is pending, to avoid unhandled errors.
-    deferred.promise.catch(() => {});
-    this.pending.set(id, deferred);
-    const timer = setTimeout(() => {
-      this.pending.delete(id);
-      deferred.reject(new AgentError("Request timed out; inspect requestStatus() or reuse the same idempotencyKey", 0, id));
-    }, options.timeoutMs ?? 180_000);
+    options.signal?.throwIfAborted();
+    const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");
     try {
       const record = await this.http("/requests", "POST", { id, method, params });
       if (record.outcome) this.settle(id, record.outcome);
       return await this.outcome(id, deferred.promise);
     } catch (error) {
       if (error instanceof AgentError) { error.requestId ??= id; throw error; }
+      if (options.signal?.aborted && error === options.signal.reason) throw error;
       throw new AgentError(String(error), 0, id);
-    } finally { clearTimeout(timer); this.pending.delete(id); }
+    } finally { deferred.done(); }
   }
 
-  /** Observe an already accepted request. This never submits or re-executes work. */
-  async waitForRequest(id: string, options: { timeoutMs?: number } = {}): Promise<any> {
-    if (this.closed || this.fatal) throw this.fatal ?? new AgentError("Client closed");
-    if (this.pending.has(id)) throw new AgentError("Request already pending", 409, id);
+  /** Wait for request `id` to settle, until `timeoutMs` or `signal` says to stop waiting. */
+  private waiter(id: string, options: { timeoutMs?: number; signal?: AbortSignal }, timedOut: string) {
     const deferred = Promise.withResolvers<any>();
+    // Attach immediately, even while the POST is pending, to avoid unhandled errors.
     deferred.promise.catch(() => {});
     this.pending.set(id, deferred);
-    const timer = setTimeout(() => {
-      deferred.reject(new AgentError("Request observation timed out; the request may still be running", 0, id));
-    }, options.timeoutMs ?? 180_000);
+    const stop = (error: unknown) => { if (this.pending.get(id) === deferred) this.pending.delete(id); deferred.reject(error as Error); };
+    const timer = options.timeoutMs !== undefined ? setTimeout(() => stop(new AgentError(timedOut, 0, id)), options.timeoutMs) : undefined;
+    const aborted = () => stop(options.signal!.reason);
+    options.signal?.addEventListener("abort", aborted, { once: true });
+    return {
+      promise: deferred.promise,
+      done: () => { clearTimeout(timer); options.signal?.removeEventListener("abort", aborted); if (this.pending.get(id) === deferred) this.pending.delete(id); },
+    };
+  }
+
+  /** Wait for a request already sent (by this process or another) to settle. This never submits or re-executes work. */
+  async waitForRequest(id: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<any> {
+    if (this.closed || this.fatal) throw this.fatal ?? new AgentError("Client closed");
+    if (this.pending.has(id)) throw new AgentError("Request already pending", 409, id);
+    options.signal?.throwIfAborted();
+    const deferred = this.waiter(id, options, "Stopped waiting; the request may still be running");
     try {
       const record = await this.requestStatus(id);
       if (record.outcome) this.settle(id, record.outcome);
       return await this.outcome(id, deferred.promise);
-    } finally { clearTimeout(timer); this.pending.delete(id); }
+    } finally { deferred.done(); }
   }
 
   /**
@@ -922,14 +1090,23 @@ export class AgentClient {
   inputs(state?: AgentInput["state"]): Promise<AgentInput[]> { return this.http(`/inputs${state ? `?state=${state}` : ""}`); }
   outcomes(): Promise<SessionState> { return this.http("/state"); }
 
+  toJSON() { return { id: this.id }; }
+  [INSPECT]() { return `AgentClient { id: '${this.id}' }`; }
+
   async close() {
     this.closed = true; this.stream?.abort();
     for (const controller of this.active.values()) controller.abort();
     for (const [id, waiter] of this.pending) waiter.reject(new AgentError("Client closed; request may still be running", 0, id));
     this.pending.clear();
     await this.loop;
-    // User callbacks must cooperate with cancellation. Do not hang shutdown on one.
+    // Events received before closing still reach onEvent, but a handler that never returns cannot hang shutdown.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([this.dispatching, new Promise(resolve => { timer = setTimeout(resolve, 2000); })]);
+    clearTimeout(timer);
   }
   async destroy() { try { await this.http("", "DELETE"); } finally { await this.close(); } }
   async [Symbol.asyncDispose]() { await this.close(); }
 }
+
+export { Agents, Agent } from "./agents.ts";
+export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, InputValue, AnswerOptions } from "./agents.ts";

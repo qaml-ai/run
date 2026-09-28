@@ -26,7 +26,7 @@ const agent = await runtime.createAgent({
   model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5",
   systemPrompt: "You are an analyst. Do arithmetic in js_exec with fs, never in your head. Keep replies short.",
   onEvent(event) {
-    if (event.type === "file_presented") console.log(`presented ${event.file.path} (${event.file.contentType}, ${event.file.size} B): ${event.url.slice(0, 60)}…`);
+    if (event.type === "file_presented") console.log(`presented ${event.file.path} (${event.file.contentType}, ${event.file.size} B): ${event.url?.slice(0, 60)}…`);
     if (event.type === "tool_execution_start") console.log(`tool ${event.toolName}`);
   },
 });

@@ -183,3 +183,22 @@ test("a watcher starts from the newest page and loads older pages on request", {
   assert.deepEqual(watcher.state.messages, (await r.call(`/v1/agents/${agent}/history`)).json.messages);
   assert.equal(OPERATOR.length > 0, true);
 });
+
+test("a watcher whose token expires with no getToken stops, and says so", async () => {
+  const errors: string[] = [];
+  const fetch: typeof globalThis.fetch = async input => String(input).includes("/inputs") ? Response.json([]) : new Response(null, { status: 401 });
+  const watcher = watchAgent({ url: "https://runtime.test", agentId: "client_x", token: "expired", fetch, onError: error => errors.push(error.message) });
+  try {
+    await until(() => watcher.state.expired, "the watcher to see its token expired");
+    assert.equal(watcher.state.connected, false);
+    assert.match(errors.join("\n"), /no getToken to renew it/);
+  } finally { watcher.close(); }
+});
+
+test("a watcher that cannot reach the runtime says it may be CORS, not just \"Failed to fetch\"", async () => {
+  const errors: string[] = [];
+  const fetch: typeof globalThis.fetch = async () => { throw new TypeError("Failed to fetch"); };
+  const watcher = watchAgent({ url: "https://runtime.test", agentId: "client_x", token: "t", fetch, onError: error => errors.push(error.message) });
+  try { await until(() => errors.length > 0, "an error"); assert.match(errors[0], /CORS/); }
+  finally { watcher.close(); }
+});

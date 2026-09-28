@@ -37,6 +37,7 @@ export async function listen(t: T, handler: Parameters<typeof createServer>[1]) 
 /**
  * An OpenAI-compatible model that answers each request with `respond`'s message delta. A delta's
  * `usage` (prompt_tokens, completion_tokens) is reported with the last chunk, and `delayMs` holds the answer back.
+ * `httpStatus` (with `message`) answers with that error instead.
  */
 export async function fakeModel(t: T, respond: (body: any, index: number) => object) {
   const bodies: any[] = [];
@@ -50,8 +51,10 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
     bodies.push(body);
     keys.push(req.headers.authorization ?? "");
     headers.push(req.headers);
-    const { usage, delayMs, ...delta } = respond(body, bodies.length - 1) as any;
+    const { usage, delayMs, httpStatus, ...delta } = respond(body, bodies.length - 1) as any;
     if (delayMs) await sleep(delayMs);
+    // A provider refusing the request: `httpStatus` with an OpenAI-style error.
+    if (httpStatus) { res.writeHead(httpStatus, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: delta.message ?? "Refused", type: "invalid_request_error" } })); return; }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const [content, finish_reason] of [[delta, null], [{}, delta.tool_calls ? "tool_calls" : "stop"]]) {
       res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }], ...(finish_reason && usage ? { usage } : {}) })}\n\n`);

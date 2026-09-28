@@ -208,10 +208,10 @@ async function evaluate(label: string, name: string, index: number) {
         toolCalls[event.toolName] = (toolCalls[event.toolName] ?? 0) + 1;
         appendFileSync(log, JSON.stringify({ call: event.toolName, args: event.args }) + "\n");
       }
-      if (event.type === "tool_execution_end") appendFileSync(log, JSON.stringify({ result: event.toolName, isError: event.isError, text: JSON.stringify(event.result?.content ?? event.result).slice(0, 2000) }) + "\n");
+      if (event.type === "tool_execution_end") appendFileSync(log, JSON.stringify({ result: event.toolName, isError: event.isError, text: JSON.stringify((event.result as any)?.content ?? event.result).slice(0, 2000) }) + "\n");
       if (event.type === "message_end" && event.message?.role === "assistant") {
         turns++;
-        const u = event.message.usage ?? {};
+        const u: any = event.message.usage ?? {};
         usage.input += u.input ?? 0; usage.output += u.output ?? 0; usage.cacheRead += u.cacheRead ?? 0; usage.cacheWrite += u.cacheWrite ?? 0; usage.cost += u.cost?.total ?? 0;
         appendFileSync(log, JSON.stringify({ assistant: event.message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n"), stopReason: event.message.stopReason }) + "\n");
       }

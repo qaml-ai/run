@@ -5,7 +5,7 @@ import { AgentRuntime, memoryJournalStore, type JournalStore, type SessionCreden
 const session: SessionCredentials = { id: `client_${"a".repeat(40)}`, token: "scoped-test-token", expiresAt: Date.now() + 60_000 };
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 
-test("portable SDK awaits event consumers, persists the cursor only for control events, and attaches with saved credentials", async () => {
+test("portable SDK hands events to consumers apart from the stream, persists the cursor only for control events, and attaches with saved credentials", async () => {
   const backing = memoryJournalStore();
   await backing.save(session.id, { version: 1, cursor: 4 });
   const gate = Promise.withResolvers<void>();
@@ -180,4 +180,24 @@ test("a file transfer that stalls fails instead of hanging its caller", async t 
   await new Promise(resolve => setImmediate(resolve));
   t.mock.timers.tick(30_000);
   await assert.rejects(read, /File transfer stalled/);
+});
+
+test("the file journal store keeps cursors in memory where its directory cannot be written", async t => {
+  const { fileJournalStore } = await import("../clients/node.ts");
+  const { mkdtemp, chmod, rm } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "journal-ro-"));
+  t.after(async () => { await chmod(root, 0o700); await rm(root, { recursive: true, force: true }); });
+  await chmod(root, 0o500);
+  const warnings: string[] = [];
+  const warn = (warning: Error) => warnings.push(warning.message);
+  process.on("warning", warn);
+  t.after(() => { process.off("warning", warn); });
+  const store = fileJournalStore(join(root, "state"));
+  await store.save(session.id, { version: 1, cursor: 7 });
+  await store.save(session.id, { version: 1, cursor: 8 });
+  assert.deepEqual(await store.load(session.id), { version: 1, cursor: 8 });
+  await tick();
+  assert.equal(warnings.filter(message => /keeping it in memory/.test(message)).length, 1, "one warning");
 });

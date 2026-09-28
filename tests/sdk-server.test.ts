@@ -114,3 +114,22 @@ test("through a real runtime: served tools get its signed identity, attached too
   const issuer = await (await fetch(`${r.base}/.well-known/oauth-authorization-server`)).json() as any;
   assert.deepEqual([issuer.issuer, issuer.jwks_uri], [r.base, `${r.base}/.well-known/jwks.json`]);
 });
+
+test("nodeListener checks tokens against the URL the runtime called, behind a proxy that ends TLS", async t => {
+  const runtime = await testRuntime();
+  const handler = serveTools(todoTools(todos), runtime.options);
+  const server = createServer(nodeListener(handler));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const local = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const call = async (audience: string, headers: Record<string, string> = {}) => (await fetch(`${local}/mcp`, {
+    method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_todos", arguments: {} } }),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${await runtime.token({ subject: "alice", context: { team: "acme" } }, audience)}`, ...headers },
+  })).status;
+  // The runtime signed for https://tools.example.com/mcp; the proxy forwarded plain HTTP to this server.
+  assert.equal(await call("https://tools.example.com/mcp", { "X-Forwarded-Proto": "https", "X-Forwarded-Host": "tools.example.com" }), 200);
+  assert.equal(await call("https://tools.example.com/mcp", { "X-Forwarded-Proto": "https, http", "X-Forwarded-Host": "tools.example.com, internal" }), 200);
+  assert.equal(await call("https://tools.example.com/mcp"), 401, "without the proxy's headers it is another URL");
+  assert.equal(await call(`${local}/mcp`), 200);
+});

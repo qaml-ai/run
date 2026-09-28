@@ -8,8 +8,9 @@
  * const watcher = watchAgent({ url, agentId, token, getToken: () => fetch("/api/token").then(r => r.json()), onChange: render });
  * ```
  */
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentEvent, AssistantMessage, Message } from "./types.ts";
+import type { AgentInput } from "./typescript.ts";
+export type * from "./types.ts";
 
 /** A token and when it expires (ms); `getToken` may answer either. */
 export type BrowserToken = { token: string; expiresAt?: number };
@@ -20,12 +21,15 @@ export interface WatchOptions {
   /** A browser token for the agent, and when it expires. */
   token: string;
   expiresAt?: number;
-  /** A new token: called before the current one expires, and when the runtime refuses it (401). */
+  /**
+   * A new token from your server: called before the current one expires, and when the runtime refuses it
+   * (401). Without it the watcher stops once the token expires, with `state.expired` set.
+   */
   getToken?: () => Promise<BrowserToken | string>;
   /** Called after every change to `state`. */
   onChange?: (state: AgentView) => void;
   /** Every event as it arrives (Pi's, and the runtime's own), after `state` took it in. */
-  onEvent?: (event: any) => void;
+  onEvent?: (event: AgentEvent) => void;
   onError?: (error: Error) => void;
   /** "auto" (default): an SSE stream, and long polls where streams fail; or only one of them. */
   transport?: "auto" | "sse" | "poll";
@@ -43,7 +47,7 @@ export interface AgentView {
    * The agent's messages, oldest first, each at its index in the agent's history (`indexes`). A user
    * message carries its `requestId` and the application's `metadata`, to match a bubble shown before it arrived.
    */
-  messages: (AgentMessage & { requestId?: string; metadata?: Record<string, string> })[];
+  messages: (Message & { requestId?: string; metadata?: Record<string, string> })[];
   indexes: number[];
   /** The assistant message streaming now, folded from its deltas (tool arguments as partial JSON). */
   partial: AssistantMessage | null;
@@ -52,13 +56,15 @@ export interface AgentView {
   /** Whether a turn runs. */
   running: boolean;
   /** Human input the agent waits on. */
-  pendingInputs: any[];
+  pendingInputs: AgentInput[];
   /** How the latest run ended. */
   lastOutcome: { id: string; stopped?: string; error?: string } | null;
   /** Whether older history is there to load (`loadOlder`). */
   hasOlder: boolean;
   transport: "sse" | "poll" | null;
   connected: boolean;
+  /** The token expired (or was refused) and could not be renewed: the watcher has stopped. Watch again with a new one. */
+  expired: boolean;
 }
 export interface Watcher {
   readonly state: AgentView;
@@ -138,8 +144,8 @@ export function watchAgent(options: WatchOptions): Watcher {
   const pageSize = options.pageSize ?? 50;
   let token = options.token, expiresAt = options.expiresAt;
   const closed = new AbortController();
-  const messages = new Map<number, AgentMessage>();
-  const state: AgentView = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: false };
+  const messages = new Map<number, Message>();
+  const state: AgentView = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: false, expired: false };
   /** Where the page older than those held ends (its `before`); null: there is none; undefined: no page yet. */
   let before: number | null | undefined;
   /** The index the next finished message takes, once the stream has said (a run's start, or a snapshot). */
@@ -158,7 +164,7 @@ export function watchAgent(options: WatchOptions): Watcher {
   const report = (error: unknown) => options.onError?.(error instanceof Error ? error : new Error(String(error)));
 
   async function refresh() {
-    if (!options.getToken) throw new Error("The browser token expired, and there is no getToken to renew it");
+    if (!options.getToken) throw new Error("The browser token expired, and there is no getToken to renew it: pass watchAgent a getToken that fetches a new one from your server");
     const renewed = await options.getToken();
     token = typeof renewed === "string" ? renewed : renewed.token;
     expiresAt = typeof renewed === "string" ? undefined : renewed.expiresAt;
@@ -166,7 +172,13 @@ export function watchAgent(options: WatchOptions): Watcher {
   /** A read with the current token, renewed once on a 401. */
   async function get(path: string, init: RequestInit = {}, signal?: AbortSignal) {
     for (let attempt = 0; ; attempt++) {
-      const response = await doFetch(base + path, { ...init, headers: { ...init.headers as Record<string, string>, Authorization: `Bearer ${token}` }, signal: signal ?? closed.signal });
+      let response: Response;
+      try { response = await doFetch(base + path, { ...init, headers: { ...init.headers as Record<string, string>, Authorization: `Bearer ${token}` }, signal: signal ?? closed.signal }); }
+      catch (error) {
+        if ((signal ?? closed.signal).aborted || !(error instanceof TypeError)) throw error;
+        // A browser says only "Failed to fetch" for a network failure and for a CORS refusal alike.
+        throw new Error(`Could not reach the runtime at ${options.url} (${error.message}). In a browser this is also how a CORS refusal looks: the runtime allows any origin only for browser tokens (POST /v1/agents/:id/browser-tokens), never for an API key or an agent's own token; and check the url`, { cause: error });
+      }
       if (response.status !== 401 || attempt || !options.getToken) return response;
       await response.body?.cancel();
       await refresh();
@@ -191,7 +203,7 @@ export function watchAgent(options: WatchOptions): Watcher {
   }
 
   /** Take in a page of history: its messages by index, and (for the first, or an older one) where the next older page ends. */
-  function page(value: { entries: { index: number; message: AgentMessage }[]; next: number | null }, older = false) {
+  function page(value: { entries: { index: number; message: Message }[]; next: number | null }, older = false) {
     for (const { index, message } of value.entries) messages.set(index, message);
     if (older || before === undefined) before = value.next;
   }
@@ -325,7 +337,13 @@ export function watchAgent(options: WatchOptions): Watcher {
       } catch (error) {
         if (closed.signal.aborted) break;
         const status = (error as { status?: number }).status;
-        if (status === 401 || status === 403 || status === 404) { report(error); state.connected = false; changed(); break; }
+        if (status === 401 || status === 403 || status === 404) {
+          if (status === 401) {
+            state.expired = true;
+            report(new Error(options.getToken ? "The runtime refused the renewed browser token; the watcher stopped" : "The browser token expired, and there is no getToken to renew it; the watcher stopped (state.expired)"));
+          } else report(error);
+          state.connected = false; changed(); break;
+        }
         if (!stream.signal.aborted) { report(error); failures++; }
         state.connected = false;
         changed();
