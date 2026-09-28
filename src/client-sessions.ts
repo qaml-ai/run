@@ -37,6 +37,7 @@ import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
+import { recordWatchRefused } from "./metrics.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -696,10 +697,13 @@ export class ClientSessions {
    * this node's bounds (429 past them); the function returned gives it back, once.
    */
   private hold(tenant: string, subscribers: number) {
-    const reject = (scope: string) => new HttpError(429, `${scope} has too many event stream subscribers; retry later`);
-    if (subscribers >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw reject("This agent");
-    if ((this.tenantWatching.get(tenant) ?? 0) >= (this.options.watcherLimitFor?.(tenant) ?? this.options.maxTenantWatchers ?? MAX_TENANT_WATCHERS)) throw reject("This tenant");
-    if (this.watching >= (this.options.maxNodeWatchers ?? MAX_NODE_WATCHERS)) throw reject("This node");
+    const reject = (scope: "agent" | "tenant" | "node") => {
+      recordWatchRefused(scope, tenant);
+      return new HttpError(429, `This ${scope} has too many event stream subscribers; retry later`);
+    };
+    if (subscribers >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw reject("agent");
+    if ((this.tenantWatching.get(tenant) ?? 0) >= (this.options.watcherLimitFor?.(tenant) ?? this.options.maxTenantWatchers ?? MAX_TENANT_WATCHERS)) throw reject("tenant");
+    if (this.watching >= (this.options.maxNodeWatchers ?? MAX_NODE_WATCHERS)) throw reject("node");
     this.watching++;
     this.tenantWatching.set(tenant, (this.tenantWatching.get(tenant) ?? 0) + 1);
     let held = true;

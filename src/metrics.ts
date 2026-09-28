@@ -212,6 +212,11 @@ export function webhookBacklogLine(backlog: { pending: number; oldestAgeMs: numb
   }, service);
 }
 
+/** An event stream subscriber (a watcher or a waiting poll) refused with 429 at the agent's, tenant's or node's limit. */
+export function recordWatchRefused(scope: "agent" | "tenant" | "node", tenant: string) {
+  emit("watch_refused", { dimensions: { Scope: scope, Tenant: tenant }, rollups: [[], ["Scope"], ["Tenant"]], metrics: { WatchersRefused: 1 } });
+}
+
 /** Write a line through the sink (for callers outside this module). */
 export function writeMetricLine(line: string) {
   sink(line);

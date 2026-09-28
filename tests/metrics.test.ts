@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliveryLine, errorClass, metricLine, observeTurns, recordEventMetrics, setMetricSink, webhookBacklogLine } from "../src/metrics.ts";
+import { deliveryLine, errorClass, metricLine, observeTurns, recordEventMetrics, recordWatchRefused, setMetricSink, webhookBacklogLine } from "../src/metrics.ts";
 import { webhookEvent } from "../src/webhooks.ts";
 
 /** Capture the metric lines written while `fn` runs. */
@@ -177,4 +177,10 @@ test("webhook deliveries: lag and attempts when delivered, the error when not; t
   assert.equal(backlog.type, "webhook_backlog");
   assert.equal(backlog.WebhookBacklog, 12);
   assert.equal(backlog.WebhookOldestPendingMs, 90_000);
+});
+
+test("an event stream subscriber refused at a limit: counted by the limit's scope and tenant", async () => {
+  const lines = await captured(() => { recordWatchRefused("tenant", "chiridion-prod"); recordWatchRefused("agent", "chiridion-prod"); });
+  assert.deepEqual(lines.map(line => [line.type, line.Scope, line.Tenant, line.WatchersRefused]), [["watch_refused", "tenant", "chiridion-prod", 1], ["watch_refused", "agent", "chiridion-prod", 1]]);
+  assert.deepEqual(directive(lines[0]).Dimensions.map((set: string[]) => set.filter(name => name !== "ServiceName")), [[], ["Scope"], ["Tenant"]]);
 });
