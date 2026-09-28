@@ -651,6 +651,8 @@ export function createAgentHost(io: HostIO) {
     if (retried.length) await transcript.await(retried, true);
     for (const call of wanted) {
       const toolCall = made.find(part => part.id === call.toolCallId);
+      // The call ends now, as any call does on the stream: a start, then its end, then its result's message.
+      io.emit({ type: "tool_execution_start", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", args: toolCall?.arguments ?? {} });
       let result = call.result;
       if (!result) {
         const tool = agent!.state.tools.find(entry => entry.name === toolCall?.name && entry.name !== "js_exec");
@@ -659,9 +661,13 @@ export function createAgentHost(io: HostIO) {
           // The arguments as Pi gave them the first time: the approval is bound to them (inputs.ts).
           result = await tool.execute(call.toolCallId, validateToolArguments(tool, toolCall), signal) as Settled;
         } catch (error) { result = { content: [{ type: "text", text: errorText(error) }], isError: true }; }
-        // Asked again (another round of input): the call stays open.
-        if ((result!.details as { inputRequired?: boolean } | undefined)?.inputRequired) continue;
+        // Asked again (another round of input): the call stays open, as it did the first time.
+        if ((result!.details as { inputRequired?: boolean } | undefined)?.inputRequired) {
+          io.emit({ type: "tool_execution_end", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", result, isError: false });
+          continue;
+        }
       }
+      io.emit({ type: "tool_execution_end", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", result, isError: !!result!.isError });
       const message = { role: "toolResult", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", content: result!.content, ...(result!.details !== undefined ? { details: result!.details } : {}), isError: !!result!.isError, timestamp: Date.now() } as AgentMessage;
       try { await transcript.push(message); }
       catch (error) { persistenceError = error; throw error; }

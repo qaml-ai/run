@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
-import { lastUser, listen, OPERATOR, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+import { lastUser, listen, OPERATOR, runtime, toolCall, toolResults, until, watchEvents, type T } from "./runtime-server.ts";
 import { mayAnswer } from "../src/inputs.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
@@ -155,9 +155,19 @@ test("an approval policy asks before a gated tool runs: the approved call runs o
   assert.deepEqual({ ...input.detail, argumentsHash: undefined }, { tool: "shop__delete_item", source: "shop", arguments: '{"id":"a"}', argumentsHash: undefined });
   assert.equal(shop.calls.length, 0, "nothing ran before the approval");
 
+  const watcher = await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "snapshot=0" });
   const approved = await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", actor: "ops-1" } });
   assert.equal(approved.status, 202, approved.text);
   const resumed = await until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${approved.json.request.id}`)).json; return record.state === "completed" && record; }, "the resume");
+  // The resumed call starts and ends on the stream, as any call does, before its result's message.
+  await until(() => watcher.frames.some(frame => frame.data.type === "response" && frame.data.id === approved.json.request.id), "the resume on the stream");
+  const events = watcher.frames.filter(frame => frame.data.type === "event" && frame.data.requestId === approved.json.request.id).map(frame => frame.data.event);
+  const order = events.filter(event => ["tool_execution_start", "tool_execution_end"].includes(event.type) || (event.type === "message_end" && event.message.role === "toolResult")).map(event => event.type);
+  assert.deepEqual(order, ["tool_execution_start", "tool_execution_end", "message_end"]);
+  const ended = events.find(event => event.type === "tool_execution_end");
+  assert.deepEqual([ended.toolCallId, ended.toolName, ended.isError], ["call_a", "shop__delete_item", false]);
+  assert.match(JSON.stringify(ended.result), /deleted a/);
+  assert.deepEqual(events.find(event => event.type === "tool_execution_start").args, { id: "a" });
   assert.match(resumed.outcome.result.reply, /deleted a[\s\S]*Approved by ops-1 after \d+s/);
   assert.equal(shop.calls.length, 1);
   const proof = { input: input.id, by: { via: "api", actor: "ops-1" } };
