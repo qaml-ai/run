@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
+import { ClientSessions } from "../src/client-sessions.ts";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { VolumeService } from "../src/volumes.ts";
@@ -196,4 +202,17 @@ test("a new agent's initial messages pin the FileRefs they carry: a clone keeps 
   await until(async () => (await r.db.query("select count(*)::int as count from chunk_pins where agent = $1", [source])).rows[0].count === 0, "the source's purge", 20_000);
   await new Promise(resolve => setTimeout(resolve, 1500));
   assert.equal((await r.db.query("select count(*)::int as count from chunk_touches where hash = $1", [hash("cloned words")])).rows[0].count, 1, "still stored: the clone holds it");
+});
+
+test("an agent whose initial messages' FileRefs could not be pinned is not made", async t => {
+  const { db, storage, volumes } = await setup(t);
+  const root = await mkdtemp(join(tmpdir(), "gc-pins-"));
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", secret: "gc-pin-test-secret-with-32-characters", apiKeyFor: () => "fixture-only", volumes });
+  t.after(async () => { await sessions.close(); await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
+  const ref = { type: "file", path: "/workspace/a.txt", volume: "vol_000000000000000000000000", version: 1, size: 5, contentType: "text/plain", chunks: [hash("alpha")] };
+  const model = { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: "http://127.0.0.1:9/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
+  volumes.pin = async () => { throw new Error("the database went away"); };
+  await assert.rejects(sessions.create([], { model, initialMessages: [{ role: "user", content: [{ type: "text", text: "see" }, ref], timestamp: 0 }] } as any, "cloned", {}, "acme"), /database went away/);
+  assert.equal((await db.query("select count(*)::int as count from agents where tenant = 'acme'")).rows[0].count, 0, "no agent without its pins");
 });

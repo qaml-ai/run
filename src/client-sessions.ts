@@ -1478,13 +1478,15 @@ export class ClientSessions {
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
+        // FileRefs its initial messages carry (a clone of another agent's history) are its own now: their chunks are pinned
+        // to it before it exists, so there is never an agent without them (a pin left by a create that failed only keeps
+        // chunks stored).
+        const refs = (safeConfig.initialMessages ?? []).flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
+        if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
         // A conditional create: if a concurrent request made this agent first, retry as a load.
         await this.writeHeader(session);
         // A new agent's history is indexed from its first message; only agents from before the index have none.
         await this.historyIndex.begin(id);
-        // FileRefs its initial messages carry (a clone of another agent's history) are its own now: their chunks are pinned to it.
-        const refs = (safeConfig.initialMessages ?? []).flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
-        if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
         this.sessions.set(id, session);
         created = true;
         settle(session);
