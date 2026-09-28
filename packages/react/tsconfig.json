@@ -9,5 +9,5 @@
       "@camelai/agent-runtime-react": ["./src/index.tsx"]
     }
   },
-  "include": ["./src/**/*.ts", "./src/**/*.tsx", "./test/**/*.ts", "./test/**/*.tsx", "./vitest.config.ts"]
+  "include": ["./src/**/*.ts", "./src/**/*.tsx", "./test/**/*.ts", "./test/**/*.tsx", "./vitest.config.ts", "../test-lifecycle.ts"]
 }

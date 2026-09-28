@@ -26,8 +26,8 @@ export interface AgentChatStores {
 }
 
 /**
- * Stores over a chat: `options` makes one, connected from the first subscriber to the last (a chat you
- * pass stays as you left it). Each store notifies only when its part of the snapshot changes.
+ * Stores over a chat: `options` makes one, connected in a browser from the first subscriber to the last
+ * (a chat you pass stays as you left it). Each store notifies only when its part of the snapshot changes.
  */
 export function agentChat(options: Omit<AgentChatOptions, "autoConnect"> | AgentChat): AgentChatStores {
   const own = !("getSnapshot" in options);
@@ -35,7 +35,8 @@ export function agentChat(options: Omit<AgentChatOptions, "autoConnect"> | Agent
   let subscribers = 0;
   const select = <T>(pick: (snapshot: ChatSnapshot) => T): Readable<T> => ({
     subscribe(run) {
-      if (subscribers++ === 0 && own) chat.connect();
+      // Server rendering subscribes too: a chat connects only in a browser.
+      if (subscribers++ === 0 && own && typeof window !== "undefined") chat.connect();
       let last = pick(chat.getSnapshot());
       run(last);
       const off = chat.subscribe(() => {

@@ -94,3 +94,20 @@ describe("hooks", () => {
   });
 });
 
+
+describe("the provider's chat under StrictMode", () => {
+  it("opens one stream across mount, unmount and mount, whichever token answer comes last", async () => {
+    const { slowServer } = await import("../../test-lifecycle.ts");
+    const server = slowServer();
+    const view = render(<StrictMode><AgentProvider endpoint="/api/agent" fetch={server.fetch}><p>chat</p></AgentProvider></StrictMode>);
+    await waitFor(() => expect(server.pending.length).toBe(2));
+    server.pending[1]();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    server.pending[0]();
+    await waitFor(() => expect(server.open()).toBe(1));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(server.open()).toBe(1);
+    view.unmount();
+    await waitFor(() => expect(server.open()).toBe(0));
+  });
+});

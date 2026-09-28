@@ -531,9 +531,12 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
     queueMicrotask(emit);
   }
 
+  /** The generation whose token is being fetched, so a second connect() meanwhile does not start another. */
+  let connecting: number | null = null;
   function connect() {
-    if (destroyed || watcher) return;
+    if (destroyed || watcher || connecting === generation) return;
     const mine = ++generation;
+    connecting = mine;
     fatal = false;
     void (async () => {
       let minted: { token: string; expiresAt: number; agentId: string; url?: string; proxy?: boolean };
@@ -543,14 +546,18 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
         catch (cause) {
           if (mine !== generation) return;
           const failure = toError(cause);
-          if (failure.status && failure.status < 500 && failure.status !== 429) { fatal = true; report(failure); return; }
+          if (failure.status && failure.status < 500 && failure.status !== 429) { fatal = true; connecting = null; report(failure); return; }
           report(failure);
           await new Promise(resolve => setTimeout(resolve, backoff));
           if (mine !== generation) return;
         }
       }
+      // Disconnected (or destroyed) while the token was on its way, or superseded by a later connect: stop here.
+      if (mine !== generation || destroyed) return;
+      connecting = null;
       try {
         agentId = minted.agentId;
+        (watcher as Watcher | null)?.close();
         watcher = watchAgent({
           ...options.watch, ...readsFrom(minted, options.endpoint, options.thread, doFetch, options.headers, options.credentials),
           agentId: minted.agentId, token: minted.token, expiresAt: minted.expiresAt,
@@ -585,6 +592,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
   }
   function disconnect() {
     generation++;
+    connecting = null;
     watcher?.close();
     watcher = null;
     if (view) { view = { ...view, connected: false }; schedule(); }

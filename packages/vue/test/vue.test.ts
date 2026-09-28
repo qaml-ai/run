@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { effectScope, nextTick, watch } from "vue";
 import { describe, expect, it, vi } from "vitest";
 import { useAgentChat } from "../src/index.ts";

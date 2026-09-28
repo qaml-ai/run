@@ -5,7 +5,7 @@
  *
  *   const { messages, status, send, stop } = useAgentChat({ endpoint: "/api/agent" });
  */
-import { getCurrentScope, inject, onScopeDispose, provide, readonly, shallowRef, type InjectionKey, type Ref } from "vue";
+import { getCurrentInstance, getCurrentScope, inject, onMounted, onScopeDispose, provide, readonly, shallowRef, type InjectionKey, type Ref } from "vue";
 import { createAgentChat, type AgentChat, type AgentChatOptions, type ChatSnapshot } from "@camelai/agent-runtime/chat";
 export type * from "@camelai/agent-runtime/chat";
 export { answerValue, createAgentChat } from "@camelai/agent-runtime/chat";
@@ -23,8 +23,9 @@ export interface UseAgentChat {
 }
 
 /**
- * Refs over a chat: `options` makes one (connected until the component, or effect scope, ends), or pass
- * a chat you made. Each ref changes only when its part of the snapshot does.
+ * Refs over a chat: `options` makes one, or pass a chat you made. One it makes connects once the
+ * component is mounted (never while rendering on the server, as in Nuxt) and is destroyed with it (or
+ * with the effect scope). Each ref changes only when its part of the snapshot does.
  */
 export function useAgentChat(options: Omit<AgentChatOptions, "autoConnect"> | AgentChat): UseAgentChat {
   const own = !("getSnapshot" in options);
@@ -38,7 +39,11 @@ export function useAgentChat(options: Omit<AgentChatOptions, "autoConnect"> | Ag
     // shallowRef only triggers on a new value: unchanged parts keep their identity, so nothing re-renders for them.
     messages.value = next.messages; status.value = next.status; inputs.value = next.inputs; error.value = next.error; hasOlder.value = next.hasOlder;
   });
-  if (own) chat.connect();
+  if (own) {
+    // In a component: once mounted, which only happens in a browser. Elsewhere: at once, in a browser only.
+    if (getCurrentInstance()) onMounted(() => chat.connect());
+    else if (typeof window !== "undefined") chat.connect();
+  }
   if (getCurrentScope()) onScopeDispose(() => { unsubscribe(); if (own) chat.destroy(); });
   return {
     chat, snapshot: readonly(snapshot) as Readonly<Ref<ChatSnapshot>>,

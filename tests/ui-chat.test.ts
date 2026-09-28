@@ -258,3 +258,67 @@ test("a failed send stays with its error and can be retried; a refused token sto
   await until(() => refused.getSnapshot().status === "error", "the refusal");
   assert.equal(refused.getSnapshot().error?.code, "unauthorized");
 });
+
+// ---------------------------------------------------------------------------------------------
+// Connecting and disconnecting (React StrictMode mounts, effects, unmounts, and mounts again)
+
+/** A handler stand-in whose token answers wait until released, and which counts event streams opened. */
+function slowTokens() {
+  const pending: (() => void)[] = [];
+  const streams: AbortSignal[] = [];
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/events")) {
+      streams.push(init?.signal as AbortSignal);
+      // A stream that stays open until it is aborted.
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode("event: ready\ndata: {\"watch\":true}\n\n"));
+        (init?.signal as AbortSignal | undefined)?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+      } }), { headers: { "Content-Type": "text/event-stream" } });
+    }
+    if (url.includes("/history") || url.includes("/inputs") || url.includes("/state")) return Response.json(url.includes("/history") ? { entries: [], next: null, total: 0 } : []);
+    const body = JSON.parse(String(init?.body));
+    if (body.action !== "token") return Response.json({});
+    await new Promise<void>(resolve => pending.push(resolve));
+    return Response.json({ proxy: true, agentId: "client_x", token: "", expiresAt: Date.now() + 3_600_000 });
+  };
+  const open = () => streams.filter(signal => !signal?.aborted).length;
+  return { fetch, pending, streams, open };
+}
+
+test("connect, disconnect, connect (StrictMode) opens one stream, whichever token arrives first", async () => {
+  for (const order of ["first-last", "first-first"] as const) {
+    const server = slowTokens();
+    const chat = createAgentChat({ endpoint: "/api/agent", autoConnect: false, fetch: server.fetch });
+    chat.connect(); chat.disconnect(); chat.connect();
+    chat.connect(); // a second effect while the token is on its way starts nothing more
+    await until(() => server.pending.length === 2, "both token requests");
+    const [first, second] = server.pending;
+    if (order === "first-last") { second(); await sleep(20); first(); } else { first(); await sleep(20); second(); }
+    await until(() => chat.getSnapshot().connected, `the chat to connect (${order})`);
+    await sleep(50);
+    assert.equal(server.open(), 1, `one stream (${order})`);
+    assert.equal(chat.getSnapshot().status, "ready");
+    chat.destroy();
+    await until(() => server.open() === 0, "the stream to close");
+  }
+});
+
+test("a chat destroyed (or disconnected) before its token arrives never opens a stream", async () => {
+  const server = slowTokens();
+  const destroyed = createAgentChat({ endpoint: "/api/agent", fetch: server.fetch });
+  const disconnected = createAgentChat({ endpoint: "/api/agent", fetch: server.fetch });
+  await until(() => server.pending.length === 2, "the token requests");
+  destroyed.destroy();
+  disconnected.disconnect();
+  for (const release of server.pending) release();
+  await sleep(100);
+  assert.equal(server.streams.length, 0);
+  // Connected again, the disconnected one opens its stream.
+  disconnected.connect();
+  await until(() => server.pending.length === 3, "a new token request");
+  server.pending[2]();
+  await until(() => disconnected.getSnapshot().connected, "the chat to connect");
+  assert.equal(server.open(), 1);
+  disconnected.destroy();
+});
