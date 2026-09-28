@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 .agent-runtime/
 __pycache__/
