@@ -12,6 +12,7 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 | An agent's key (`Idempotency-Key` on `POST /v1/agents`, the SDKs' `upsert(key)`) | 1–80 characters of `A-Z a-z 0-9 _ -` |
 | Lifetime (`ttlSeconds`) | 60 s to 31,622,400 s (366 days), or `null`: until deleted. Default: until deleted for an agent made with a key; 1 day for one made without |
 | Create body (`POST /v1/agents`, with `initialMessages`) | 18 MiB |
+| Imported history (`initialMessages`) | 16 MB of JSON (`HISTORY_TOO_LARGE`, 413) |
 | `systemPrompt`, `systemPromptAppend` | 32,000 characters each |
 | `modelHeaders` | at most 20 headers, 8 KB in all; never auth headers |
 | `spendLimit.usd` | 0 to 1,000,000 |

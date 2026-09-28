@@ -244,10 +244,10 @@ export class Transcript {
   }
 
   /** Atomically replace the history (imports), folding the log to a single snapshot record. */
-  async replace(messages: AgentMessage[], active = this.active) {
-    this.apply({ t: "reset", messages });
+  async replace(messages: AgentMessage[], active = this.active, compaction?: CompactionState) {
+    this.apply({ t: "reset", messages, ...(compaction ? { compaction } : {}) });
     this.active = active;
-    await this.log.rewrite(() => [{ t: "reset", messages: [...messages] }, ...(this.active ? [{ t: "turn" as const, active: true }] : [])]);
+    await this.log.rewrite(() => [{ t: "reset", messages: [...messages], ...(compaction ? { compaction } : {}) }, ...(this.active ? [{ t: "turn" as const, active: true }] : [])]);
   }
 }
 

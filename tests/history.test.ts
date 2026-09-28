@@ -32,7 +32,7 @@ test("interrupted-turn recovery preserves settled native results and marks only 
   assert.equal(recovered[2].role, "toolResult");
   assert.match(JSON.stringify(recovered[2]), /outcome is unknown/);
   assert.equal(recovered.at(-1)!.role, "user");
-  assert.throws(() => validateInitialMessages([{ role: "system" }] as any), /native/);
+  assert.throws(() => validateInitialMessages([{ role: "system" }] as any), /INVALID_HISTORY: initialMessages\[0\] has role "system"/);
 });
 
 test("scoped callers can submit user text and images but never assistant or tool history", () => {

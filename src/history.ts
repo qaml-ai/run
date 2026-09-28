@@ -1,24 +1,76 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fileChars, validFileRef } from "./files.ts";
+import type { CompactionState } from "./transcript.ts";
 
-/** Imported provider messages remain native: reasoning/signatures are never reconstructed. */
+const HISTORY_BYTES = 16 * 1024 * 1024;
+const invalid = (message: string) => new Error(`INVALID_HISTORY: ${message}`);
+const isObject = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
+/** Text, image and file blocks: what a user message or a tool result may carry. */
+const inputBlock = (part: any) => isObject(part) && (part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part));
+
+/**
+ * Imported history (an agent's `initialMessages`): native Pi messages, kept as they are, so reasoning and
+ * signatures are never reconstructed. Each is checked for what the model call and history need, and a
+ * refusal names the message (`INVALID_HISTORY`, 400); past 16 MB of JSON it is `HISTORY_TOO_LARGE` (413).
+ */
 export function validateInitialMessages(messages: AgentMessage[]) {
-  if (!Array.isArray(messages) || messages.some(message => !message || !["user", "assistant", "toolResult"].includes(message.role))) {
-    throw new Error("Initial messages must be native user, assistant, or toolResult messages");
+  if (!Array.isArray(messages)) throw invalid("initialMessages must be an array of messages");
+  messages.forEach((message: any, index) => {
+    const at = `initialMessages[${index}]`;
+    if (!isObject(message)) throw invalid(`${at} must be a message object`);
+    if (message.role === "user") {
+      if (typeof message.content !== "string" && !(Array.isArray(message.content) && message.content.every(inputBlock))) throw invalid(`${at}: a user message's content is a string or an array of text, image and file blocks`);
+    } else if (message.role === "assistant") {
+      if (!Array.isArray(message.content)) throw invalid(`${at}: an assistant message's content is an array of text, thinking and toolCall blocks`);
+      message.content.forEach((part: any, block: number) => {
+        if (!isObject(part)) throw invalid(`${at}: content[${block}] must be a block object`);
+        if (part.type === "text" && typeof part.text === "string" || part.type === "thinking" && typeof part.thinking === "string") return;
+        if (part.type === "toolCall") {
+          if (typeof part.id !== "string" || !part.id || typeof part.name !== "string" || !part.name || !isObject(part.arguments)) throw invalid(`${at}: content[${block}]: a toolCall needs id, name and arguments (an object)`);
+          return;
+        }
+        throw invalid(`${at}: an assistant message's content is an array of text, thinking and toolCall blocks`);
+      });
+    } else if (message.role === "toolResult") {
+      if (typeof message.toolCallId !== "string" || !message.toolCallId || typeof message.toolName !== "string" || !Array.isArray(message.content) || !message.content.every(inputBlock)) {
+        throw invalid(`${at}: a toolResult needs toolCallId, toolName and content (an array of text, image and file blocks)`);
+      }
+    } else if (message.role === "compactionSummary") {
+      if (typeof message.summary !== "string" || !message.summary.trim()) throw invalid(`${at}: a compactionSummary needs its summary`);
+    } else throw invalid(`${at} has role ${JSON.stringify(message.role)}; a message is user, assistant, toolResult or compactionSummary`);
+  });
+  const bytes = Buffer.byteLength(JSON.stringify(messages));
+  if (bytes > HISTORY_BYTES) {
+    throw Object.assign(new Error(`HISTORY_TOO_LARGE: initialMessages is ${(bytes / 1024 / 1024).toFixed(1)} MB of JSON; at most 16 MB. Import the most recent messages that fit, after a compactionSummary of the rest`), { status: 413 });
   }
-  if (Buffer.byteLength(JSON.stringify(messages)) > 16 * 1024 * 1024) throw new Error("Initial history exceeds 16 MB");
+}
+
+/**
+ * Imported history as the transcript keeps it: its messages without compaction summaries, and the last
+ * summary as the compaction it stands for, cut where it sat. The model then sees that summary and what
+ * follows it; history still has every message.
+ */
+export function importedHistory(initial: AgentMessage[]): { messages: AgentMessage[]; compaction?: CompactionState } {
+  const messages: AgentMessage[] = [];
+  let compaction: CompactionState | undefined;
+  for (const message of initial as any[]) {
+    if (message.role !== "compactionSummary") { messages.push(message); continue; }
+    const at = typeof message.timestamp === "number" ? message.timestamp : Date.parse(message.timestamp ?? "");
+    compaction = { summary: message.summary, cut: messages.length, tokensBefore: Number(message.tokensBefore) || 0, at: Number.isFinite(at) ? at : Date.now() };
+  }
+  return { messages, ...(compaction ? { compaction } : {}) };
 }
 
 /** Scoped callers may only add user input; assistant and tool history is runtime-owned. */
 export function validateUserMessages(messages: AgentMessage[]) {
-  validateInitialMessages(messages);
+  if (!Array.isArray(messages) || messages.some(message => !message || message.role !== "user")) throw new Error("Only user messages can be submitted; assistant and tool results are produced by the runtime");
   for (const message of messages) {
-    if (message.role !== "user") throw new Error("Only user messages can be submitted; assistant and tool results are produced by the runtime");
-    if (typeof message.content === "string") continue;
+    if (message.role !== "user" || typeof message.content === "string") continue;
     if (!Array.isArray(message.content) || message.content.some(part => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string"))) {
       throw new Error("User messages may only contain text and images");
     }
   }
+  if (Buffer.byteLength(JSON.stringify(messages)) > HISTORY_BYTES) throw new Error("Messages exceed 16 MB");
 }
 
 /**

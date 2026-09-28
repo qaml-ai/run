@@ -1419,7 +1419,8 @@
           },
           "initialMessages": {
             "type": "array",
-            "items": {}
+            "items": {},
+            "description": "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide"
           },
           "fileTools": {
             "type": "boolean",

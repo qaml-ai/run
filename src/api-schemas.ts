@@ -195,7 +195,7 @@ export const AgentInput = z.object({
   systemPrompt: z.string().optional(),
   systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt, e.g. per-conversation context. The agent's own: applying its definition replaces the prompt and keeps this" }),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
-  initialMessages: z.array(z.unknown()).optional(),
+  initialMessages: z.array(z.unknown()).optional().openapi({ description: "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide" }),
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without" }),
   mounts: z.array(Mount).optional().openapi({ description: "Volumes for the agent's file tools; default: a new workspace volume at /workspace" }),
