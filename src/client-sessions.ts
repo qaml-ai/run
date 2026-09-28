@@ -174,8 +174,8 @@ const MAX_BUFFERED_EVENTS = 512;
 const MAX_WATCHERS = 32;
 const MAX_TENANT_WATCHERS = 1024;
 const MAX_NODE_WATCHERS = 4096;
-/** Failed loads of an agent with work left before sweeps and reads stop trying (see `resumeFailed`). */
-const MAX_RESUME_FAILURES = 5;
+/** The longest a load of an agent with work left is put off (see `defer`). */
+const MAX_RESUME_DELAY_MS = 60 * 60_000;
 /** How often an idle watcher's agent is checked for an owner elsewhere, should its load's notice be missed. */
 const IDLE_CHECK_MS = 20_000;
 /** A long poll waits at most this long for an event. */
@@ -493,6 +493,9 @@ export class ClientSessions {
     this.sessions.set(id, session);
     this.loaded(session);
     session.inherited = new Set([...resumed, ...queued].map(record => record.id));
+    // Its runs are this node's now, so no sweep need look at it (a crash of this node is its dead owner, which sweeps catch).
+    // Written before anything can hand it back, whose unload marks it pending again. With no work to resume, a put-off load is over.
+    await underClaim(this.db, claim, sql => sql.query(`update agents set pending_runs = false${session.inherited!.size ? "" : ", resume_failures = 0, resume_after = null"} where id = $1`, [id]));
     for (const record of resumed) { session.resuming.add(record.id); this.enqueue(session, record, undefined); }
     for (const record of queued.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) this.enqueue(session, record, record.params);
     return session;
@@ -698,9 +701,6 @@ export class ClientSessions {
   /** A session loaded here: it takes up its idle watchers and polls, and other nodes end theirs (they reconnect here). */
   private loaded(session: Session) {
     const id = session.header.id;
-    // Its runs are this node's now, so no sweep need look at it (a crash of this node is its dead owner, which sweeps catch),
-    // and a load that had failed before has succeeded.
-    void underClaim(this.db, session.claim, sql => sql.query("update agents set pending_runs = false, resume_failures = 0, resume_after = null where id = $1", [id])).catch(() => {});
     const entry = this.idle.get(id);
     if (entry) {
       this.idle.delete(id);
@@ -734,7 +734,7 @@ export class ClientSessions {
     };
     if (this.sessions.has(id) || this.loading.has(id) || this.closed) return live();
     // One with work left is loaded, which resumes it, and watched live.
-    if (await this.orphaned(id)) return live();
+    if (await this.resumable(id)) return live();
     const cursor = await this.idleCursor(id);
     // Loaded meanwhile, here or on another node (whose stream this one does not have): take the loaded path, or retry there.
     if (this.sessions.has(id) || this.loading.has(id)) return live();
@@ -1388,7 +1388,7 @@ export class ClientSessions {
   /** A tenant's live agents. `running` covers agents served by any node. */
   async list(tenant: string) {
     const { rows } = await this.db.query(`
-      select a.id, a.name, a.type, a.model, a.expires_at, n.node is not null as served from agents a
+      select a.id, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, n.node is not null as served from agents a
       left join actor_owners o on o.actor = a.id
       left join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
       where a.tenant = $1 and not a.revoked and (a.expires_at is null or a.expires_at > $2) order by a.id`, [tenant, Date.now()]);
@@ -1396,7 +1396,8 @@ export class ClientSessions {
       const local = this.sessions.get(row.id);
       const response = local?.response;
       const running = this.supervisor.agents.has(row.id) || (!local && row.served);
-      return { id: row.id as string, name: row.name as string, type: row.type as string, model: row.model as string, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null };
+      return { id: row.id as string, name: row.name as string, type: row.type as string, model: row.model as string, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
+        resume: row.resume_failures ? { failures: row.resume_failures as number, after: Number(row.resume_after) } : null };
     });
   }
 
@@ -1434,14 +1435,14 @@ export class ClientSessions {
   async stateFor(id: string, tenant: string) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
     // One with work left is loaded (resuming it), and answers from its session.
-    const orphaned = this.unloaded(id) && await this.orphaned(id);
-    if (this.unloaded(id) && !orphaned) {
+    const resuming = this.unloaded(id) && await this.resumable(id);
+    if (this.unloaded(id) && !resuming) {
       // Its cursor is where a stream of it picks up (see `idleCursor`); undefined: a node has just taken it.
       const cursor = await this.idleCursor(id);
-      if (cursor !== undefined && this.unloaded(id)) return { cursor, requests: await this.storedRequests(id) };
+      if (cursor !== undefined && this.unloaded(id)) return { cursor, requests: await this.storedRequests(id), ...await this.resumeState(id) };
     }
     const session = await this.load(id).catch(error => {
-      if (orphaned && !(error instanceof NotOwner)) void this.resumeFailed(id, error);
+      if (resuming && !(error instanceof NotOwner)) void this.defer(id, error);
       throw error;
     });
     if (!session) throw new HttpError(404, "Unknown agent");
@@ -1453,7 +1454,7 @@ export class ClientSessions {
     if (!await this.owns(id, tenant)) return undefined;
     // An agent no node has loaded is read from storage, not loaded for it (see `unloaded`); one with work left is loaded meanwhile.
     if (this.unloaded(id)) {
-      if (await this.orphaned(id)) this.resumeSoon(id);
+      if (await this.resumable(id)) this.resumeSoon(id);
       return { messages: await this.supervisor.history(id) };
     }
     const session = await this.load(id);
@@ -1468,40 +1469,75 @@ export class ClientSessions {
   private unloaded(id: string) { return !this.sessions.has(id) && !this.loading.has(id); }
 
   /**
-   * Whether an agent no node holds has work left: runs its last owner left queued, or an owner that died
-   * holding it (its turn may be half done). Loading it resumes them; nothing else would.
+   * An agent's work no node is doing: runs its last owner left queued, or an owner that died holding it
+   * (its turn may be half done). Only a load resumes them. `waits`: a load of it is put off (see `defer`).
    */
-  private async orphaned(id: string) {
+  private async work(id: string) {
     const { rows } = await this.db.query(`
-      select (a.pending_runs or (o.session is not null and not exists (
-        select from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())))
-        and a.resume_failures < $2 and (a.resume_after is null or a.resume_after <= $3) as orphaned
-      from agents a left join actor_owners o on o.actor = a.id where a.id = $1`, [id, MAX_RESUME_FAILURES, Date.now()]);
-    return !!rows[0]?.orphaned;
+      select a.tenant, a.pending_runs or (o.session is not null and not exists (
+          select from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())) as left,
+        coalesce(a.resume_after > $2, false) as waits
+      from agents a left join actor_owners o on o.actor = a.id where a.id = $1`, [id, Date.now()]);
+    return { tenant: rows[0]?.tenant as string, left: !!rows[0]?.left, waits: !!rows[0]?.waits };
   }
 
-  /** Load an agent with work left, in the background; a failed load is tried again later (see `resumeFailed`). */
-  private resumeSoon(id: string) {
-    void this.load(id).catch(error => { if (!(error instanceof NotOwner)) void this.resumeFailed(id, error); });
+  /** Whether this node could start an agent of `tenant` now: a free slot, or an idle agent to stop, within the tenant's quota. */
+  private async room(tenant: string) {
+    const supervisor = this.supervisor;
+    const idle = (filter: (session: Session) => boolean) => [...this.sessions.values()].some(session => supervisor.agents.has(session.header.id) && !this.busy(session) && filter(session));
+    const free = (supervisor.options.maxAgents ?? 8) - supervisor.agents.size - supervisor.starting.size - supervisor.reserved.size;
+    if (free <= 0 && !idle(() => true)) return false;
+    const quota = await this.options.agentLimitFor?.(tenant) ?? this.options.maxAgentsPerTenant;
+    if (!quota) return true;
+    const hosted = [...this.sessions.values()].filter(session => session.header.tenant === tenant && (supervisor.agents.has(session.header.id) || supervisor.starting.has(session.header.id))).length;
+    return hosted < quota || idle(session => session.header.tenant === tenant);
+  }
+
+  /** Whether a read of an unloaded agent should load it, to resume its work: it has work, no load of it is put off, and there is room here. */
+  private async resumable(id: string) {
+    const work = await this.work(id);
+    return work.left && !work.waits && await this.room(work.tenant);
   }
 
   /**
-   * A load of an agent with work left failed: it is tried again no sooner than a backoff (the sweep's
-   * interval, doubling), and after MAX_RESUME_FAILURES not at all, by sweeps or by reads, which then read
-   * storage. A successful load starts the count over.
+   * A request that acts on an unloaded agent (a prompt, an application connecting) loads it, which resumes
+   * its work; without room here for that work, it is asked to retry (to reach a node with room) rather than
+   * loaded here only to be handed back.
    */
-  private async resumeFailed(id: string, error: unknown) {
-    const base = this.options.orphanSweepMs || 30_000;
-    const { rows } = await this.db.query(`update agents set resume_failures = resume_failures + 1, resume_after = $2 + $3 * power(2, resume_failures)::bigint
-      where id = $1 returning resume_failures`, [id, Date.now(), base]).catch(() => ({ rows: [] as { resume_failures: number }[] }));
-    const failures = rows[0]?.resume_failures;
-    if (failures === MAX_RESUME_FAILURES) console.error(JSON.stringify({ type: "agent_resume_abandoned", level: "error", agent: id, failures, error: errorText(error) }));
-    else console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, failures, error: errorText(error) }));
+  private async roomFor(id: string) {
+    if (!this.options.ownership || !this.unloaded(id)) return;
+    const work = await this.work(id);
+    if (work.left && !await this.room(work.tenant)) throw new HttpError(503, "No room on this node for this agent's unfinished work; retry");
+  }
+
+  /** A put-off load of an agent's work, as its state and listing show it: how many times, and until when. */
+  private async resumeState(id: string) {
+    const row = (await this.db.query("select resume_failures, resume_after from agents where id = $1", [id])).rows[0];
+    return row?.resume_failures ? { resume: { failures: row.resume_failures as number, after: Number(row.resume_after) } } : {};
+  }
+
+  /** Load an agent with work left, in the background; a failed load puts the next off (see `defer`). */
+  private resumeSoon(id: string) {
+    void this.load(id).catch(error => { if (!(error instanceof NotOwner)) void this.defer(id, error); });
+  }
+
+  /**
+   * Put off loading an agent with work left, after a load of it failed or it was handed back for want of
+   * room: by the sweep's interval, doubling each time, at most an hour, and never for good. A window counts
+   * once however many requests met it; a run of its work that begins starts the count over.
+   */
+  private async defer(id: string, reason: unknown) {
+    const now = Date.now();
+    const { rows } = await this.db.query(`update agents set resume_failures = resume_failures + 1,
+        resume_after = $2 + least($3 * power(2, least(resume_failures, 30))::bigint, $4)
+      where id = $1 and (resume_after is null or resume_after <= $2) returning resume_failures, resume_after`,
+      [id, now, this.options.orphanSweepMs || 30_000, MAX_RESUME_DELAY_MS]).catch(() => ({ rows: [] as { resume_failures: number; resume_after: string }[] }));
+    if (rows[0]) console.error(JSON.stringify({ type: "agent_resume_deferred", agent: id, failures: rows[0].resume_failures, until: Number(rows[0].resume_after), reason: errorText(reason) }));
   }
 
   /**
    * Give an agent back that this node took over but has no room to run (every slot busy, or its tenant's):
-   * its taken-over runs stay open, its resumes are not spent, and it is marked for a node with room.
+   * its taken-over runs stay open, its resumes are not spent, and it is put off (see `defer`) for a node with room.
    */
   private async handBack(session: Session) {
     if (session.handedBack) return;
@@ -1510,39 +1546,38 @@ export class ClientSessions {
       const record = session.requests.get(id);
       if (record?.resumes) this.upsertRequest(session, { ...record, resumes: record.resumes - 1 });
     }
+    // Should this commit fail, the resume given back is spent after all: at most one of the few a turn has.
     await this.commit(session, true).catch(() => {});
     this.idleWatchers(session);
     session.response?.end();
-    console.log(JSON.stringify({ type: "agent_handed_back", agent: session.header.id, runs: session.running.size }));
+    await this.defer(session.header.id, "no room on this node");
     await this.unload(session);
   }
 
   /**
-   * Load agents no node holds that have work left (see `orphaned`), `limit` at a time, so their runs
-   * resume even when no one reads them. Every node sweeps; taking ownership decides which loads each.
+   * Load agents no node holds that have work left (see `work`), no more than this node has room for, so
+   * their runs resume even when no one reads them. Every node sweeps; taking ownership decides which loads each.
    */
   async resumeOrphans(limit = 10) {
     if (this.closed || this.draining) return 0;
-    // Only as many as this node has room to run: a node with none leaves them to one that has.
     const supervisor = this.supervisor;
     const free = (supervisor.options.maxAgents ?? 8) - supervisor.agents.size - supervisor.starting.size - supervisor.reserved.size;
     if (free <= 0) return 0;
-    limit = Math.min(limit, free);
     const { rows } = await this.db.query(`
-      select a.id from agents a
+      select a.id, a.tenant from agents a
       where not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $1)
-        and a.resume_failures < $3 and (a.resume_after is null or a.resume_after <= $1)
+        and (a.resume_after is null or a.resume_after <= $1)
         and a.id in (
           select id from agents where pending_runs
           union
           select o.actor from actor_owners o where o.session is not null and o.actor like 'client\\_%'
             and not exists (select from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now()))
-      order by random() limit $2`, [Date.now(), limit, MAX_RESUME_FAILURES]);
+      order by random() limit $2`, [Date.now(), Math.min(limit, free)]);
     let loaded = 0;
-    for (const { id } of rows) {
-      if (this.sessions.has(id) || this.loading.has(id)) continue;
+    for (const { id, tenant } of rows) {
+      if (this.sessions.has(id) || this.loading.has(id) || !await this.room(tenant)) continue;
       try { if (await this.load(id)) loaded++; }
-      catch (error) { if (!(error instanceof NotOwner)) await this.resumeFailed(id, error); }
+      catch (error) { if (!(error instanceof NotOwner)) await this.defer(id, error); }
     }
     if (loaded) console.log(JSON.stringify({ type: "agents_resumed", count: loaded }));
     return loaded;
@@ -1639,7 +1674,7 @@ export class ClientSessions {
   async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string }) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
     if (this.unloaded(id)) {
-      if (await this.orphaned(id)) this.resumeSoon(id);
+      if (await this.resumable(id)) this.resumeSoon(id);
       return this.historyPage({ header: { id }, unloaded: true }, query);
     }
     const session = await this.load(id);
@@ -1676,6 +1711,7 @@ export class ClientSessions {
       if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events` && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
         return this.watchAgent(c, header, c.req.query("poll") === "1" ? "poll" : "watch");
       }
+      await this.roomFor(header.id);
       const session = await this.load(header.id);
       if (!session) throw new HttpError(401, "Unauthorized");
       if (session.fault) throw session.fault;
@@ -2019,6 +2055,7 @@ export class ClientSessions {
 
   /** Submit a request to a tenant's agent on the tenant's behalf (REST API and console). */
   async submit(id: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }) {
+    if (await this.owns(id, tenant)) await this.roomFor(id);
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Unknown agent");
     if (session.fault) throw session.fault;
@@ -2154,6 +2191,8 @@ export class ClientSessions {
           throw error;
         }
         if (this.draining || session.handedBack) return;
+        // Work taken over runs: any put-off loads of it are over.
+        if (session.inherited?.delete(record.id)) void this.db.query("update agents set resume_failures = 0, resume_after = null where id = $1 and resume_failures > 0", [session.header.id]).catch(() => {});
         // Durable before any side effect: after a crash this run is "began", never repeated.
         const { params: _params, ...rest } = session.requests.get(record.id)!;
         record = this.upsertRequest(session, { ...rest, began: Date.now() });

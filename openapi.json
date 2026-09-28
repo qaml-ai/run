@@ -459,6 +459,25 @@
               "number",
               "null"
             ]
+          },
+          "resume": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "failures": {
+                "type": "number"
+              },
+              "after": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "failures",
+              "after"
+            ],
+            "description": "Loads of its unfinished work that failed, or found no room, and when the next may be tried: put off, doubling, at most an hour apart, never for good"
           }
         },
         "required": [
@@ -468,7 +487,8 @@
           "model",
           "connected",
           "running",
-          "expiresAt"
+          "expiresAt",
+          "resume"
         ]
       },
       "AgentCreated": {
@@ -1019,6 +1039,22 @@
               "$ref": "#/components/schemas/RequestRecord"
             },
             "description": "Recent requests (the running ones and the latest settled), with their outcomes"
+          },
+          "resume": {
+            "type": "object",
+            "properties": {
+              "failures": {
+                "type": "number"
+              },
+              "after": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "failures",
+              "after"
+            ],
+            "description": "For an agent no node holds, whose unfinished work's loads are put off: how many times, and until when"
           }
         },
         "required": [

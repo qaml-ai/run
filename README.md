@@ -121,9 +121,11 @@ agents at a time, and no more than the node has free agent slots. So a turn
 finishes even when no application or tab is there to reconnect. A node that took
 such runs over but has no room to run them (every slot busy, or the tenant's)
 gives the agent back, still pending, for a node with room, rather than failing
-them. An agent that fails to load is tried again after a backoff (the sweep's
-interval, doubling), and after 5 failures no more: an `agent_resume_abandoned`
-error is logged once, and reads of it answer from storage.
+them; a node without room does not load it for a read (which answers from
+storage) or for a prompt or an application connecting (which get 503 and
+`Retry-After`, to reach a node with room). A load of it that fails, or finds no
+room, puts the next off: by the sweep's interval, doubling, at most an hour, and
+never for good. The agent's listing and state show it (`resume: {failures, after}`).
 
 **Deleting agents.** `DELETE /v1/agents/:id` (or `/clients/:id`) revokes the
 agent, stops it and unloads it at once. A sweep every node runs

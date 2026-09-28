@@ -132,6 +132,7 @@ export const AgentSummary = z.object({
   connected: z.boolean(),
   running: z.boolean(),
   expiresAt: z.number().nullable(),
+  resume: z.object({ failures: z.number(), after: z.number() }).nullable().openapi({ description: "Loads of its unfinished work that failed, or found no room, and when the next may be tried: put off, doubling, at most an hour apart, never for good" }),
 }).openapi("AgentSummary");
 
 const Outcome = z.object({ result: z.unknown().optional(), error: z.string().optional(), uncertain: z.boolean().optional() }).openapi("Outcome");
@@ -212,6 +213,7 @@ export const AgentDetail = AgentSummary.extend({
 export const SessionState = z.object({
   cursor: z.number().openapi({ description: "The agent's latest event id: a stream opened with it as Last-Event-ID continues from here" }),
   requests: z.array(RequestRecord).openapi({ description: "Recent requests (the running ones and the latest settled), with their outcomes" }),
+  resume: z.object({ failures: z.number(), after: z.number() }).optional().openapi({ description: "For an agent no node holds, whose unfinished work's loads are put off: how many times, and until when" }),
 }).openapi("SessionState");
 export const EventPoll = z.object({
   cursor: z.number().openapi({ description: "Send as Last-Event-ID on the next poll" }),

@@ -10,7 +10,7 @@ alter table agent_history_index add column reported integer not null default 0;
 -- loads an agent no node holds that has them, or whose owner died, so they run.
 alter table agents add column pending_runs boolean not null default false;
 create index agents_pending_runs on agents (id) where pending_runs;
--- Loads of an agent with work left that failed (src/client-sessions.ts `resumeOrphans`): tried again
--- no sooner than `resume_after` (ms), backing off, and not at all after a few.
+-- Loads of an agent with work left that failed or found no room (src/client-sessions.ts `defer`): the
+-- next is tried no sooner than `resume_after` (ms), backing off to at most an hour, never for good.
 alter table agents add column resume_failures integer not null default 0;
 alter table agents add column resume_after bigint;

@@ -188,7 +188,8 @@ test("a full node's sweep leaves an orphaned turn for a node with room, and neve
   const a = await c.start("a", env);
   const b = await c.start("b", { ...env, AGENT_MAX_AGENTS: "1", AGENT_MAX_AGENTS_PER_TENANT: "1" });
   const call = (base: string, path: string, body?: unknown) => fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
-  const orphan = (await call(a.url, "/v1/agents", {})).id as string;
+  const made = await call(a.url, "/v1/agents", {});
+  const orphan = made.id as string;
   await call(a.url, `/v1/agents/${orphan}/prompt`, { text: "orphan-turn", requestId: "turn-1" });
   await until(() => model.bodies.length === 1, "A to call the model");
   const busy = (await call(b.url, "/v1/agents", {})).id as string;
@@ -198,12 +199,19 @@ test("a full node's sweep leaves an orphaned turn for a node with room, and neve
   await once(a.child, "close");
   // B sweeps several times while full: the orphan's turn must not end.
   await sleep(1500 + 3_000);
-  // A read loads it on B all the same: its run finds no room, and B hands it back, still pending.
+  // Requests to it on B, which has no room for it: a read answers from storage, and a prompt or an
+  // application's connection is asked to retry, instead of B loading it only to hand it back.
   const read = await call(b.url, `/v1/agents/${orphan}/state`);
   assert.equal(read.requests.find((request: any) => request.id === "turn-1").state, "running");
-  await until(async () => (await c.db.query("select pending_runs from agents where id = $1", [orphan])).rows[0].pending_runs && !await c.owner(orphan), "B to hand it back, pending");
-  const handed = (await c.db.query("select header from agents where id = $1", [orphan])).rows[0];
-  assert.ok(handed);
+  const prompt = await fetch(`${b.url}/v1/agents/${orphan}/prompt`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ text: "more" }) });
+  assert.equal(prompt.status, 503);
+  assert.ok(prompt.headers.get("retry-after"));
+  const attach = await fetch(`${b.url}/clients/${orphan}/events`, { headers: { Authorization: `Bearer ${made.token}` } });
+  assert.equal(attach.status, 503);
+  assert.ok(attach.headers.get("retry-after"));
+  await attach.body?.cancel();
+  await sleep(500);
+  assert.notEqual(await c.owner(orphan), b.url, "nothing loaded it on B");
   gate.resolve();
   await until(async () => (await call(b.url, `/v1/agents/${orphan}/state`)).requests?.find((request: any) => request.id === "turn-1")?.state === "completed", "the orphan's turn to resume once B has room", 30_000);
   const outcome = (await call(b.url, `/v1/agents/${orphan}/state`)).requests.find((request: any) => request.id === "turn-1").outcome;
