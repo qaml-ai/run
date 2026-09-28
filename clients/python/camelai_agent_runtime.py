@@ -289,9 +289,21 @@ def _origin(url):
     address = urlparse(url)
     if address.username or address.password or address.query or address.fragment or address.path not in ("", "/"):
         raise ValueError("Use a runtime origin without credentials, path, or query")
-    if address.scheme != "https" and not (address.scheme == "http" and address.hostname in ("localhost", "127.0.0.1", "::1")):
-        raise ValueError("Remote runtimes require https://")
+    if address.scheme != "https" and not (address.scheme == "http" and _private_host(address.hostname or "")):
+        raise ValueError("Remote runtimes require https://; http:// only on a private network (localhost, a single-label or .internal name, a private IP)")
     return url.rstrip("/")
+
+
+def _private_host(hostname):
+    """Hosts plain http:// may reach: loopback, and names and addresses only a private network resolves."""
+    host = hostname.lower().rstrip(".")
+    if host in ("localhost", "::1") or host.endswith((".localhost", ".internal", ".local")):
+        return True
+    parts = host.split(".")
+    if len(parts) == 4 and all(part.isdigit() for part in parts):
+        a, b = int(parts[0]), int(parts[1])
+        return a in (127, 10) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
+    return "." not in host and ":" not in host
 
 
 def _code(value):

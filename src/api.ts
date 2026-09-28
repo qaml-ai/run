@@ -56,8 +56,8 @@ export interface ApiContext {
   browserTokens?: BrowserTokens;
   /** How long a request holds its Idempotency-Key before a retry may take it over (default 2 minutes). */
   idempotencyLockMs?: number;
-  /** Where browsers reach this runtime (a browser token's `url`). */
-  publicUrl?: string;
+  /** Where browsers reach this runtime (a browser token's `url`); none for a private runtime read through a proxy. */
+  browserUrl?: string;
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
@@ -385,7 +385,7 @@ export function api(context: ApiContext) {
     if (!context.browserTokens) throw new HttpError(404, "Browser tokens are not enabled on this runtime");
     const id = c.req.param("id")!;
     const minted = context.browserTokens.mint(c.var.principal.tenant, id, await readJson(c.req.raw.body, 16 * 1024, {}));
-    return json(c, 201, { ...minted, agentId: id, ...(context.publicUrl ? { url: context.publicUrl } : {}) });
+    return json(c, 201, { ...minted, agentId: id, ...(context.browserUrl ? { url: context.browserUrl } : {}) });
   });
   route(createRoute({ method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId }, responses: { 200: reply("The running turn is aborted", z.object({ aborted: z.literal(true) })) } }), async c => {
     await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant);

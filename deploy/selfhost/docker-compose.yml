@@ -33,8 +33,9 @@ services:
     env_file: .env
     environment:
       AGENT_DATABASE_URL: postgres://agent_runtime:${POSTGRES_PASSWORD}@postgres:5432/agent_runtime
+    # Your application reaches it at http://runtime:8790 on this network. This port, on loopback, is for
+    # operators on the host (and a reverse proxy, if browsers reach it directly); remove it to keep it private.
     ports:
-      # On loopback: put the reverse proxy that terminates TLS in front of it.
       - "${AGENT_RUNTIME_BIND:-127.0.0.1}:${AGENT_RUNTIME_PORT:-8790}:8790"
     volumes:
       - data:/data

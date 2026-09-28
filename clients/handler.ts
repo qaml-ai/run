@@ -105,6 +105,10 @@ export type HandlerAction = "token" | "send" | "answer" | "stop" | "link" | "rea
 const ACTIONS = new Set<HandlerAction>(["token", "send", "answer", "stop", "link"]);
 /** A read the proxy passes through: [thread segment, agent id, route]. */
 const READ = /(?:\/threads\/([^/]+))?\/v1\/agents\/([^/]+)\/(events|history|state|inputs)$/;
+/** A file link the proxy passes through: its runtime path, whose signed token is its only credential. */
+const LINK = /\/v1\/links\/[^/]+\/[^/]+$/;
+/** What a file download answers with, passed on from the runtime. */
+const LINK_HEADERS = ["content-type", "content-length", "content-disposition", "content-range", "accept-ranges", "etag", "last-modified", "cache-control", "x-content-type-options", "content-security-policy"];
 
 /** The route: a fetch handler. `close()` detaches agents whose tools this process serves. */
 export type AgentHandler = ((request: Request) => Promise<Response>) & { close(): Promise<void> };
@@ -260,7 +264,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
    * mounts are reachable), renewed once if it expired; once the runtime has POST /v1/agents/:id/links,
    * the tenant key signs it here instead and nothing else changes.
    */
-  async function signLink(agent: Cached, path: string, renew: () => Promise<Cached>): Promise<{ url: string; expiresAt: number }> {
+  async function signLink(agent: Cached, path: string, renew: () => Promise<Cached>): Promise<{ url: string; urlPath?: string; expiresAt: number }> {
     const sign = (entry: Cached) => call(`/clients/${encodeURIComponent(entry.id)}/links`, { path, method: "GET" }, entry.token);
     return sign(agent).catch(async error => {
       if (!(error instanceof HandlerError) || error.status !== 401) throw error;
@@ -363,6 +367,21 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     return new Response(upstream.body, { status: upstream.status, headers });
   }
 
+  /** A signed file link passed through to the runtime (ranges included), with nothing added: its token is the credential. */
+  async function download(request: Request, path: string): Promise<Response> {
+    const headers: Record<string, string> = {};
+    for (const name of ["range", "if-range", "if-none-match", "if-modified-since"]) { const value = request.headers.get(name); if (value !== null) headers[name] = value; }
+    let upstream: Response;
+    try { upstream = await doFetch(`${url}${path}`, { headers, signal: request.signal, redirect: "manual" }); }
+    catch (error) {
+      if (request.signal.aborted) throw error;
+      return fail(502, "runtime_unreachable", `Could not reach the agent runtime: ${(error as Error).message}`);
+    }
+    const passed = new Headers();
+    for (const name of LINK_HEADERS) { const value = upstream.headers.get(name); if (value !== null) passed.set(name, value); }
+    return new Response(upstream.body, { status: upstream.status, headers: passed });
+  }
+
   async function handle(request: Request, body: Record<string, unknown>, auth: A, action: HandlerAction, thread: string | null): Promise<unknown> {
     const agent = await agentFor(auth, thread);
     const path = `/v1/agents/${encodeURIComponent(agent.id)}`;
@@ -410,6 +429,8 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
           fail(403, "forbidden", "Only files the agent presented, or in its own workspace, can be linked (see linkAnyMountedPath)");
         }
         const link = await signLink(agent, file as string, () => agentFor(auth, thread, true));
+        // Proxied, the browser downloads through this route too, on the page's own origin.
+        if (options.proxy) return { url: `${new URL(request.url).pathname.replace(/\/+$/, "")}${link.urlPath ?? new URL(link.url).pathname}`, expiresAt: link.expiresAt };
         return { url: link.url, expiresAt: link.expiresAt };
       }
     }
@@ -450,7 +471,10 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     }
     try {
       if (request.method === "GET" && options.proxy) {
-        const match = READ.exec(new URL(request.url).pathname);
+        const pathname = new URL(request.url).pathname;
+        const link = LINK.exec(pathname);
+        if (link) return await download(request, link[0]);
+        const match = READ.exec(pathname);
         if (!match) fail(404, "not_found", "No such route");
         sameSite(request, origin);
         const response = await read(request, match!);

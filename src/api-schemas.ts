@@ -573,6 +573,7 @@ export const LinkInput = z.object({
 }).openapi("LinkInput");
 export const Link = z.object({
   url: z.string().openapi({ description: "Send the method to it, with no Authorization header" }),
+  urlPath: z.string().openapi({ description: "The url's path on the runtime: for a proxy that serves the link at its own origin, in front of a runtime browsers cannot reach" }),
   method: z.enum(["GET", "PUT"]), tenant: z.string(), volume: z.string(), path: z.string(), expiresAt: z.number(),
   maxBytes: z.number().optional(), contentType: z.string().optional(),
 }).openapi("Link");

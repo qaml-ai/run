@@ -4423,6 +4423,10 @@
             "type": "string",
             "description": "Send the method to it, with no Authorization header"
           },
+          "urlPath": {
+            "type": "string",
+            "description": "The url's path on the runtime: for a proxy that serves the link at its own origin, in front of a runtime browsers cannot reach"
+          },
           "method": {
             "type": "string",
             "enum": [
@@ -4451,6 +4455,7 @@
         },
         "required": [
           "url",
+          "urlPath",
           "method",
           "tenant",
           "volume",

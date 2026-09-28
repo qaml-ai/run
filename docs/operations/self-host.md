@@ -11,8 +11,9 @@ on deploys, Secrets Manager) turn on only when their settings are present.
   at once; agents asleep cost only storage. Postgres 14 or later (the example
   runs 16).
 - Outbound HTTPS to your model providers.
-- A reverse proxy that terminates TLS in front of it, if browsers or other hosts
-  reach it.
+- Nothing public: your application reaches it on a private network, and
+  browsers through your application (see [Networking](#networking)). A reverse
+  proxy that terminates TLS only if other hosts or browsers reach it directly.
 
 The image is `ghcr.io/qaml-ai/agent-runtime:<version>`. It needs no extra
 privileges: no `--privileged`, no added capabilities, no Docker socket, no
@@ -60,7 +61,8 @@ every setting. The ones a self-hosted runtime needs:
 | `AGENT_TENANT`, `AGENT_OPERATOR_TOKEN` | the one tenant it serves and that tenant's operator token (at least 24 characters): what your application sends as `Authorization: Bearer`. For several tenants, give the whole [tenants file](configuration.md) instead, as `AGENT_TENANTS_JSON` or a mounted `AGENT_TENANTS_FILE` |
 | `AGENT_TENANT_API_KEYS` | the tenant's provider keys as JSON, `{"anthropic": "sk-ant-...", "openrouter": "sk-or-..."}`. Optional: keys can be stored later with `PUT /v1/providers/:provider/key` (encrypted with `AGENT_SECRETS_KEY`), or per key scope |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY` | 32 random bytes each, hex. Keep them: changing the first invalidates agents' tokens and signed links, and the second makes stored keys unreadable |
-| `AGENT_PUBLIC_URL` | the URL browsers and tool servers reach the runtime at, through your proxy: signed links and identity tokens name it |
+| `AGENT_PUBLIC_URL` | the URL your application and tool servers reach the runtime at (`http://runtime:8790` on the Compose network): signed links and identity tokens name it |
+| `AGENT_BROWSER_URL` | where browsers reach it, as browser tokens say; `AGENT_PUBLIC_URL` unless set, and empty for none, when browsers read through your application |
 | `AGENT_DATABASE_URL` | Postgres (the Compose file sets it for its own) |
 | `AGENT_PROVIDER`, `AGENT_MODEL` | the default model for agents that name none (default Claude Sonnet 5.5 on Anthropic, then on OpenRouter and Bedrock, whichever the tenant has a key for) |
 
@@ -79,19 +81,33 @@ made for you; `.env.example` has the lines to set.
 
 ## Networking
 
-Your application calls the runtime with the operator token, from its backend.
-Browsers call it too, when you [show agents in a page](../guides/browser.md): with
-browser tokens, which your backend mints, to `/v1/agents/:id/{events,history,state}`
-(CORS allows any origin for them). Route the runtime's hostname (or a path
-prefix) through your proxy to port 8790, and keep single sign-on in front of
-it off those routes: the browser token is their credential.
+The runtime can stay private, reachable only by your application: leave out
+the Compose file's `ports`, put your application on the same Docker network,
+and have it call `http://runtime:8790`. Browsers then read agents through your
+application ([read-proxy mode](../frontend.md), `createAgentHandler({ proxy:
+true })`, or your own route passing `/v1/agents/:id/{events,history,state,inputs}`
+on with a browser token), never from the runtime. Set:
+
+- `AGENT_PUBLIC_URL=http://runtime:8790`: the runtime's own address as your
+  application and tool servers reach it (identity tokens name it, and signed
+  file links point at it).
+- `AGENT_BROWSER_URL=` (empty): browser tokens then name no URL. A link's
+  `urlPath` is its path on the runtime, for a proxy to serve at its own origin;
+  `createAgentHandler` in proxy mode does, under its route.
+
+To let browsers reach the runtime directly instead, route its hostname (or a
+path prefix) through your proxy to port 8790, and set `AGENT_PUBLIC_URL` to that
+URL. Browser tokens' reads (`/v1/agents/:id/{events,history,state,inputs}`)
+allow any origin; keep single sign-on in front of the runtime off those routes,
+since the browser token is their credential.
 
 The runtime refuses to call private and loopback addresses (MCP servers,
 `web_fetch`, tenants' model endpoints), so an agent cannot reach your network.
 A model server or gateway on your network is allowed by naming its range,
 `AGENT_OUTBOUND_ALLOW_CIDRS=10.1.2.0/24`, and, if it has no TLS,
 `AGENT_OUTBOUND_ALLOW_HTTP=true`; both open that range to every agent's tools
-too, so keep it narrow.
+too, so keep it narrow. Tool servers your application runs on the same Docker
+network are such an address too.
 
 ## More than one node
 

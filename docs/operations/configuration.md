@@ -12,6 +12,7 @@
 | `AGENT_PROVIDER`, `AGENT_MODEL` | the default model, for agents that name none (e.g. `anthropic` and `claude-sonnet-5-5`); `AGENT_BASE_URL` overrides its endpoint |
 | `AGENT_MODEL_FALLBACKS` | the defaults after it, as `provider/model` references, comma-separated (default Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock's global profile, then `openrouter/openai/gpt-6-luna`; empty for none): an agent that names no model gets the first its tenant or key scope has a key for |
 | `AGENT_STORAGE` | `file` (default; one node only), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
+| `AGENT_BROWSER_URL` | where browsers reach the runtime, as browser tokens' `url` says: `AGENT_PUBLIC_URL` unless set; empty for none, for a private runtime browsers read through the application ([Self-hosting](self-host.md#networking)) |
 | `AGENT_S3_ENDPOINT`, `AGENT_S3_FORCE_PATH_STYLE` | an S3-compatible service instead of AWS S3 (R2, SeaweedFS), and `true` for path-style requests; it must support conditional writes (`If-None-Match`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |

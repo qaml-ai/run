@@ -101,8 +101,10 @@ export default function Support() {
 By default the browser reads its agent's stream straight from the runtime, with the browser token
 your route gave it: the stream never passes through your server. With `proxy: true`, your route
 passes those reads through as well (the event stream, its long-poll fallback, history, state and
-inputs), so the browser only ever talks to your origin: nothing to allow in a Content Security
-Policy, and no runtime URL in the page. The chat needs no other change.
+inputs), and file downloads (`link` answers a URL under your route), so the browser only ever talks
+to your origin: nothing to allow in a Content Security Policy, no runtime URL in the page, and the
+runtime itself may be private (see [Self-hosting](operations/self-host.md#networking)). The chat
+needs no other change.
 
 ```ts
 // app/api/agent/[[...path]]/route.ts: the route and every path under it
