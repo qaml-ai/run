@@ -90,3 +90,17 @@ test("a steered message the running turn did not take (it was aborted) runs once
   const history = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
   assert.equal(history.filter((message: any) => message.requestId === "steer-1").length, 1, "the message is recorded once");
 });
+
+test("steer or followUp sent while no turn runs starts one, as a prompt does, instead of waiting unseen for the next turn", async t => {
+  const r = await runtime(t, (body, index) => ({ role: "assistant", content: `answer ${index}: ${userTexts(body).at(-1)}` }));
+  const created = (await r.call("/v1/agents", { body: {} })).json;
+  const send = (id: string, method: string, text: string) => fetch(`${r.base}/clients/${created.id}/requests`, {
+    method: "POST", headers: { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id, method, params: { text } }),
+  }).then(response => response.json() as Promise<any>);
+  for (const [id, method] of [["s-1", "steer"], ["f-1", "followUp"]]) {
+    assert.equal((await send(id, method, `${method} while idle`)).state, "running");
+    const done = await until(async () => { const record = await byId(r, created.id, id); return record.state === "completed" && record; }, `${method} to run`);
+    assert.match(done.outcome.result.reply, new RegExp(`${method} while idle`));
+  }
+  assert.equal(r.model.bodies.length, 2, "each ran as its own turn");
+});

@@ -1946,6 +1946,11 @@ export class ClientSessions {
       if (["prompt", "steer", "followUp"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
     const fingerprint = hash(canonical({ method: body.method, params: body.params }));
+    // A message sent while no turn runs starts one, as a prompt: steer as a prompt that steers a running turn,
+    // followUp as one that waits for it. Neither waits unseen in memory for whatever turn comes next.
+    if (body.method === "steer" || body.method === "followUp") {
+      body = { ...body, method: "prompt", params: { ...body.params, ...(body.method === "steer" ? { whileRunning: "steer" } : {}) } };
+    }
     const existing = () => {
       const record = session.requests.get(body.id);
       if (record && record.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments");

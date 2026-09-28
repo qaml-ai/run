@@ -141,15 +141,17 @@ export function answerInput(input: Pick<Input, "kind" | "detail">, body: any): {
 }
 
 /**
- * Whether a responder may answer: anyone the application vouches for, unless it names someone not
- * in the audience or the approvers. An API answer that names no one has the token's authority;
- * channels always name the sender.
+ * Whether a responder may answer: anyone the application vouches for, when the input is for no one
+ * in particular; else only someone in its audience or the approvers, named with `from` or `actor`
+ * (channels always name the sender). An answer that names no one is refused for such an input.
  */
 export function mayAnswer(input: Pick<Input, "responders">, by: Responder, approvers: string[] = []) {
   if (by.system) return true;
   const who = by.from?.id ?? by.actor;
   const allowed = [...input.responders.audience ?? [], ...approvers];
-  return who === undefined || !allowed.length || allowed.includes(who);
+  if (!allowed.length) return true;
+  if (who === undefined) throw new HttpError(400, `This input is for ${allowed.join(", ")}: answer with from or actor naming who answers`);
+  return allowed.includes(who);
 }
 
 /** Why a system-closed input got no answer, as the model reads it. */

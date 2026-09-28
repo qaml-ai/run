@@ -128,7 +128,8 @@ test("only whoever started the turn, or an approver, may answer", async t => {
   assert.equal((await answer({ id: "mallory" })).status, 403);
   assert.ok(mayAnswer(input, { from: { id: "boss" } }, ["boss"]), "an approver may answer");
   assert.ok(!mayAnswer(input, { via: "channel", from: { id: "slack:U9" } }), "a channel sender outside the audience may not");
-  assert.equal((await answer()).status, 202, "an answer naming no one has the token's authority");
+  assert.equal((await answer()).status, 400, "an answer naming no one is refused: the input is for particular people");
+  assert.equal((await answer({ id: "alice" })).status, 202);
 });
 
 test("an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs", async t => {
@@ -297,4 +298,19 @@ test("a remote MCP tool sets its own exposure in _meta, over its source's; an ap
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
   const tools = Object.fromEntries((await r.call(`/v1/agents/${agent}`)).json.toolSources.find((source: any) => source.name === "s").tools.map((tool: any) => [tool.name, tool.exposure]));
   assert.deepEqual(tools, { s__key: "direct", s__hidden: "codemode", s__gated: "direct", s__plain: "codemode" });
+});
+
+test("an input for particular people must be answered naming who answers", async t => {
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("ask_user", ASK, "call_ask") : { role: "assistant", content: "ok" });
+  const agent = await asker(r);
+  const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "Deploy it", from: { id: "u1" } } });
+  const suspended = await request(r, agent, accepted.json.id);
+  const [input] = suspended.outcome.result.inputs;
+  assert.deepEqual(input.responders.audience, ["u1"]);
+  const answer = { action: "accept", content: { answers: { "Which region?": "EU" } } };
+  const anonymous = await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: answer });
+  assert.equal(anonymous.status, 400);
+  assert.match(anonymous.json.error, /from or actor/);
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { ...answer, from: { id: "u2" } } })).status, 403);
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { ...answer, from: { id: "u1" } } })).status, 202);
 });
