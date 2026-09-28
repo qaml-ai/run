@@ -135,12 +135,19 @@ test("a direct tool's large result is cut for the model, as js_exec's output is,
     toolCall("dump", {}, "call_big"),
     toolCall("js_exec", { code: 'return (await fs.readFile("/workspace/tool-results/1-call_big.txt", { encoding: "utf8" })).length' }, "call_read"),
     { role: "assistant", content: "done" },
-  ][index]);
+  ][index] ?? (index % 2 === 1 ? toolCall("dump", {}, "call_big") : { role: "assistant", content: "done" }));
   const created = (await r.call("/v1/agents", { body: { mcp: { tools: [tool] } } })).json;
   await attach(t, r.base, created.id, created.token, (_call, { reply }) => void reply({ content: [{ type: "text", text: big }] }));
   await r.prompt(created.id, "go");
   const seen = toolResults(r.model.bodies[1]).at(-1);
   assert.ok(seen.length < 33_000, `the model got ${seen.length} characters`);
-  assert.match(seen, /cut at 32,000 of 100,000 characters[\s\S]*\/workspace\/tool-results\/1-call_big\.txt/, "named by the message that made the call, and the call");
+  assert.match(seen, /cut at 32,000 of 100,000 characters[\s\S]*\/workspace\/tool-results\/1-call_big\.txt[\s\S]*with read/, "named by the message that made the call, and the call; read with the read tool");
+
+  // An agent without file tools is told to read it with fs in js_exec instead.
+  const bare = (await r.call("/v1/agents", { body: { mcp: { tools: [tool] }, fileTools: false } })).json;
+  await attach(t, r.base, bare.id, bare.token, (_call, { reply }) => void reply({ content: [{ type: "text", text: big }] }));
+  const before = r.model.bodies.length;
+  await r.prompt(bare.id, "go");
+  assert.match(toolResults(r.model.bodies[before + 1]).at(-1), /in \/workspace\/tool-results\/1-call_big\.txt: read it in parts with fs\.readFile in js_exec/);
   assert.match(toolResults(r.model.bodies[2]).at(-1), /100000/, "the whole result is in the file");
 });
