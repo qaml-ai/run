@@ -101,9 +101,13 @@ A request settled. `outcome.result` is what it produced ([run
 outcomes](#run-outcomes) for prompts); `outcome.error` means the runtime could not
 carry it out, and `uncertain: true` that nobody can tell whether its work took
 effect (a restart cut it short). The same outcome is at
-`GET …/requests/:requestId` and in `GET …/state`, which is what to trust.
+`GET …/requests/:requestId` and in `GET …/state`, which is what to trust. There,
+an ended request also carries `error` (the runtime's, or the model's from
+`result.error`) and `stopped` on top, so a failed run reads as failed without
+looking inside `result`.
 
-A browser token sees an outcome only as `{id, outcome: {stopped?, error?}}`.
+A browser token sees an outcome only as `{id, outcome: {stopped?, error?}}`, its
+`error` the model's too.
 
 ### `snapshot`
 

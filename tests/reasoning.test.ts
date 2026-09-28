@@ -16,7 +16,9 @@ test("a model that always reasons is called with its least reasoning when an age
   await r.call("/v1/key-scopes/hosted/providers/anthropic", { method: "PUT", body: { apiKey: "sk-ant", baseUrl: `${provider.url}/anthropic` } });
   for (const model of ["openrouter/anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5-5"]) {
     const agent = (await r.call("/v1/agents", { body: { model, keyScope: "hosted" } })).json.id;
-    assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Reasoned.", model);
+    const done = await r.prompt(agent, "Hi");
+    assert.equal(done.outcome.result.reply, "Reasoned.", model);
+    assert.equal(done.error, undefined, "a run that answered has no error on top");
     const sent = provider.requests.at(-1)!.body;
     assert.deepEqual([sent.thinking?.type, sent.output_config?.effort], ["adaptive", "low"], model);
   }
@@ -48,6 +50,14 @@ test("a run whose first model call is refused fails with the provider's error, o
     for (const how of ["HTTP", "stream"]) {
       const done = await r.prompt(agent, "Hi");
       assert.match(done.outcome.result.error ?? "", /Reasoning is mandatory/, `${model}, ${how}: ${JSON.stringify(done.outcome)}`);
+      // On top of the request too, as the API and a browser token's reader see it: a failed run reads as failed.
+      assert.match(done.error ?? "", /Reasoning is mandatory/, `${model}, ${how}`);
+      const { token } = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: {} })).json;
+      for (const reader of [undefined, token]) {
+        const seen = (await r.call(`/v1/agents/${agent}/state`, { token: reader })).json.requests.find((request: { id: string }) => request.id === done.id);
+        assert.match(seen.error ?? "", /Reasoning is mandatory/, `${model}, ${how}, ${reader ? "browser" : "API"}`);
+        assert.match(seen.outcome.error ?? seen.outcome.result.error, /Reasoning is mandatory/);
+      }
     }
   }
 });

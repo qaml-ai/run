@@ -15,7 +15,7 @@ import type { Backlog } from "./transcript.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
-import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
+import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorStatus, HttpError, readJson } from "./http.ts";
@@ -273,8 +273,9 @@ const json = (c: Context, status: number, value: unknown) => c.json(value, statu
 /** Never-expiring agents have `expiresAt: null`; a bare `<=` would treat null as 0, long expired. */
 const expired = (expiresAt: number | null, now = Date.now()) => expiresAt !== null && expiresAt <= now;
 const settled = (state: string) => state !== "running";
-/** A request as callers see it: queued parameters stay internal. */
-const visible = ({ params: _params, announce: _announce, ...record }: RequestRecord): RequestRecord => record;
+/** A request as callers see it: queued parameters stay internal, and an ended one's error and early stop are on top. */
+const visible = ({ params: _params, announce: _announce, ...record }: RequestRecord): RequestRecord =>
+  record.state === "completed" ? { ...record, ...outcomeEnding(record.outcome) } : record;
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
@@ -557,8 +558,8 @@ export class ClientSessions {
     const base = { agentId, requestId: record.id, method: record.method, ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
     if (record.state === "running") return webhookEvent("run.started", tenant, { ...base, ...(record.resumes ? { resumes: record.resumes } : {}) }, `run.started:${agentId}:${record.id}`);
     const outcome = record.outcome ?? { error: "No outcome was recorded" };
-    const result = (outcome.result ?? {}) as { error?: string | null; stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number };
-    const error = outcome.error ?? (typeof result.error === "string" ? result.error : undefined);
+    const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number };
+    const { error } = outcomeEnding(outcome);
     const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null };
     const key = `run.ended:${agentId}:${record.id}`;
     if (error !== undefined) return webhookEvent("run.failed", tenant, { ...ended, error, ...(outcome.uncertain ? { uncertain: true } : {}) }, key);

@@ -1,6 +1,13 @@
 export const FRAME_BYTES = 1_100_000;
 /** `uncertain` marks an outcome nobody can confirm (timeout after claim, restart). It is informational, never a gate. */
 export type Outcome = { result: unknown; error?: never; uncertain?: never } | { error: string; uncertain?: boolean; result?: never };
+/** How an outcome ended: its error, the runtime's or the model's (`result.error`), and why its turn stopped early. */
+export function outcomeEnding(outcome: Outcome | undefined): { error?: string; stopped?: "input_required" | "spend_limit" } {
+  const result = (outcome?.result ?? {}) as { error?: unknown; stopped?: unknown };
+  const error = outcome?.error ?? (typeof result.error === "string" ? result.error : undefined);
+  const stopped = result.stopped === "input_required" || result.stopped === "spend_limit" ? result.stopped : undefined;
+  return { ...(error !== undefined ? { error } : {}), ...(stopped ? { stopped } : {}) };
+}
 /** `expiresAt` is null for agents that live until deleted. */
 export interface SessionCredentials { id: string; token: string; expiresAt: number | null }
 export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "continue" | "steer" | "configure" | "resume";
@@ -8,6 +15,10 @@ export type RequestRecord = {
   id: string; startedAt?: number; endedAt?: number; prompt?: string; code?: string; fingerprint: string; method: RequestMethod;
   /** "running" covers queued runs too: a run has begun once `began` is set. */
   state: "running" | "completed"; outcome?: Outcome;
+  /** An ended request's error, from `outcome`: the runtime's, or the model's (`outcome.result.error`). Absent when it succeeded. */
+  error?: string;
+  /** Why an ended run stopped early, from `outcome.result.stopped`. */
+  stopped?: "input_required" | "spend_limit";
   /** When the agent actually started this run (runs queue behind each other). */
   began?: number;
   /** Kept until the run begins, so a queued run survives a restart and runs exactly once. */

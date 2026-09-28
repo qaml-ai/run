@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { HttpError } from "./http.ts";
+import { outcomeEnding } from "../shared/client-protocol.ts";
 
 /** What a browser token may read of its one agent. */
 export const BROWSER_SCOPES = ["events", "state", "history", "inputs"] as const;
@@ -97,9 +98,7 @@ export function readableMessage(claims: BrowserClaims, message: unknown) {
  */
 export function readableFrame(claims: BrowserClaims, data: any): unknown {
   if (data?.type === "response") {
-    const outcome = data.outcome ?? {};
-    const stopped = outcome.result?.stopped;
-    return { type: "response", id: data.id, outcome: { ...(stopped ? { stopped } : {}), ...(outcome.error ? { error: outcome.error } : {}) } };
+    return { type: "response", id: data.id, outcome: outcomeEnding(data.outcome) };
   }
   if (data?.type === "snapshot") {
     // Its turn's messages are what history, or the stream's message_ends, would show; its message streaming, what message_updates would.
@@ -115,10 +114,10 @@ export function readableFrame(claims: BrowserClaims, data: any): unknown {
   return readableMessage(claims, data);
 }
 
-/** A request as a browser token's reader may see it (`/state`): what it is and how it ended, not its parameters or result. */
+/** A request as a browser token's reader may see it (`/state`): what it is and how it ended (its error, the model's included, and early stop), not its parameters or result. */
 export function readableRequest(record: { id: string; method: string; state: string; startedAt?: number; began?: number; endedAt?: number; outcome?: any }) {
   const { id, method, state, startedAt, began, endedAt, outcome } = record;
-  const stopped = outcome?.result?.stopped;
+  const ending = outcomeEnding(outcome);
   return { id, method, state, ...(startedAt ? { startedAt } : {}), ...(began ? { began } : {}), ...(endedAt ? { endedAt } : {}),
-    ...(outcome ? { outcome: { ...(stopped ? { stopped } : {}), ...(outcome.error ? { error: outcome.error } : {}) } } : {}) };
+    ...(outcome ? { ...ending, outcome: ending } : {}) };
 }

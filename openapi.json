@@ -1875,6 +1875,18 @@
           },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"
+          },
+          "error": {
+            "type": "string",
+            "description": "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded"
+          },
+          "stopped": {
+            "type": "string",
+            "enum": [
+              "input_required",
+              "spend_limit"
+            ],
+            "description": "Why an ended run stopped early (outcome.result.stopped)"
           }
         },
         "required": [

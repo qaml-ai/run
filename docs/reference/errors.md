@@ -92,6 +92,9 @@ A run ends in one of three ways: it answered, it waits on people
 | `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent's model has no key, the agent was deleted, code execution failed, a queued run refused for credit |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
 
+A request record (`GET …/requests/:requestId`, `GET …/state`) puts an ended run's
+`error`, whichever kind, and `stopped` on top: `error` set means it failed.
+
 A failed model response that is retried is retracted from history (`message_retracted`); the last one stays, with its `errorMessage`. A run
 whose node was lost mid-turn resumes on another (`turn_resumed`), with any tool
 call whose answer was lost marked "outcome unknown" for the model; tool calls

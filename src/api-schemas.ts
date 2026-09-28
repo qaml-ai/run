@@ -241,6 +241,8 @@ export const RequestRecord = z.object({
   metadata: z.record(z.string(), z.string()).optional().openapi({ description: "The metadata sent with the message" }),
   steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares" }),
   outcome: Outcome.optional().openapi({ description: "result.stopped is input_required when the turn waits on human input, listed in result.inputs" }),
+  error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
+  stopped: z.enum(["input_required", "spend_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
 }).openapi("RequestRecord");
 
 const Sender = z.strictObject({ id: z.string(), name: z.string().optional(), username: z.string().optional() });
