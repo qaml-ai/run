@@ -872,7 +872,7 @@ export function askText(input: Input): string {
     ].join("\n\n");
   }
   if (input.kind === "approval") {
-    return [`Approve this action? ${input.detail.tool} (${input.detail.source}) with ${input.detail.arguments}`, ...input.detail.reason ? [`The tool says: ${input.detail.reason}`] : [], "Reply approve or deny."].join("\n");
+    return [`Approve this action? ${input.detail.tool} (${input.detail.source}) with ${input.detail.argumentsPreview ?? JSON.stringify(input.detail.arguments)}`, ...input.detail.reason ? [`The tool says: ${input.detail.reason}`] : [], "Reply approve or deny."].join("\n");
   }
   if (input.kind === "url") return `${input.message}\n${input.detail.url}\n(on ${new URL(input.detail.url).hostname})\nReply done when you have finished.`;
   const fields = Object.keys(input.detail.requestedSchema?.properties ?? {});

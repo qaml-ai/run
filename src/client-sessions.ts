@@ -37,7 +37,7 @@ import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type F
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
-import { answerInput, argumentsHash, expiresAt, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
+import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
 import { recordWatchRefused } from "./metrics.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
@@ -1261,7 +1261,9 @@ export class ClientSessions {
     const shown = JSON.stringify(call.args);
     requests = requests.map(entry => entry.kind !== "approval" ? entry : {
       ...entry, message: `Allow ${call.name} to run?`,
-      detail: { ...entry.detail, tool: call.name, source: call.name.includes("__") ? call.name.split("__")[0] : header.definitions.some(tool => tool.name === call.name) ? "application" : "runtime", arguments: shown.length > 4000 ? `${shown.slice(0, 4000)}…` : shown, argumentsHash: hashed },
+      // The call's arguments as it has them; past INPUT_LIMITS.arguments of JSON, the start of that JSON instead.
+      detail: { ...entry.detail, tool: call.name, source: call.name.includes("__") ? call.name.split("__")[0] : header.definitions.some(tool => tool.name === call.name) ? "application" : "runtime",
+        ...shown.length > INPUT_LIMITS.arguments ? { argumentsPreview: `${shown.slice(0, INPUT_LIMITS.arguments)}…` } : { arguments: call.args }, argumentsHash: hashed },
     });
     const rows = await inputs.create({
       agent: header.id, tenant: header.tenant, requestId: request.id, toolCallId: call.toolCallId,

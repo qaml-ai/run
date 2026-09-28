@@ -152,7 +152,7 @@ test("an approval policy asks before a gated tool runs: the approved call runs o
   const [input] = suspended.outcome.result.inputs;
   assert.equal(input.kind, "approval");
   assert.equal(input.message, "Allow shop__delete_item to run?");
-  assert.deepEqual({ ...input.detail, argumentsHash: undefined }, { tool: "shop__delete_item", source: "shop", arguments: '{"id":"a"}', argumentsHash: undefined });
+  assert.deepEqual({ ...input.detail, argumentsHash: undefined }, { tool: "shop__delete_item", source: "shop", arguments: { id: "a" }, argumentsHash: undefined }, "arguments as an object, as a stream's tool calls have them");
   assert.equal(shop.calls.length, 0, "nothing ran before the approval");
 
   const watcher = await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "snapshot=0" });
@@ -296,6 +296,7 @@ test("an application answers with onInput, from its SDK", async t => {
   assert.deepEqual(wiped, ["d1"]);
   assert.equal(seen[0].detail.tool, "wipe");
   assert.equal(seen[0].detail.source, "application");
+  assert.deepEqual(seen[0].detail.arguments, { disk: "d1" });
   assert.deepEqual((await agent.inputs())[0].answer?.by, { via: "agent", actor: "ops" });
 });
 

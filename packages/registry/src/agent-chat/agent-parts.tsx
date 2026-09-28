@@ -49,7 +49,7 @@ export const AgentInputCard = memo(function AgentInputCard({ input }: { input: C
       {input.kind === "approval" && (
         <>
           <p className="font-medium">{input.message}</p>
-          {typeof input.detail.arguments === "string" && <pre className="max-h-48 overflow-auto rounded bg-muted p-2 font-mono text-xs">{clip(input.detail.arguments, 2000)}</pre>}
+          {(input.detail.argumentsPreview ?? input.detail.arguments) && <pre className="max-h-48 overflow-auto rounded bg-muted p-2 font-mono text-xs">{clip(input.detail.argumentsPreview ?? JSON.stringify(input.detail.arguments, null, 2), 2000)}</pre>}
           <div className="flex gap-2">
             <Button size="sm" disabled={busy} onClick={() => answer(true)}>Approve</Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => answer(false)}>Deny</Button>

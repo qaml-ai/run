@@ -679,7 +679,7 @@ test("a channel asks the agent's questions and approvals as messages; the asker'
 
 test("inputs read as messages, and only a reply that fits answers one", () => {
   const input = (kind: string, detail: object, message = "") => ({ kind, detail, message } as any);
-  const approval = input("approval", { tool: "shop__delete_item", source: "shop", arguments: '{"id":"a"}' });
+  const approval = input("approval", { tool: "shop__delete_item", source: "shop", arguments: { id: "a" } });
   assert.equal(askText(approval), 'Approve this action? shop__delete_item (shop) with {"id":"a"}\nReply approve or deny.');
   assert.deepEqual(answerOf(approval, "Approve!"), { action: "accept" });
   assert.deepEqual(answerOf(approval, "no"), { action: "decline" });

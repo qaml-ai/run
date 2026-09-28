@@ -206,7 +206,7 @@ Messages (`message` fields, and history) are one of:
 
 | Type | Fields | When |
 | --- | --- | --- |
-| `input_required` | `input` | the turn waits on a person: a question, an approval, a form or a URL step. `input`: `{id, agent, requestId, toolCallId, kind: "question" \| "approval" \| "form" \| "url", message, detail, responders: {audience?}, state, createdAt, expiresAt}`. See [Human input](../guides/human-input.md) |
+| `input_required` | `input` | the turn waits on a person: a question, an approval, a form or a URL step. `input`: `{id, agent, requestId, toolCallId, kind: "question" \| "approval" \| "form" \| "url", message, detail, responders: {audience?}, state, createdAt, expiresAt}`; `detail` by kind: question `{questions}`, approval `{tool, source, arguments, argumentsHash, reason?}` (`arguments` an object, as in the call; past 4,000 characters of JSON, `argumentsPreview` instead), form `{requestedSchema}`, url `{url, origin}`. See [Human input](../guides/human-input.md) |
 | `input_resolved` | `id`, `state` (`answered`, `declined`, `cancelled`, `expired`, `superseded`), `by?` | an input settled |
 
 ### The runtime

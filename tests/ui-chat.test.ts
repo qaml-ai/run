@@ -37,7 +37,7 @@ test("a turn is one assistant message; tool results fold into their calls; a use
 });
 
 test("a call waiting on a person carries its input; errors, stops and presented files show as such", () => {
-  const input = { id: "inp_1", toolCallId: "c1", kind: "question", message: "Which?", detail: { questions: [{ question: "Which?" }] }, answering: false } as unknown as ChatInput;
+  const input = { id: "inp_1", toolCallId: "c1", kind: "question", message: "Which?", detail: { questions: [{ question: "Which?", options: [], multiSelect: false, allowOther: true }] }, answering: false } as unknown as ChatInput;
   const waiting = project([
     user("go", 1),
     assistant([{ type: "toolCall", id: "c1", name: "ask_user", arguments: {} }], 2, { stopReason: "toolUse" }),
@@ -116,10 +116,10 @@ test("messages and parts that did not change are the same objects; a streamed de
 test("answerValue turns plain values into answers", () => {
   assert.deepEqual(answerValue({ kind: "approval", detail: {} }, true), { action: "accept" });
   assert.deepEqual(answerValue({ kind: "approval", detail: {} }, false), { action: "decline" });
-  assert.deepEqual(answerValue({ kind: "question", detail: { questions: [{ question: "Which?" }] } }, "EU"), { action: "accept", content: { answers: { "Which?": "EU" } } });
+  assert.deepEqual(answerValue({ kind: "question", detail: { questions: [{ question: "Which?", options: [], multiSelect: false, allowOther: true }] } }, "EU"), { action: "accept", content: { answers: { "Which?": "EU" } } });
   assert.deepEqual(answerValue({ kind: "form", detail: {} }, { a: 1 }), { action: "accept", content: { a: 1 } });
   assert.throws(() => answerValue({ kind: "approval", detail: {} }, "yes"));
-  assert.throws(() => answerValue({ kind: "question", detail: { questions: [{ question: "A" }, { question: "B" }] } }, "x"));
+  assert.throws(() => answerValue({ kind: "question", detail: { questions: [{ question: "A", options: [], multiSelect: false, allowOther: true }, { question: "B", options: [], multiSelect: false, allowOther: true }] } }, "x"));
 });
 
 test("the chat store is browser code: it bundles for a browser with nothing from Node, and small", async () => {

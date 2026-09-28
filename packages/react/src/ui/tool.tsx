@@ -67,11 +67,12 @@ export const InputCard = memo(function InputCard({ input }: { input: ChatInput }
   const body = (() => {
     switch (input.kind) {
       case "approval": {
-        const detail = input.detail as { tool?: string; arguments?: string };
+        // The call's arguments, or where they are long, the start of their JSON.
+        const shown = input.detail.argumentsPreview ?? (input.detail.arguments ? JSON.stringify(input.detail.arguments, null, 2) : undefined);
         return (
           <>
             <p className="agent-chat__input-message">{input.message}</p>
-            {detail.arguments && <pre><code>{clip(prettyJsonText(detail.arguments), 2000)}</code></pre>}
+            {shown && <pre><code>{clip(shown, 2000)}</code></pre>}
             <div className="agent-chat__input-actions">
               <button type="button" className="agent-chat__button agent-chat__button--primary" disabled={busy} onClick={() => answer(true)}>{labels.approve}</button>
               <button type="button" className="agent-chat__button" disabled={busy} onClick={() => answer(false)}>{labels.deny}</button>
@@ -104,10 +105,6 @@ export const InputCard = memo(function InputCard({ input }: { input: ChatInput }
     </div>
   );
 });
-
-function prettyJsonText(text: string) {
-  try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
-}
 
 function Questions({ input, questions, onAnswer }: { input: ChatInput; questions: Question[]; onAnswer(value: InputValue): void }) {
   const { labels } = useUI();

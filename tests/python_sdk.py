@@ -325,7 +325,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
         self.assertEqual(wiped, ["d1"])
         self.assertEqual(seen[0]["kind"], "approval")
-        self.assertEqual(seen[0]["detail"]["arguments"], json.dumps({"disk": "d1"}, separators=(",", ":")))
+        self.assertEqual(seen[0]["detail"]["arguments"], {"disk": "d1"})
         self.assertEqual((await agent.inputs())[0]["answer"]["by"], {"via": "agent", "actor": "ops"})
         self.assertEqual(await agent.inputs(state="pending"), [])
 

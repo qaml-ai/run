@@ -282,12 +282,25 @@ export interface AgentOptions {
 export interface AgentInput {
   id: string; agent: string; requestId: string; toolCallId: string;
   kind: "question" | "approval" | "form" | "url"; message: string;
-  /** question: { questions }; approval: { tool, source, arguments, argumentsHash }; form: { requestedSchema }; url: { url, origin }. */
-  detail: Record<string, any>;
+  /** What it asks, by `kind`. */
+  detail: InputDetail;
   responders: { audience?: string[] };
   state: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
   answer?: { action: string; content?: unknown; by: Record<string, unknown>; at: number };
   createdAt: number; expiresAt: number;
+}
+/** What an input asks: by its `kind`, the fields of one of these. */
+export interface InputDetail {
+  /** question: the model's questions (ask_user). */
+  questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect: boolean; allowOther: boolean }[];
+  /** approval: the tool call it waits on, where its tool comes from ("application", "runtime", or a tool source's name), and why it asks. */
+  tool?: string; source?: string; reason?: string;
+  /** approval: the call's arguments, as its tool_call event has them; past 4,000 characters of JSON, `argumentsPreview` (their start) instead. */
+  arguments?: Record<string, unknown>; argumentsPreview?: string; argumentsHash?: string;
+  /** form: the fields asked for, as a flat JSON Schema. */
+  requestedSchema?: Record<string, unknown>;
+  /** url: the page to open, and its origin. */
+  url?: string; origin?: string;
 }
 /** An answer. `content`: for a question, { answers: { "<question>": "<label>" | ["<label>"] | "<own words>" } }; for a form, its fields. `from`/`actor`: who answers, checked against who may. */
 export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }

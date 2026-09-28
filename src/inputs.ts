@@ -25,7 +25,7 @@ export type Answer = { action: Action; content?: unknown; by: Responder; at: num
 export interface Input {
   id: string; agent: string; tenant: string; requestId: string; toolCallId: string;
   kind: InputKind; message: string;
-  /** question: { questions }; approval: { tool, source, arguments, argumentsHash }; form: { requestedSchema }; url: { url, origin }. */
+  /** question: { questions }; approval: { tool, source, arguments (or argumentsPreview), argumentsHash, reason? }; form: { requestedSchema }; url: { url, origin }. */
   detail: Record<string, any>;
   /** Who may answer, besides the definition's approvers: the person whose message started the turn. */
   responders: { audience?: string[] };

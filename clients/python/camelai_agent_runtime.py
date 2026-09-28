@@ -18,7 +18,7 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import get_type_hints
+from typing import NotRequired, TypedDict, get_type_hints
 from urllib.parse import quote, urlencode, urlparse
 import uuid
 
@@ -1236,8 +1236,24 @@ class Run:
     raw: dict | None = field(default=None, repr=False)
 
 
+class InputDetail(TypedDict):
+    """What an input asks (its "detail"), by its kind. question: questions. approval: tool, source, reason, and the
+    call's arguments as a dict (past 4,000 characters of JSON, argumentsPreview, their start, instead). form:
+    requestedSchema. url: url, origin."""
+    questions: NotRequired[list[dict]]
+    tool: NotRequired[str]
+    source: NotRequired[str]
+    reason: NotRequired[str]
+    arguments: NotRequired[dict]
+    argumentsPreview: NotRequired[str]
+    argumentsHash: NotRequired[str]
+    requestedSchema: NotRequired[dict]
+    url: NotRequired[str]
+    origin: NotRequired[str]
+
+
 class RunInput(dict):
-    """Human input a run waits on (a dict: id, kind, message, detail...), with the means to answer it.
+    """Human input a run waits on (a dict: id, kind, message, detail (an InputDetail)...), with the means to answer it.
     answer() and decline() return the resumed run."""
 
     def __init__(self, agent, value):
