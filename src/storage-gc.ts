@@ -14,8 +14,8 @@ const chunkKey = (tenant: string, hash: string) => `chunks/${tenant}/${hash.slic
  * deleted by a later pass, at least `graceMs` on, if it is still unreferenced and has not been written
  * or pinned since (`chunk_touches`). A writer touches a chunk before it writes it, and the deleting pass
  * reads the chunk, deletes it, then checks for a touch again, putting the chunk back if one came: so a
- * writer whose write found the chunk there (a no-op) never loses it. Only chunks with a touch are ever
- * collected: those stored before collection began may be held by FileRefs that have no pins.
+ * writer whose write found the chunk there (a no-op) never loses it. Only chunks a write stored (with a
+ * touch) are ever collected.
  */
 export class StorageGc {
   private readonly db: Db;

@@ -119,9 +119,9 @@ refers to any more, so they stop being stored and billed:
   (`chunk_pins`) as it is made: attachments, files a tool saved or read natively,
   presented files, and FileRefs in a new agent's `initialMessages`. Purging an
   agent drops its pins.
-- **Only chunks written since.** A chunk is collectable only if a write created it
-  (`chunk_touches`); bytes stored before collection began, or written again as a
-  no-op, never are, because FileRefs from before have no pins.
+- **Only chunks written since.** A chunk is collectable once a write has stored it
+  (`chunk_touches`); bytes stored before collection began and never written again
+  are left alone.
 - **Two passes.** A pass marks what is referred to; a chunk it finds unreferenced
   becomes a candidate, and a later pass at least `AGENT_GC_GRACE_MS` (a day) on
   deletes it if it is still unreferenced and nothing touched it since. Writes, pins,

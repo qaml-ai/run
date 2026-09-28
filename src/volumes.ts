@@ -518,9 +518,8 @@ export class VolumeService {
     const emit = async (piece: Buffer) => {
       const hash = sha256(piece);
       chunks.push(hash);
-      // Touched before it is written (see storage-gc.ts): a collection deleting it meanwhile puts it back. Only a write
-      // that creates it makes it collectable: bytes stored before collection began may be held by FileRefs with no pins.
-      writes.push(this.touch(tenant, [hash]).then(() => this.storage.writeBlob(chunkKey(tenant, hash), piece)).then(created => created ? this.collectable(tenant, hash) : undefined));
+      // Touched before it is written (see storage-gc.ts): a collection deleting it meanwhile puts it back.
+      writes.push(this.touch(tenant, [hash]).then(() => this.storage.writeBlob(chunkKey(tenant, hash), piece)).then(() => this.collectable(tenant, hash)));
       if (writes.length >= 4) { await Promise.all(writes); writes = []; }
     };
     for await (const data of source instanceof Uint8Array ? [source] : source) {
@@ -567,7 +566,7 @@ export class VolumeService {
     await this.db.query("update chunk_touches set at = $3 where tenant = $1 and hash = any($2::text[])", [tenant, [...new Set(hashes)], Date.now()]);
   }
 
-  /** A chunk a write just created: collectable once nothing refers to it (storage-gc.ts). */
+  /** A chunk a write just stored: collectable once nothing refers to it (storage-gc.ts). */
   private async collectable(tenant: string, hash: string) {
     await this.db.query(`
       with added as (insert into chunk_touches (tenant, hash, at) values ($1, $2, $3) on conflict (tenant, hash) do update set at = excluded.at returning 1)

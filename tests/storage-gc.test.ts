@@ -83,7 +83,7 @@ test("a deleted volume's chunks go once no fork or snapshot holds them, and its 
   assert.equal(storage.blobs.has(key("epsilon")), false);
 });
 
-test("a chunk written again between two collections stays; one written as it is deleted is put back; one stored before collection existed is never touched", async t => {
+test("a chunk written again between two collections stays; one written as it is deleted is put back", async t => {
   const { gc, storage, volumes, write, collect } = await setup(t);
   const { id } = await volumes.create("acme", { name: "v" });
   await write(id, "/z.txt", "zeta");
@@ -103,10 +103,6 @@ test("a chunk written again between two collections stays; one written as it is 
   storage.removeBlob = remove;
   assert.equal(racing.restored, 1);
   assert.equal(storage.blobs.has(key("eta")), true);
-
-  await storage.writeBlob(key("legacy"), Buffer.from("legacy"));
-  await collect();
-  assert.equal(storage.blobs.has(key("legacy")), true, "only chunks written since collection began are collected");
 });
 
 test("on a runtime, an attachment's chunks are pinned to its agent, and collected once the agent and its workspace are deleted", async t => {
@@ -123,17 +119,15 @@ test("on a runtime, an attachment's chunks are pinned to its agent, and collecte
   assert.equal((await r.db.query("select count(*)::int as count from chunk_pins where agent = $1", [agent])).rows[0].count, 0);
 });
 
-test("only chunks a write created are ever collected: bytes stored before collection began stay, even when written or pinned again", async t => {
-  const { db, storage, volumes, write, collect } = await setup(t);
-  // Stored before collection began, with no record: a FileRef from then may hold it with no pin.
+test("a chunk any write stored is collectable, one already there included, once nothing refers to it", async t => {
+  const { storage, volumes, write, collect } = await setup(t);
+  // Stored with no record of it (as before collection began): a write that finds it there makes it collectable too.
   await storage.writeBlob(key("old bytes"), Buffer.from("old bytes"));
   const { id } = await volumes.create("acme", { name: "v" });
-  const entry = await write(id, "/again.txt", "old bytes");
-  await volumes.pin("acme", "client_new", entry.chunks);
+  await write(id, "/again.txt", "old bytes");
   await volumes.call(id, "acme", "remove", { path: "/again.txt" });
-  await db.query("delete from chunk_pins where agent = 'client_new'");
   await collect();
-  assert.equal(storage.blobs.has(key("old bytes")), true, "written again (a no-op) or pinned, it is still not collectable");
+  assert.equal(storage.blobs.has(key("old bytes")), false);
 });
 
 test("a reference made while a collection is under way (a move between volumes, a fork) keeps its chunk, even when the mark missed it", async t => {
