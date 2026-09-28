@@ -15,7 +15,7 @@ import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, runCompaction } from "./compaction.ts";
-import { codeRequest, DEFAULT_RETRY } from "./limits.ts";
+import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 
@@ -242,6 +242,22 @@ export function createAgentHost(io: HostIO) {
     };
   }
 
+  /**
+   * A direct tool call's content as the model gets it: text past SANDBOX_LIMITS.outputCharacters is cut, as js_exec's
+   * output is, and the whole text saved to the agent's workspace (tool-results/<call>.txt), which the model is told to read in parts.
+   */
+  async function capped(toolCallId: string, content: any[]): Promise<any[]> {
+    const text = content.filter(part => part.type === "text").map(part => part.text as string).join("\n");
+    const limit = SANDBOX_LIMITS.outputCharacters;
+    if (text.length <= limit) return content;
+    const mount = config.mounts?.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? config.mounts?.find(entry => entry.mode === "rw");
+    const path = mount && `${mount.path}/tool-results/${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
+    const whole = Buffer.from(text, "utf8");
+    const saved = path ? await io.fs("writeFile", { path, text: whole.length > FILE_LIMITS.scriptFileBytes ? whole.subarray(0, FILE_LIMITS.scriptFileBytes).toString("utf8") : text }).then(() => true, () => false) : false;
+    const where = saved ? ` The whole result${whole.length > FILE_LIMITS.scriptFileBytes ? ` (its first ${FILE_LIMITS.scriptFileBytes.toLocaleString("en-US")} bytes)` : ""} is in ${path}: read it in parts.` : " Ask the tool for less.";
+    return [...content.filter(part => part.type !== "text"), { type: "text", text: `${text.slice(0, limit)}\n\n[Result cut at ${limit.toLocaleString("en-US")} of ${text.length.toLocaleString("en-US")} characters.${where}]` }];
+  }
+
   function directAgentTools(tools: AgentConfig["tools"]): AgentTool[] {
     return tools.filter(tool => ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
         name: tool.name, label: tool.name, description: tool.description,
@@ -259,9 +275,9 @@ export function createAgentHost(io: HostIO) {
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
             if (value.isError === true) throw new Error(value.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") || "Tool execution failed");
-            return value;
+            return { ...value, content: await capped(toolCallId, value.content) };
           }
-          return { content: [{ type: "text", text: JSON.stringify(value) ?? "null" }], details: value };
+          return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]), details: value };
         },
       }));
   }

@@ -114,3 +114,20 @@ test("an MCP server is listed when its definition is saved: refused credentials 
   const patched = await r.call(`/v1/definitions/${saved.json.id}`, { method: "PATCH", body: { mcpServers: [{ name: "tools", url: `${refusing}/mcp` }] } });
   assert.equal(patched.status, 400, "an edit is checked too");
 });
+
+test("a direct tool's large result is cut for the model, as js_exec's output is, with the whole of it saved to the workspace", async t => {
+  const big = "x".repeat(100_000);
+  const tool = { name: "dump", description: "Dumps a lot", inputSchema: { type: "object", properties: {} }, _meta: { "agent-runtime/exposure": "direct" } };
+  const r = await runtime(t, (_body, index) => [
+    toolCall("dump", {}, "call_big"),
+    toolCall("js_exec", { code: 'return (await fs.readFile("/workspace/tool-results/call_big.txt", { encoding: "utf8" })).length' }, "call_read"),
+    { role: "assistant", content: "done" },
+  ][index]);
+  const created = (await r.call("/v1/agents", { body: { mcp: { tools: [tool] } } })).json;
+  await attach(t, r.base, created.id, created.token, (_call, { reply }) => void reply({ content: [{ type: "text", text: big }] }));
+  await r.prompt(created.id, "go");
+  const seen = toolResults(r.model.bodies[1]).at(-1);
+  assert.ok(seen.length < 33_000, `the model got ${seen.length} characters`);
+  assert.match(seen, /cut at 32,000 of 100,000 characters[\s\S]*\/workspace\/tool-results\/call_big\.txt/);
+  assert.match(toolResults(r.model.bodies[2]).at(-1), /100000/, "the whole result is in the file");
+});
