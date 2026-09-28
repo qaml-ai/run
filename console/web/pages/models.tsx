@@ -61,7 +61,7 @@ function KeyBadge({ provider }: { provider: Provider }) {
   if (!provider.key) return <Badge variant="outline">No key</Badge>;
   if (provider.key.source === "admin") return <Badge variant="secondary">Set by admin</Badge>;
   if (provider.key.source === "platform") return <Badge variant="secondary">Platform key · billed to credit</Badge>;
-  return <Badge><CheckCircle2 />…{provider.key.last4}</Badge>;
+  return <Badge><CheckCircle2 /><span className="font-mono tracking-normal normal-case">…{provider.key.last4}</span></Badge>;
 }
 
 export function ModelsPage({ me }: { me: Me }) {
@@ -82,7 +82,7 @@ export function ModelsPage({ me }: { me: Me }) {
       <section className="mb-10">
         <h2 className="mb-3 text-sm font-semibold">Provider keys</h2>
         {!providers.data ? <Skeleton className="h-48 w-full" /> : (
-          <div className="rounded-lg border">
+          <div className="bg-card border">
             <Table>
               <TableHeader><TableRow><TableHead>Provider</TableHead><TableHead>Models</TableHead><TableHead>Key</TableHead><TableHead className="hidden md:table-cell">Updated</TableHead><TableHead /></TableRow></TableHeader>
               <TableBody>
@@ -153,7 +153,7 @@ function ModelCatalog({ providers }: { providers: Provider[] }) {
       </div>
       <ErrorAlert error={models.error} />
       {!models.data ? <Skeleton className="h-64 w-full" /> : (
-        <div className="rounded-lg border">
+        <div className="bg-card border">
           <Table>
             <TableHeader>
               <TableRow>
@@ -172,10 +172,10 @@ function ModelCatalog({ providers }: { providers: Provider[] }) {
                     <div className="flex items-center gap-1"><span className="font-mono text-xs">{model.id}</span><CopyButton value={model.id} label="Copy model ID" /></div>
                     <div className="text-muted-foreground text-xs">{model.name}{model.reasoning ? " · reasoning" : ""}{model.input.includes("image") ? " · images" : ""}</div>
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{formatNumber(model.contextWindow)}</TableCell>
-                  <TableCell className="hidden text-right tabular-nums md:table-cell">{formatNumber(model.maxTokens)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{perMillion(model.cost.input)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{perMillion(model.cost.output)}</TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">{formatNumber(model.contextWindow)}</TableCell>
+                  <TableCell className="hidden text-right font-mono tabular-nums md:table-cell">{formatNumber(model.maxTokens)}</TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">{perMillion(model.cost.input)}</TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">{perMillion(model.cost.output)}</TableCell>
                   <TableCell>{model.available ? <Badge>Usable</Badge> : <Badge variant="outline">Needs key</Badge>}</TableCell>
                 </TableRow>
               ))}

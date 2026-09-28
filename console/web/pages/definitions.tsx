@@ -196,7 +196,7 @@ export function DefinitionsPage() {
       {!definitions.data ? <Skeleton className="h-32 w-full" /> : definitions.data.length === 0 ? (
         <EmptyState icon={<FileCog />} title="No definitions">Create one to make agents with the same configuration from your app or a channel.</EmptyState>
       ) : (
-        <div className="rounded-lg border">
+        <div className="bg-card border">
           <Table>
             <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Model</TableHead><TableHead>Revision</TableHead><TableHead className="hidden lg:table-cell">Updated</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>

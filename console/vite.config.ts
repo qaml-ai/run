@@ -10,6 +10,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: { alias: { "@": fileURLToPath(new URL("./web", import.meta.url)) } },
   css: { postcss: { plugins: [tailwind()] } },
-  build: { outDir: "../dist", emptyOutDir: true },
+  // Fonts stay files: inlined as data: URIs, the console's CSP (fonts from 'self') would block them.
+  build: { outDir: "../dist", emptyOutDir: true, assetsInlineLimit: file => /\.(woff2?|ttf|otf)$/.test(file) ? false : undefined },
   server: { proxy: { "/v1": "http://127.0.0.1:8790", "/console/auth": "http://127.0.0.1:8790" } },
 });
