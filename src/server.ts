@@ -8,6 +8,7 @@ import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
+import { loadDocs } from "./docs.ts";
 import { modelHeadersInput, sessionConfig } from "./session-config.ts";
 import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -421,6 +422,16 @@ app.get("/.well-known/oauth-authorization-server", c => c.json({
   issuer: signer.issuer, jwks_uri: `${signer.issuer}/.well-known/jwks.json`,
   response_types_supported: [], grant_types_supported: [], token_endpoint_auth_methods_supported: [], code_challenge_methods_supported: [],
 }, 200, { "Cache-Control": "public, max-age=300" }));
+// The public docs (docs/ in the image), for people and for models: cacheable, and readable from any page.
+const docs = loadDocs(resolve(process.env.AGENT_DOCS_DIR ?? fileURLToPath(new URL("../docs", import.meta.url))), publicUrl);
+// Matched on the request's path as sent, before any decoding or dot-segment folding: only exact document paths answer.
+app.use(async (c, next) => {
+  const path = (c.env.incoming.url ?? "").split("?")[0];
+  if (path !== "/llms.txt" && path !== "/llms-full.txt" && path !== "/docs" && !path.startsWith("/docs/")) return next();
+  const doc = c.req.method === "GET" || c.req.method === "HEAD" ? docs.get(path) : undefined;
+  if (!doc) return c.json({ type: "error", error: "Unknown document", code: "NOT_FOUND" }, 404, { "Access-Control-Allow-Origin": "*" });
+  return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" });
+});
 app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
 // Every 503 is worth retrying (capacity, an actor moving, this node draining), and so is a 429 (a
 // tenant at its agent quota, or an agent with too many queued requests) once work finishes; say when.

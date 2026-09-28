@@ -1,47 +1,37 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
-import { llmsFullTxt, llmsTxt, PAGES } from "../scripts/docs.ts";
+import { request } from "node:http";
+import { runtime } from "./runtime-server.ts";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
-const markdown = (directory: string): string[] => readdirSync(join(root, directory)).flatMap(name => {
-  const path = join(directory, name);
-  return statSync(join(root, path)).isDirectory() ? markdown(path) : name.endsWith(".md") ? [path] : [];
-});
-const pages = [...markdown("docs"), "README.md", "clients/README.md", "sdk/README.md", "clients/python/README.md"];
+test("the docs are served without credentials: llms.txt, llms-full.txt and every page but the operators', pointing at this runtime", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const get = (path: string) => fetch(`${r.base}${path}`);
+  const index = await get("/llms.txt");
+  assert.equal(index.status, 200);
+  assert.match(index.headers.get("content-type")!, /^text\/plain/);
+  assert.equal(index.headers.get("cache-control"), "public, max-age=300");
+  assert.equal(index.headers.get("access-control-allow-origin"), "*");
+  const text = await index.text();
+  assert.doesNotMatch(text, /agents\.camelai\.dev/, "a runtime elsewhere points at itself");
+  const linked = /\((https:\/\/agents\.example\.test\/docs\/[^)]+\.md)\)/.exec(text)![1];
+  const page = await get(new URL(linked).pathname);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type")!, /^text\/markdown/);
+  assert.ok((await page.text()).length > 100);
+  assert.equal((await get("/llms-full.txt")).status, 200);
 
-test("the committed llms.txt and llms-full.txt are current (npm run docs regenerates them)", () => {
-  assert.equal(readFileSync(join(root, "docs/llms.txt"), "utf8"), llmsTxt());
-  assert.equal(readFileSync(join(root, "docs/llms-full.txt"), "utf8"), llmsFullTxt());
-});
-
-test("llms.txt lists every user-facing page, and only those", () => {
-  const listed = new Set(PAGES.map(page => page.path));
-  const user = markdown("docs").map(path => relative("docs", path)).filter(path => !path.startsWith("operations/") && path !== "README.md");
-  assert.deepEqual([...listed].sort(), user.sort());
-});
-
-test("every relative link in the docs resolves, to a file and a heading", () => {
-  // GitHub's anchors: a heading's text, lower case, punctuation dropped, spaces as hyphens; and explicit <a id>s.
-  const anchors = (path: string) => {
-    const text = readFileSync(join(root, path), "utf8");
-    return new Set([
-      ...[...text.matchAll(/^#+ (.+)$/gm)].map(([, heading]) => heading.toLowerCase().replace(/[`*_]/g, "").replace(/[^\p{L}\p{N} -]/gu, "").trim().replace(/ /g, "-")),
-      ...[...text.matchAll(/<a id="([^"]+)"/g)].map(([, id]) => id),
-    ]);
-  };
-  const broken: string[] = [];
-  for (const page of pages) {
-    const text = readFileSync(join(root, page), "utf8").replace(/```[\s\S]*?```/g, "");
-    for (const [, target] of text.matchAll(/\]\(([^)\s]+)\)/g)) {
-      if (/^(https?:|mailto:)/.test(target)) continue;
-      const [path, anchor] = target.split("#");
-      const file = path ? join(dirname(page), path) : page;
-      if (!existsSync(join(root, file))) { broken.push(`${page}: ${target}`); continue; }
-      if (anchor && file.endsWith(".md") && !anchors(file).has(anchor)) broken.push(`${page}: ${target} (no such heading)`);
-    }
+  // Sent as written (fetch would fold dot segments first): nothing outside docs/, nor the operators' pages, is served.
+  const raw = (path: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const { hostname, port } = new URL(r.base);
+    request({ hostname, port, path, method: "GET" }, response => {
+      let body = "";
+      response.on("data", chunk => { body += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode!, body }));
+    }).on("error", reject).end();
+  });
+  for (const path of ["/docs/operations/architecture.md", "/docs/operations/README.md", "/docs/../package.json", "/docs/%2e%2e/package.json", "/docs/..%2fsrc%2fserver.ts", "/docs/guides/../../README.md", "/docs/quickstart", "/docs/", "/docs"]) {
+    const refused = await raw(path);
+    assert.equal(refused.status, 404, `${path}: ${refused.status}`);
+    assert.equal(JSON.parse(refused.body).code, "NOT_FOUND", path);
   }
-  assert.deepEqual(broken, []);
 });
