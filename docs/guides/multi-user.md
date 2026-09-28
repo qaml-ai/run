@@ -46,7 +46,7 @@ export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev
 ```
 
 ```ts
-const definition = await agents.runtime.createDefinition({
+const definition = await agents.runtime.upsertDefinition("support", {
   name: "Support",
   mcpServers: [{ name: "app", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],
 });

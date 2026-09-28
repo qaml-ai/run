@@ -160,7 +160,7 @@ export function api(context: ApiContext) {
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || /^\/v1\/agents\/[^/]+\/prompt$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || /^\/v1\/agents\/[^/]+\/prompt$/.test(path),
     // Answers with a secret shown once: API tokens, signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links)|volumes\/[^/]+\/links)$/.test(path),
   }));

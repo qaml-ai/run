@@ -3,12 +3,16 @@
 A definition is a reusable agent configuration: name, model, system prompt,
 thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
 limits (`ttlSeconds`) and mounts. Manage them with the SDKs
-(`agents.runtime.createDefinition`, `updateDefinition`, `definition(s)`,
-`deleteDefinition`; `create_definition` and so on in Python), `/v1/definitions`,
-or the console's Definitions page, and make agents from one:
+(`agents.runtime.upsertDefinition`, `createDefinition`, `updateDefinition`,
+`definition(s)`, `deleteDefinition`; `upsert_definition` and so on in Python),
+`/v1/definitions`, or the console's Definitions page, and make agents from one.
+`upsertDefinition(key, …)` (`POST /v1/definitions` with an `Idempotency-Key`) is
+the one to run at every deploy: the same key is the same definition, set to what
+you send (fields left out are cleared), with a new revision only when that
+changes it. `createDefinition` makes a new one each time.
 
 ```ts
-const definition = await agents.runtime.createDefinition({
+const definition = await agents.runtime.upsertDefinition("support", {
   name: "Support", model: "anthropic/claude-sonnet-5", systemPrompt: "You answer support tickets.",
   builtins: ["web_search", "ask_user"],
   mcpServers: [{ name: "app", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],

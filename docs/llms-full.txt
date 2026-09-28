@@ -462,7 +462,7 @@ naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 Then name the server in a definition, and make agents from it:
 
 ```ts
-const definition = await agents.runtime.createDefinition({
+const definition = await agents.runtime.upsertDefinition("support", {
   name: "Support",
   mcpServers: [{ name: "shop", url: "https://tools.example.com/mcp", auth: { type: "runtime" } }],
 });
@@ -1121,7 +1121,7 @@ export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev
 ```
 
 ```ts
-const definition = await agents.runtime.createDefinition({
+const definition = await agents.runtime.upsertDefinition("support", {
   name: "Support",
   mcpServers: [{ name: "app", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],
 });
@@ -1448,12 +1448,16 @@ agent's own token.
 A definition is a reusable agent configuration: name, model, system prompt,
 thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
 limits (`ttlSeconds`) and mounts. Manage them with the SDKs
-(`agents.runtime.createDefinition`, `updateDefinition`, `definition(s)`,
-`deleteDefinition`; `create_definition` and so on in Python), `/v1/definitions`,
-or the console's Definitions page, and make agents from one:
+(`agents.runtime.upsertDefinition`, `createDefinition`, `updateDefinition`,
+`definition(s)`, `deleteDefinition`; `upsert_definition` and so on in Python),
+`/v1/definitions`, or the console's Definitions page, and make agents from one.
+`upsertDefinition(key, …)` (`POST /v1/definitions` with an `Idempotency-Key`) is
+the one to run at every deploy: the same key is the same definition, set to what
+you send (fields left out are cleared), with a new revision only when that
+changes it. `createDefinition` makes a new one each time.
 
 ```ts
-const definition = await agents.runtime.createDefinition({
+const definition = await agents.runtime.upsertDefinition("support", {
   name: "Support", model: "anthropic/claude-sonnet-5", systemPrompt: "You answer support tickets.",
   builtins: ["web_search", "ask_user"],
   mcpServers: [{ name: "app", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],
@@ -1888,7 +1892,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.connectAgent(session, { tools, attach, takeover })` | `runtime.connect_agent(session, tools=, attach=, takeover=)` | connect with stored credentials |
 | `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
 | `runtime.me()` | `runtime.me()` | who the API key is: `tenant`, your tenant's id, which `serveTools` takes |
-| `runtime.createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `create_definition`, … | definitions |
+| `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
 | `client.prompt(text, { from, actor, files, metadata, whileRunning, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error |

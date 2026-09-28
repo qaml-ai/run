@@ -173,7 +173,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.connectAgent(session, { tools, attach, takeover })` | `runtime.connect_agent(session, tools=, attach=, takeover=)` | connect with stored credentials |
 | `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
 | `runtime.me()` | `runtime.me()` | who the API key is: `tenant`, your tenant's id, which `serveTools` takes |
-| `runtime.createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `create_definition`, … | definitions |
+| `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
 | `client.prompt(text, { from, actor, files, metadata, whileRunning, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error |

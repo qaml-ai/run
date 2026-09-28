@@ -341,7 +341,7 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
 interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number }
 export interface DefinitionInput {
   name: string; model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
-  limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: ("web_fetch" | "web_search" | "schedule")[];
+  limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
   /** The search providers web_search tries, in order, instead of the runtime's. */
   webSearch?: { providers: ("exa" | "brave" | "parallel")[] };
   mcpServers?: (SourceOptions & { url: string })[];
@@ -627,6 +627,11 @@ export class AgentRuntime {
    * specs, built-ins). Make agents from one with `createAgent({ definition: id })`.
    */
   createDefinition(input: DefinitionInput): Promise<Definition> { return this.transport.json("/v1/definitions", this.operator(), "POST", input, false); }
+  /** The definition for `key`, set to `input` whole: made if there is none, else a new revision if `input` changes it. The same key is the same definition. */
+  upsertDefinition(key: string, input: DefinitionInput): Promise<Definition> {
+    if (!AGENT_KEY.test(key)) throw new AgentError(`A definition's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
+    return this.transport.json("/v1/definitions", this.operator(), "POST", input, true, { "Idempotency-Key": key });
+  }
   /** Replace the fields given (null removes one); `apply: "all"` also reconfigures its live agents between their turns. */
   updateDefinition(id: string, input: Partial<DefinitionInput> & { revision?: number; apply?: "all" }): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "PATCH", input, false); }
   definition(id: string): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator()); }

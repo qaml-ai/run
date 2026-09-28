@@ -473,6 +473,14 @@ class AgentRuntime:
     async def create_definition(self, **fields):
         return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", fields, retry=False)
 
+    async def upsert_definition(self, key, **fields):
+        """The definition for `key`, set to `fields` whole: made if there is none, else a new revision if they change it.
+        The same key is the same definition."""
+        import re
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
+            raise AgentError(f"A definition's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
+        return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", fields, headers={"Idempotency-Key": key})
+
     async def update_definition(self, definition_id, **fields):
         """Replace the fields given (None removes one); apply="all" also reconfigures its live agents."""
         return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "PATCH", fields, retry=False)

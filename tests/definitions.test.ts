@@ -8,7 +8,7 @@ import { AgentRuntime } from "../clients/typescript.ts";
 import { Definitions } from "../src/definitions.ts";
 import { migrate } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
-import { OTHER_OPERATOR, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
+import { OPERATOR, OTHER_OPERATOR, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
 
 const lookup = { name: "lookup", description: "Look something up", parameters: { type: "object", properties: { key: { type: "string" } } }, exposure: "direct" };
 const systemText = (body: any) => body.messages.find((message: any) => message.role === "system" || message.role === "developer")?.content as string;
@@ -47,6 +47,25 @@ test("definitions are the tenant's own, validated, and revised", async t => {
   assert.equal((await r.call(`/v1/definitions/${id}`, { method: "DELETE" })).status, 200);
   assert.equal((await r.call(`/v1/definitions/${id}`)).status, 404);
   assert.equal((await r.call("/v1/definitions")).json.length, 1);
+});
+
+test("a definition's key upserts it: the same key is the same definition, revised only when it changes", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const key = { "Idempotency-Key": "researcher" };
+  const first = await r.call("/v1/definitions", { body: { name: "Researcher", builtins: ["web_search"], systemPrompt: "Research." }, headers: key });
+  assert.equal(first.status, 201, first.text);
+  const again = await r.call("/v1/definitions", { body: { name: "Researcher", builtins: ["web_search"], systemPrompt: "Research." }, headers: key });
+  assert.equal(again.json.id, first.json.id);
+  assert.equal(again.json.revision, 1, "the same configuration changes nothing");
+  const changed = (await r.call("/v1/definitions", { body: { name: "Researcher", builtins: ["web_search", "web_fetch"] }, headers: key })).json;
+  assert.equal(changed.id, first.json.id);
+  assert.equal(changed.revision, 2);
+  assert.deepEqual(changed.builtins, ["web_search", "web_fetch"]);
+  assert.equal(changed.systemPrompt, undefined, "an upsert sets the whole definition: fields left out are cleared");
+  assert.equal((await r.call("/v1/definitions")).json.length, 1, "no duplicates");
+  assert.equal((await r.call("/v1/definitions", { body: { name: "Researcher" }, headers: key, token: OTHER_OPERATOR })).json.id === first.json.id, false, "keys are per tenant");
+  const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  assert.equal((await sdk.upsertDefinition("researcher", { name: "Researcher", builtins: ["web_search", "ask_user"] })).id, first.json.id);
 });
 
 test("agents are made from a definition, record its revision, and take a new one when it is applied", async t => {

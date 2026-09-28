@@ -6955,11 +6955,10 @@
           {
             "schema": {
               "type": "string",
-              "maxLength": 255,
-              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+              "description": "The definition's key: the same key is the same definition, set to this body (a new revision if it changes anything)"
             },
             "required": false,
-            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "description": "The definition's key: the same key is the same definition, set to this body (a new revision if it changes anything)",
             "name": "idempotency-key",
             "in": "header"
           }
@@ -6975,7 +6974,7 @@
         },
         "responses": {
           "201": {
-            "description": "The definition, at revision 1",
+            "description": "The definition: at revision 1, or with a key, the key's at its latest revision",
             "content": {
               "application/json": {
                 "schema": {

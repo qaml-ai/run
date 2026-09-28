@@ -129,7 +129,7 @@ naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 Then name the server in a definition, and make agents from it:
 
 ```ts
-const definition = await agents.runtime.createDefinition({
+const definition = await agents.runtime.upsertDefinition("support", {
   name: "Support",
   mcpServers: [{ name: "shop", url: "https://tools.example.com/mcp", auth: { type: "runtime" } }],
 });

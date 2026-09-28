@@ -28,9 +28,14 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
   };
   route(createRoute({ method: "get", path: "/v1/definitions", responses: { 200: reply("The tenant's definitions", z.array(schema.Definition)) } }),
     async c => json(c, 200, await service().list(c.var.principal.tenant)));
-  route(createRoute({ method: "post", path: "/v1/definitions", request: { body: body(schema.DefinitionInput) }, responses: { 201: reply("The definition, at revision 1", schema.Definition) } }), async c => {
+  route(createRoute({
+    method: "post", path: "/v1/definitions",
+    request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "The definition's key: the same key is the same definition, set to this body (a new revision if it changes anything)" }) }), body: body(schema.DefinitionInput) },
+    responses: { 201: reply("The definition: at revision 1, or with a key, the key's at its latest revision", schema.Definition) },
+  }), async c => {
     const definitions = service();
-    return json(c, 201, definitions.view(await definitions.create(c.var.principal.tenant, await parse(schema.DefinitionInput, c))));
+    const key = c.req.header("idempotency-key"), input = await parse(schema.DefinitionInput, c);
+    return json(c, 201, definitions.view(key !== undefined ? await definitions.upsert(c.var.principal.tenant, key, input) : await definitions.create(c.var.principal.tenant, input)));
   });
   route(createRoute({ method: "get", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition", schema.Definition) } }),
     async c => json(c, 200, await service().get(c.var.principal.tenant, c.req.param("id")!)));

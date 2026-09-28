@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Db } from "./db.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
@@ -10,6 +10,7 @@ import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import { builtinsInput } from "./builtins.ts";
 import { searchOrder } from "./web-search.ts";
+import { canonical } from "../shared/durable-json.ts";
 import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
 import { mcpServersInput, mcpServerView, openApiInput, openApiView, type McpServerSpec, type OpenApiSpec, type Sources } from "./tool-sources.ts";
 import type { ToolSourceView } from "./tool-servers.ts";
@@ -105,12 +106,34 @@ export class Definitions {
   }
   async get(tenant: string, id: string) { return this.view(await this.read(tenant, id)); }
 
+  /**
+   * The definition for the tenant's `key`, set to `input` (POST /v1/definitions with an Idempotency-Key): made at
+   * revision 1 if there is none, else given `input` whole (fields left out are cleared) as a new revision, unless that
+   * changes nothing. The same key is the same definition.
+   */
+  async upsert(tenant: string, key: string, input: DefinitionInput): Promise<Definition> {
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(key)) throw new HttpError(400, "An Idempotency-Key is 1 to 80 letters, digits, _ and -");
+    const id = `def_${createHash("sha256").update(`${tenant}:${key}`).digest("hex").slice(0, 20)}`;
+    const current = await this.read(tenant, id).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
+    if (!current) return this.create(tenant, input, {}, id).catch(async error => {
+      // A concurrent upsert of the key made it first: this one updates it.
+      if ((error as { code?: string }).code === "23505") return this.upsert(tenant, key, input);
+      throw error;
+    });
+    if (input?.revision !== undefined) throw new HttpError(400, "An upsert sets the definition whatever its revision; use PATCH /v1/definitions/<id> for a conditional change");
+    const name = this.name(input?.name);
+    if (!name) throw new HttpError(400, "A definition needs a name");
+    const spec = await this.merge(tenant, id, current.spec, { ...Object.fromEntries(FIELDS.map(field => [field, null])), ...input });
+    if (name === current.name && canonical(spec) === canonical(current.spec)) return current;
+    const toolSources = await this.listing(tenant, id, spec, input);
+    return { ...await this.write(current, name, spec), ...(toolSources ? { toolSources } : {}) };
+  }
+
   /** A new definition, at revision 1. */
-  async create(tenant: string, input: DefinitionInput, internal: Pick<DefinitionSpec, "channel"> = {}): Promise<Definition> {
+  async create(tenant: string, input: DefinitionInput, internal: Pick<DefinitionSpec, "channel"> = {}, id = `def_${randomBytes(10).toString("hex")}`): Promise<Definition> {
     const name = this.name(input.name);
     if (!name) throw new HttpError(400, "A definition needs a name");
     if ((await this.db.query("select count(*) as count from definitions where tenant = $1", [tenant])).rows[0].count >= MAX_DEFINITIONS) throw new HttpError(400, `A tenant can have at most ${MAX_DEFINITIONS} definitions`);
-    const id = `def_${randomBytes(10).toString("hex")}`;
     const spec: DefinitionSpec = { ...await this.merge(tenant, id, {}, input), ...internal };
     const toolSources = await this.listing(tenant, id, spec, input);
     const now = Date.now();
