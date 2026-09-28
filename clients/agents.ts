@@ -149,6 +149,8 @@ export interface RunOptions {
    * it, such a run is refused with an AgentError, code APPLICATION_NOT_CONNECTED.
    */
   allowDisconnected?: boolean;
+  /** This run's own budget (USD): it ends before its next model request once it has spent this. The agent's spendLimit is unchanged. */
+  spendLimit?: { usd: number };
 }
 
 /** What `agent.stream()` yields. `raw` is the event it came from. */
@@ -383,7 +385,7 @@ function promptOptions(id: string, options: RunOptions) {
   return {
     ...messageOptions(options), idempotencyKey: id,
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
-    ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
+    ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
   };
 }
 

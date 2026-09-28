@@ -1080,7 +1080,8 @@ class AgentClient:
         return await self.request(method, {"text": text, **({"files": attached} if attached else {}), **(extra or {}), **({"from": from_} if from_ else {}),
                                            **({"metadata": metadata} if metadata else {})}, idempotency_key=request_id, **options)
 
-    async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False, **options):
+    async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
+                     spend_limit=None, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
         the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
         identity tokens) without telling the model. `files` are attached: bytes, a local path (str or Path),
@@ -1088,10 +1089,12 @@ class AgentClient:
         uploaded to the agent's workspace (uploads/<request>/<name>) first, then attached by path. `metadata` is the
         application's own key-value data about the message (a dict of at most 16 strings): the stored message and
         its request carry it, with the request's id, in history, events and webhooks; the model never sees it. `while_running="steer"` hands
-        the message to a running turn, and returns with that turn's outcome."""
+        the message to a running turn, and returns with that turn's outcome. `spend_limit` ({"usd": n}) is this run's own budget:
+        it ends before its next model request once it has spent that; the agent's spend limit is unchanged."""
         return await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
                                    extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
-                                          **({"allowDisconnected": True} if allow_disconnected else {})}, **options)
+                                          **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {})},
+                                   **options)
 
     async def _attach(self, request_id, files):
         names, attached = set(), []
@@ -1416,26 +1419,28 @@ class Agent:
         return self.client.files
 
     async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-                  allow_disconnected=False):
+                  allow_disconnected=False, spend_limit=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. There is no timeout
         unless `timeout` (seconds) says so, and that only stops the wait. `user` (your user id, or {"id", "name"?}) is
         who sent it: the model sees who, and tools get it as identity.user. A failed run raises RunError (with the run)
         unless throw_on_error=False. The same idempotency_key returns the same run, never a second one. An agent with application
-        tools and no process serving them refuses the run (AgentError, code APPLICATION_NOT_CONNECTED) unless allow_disconnected."""
+        tools and no process serving them refuses the run (AgentError, code APPLICATION_NOT_CONNECTED) unless allow_disconnected.
+        `spend_limit` ({"usd": n}) is this run's own budget; the agent's spend limit is unchanged."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
-                               throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected)
+                               throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit)
 
     def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-               allow_disconnected=False):
+               allow_disconnected=False, spend_limit=None):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
-                                      "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected})
+                                      "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected,
+                                      "spend_limit": spend_limit})
 
     async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None,
-                   allow_disconnected=False):
+                   allow_disconnected=False, spend_limit=None):
         pending = self.client.prompt(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=request_id,
-                                     timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected)
+                                     timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit)
         return await self._settle(request_id, pending, throw_on_error)
 
     async def _settle(self, request_id, pending, throw_on_error):

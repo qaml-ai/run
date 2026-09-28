@@ -179,11 +179,16 @@ with 400. Only the tenant sets them; `GET /v1/agents/:id` shows them.
 is the most the agent may spend on model calls from then on: their cost as the
 [webhooks](webhooks.md) (`usage.recorded`) reports it (the provider's own when it reports
 one, else the catalog price), turns and compaction summaries, whoever's key they
-ran on. Setting a value starts counting from zero, so an
-application can set the remaining allowance before each prompt; `null` removes
-it. A PATCH applies it at once, ahead of runs already queued. `GET /v1/agents/:id`
+ran on. Setting a value starts counting from zero; `null` removes it. A PATCH applies it at once, ahead of runs already queued. `GET /v1/agents/:id`
 shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
 `prompt` and `continue` runs, and a running turn ends after the response that
 crossed it (its tool calls run and are recorded), with `stopped: "spend_limit"`:
 the SDKs' `run()` fails with code `spend_limit`. Only you can set it, not the
 agent's own token.
+
+A run can have a budget of its own: `spendLimit: {"usd": n}` on
+`POST /v1/agents/:id/prompt` (the SDKs' `run`, `stream` and `prompt` take
+`spendLimit`, `spend_limit=` in Python). The run ends the same way once it has
+spent that, before its next model request; the agent's own limit is unchanged,
+and still counts the run. To give each prompt what is left of a budget you keep,
+send it with the prompt instead of reconfiguring the agent.

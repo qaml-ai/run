@@ -206,7 +206,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
     async def test_parity_history_configure_tools_and_wait_for_request(self):
         agent = await self.make()
         # The same key sent again while its run goes on joins that run.
-        first, again = await asyncio.gather(agent.run("one", idempotency_key="py-first"), agent.run("one", idempotency_key="py-first"))
+        first, again = await asyncio.gather(agent.run("one", idempotency_key="py-first", spend_limit={"usd": 5}), agent.run("one", idempotency_key="py-first", spend_limit={"usd": 5}))
         self.assertEqual(first.text, again.text)
         researcher = await self.agents.upsert("py-researcher", builtins=["web_fetch"])
         # A provider of one's own: here the fake model server (allowed by the operator's outbound policy).

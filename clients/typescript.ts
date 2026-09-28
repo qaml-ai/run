@@ -1108,10 +1108,11 @@ export class AgentClient {
    * `from.id` is the turn's actor. `actor` names someone else acting (`act` in identity tokens) without telling the model.
    * `metadata` is the application's own key-value data about the message (at most 16 string values): the
    * stored message and its request carry it, with the request's id, in history, events and webhooks; the model never sees it.
-   * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome.
+   * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome. `spendLimit` is this run's own
+   * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    */
-  prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer" }) {
-    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) });
+  prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number } }) {
+    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}) });
   }
 
   /**

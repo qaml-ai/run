@@ -2138,6 +2138,16 @@
             ],
             "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step, and this request ends with that turn (steeredInto names it); if the turn ends first, it runs as a turn of its own. With no turn running, both start one"
           },
+          "spendLimit": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpendLimitInput"
+              },
+              {
+                "description": "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too"
+              }
+            ]
+          },
           "metadata": {
             "type": "object",
             "additionalProperties": {

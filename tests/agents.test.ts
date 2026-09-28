@@ -260,3 +260,12 @@ test("an agent's history is the list of its messages", async t => {
   assert.ok(Array.isArray(history));
   assert.deepEqual(history.map(message => message.role), ["user", "assistant"]);
 });
+
+test("a run takes a budget of its own", async t => {
+  // Every response costs something and asks for another tool call: only the budget ends the run.
+  const { make } = await setup(t, (_body, index) => ({ ...toolCall("js_exec", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 100_000, completion_tokens: 0 } }));
+  const agent = await make();
+  const run = await agent.run("Go", { spendLimit: { usd: 0.001 }, throwOnError: false });
+  assert.equal(run.raw?.stopped, "spend_limit");
+  assert.match(run.error!.message, /This run has reached its spend limit/);
+});

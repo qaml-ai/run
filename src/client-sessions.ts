@@ -110,6 +110,8 @@ type Session = {
   partial?: unknown;
   /** What each running run's model responses used so far, for its end's webhook event. */
   usage?: Map<string, RunUsage>;
+  /** Model runs' own spend limits (a prompt's `spendLimit`), in USD, by request id, while they run. */
+  runLimits?: Map<string, number>;
   /** Writing the latest run's `run.started` event, which the event of its end waits for. */
   started?: Promise<void>;
   /** Whether the run in progress has its webhook events written: its tenant had an endpoint for them as it began. */
@@ -1066,7 +1068,7 @@ export class ClientSessions {
       const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions: await this.toolset(session),
         spendLimit: async () => {
-          const limited = await this.agentSpendLimit(session) ?? await this.options.spendLimit?.(session.header.tenant);
+          const limited = await this.agentSpendLimit(session) ?? this.runSpendLimit(session) ?? await this.options.spendLimit?.(session.header.tenant);
           return typeof limited === "string" ? limited : limited?.message;
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
@@ -2015,6 +2017,8 @@ export class ClientSessions {
     if (params.metadata !== undefined && !isMessage) throw new HttpError(400, "metadata is only for messages (prompt, steer)");
     if (params.images !== undefined) throw new HttpError(400, "Attach images as files: files: [{ name, data (base64), contentType }]");
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
+    // A run's own budget: it only ever lowers what the run may spend, so whoever may run the agent may set it.
+    if (params.spendLimit !== undefined && (!MODEL_RUNS.includes(body.method) || spendInput(params.spendLimit) === null)) throw new HttpError(400, "spendLimit is {usd}, for a model run (prompt, continue)");
     if (params.whileRunning === "queue") delete params.whileRunning;
     // A message records the request that sent it, so an application can match it to its own.
     if (isMessage) params.requestId = body.id;
@@ -2311,6 +2315,12 @@ export class ClientSessions {
       return provisionHash !== undefined ? { ...result, changed } : result;
     }
     if (record.method === "resume") params = await this.resumeParams(session, record.suspension!);
+    // The run's own budget is the runtime's to keep (runSpendLimit), not the agent's.
+    if (params?.spendLimit !== undefined) {
+      const { spendLimit, ...rest } = params;
+      (session.runLimits ??= new Map()).set(record.id, spendLimit.usd);
+      params = rest;
+    }
     try {
       return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
       ? event => {
@@ -2462,6 +2472,7 @@ export class ClientSessions {
       const run = RUN_METHODS.includes(record.method);
       const announcing = run && !!session.announcing;
       const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now(), ...(announcing ? { announce: true as const } : {}) });
+      session.runLimits?.delete(record.id);
       const steered = this.endSteered(session, record.id, value, announcing);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
@@ -2536,6 +2547,15 @@ export class ClientSessions {
     const spend = await this.spendOf(session);
     if (!spend || spend.spent < spend.usd) return undefined;
     return `This agent has reached its spend limit of ${dollars(spend.usd)} (${dollars(spend.spent)} spent since it was set); raise it with PATCH /v1/agents/${session.header.id}/configuration {"spendLimit": {"usd": …}}`;
+  }
+
+  /** Why the running run may not spend more: it has spent its own limit (`runLimits`). */
+  private runSpendLimit(session: Session): string | undefined {
+    for (const [id, usd] of session.runLimits ?? []) {
+      const spent = session.usage?.get(id)?.costUsd ?? 0;
+      if (session.running.has(id) && spent >= usd) return `This run has reached its spend limit of ${dollars(usd)} (${dollars(spent)} spent)`;
+    }
+    return undefined;
   }
 
   /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
