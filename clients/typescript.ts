@@ -312,16 +312,24 @@ export type RecordedMessage = AgentMessage & { from?: Sender; requestId?: string
 export interface AgentHistory { messages: RecordedMessage[] }
 /** A page of history: whole turns, oldest first, each message at its index in the agent's history. `next` is the older page's `before` (null at the start). */
 export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true }
-/** What a run's model responses used (`run.finished`). */
+/** What a run's model responses used (`run.completed`, `run.failed`); null when it made none on the node that ended it. */
 export interface RunUsage { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number }
-/** An event the tenant's webhook receives (`PUT /v1/usage-webhook {url, events}`), signed per Standard Webhooks; dedupe by `id`, order by `at`. */
-export type WebhookEvent = { id: string; tenant: string; at: number } & (
-  | { type: "usage"; agent: string; requestId: string | null; subject: string; actor: string | null; context: Record<string, unknown>; keyScope: string | null;
+type RunFacts = { agentId: string; requestId: string; method: "prompt" | "continue" | "resume" | "execute"; actor?: string; metadata?: Record<string, string> };
+/**
+ * An event a tenant's webhook endpoint receives (`POST /v1/webhooks {url, events}`), signed per Standard Webhooks.
+ * `created` is Unix seconds; dedupe by `id`. Payloads carry ids and key facts: read the rest with the tenant token.
+ */
+export type WebhookEvent = { id: string; created: number } & (
+  | { type: "run.started"; data: RunFacts & { resumes?: number } }
+  | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; stopped?: "input_required" | "spend_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
+  | { type: "run.failed"; data: RunFacts & { usage: RunUsage | null; error: string; uncertain?: boolean; steeredInto?: string } }
+  | { type: "input.requested"; data: { agentId: string; requestId: string; inputId: string; toolCallId: string; kind: AgentInput["kind"]; expiresAt: number } }
+  | { type: "input.resolved"; data: { agentId: string; requestId: string; inputId: string; state: Exclude<AgentInput["state"], "pending"> } }
+  | { type: "usage.recorded"; data: {
+      agentId: string; requestId: string | null; subject: string; actor: string | null; context: Record<string, unknown>; keyScope: string | null;
       provider: string; model: string; kind: "response" | "compaction"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
-      cost: { usd: number; source: "provider" | "catalog" } }
-  | { type: "run.started"; agent: string; requestId: string; method: RequestMethod; actor?: string; resumes?: number }
-  | { type: "run.finished"; agent: string; requestId: string; method: RequestMethod; actor?: string; outcome: Outcome; steeredInto?: string; usage: RunUsage | null }
-  | { type: "input.requested" | "input.resolved"; agent: string; requestId: string; input: AgentInput });
+      cost: { usd: number; source: "provider" | "catalog" }; at: number;
+    } });
 /**
  * A file to attach to a message: bytes or a Blob (a File keeps its name and type), `{ name, data,
  * contentType? }`, a local path (Node entry), or `{ path }` for a file already in the agent's mounts.

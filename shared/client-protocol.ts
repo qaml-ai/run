@@ -22,7 +22,7 @@ export type RequestRecord = {
   metadata?: Record<string, string>;
   /** A prompt sent with `whileRunning: "steer"` that a running turn took: that turn's request, whose outcome it shares. */
   steeredInto?: string;
-  /** The runtime's own: a finished run whose `run.finished` webhook event is not written yet. */
+  /** The runtime's own: an ended run whose webhook event (`run.completed` or `run.failed`) is not written yet. */
   announce?: true;
 };
 /**

@@ -32,6 +32,553 @@
       }
     },
     "schemas": {
+      "Event_run_started": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.started"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string",
+                "enum": [
+                  "prompt",
+                  "continue",
+                  "resume",
+                  "execute"
+                ]
+              },
+              "actor": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "The metadata the message that started it carried"
+              },
+              "resumes": {
+                "type": "number",
+                "description": "Set when a node resumed a turn whose node was lost"
+              }
+            },
+            "required": [
+              "agentId",
+              "requestId",
+              "method"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A run began"
+      },
+      "Event_run_completed": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.completed"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string",
+                "enum": [
+                  "prompt",
+                  "continue",
+                  "resume",
+                  "execute"
+                ]
+              },
+              "actor": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "The metadata the message that started it carried"
+              },
+              "usage": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "responses": {
+                    "type": "number"
+                  },
+                  "input": {
+                    "type": "number"
+                  },
+                  "output": {
+                    "type": "number"
+                  },
+                  "cacheRead": {
+                    "type": "number"
+                  },
+                  "cacheWrite": {
+                    "type": "number"
+                  },
+                  "costUsd": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "responses",
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite",
+                  "costUsd"
+                ],
+                "description": "The run's model responses on the node that ended it; null when it made none there"
+              },
+              "stopped": {
+                "type": "string",
+                "enum": [
+                  "input_required",
+                  "spend_limit"
+                ],
+                "description": "Why it stopped early: waiting on input (inputIds), or a spend limit"
+              },
+              "inputIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "replyIndex": {
+                "type": "number",
+                "description": "The final assistant message's index in the agent's history"
+              },
+              "messageCount": {
+                "type": "number",
+                "description": "Messages in the agent's history after it"
+              },
+              "steeredInto": {
+                "type": "string",
+                "description": "A prompt sent with whileRunning: steer that a running turn took: that turn's request"
+              }
+            },
+            "required": [
+              "agentId",
+              "requestId",
+              "method",
+              "usage"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A run ended without an error"
+      },
+      "Event_run_failed": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.failed"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string",
+                "enum": [
+                  "prompt",
+                  "continue",
+                  "resume",
+                  "execute"
+                ]
+              },
+              "actor": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "The metadata the message that started it carried"
+              },
+              "usage": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "responses": {
+                    "type": "number"
+                  },
+                  "input": {
+                    "type": "number"
+                  },
+                  "output": {
+                    "type": "number"
+                  },
+                  "cacheRead": {
+                    "type": "number"
+                  },
+                  "cacheWrite": {
+                    "type": "number"
+                  },
+                  "costUsd": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "responses",
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite",
+                  "costUsd"
+                ],
+                "description": "The run's model responses on the node that ended it; null when it made none there"
+              },
+              "error": {
+                "type": "string"
+              },
+              "uncertain": {
+                "type": "boolean",
+                "description": "A restart cut it short: its effects are unknown"
+              },
+              "steeredInto": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agentId",
+              "requestId",
+              "method",
+              "usage",
+              "error"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A run ended with an error: the runtime's, or the model's"
+      },
+      "Event_input_requested": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "input.requested"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "inputId": {
+                "type": "string"
+              },
+              "toolCallId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "question",
+                  "approval",
+                  "form",
+                  "url"
+                ]
+              },
+              "expiresAt": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "agentId",
+              "requestId",
+              "inputId",
+              "toolCallId",
+              "kind",
+              "expiresAt"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "The agent asks a person for input; the run waits"
+      },
+      "Event_input_resolved": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "input.resolved"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "inputId": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "answered",
+                  "declined",
+                  "cancelled",
+                  "expired",
+                  "superseded"
+                ]
+              }
+            },
+            "required": [
+              "agentId",
+              "requestId",
+              "inputId",
+              "state"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "An input settled"
+      },
+      "Event_usage_recorded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "usage.recorded"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "subject": {
+                "type": "string"
+              },
+              "actor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "context": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "keyScope": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "response",
+                  "compaction"
+                ]
+              },
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cost": {
+                "type": "object",
+                "properties": {
+                  "usd": {
+                    "type": "number"
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "provider",
+                      "catalog"
+                    ]
+                  }
+                },
+                "required": [
+                  "usd",
+                  "source"
+                ]
+              },
+              "at": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "agentId",
+              "requestId",
+              "subject",
+              "actor",
+              "context",
+              "keyScope",
+              "provider",
+              "model",
+              "kind",
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite",
+              "cost",
+              "at"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A model response's usage and cost"
+      },
       "Error": {
         "type": "object",
         "properties": {
@@ -299,9 +846,31 @@
         },
         "additionalProperties": false
       },
-      "UsageWebhookSet": {
+      "WebhookEndpointCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WebhookEndpoint"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "secret": {
+                "type": "string",
+                "description": "The Standard Webhooks signing secret (whsec_…); shown only this once"
+              }
+            },
+            "required": [
+              "secret"
+            ]
+          }
+        ]
+      },
+      "WebhookEndpoint": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "string"
+          },
           "url": {
             "type": "string"
           },
@@ -310,14 +879,111 @@
             "items": {
               "type": "string",
               "enum": [
-                "usage",
                 "run.started",
-                "run.finished",
+                "run.completed",
+                "run.failed",
                 "input.requested",
-                "input.resolved"
+                "input.resolved",
+                "usage.recorded"
               ]
             },
-            "description": "The event types it receives. usage: each model response's usage and cost. run.started / run.finished: each run (prompt, continue, resume, execute) as it begins and ends, the end with its outcome (stopped, error, reply and replyIndex: the final assistant message's index in history) and usage. input.requested / input.resolved: each human input as it is asked and settled"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
+          },
+          "description": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "events",
+          "createdAt"
+        ]
+      },
+      "WebhookEndpointInput": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "An HTTPS URL that receives the events, each a POST signed per Standard Webhooks",
+            "example": "https://example.com/hooks/agents"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "run.started",
+                "run.completed",
+                "run.failed",
+                "input.requested",
+                "input.resolved",
+                "usage.recorded"
+              ]
+            },
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "url",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "WebhookEndpointUpdate": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "An HTTPS URL that receives the events, each a POST signed per Standard Webhooks",
+            "example": "https://example.com/hooks/agents"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "run.started",
+                "run.completed",
+                "run.failed",
+                "input.requested",
+                "input.resolved",
+                "usage.recorded"
+              ]
+            },
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "additionalProperties": false
+      },
+      "WebhookSecret": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "The Standard Webhooks signing secret (whsec_…); shown only this once"
+          }
+        },
+        "required": [
+          "secret"
+        ]
+      },
+      "UsageWebhookSet": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
           },
           "secret": {
             "type": "string",
@@ -325,8 +991,7 @@
           }
         },
         "required": [
-          "url",
-          "events"
+          "url"
         ]
       },
       "UsageWebhookInput": {
@@ -334,22 +999,8 @@
         "properties": {
           "url": {
             "type": "string",
-            "description": "An HTTPS URL that receives the selected events",
-            "example": "https://example.com/hooks/agent-events"
-          },
-          "events": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "usage",
-                "run.started",
-                "run.finished",
-                "input.requested",
-                "input.resolved"
-              ]
-            },
-            "description": "The event types it receives; a new webhook gets [\"usage\"] without it, and leaving it out keeps the current selection"
+            "description": "An HTTPS URL that receives each model response's usage",
+            "example": "https://example.com/hooks/agent-usage"
           }
         },
         "required": [
@@ -363,40 +1014,13 @@
           "url": {
             "type": "string"
           },
-          "events": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "usage",
-                "run.started",
-                "run.finished",
-                "input.requested",
-                "input.resolved"
-              ]
-            },
-            "description": "The event types it receives. usage: each model response's usage and cost. run.started / run.finished: each run (prompt, continue, resume, execute) as it begins and ends, the end with its outcome (stopped, error, reply and replyIndex: the final assistant message's index in history) and usage. input.requested / input.resolved: each human input as it is asked and settled"
-          },
           "createdAt": {
             "type": "number"
           }
         },
         "required": [
           "url",
-          "events",
           "createdAt"
-        ]
-      },
-      "UsageWebhookSecret": {
-        "type": "object",
-        "properties": {
-          "secret": {
-            "type": "string",
-            "description": "The Standard Webhooks signing secret (whsec_…); shown only this once"
-          }
-        },
-        "required": [
-          "secret"
         ]
       },
       "Model": {
@@ -4153,6 +4777,228 @@
         }
       }
     },
+    "/v1/webhooks": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEndpointInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The endpoint, with its signing secret, shown only now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpointCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The tenant's webhook endpoints",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WebhookEndpoint"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{webhookId}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "webhookId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The endpoint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpoint"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "webhookId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEndpointUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The endpoint; what the request left out is unchanged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpoint"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "webhookId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The endpoint and its undelivered events are removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{webhookId}/secret": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "webhookId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A new signing secret, shown only now; the old one also signs for 24 hours",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookSecret"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage-webhook": {
       "put": {
         "requestBody": {
@@ -4255,7 +5101,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UsageWebhookSecret"
+                  "$ref": "#/components/schemas/WebhookSecret"
                 }
               }
             }
@@ -6906,5 +7752,120 @@
       }
     }
   },
-  "webhooks": {}
+  "webhooks": {
+    "run.started": {
+      "post": {
+        "summary": "run.started",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_run_started"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "run.completed": {
+      "post": {
+        "summary": "run.completed",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_run_completed"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "run.failed": {
+      "post": {
+        "summary": "run.failed",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_run_failed"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "input.requested": {
+      "post": {
+        "summary": "input.requested",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_input_requested"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "input.resolved": {
+      "post": {
+        "summary": "input.resolved",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_input_resolved"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "usage.recorded": {
+      "post": {
+        "summary": "usage.recorded",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_usage_recorded"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    }
+  }
 }

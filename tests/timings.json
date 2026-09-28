@@ -24,7 +24,6 @@
     "fencing.test.ts": 3.1,
     "history-pages.test.ts": 23.8,
     "history.test.ts": 0.3,
-    "lifecycle-webhooks.test.ts": 8.5,
     "log-tail.test.ts": 16.3,
     "mcp.test.ts": 4.8,
     "openapi.test.ts": 0.4,
@@ -42,7 +41,8 @@
     "stream-deltas.test.ts": 19.5,
     "tenant-reads.test.ts": 3.3,
     "volumes.test.ts": 6.7,
-    "watch.test.ts": 20.3
+    "watch.test.ts": 20.3,
+    "webhooks.test.ts": 8.5
   },
   "inline": {
     "api.test.ts": 12.1,
@@ -69,7 +69,6 @@
     "fencing.test.ts": 2.5,
     "history-pages.test.ts": 21.7,
     "history.test.ts": 0.3,
-    "lifecycle-webhooks.test.ts": 6.9,
     "log-tail.test.ts": 6,
     "mcp.test.ts": 3.6,
     "openapi.test.ts": 0.4,
@@ -87,6 +86,7 @@
     "stream-deltas.test.ts": 18.3,
     "tenant-reads.test.ts": 2.7,
     "volumes.test.ts": 5.3,
-    "watch.test.ts": 18.4
+    "watch.test.ts": 18.4,
+    "webhooks.test.ts": 6.9
   }
 }

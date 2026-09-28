@@ -6,7 +6,7 @@ import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, Credentials, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
-import { enqueueEvents, eventId, usageCost, type WebhookEvent } from "./usage-webhooks.ts";
+import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { configurationUpdate, type ModelEndpoints } from "./session-config.ts";
 import { validateDefinitions } from "./tool-policy.ts";
@@ -69,11 +69,11 @@ interface SessionHeader {
   history?: true;
 }
 /**
- * Upserts of request records, appended as their state changes, and runs whose `run.finished` webhook event is written
- * (`announced`). Journals from before tool calls were MCP also hold call records, which are skipped.
+ * Upserts of request records, appended as their state changes, and ended runs whose webhook event (`run.completed` or
+ * `run.failed`) is written (`announced`). Journals from before tool calls were MCP also hold call records, which are skipped.
  */
 type JournalRecord = { t: "request"; record: RequestRecord } | { t: "announced"; ids: string[] };
-/** What a run's model responses (compaction summaries included) used, for its `run.finished` event. */
+/** What a run's model responses (compaction summaries included) used, for its end's webhook event. */
 type RunUsage = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number };
 type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; Variables: { session: Session } };
 type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
@@ -104,9 +104,9 @@ type Session = {
   handedBack?: true;
   /** The assistant message streaming now, as its latest message_update carried it. */
   partial?: unknown;
-  /** What each running run's model responses used so far, for its `run.finished` event. */
+  /** What each running run's model responses used so far, for its end's webhook event. */
   usage?: Map<string, RunUsage>;
-  /** Writing the latest run's `run.started` event, which its `run.finished` waits for. */
+  /** Writing the latest run's `run.started` event, which the event of its end waits for. */
   started?: Promise<void>;
   /** Prompts sent with `whileRunning: "steer"` that a running turn took, each with that turn's request: they end with it. */
   steered?: Map<string, string>;
@@ -524,22 +524,32 @@ export class ClientSessions {
     }
   }
 
-  /** A run's lifecycle event for the tenant's webhook, with an id each rewrite keeps. */
-  private runEvent(session: Session, type: "run.started" | "run.finished", record: RequestRecord, usage?: RunUsage): WebhookEvent {
-    const { id: agent, tenant } = session.header;
-    return {
-      id: eventId(`${type}:${agent}:${record.id}`), type, tenant, agent, requestId: record.id, method: record.method,
-      ...(record.actor ? { actor: record.actor } : {}),
-      ...(type === "run.started" ? { at: record.began ?? Date.now(), ...(record.resumes ? { resumes: record.resumes } : {}) }
-        : { at: record.endedAt ?? Date.now(), outcome: record.outcome, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null }),
-    };
+  /**
+   * A run's webhook event, with an id each rewrite keeps: `run.started`, or as it ended, `run.completed` (with how it
+   * stopped, if early, and its answer's index in history) or `run.failed` (the runtime's error, or the model's). Ids and
+   * key facts only: a receiver reads the rest from the request, history or inputs.
+   */
+  private runEvent(session: Session, record: RequestRecord, usage?: RunUsage): WebhookEvent {
+    const { id: agentId, tenant } = session.header;
+    const base = { agentId, requestId: record.id, method: record.method, ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
+    if (record.state === "running") return webhookEvent("run.started", tenant, { ...base, ...(record.resumes ? { resumes: record.resumes } : {}) }, `run.started:${agentId}:${record.id}`);
+    const outcome = record.outcome ?? { error: "No outcome was recorded" };
+    const result = (outcome.result ?? {}) as { error?: string | null; stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number };
+    const error = outcome.error ?? (typeof result.error === "string" ? result.error : undefined);
+    const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null };
+    const key = `run.ended:${agentId}:${record.id}`;
+    if (error !== undefined) return webhookEvent("run.failed", tenant, { ...ended, error, ...(outcome.uncertain ? { uncertain: true } : {}) }, key);
+    return webhookEvent("run.completed", tenant, {
+      ...ended, ...(result.stopped ? { stopped: result.stopped } : {}), ...(result.inputs?.length ? { inputIds: result.inputs.map(input => input.id) } : {}),
+      ...(typeof result.replyIndex === "number" ? { replyIndex: result.replyIndex } : {}), ...(typeof result.messages === "number" ? { messageCount: result.messages } : {}),
+    }, key);
   }
 
-  /** Write finished runs' `run.finished` events, then journal that they are written; a failure leaves them for the agent's next run or load. */
+  /** Write ended runs' webhook events, then journal that they are written; a failure leaves them for the agent's next run or load. */
   private async announce(session: Session, records: RequestRecord[], usage?: Map<string, RunUsage>) {
     try {
       await session.started;
-      await enqueueEvents(this.db, records.map(record => this.runEvent(session, "run.finished", record, usage?.get(record.id))));
+      await enqueueEvents(this.db, records.map(record => this.runEvent(session, record, usage?.get(record.id))));
     } catch (error) {
       console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: errorText(error) }));
       return;
@@ -2243,7 +2253,7 @@ export class ClientSessions {
         if (record.method === "execute") session.beginning = {};
         else await this.commit(session, true);
         this.hook("runStarted", session, record);
-        session.started = enqueueEvents(this.db, [this.runEvent(session, "run.started", record)])
+        session.started = enqueueEvents(this.db, [this.runEvent(session, record)])
           .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: errorText(error) })));
         if (record.method !== "execute") session.turn = { requestId: record.id, messages: [], count: 0, bytes: 0 };
       }
@@ -2293,7 +2303,7 @@ export class ClientSessions {
     await this.fold(session);
   }
 
-  /** Count a model response's usage toward its run's `run.finished` event. */
+  /** Count a model response's usage toward the webhook event of its run's end. */
   private tally(session: Session, requestId: string, usage: any) {
     const total = (session.usage ??= new Map()).get(requestId) ?? { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
     session.usage.set(requestId, {

@@ -6,7 +6,7 @@ import { underClaim, type Claim } from "./ownership.ts";
 import { canonical } from "../shared/durable-json.ts";
 import { schemaAccepts } from "./tool-policy.ts";
 import type { Sender } from "./sender.ts";
-import { enqueueEvents, eventId, type WebhookEvent } from "./usage-webhooks.ts";
+import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 
 /**
  * Human input: a question the model asks (ask_user), an approval the runtime's policy or a tool asks
@@ -206,9 +206,11 @@ const row = (value: any): InputRow => {
 /** An input as callers see it: never how its call is retried. */
 export const inputView = ({ stored: _stored, ...input }: InputRow): Input => input;
 
-/** A tenant webhook's event for an input asked (`input.requested`) or settled (`input.resolved`), written with the row's change. */
-const inputEvent = (type: "input.requested" | "input.resolved", input: InputRow): WebhookEvent =>
-  ({ id: eventId(`${type}:${input.id}`), type, tenant: input.tenant, agent: input.agent, requestId: input.requestId, at: Date.now(), input: inputView(input) });
+/** The webhook event for an input asked (`input.requested`) or settled (`input.resolved`), written with the row's change: its ids and key facts. */
+const inputEvent = (type: "input.requested" | "input.resolved", input: InputRow): WebhookEvent => webhookEvent(type, input.tenant, {
+  agentId: input.agent, requestId: input.requestId, inputId: input.id,
+  ...(type === "input.requested" ? { toolCallId: input.toolCallId, kind: input.kind, expiresAt: input.expiresAt } : { state: input.state }),
+}, `${type}:${input.id}`);
 
 /** The `agent_inputs` rows. Creates are written under the agent's claim; settling is a compare-and-set any node may make. */
 export class Inputs {

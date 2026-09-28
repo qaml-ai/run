@@ -6,7 +6,7 @@ import { accrueUsage, Billing, type UsageCharge } from "./billing.ts";
 import { activeCharge, MICROS, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
 import type { HttpError } from "./http.ts";
-import { enqueueEvents, usageEvent, type UsageEvent } from "./usage-webhooks.ts";
+import { enqueueEvents, usageEvent, type WebhookEvent } from "./webhooks.ts";
 
 /**
  * Tenant state that tenants manage themselves: provider keys (encrypted at rest),
@@ -34,9 +34,9 @@ type Charge = { platformCost: number; activeMs: number; toolCost: number; search
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
  * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
  * `charges` is what prepaid tenants pay for it (`Charge`), and `events` its model responses for
- * tenants' usage webhooks (usage-webhooks.ts), which the same transaction adds to their outbox.
+ * tenants' webhooks (`usage.recorded`, webhooks.ts), which the same transaction adds to their outbox.
  */
-type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, Charge>; events: UsageEvent[] };
+type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, Charge>; events: WebhookEvent[] };
 const batch = (): Batch => ({ id: randomUUID(), usage: new Map(), charges: new Map(), events: [] });
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -378,7 +378,7 @@ export class Accounts {
           platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
       [JSON.stringify(rows)]);
       await accrueUsage(sql, billed);
-      // Only tenants whose webhook selects usage keep their events.
+      // Only tenants with an endpoint that selects usage keep their events.
       await enqueueEvents(sql, events);
     });
     this.billing.invalidate(charges.keys());

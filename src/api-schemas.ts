@@ -1,5 +1,5 @@
 import { z } from "@hono/zod-openapi";
-import { WEBHOOK_EVENTS } from "./usage-webhooks.ts";
+import { EVENT_TYPES } from "./webhooks.ts";
 
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
 const SEND_TEXT = "Send {\"text\": \"...\"}";
@@ -55,15 +55,58 @@ export const KeyScope = z.object({
   })),
 }).openapi("KeyScope");
 
-const webhookEvents = z.array(z.enum(WEBHOOK_EVENTS)).openapi({ description: "The event types it receives. usage: each model response's usage and cost. run.started / run.finished: each run (prompt, continue, resume, execute) as it begins and ends, the end with its outcome (stopped, error, reply and replyIndex: the final assistant message's index in history) and usage. input.requested / input.resolved: each human input as it is asked and settled" });
-export const UsageWebhookInput = z.object({
-  url: z.string().openapi({ description: "An HTTPS URL that receives the selected events", example: "https://example.com/hooks/agent-events" }),
-  events: webhookEvents.optional().openapi({ description: "The event types it receives; a new webhook gets [\"usage\"] without it, and leaving it out keeps the current selection" }),
-}).strict().openapi("UsageWebhookInput");
-export const UsageWebhook = z.object({ url: z.string(), events: webhookEvents, createdAt: z.number() }).openapi("UsageWebhook");
+const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded" });
+export const WebhookEndpointInput = z.object({
+  url: z.string().openapi({ description: "An HTTPS URL that receives the events, each a POST signed per Standard Webhooks", example: "https://example.com/hooks/agents" }),
+  events: eventTypes,
+  description: z.string().max(500).optional(),
+}).strict().openapi("WebhookEndpointInput");
+export const WebhookEndpointUpdate = WebhookEndpointInput.partial().openapi("WebhookEndpointUpdate");
+export const WebhookEndpoint = z.object({ id: z.string(), url: z.string(), events: eventTypes, description: z.string().optional(), createdAt: z.number() }).openapi("WebhookEndpoint");
 const signingSecret = z.string().openapi({ description: "The Standard Webhooks signing secret (whsec_…); shown only this once" });
-export const UsageWebhookSet = z.object({ url: z.string(), events: webhookEvents, secret: signingSecret.optional() }).openapi("UsageWebhookSet");
-export const UsageWebhookSecret = z.object({ secret: signingSecret }).openapi("UsageWebhookSecret");
+export const WebhookEndpointCreated = WebhookEndpoint.extend({ secret: signingSecret }).openapi("WebhookEndpointCreated");
+export const WebhookSecret = z.object({ secret: signingSecret }).openapi("WebhookSecret");
+export const UsageWebhookInput = z.object({ url: z.string().openapi({ description: "An HTTPS URL that receives each model response's usage", example: "https://example.com/hooks/agent-usage" }) }).strict().openapi("UsageWebhookInput");
+export const UsageWebhook = z.object({ url: z.string(), createdAt: z.number() }).openapi("UsageWebhook");
+export const UsageWebhookSet = z.object({ url: z.string(), secret: signingSecret.optional() }).openapi("UsageWebhookSet");
+
+// Webhook events: documentation only; src/webhooks.ts, src/inputs.ts and ClientSessions.runEvent build them.
+const envelope = <T extends string>(type: T, data: z.ZodType, description: string) => z.object({
+  id: z.string().openapi({ description: "evt_…: the same each time the event is sent; dedupe by it", example: "evt_3f9c0a1b2c3d4e5f60718293" }),
+  type: z.literal(type), created: z.number().openapi({ description: "When it happened, in Unix seconds" }), data,
+}).openapi(`Event_${type.replace(".", "_")}`, { description });
+const runFacts = {
+  agentId: z.string(), requestId: z.string(),
+  method: z.enum(["prompt", "continue", "resume", "execute"]),
+  actor: z.string().optional(), metadata: z.record(z.string(), z.string()).optional().openapi({ description: "The metadata the message that started it carried" }),
+};
+const runUsage = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), costUsd: z.number() }).nullable()
+  .openapi({ description: "The run's model responses on the node that ended it; null when it made none there" });
+export const WebhookEvents = {
+  "run.started": envelope("run.started", z.object({ ...runFacts, resumes: z.number().optional().openapi({ description: "Set when a node resumed a turn whose node was lost" }) }), "A run began"),
+  "run.completed": envelope("run.completed", z.object({
+    ...runFacts, usage: runUsage,
+    stopped: z.enum(["input_required", "spend_limit"]).optional().openapi({ description: "Why it stopped early: waiting on input (inputIds), or a spend limit" }),
+    inputIds: z.array(z.string()).optional(),
+    replyIndex: z.number().optional().openapi({ description: "The final assistant message's index in the agent's history" }),
+    messageCount: z.number().optional().openapi({ description: "Messages in the agent's history after it" }),
+    steeredInto: z.string().optional().openapi({ description: "A prompt sent with whileRunning: steer that a running turn took: that turn's request" }),
+  }), "A run ended without an error"),
+  "run.failed": envelope("run.failed", z.object({
+    ...runFacts, usage: runUsage, error: z.string(), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
+  }), "A run ended with an error: the runtime's, or the model's"),
+  "input.requested": envelope("input.requested", z.object({
+    agentId: z.string(), requestId: z.string(), inputId: z.string(), toolCallId: z.string(), kind: z.enum(["question", "approval", "form", "url"]), expiresAt: z.number(),
+  }), "The agent asks a person for input; the run waits"),
+  "input.resolved": envelope("input.resolved", z.object({
+    agentId: z.string(), requestId: z.string(), inputId: z.string(), state: z.enum(["answered", "declined", "cancelled", "expired", "superseded"]),
+  }), "An input settled"),
+  "usage.recorded": envelope("usage.recorded", z.object({
+    agentId: z.string(), requestId: z.string().nullable(), subject: z.string(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
+    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction"]), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
+    reasoning: z.number().optional(), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
+  }), "A model response's usage and cost"),
+};
 
 export const Model = z.object({
   id: z.string().openapi({ description: "Pass this as `model` when creating or configuring an agent", example: "anthropic/claude-sonnet-5" }),

@@ -6,7 +6,7 @@ import { AgentSupervisor, type Hosting } from "./supervisor.ts";
 import { configuredModel } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
-import { UsageWebhooks } from "./usage-webhooks.ts";
+import { Webhooks } from "./webhooks.ts";
 import { modelHeadersInput, sessionConfig } from "./session-config.ts";
 import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -158,8 +158,8 @@ const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, r
 const definitions = new Definitions({ db, accounts, outbound });
 const keyScopes = new KeyScopes({ db, accounts });
 // Each model response's usage, POSTed to the tenant's receiver from a durable outbox any node sends from.
-const usageWebhooks = new UsageWebhooks({ db, accounts, outbound, ...(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS) } : {}) });
-usageWebhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
+const webhooks = new Webhooks({ db, accounts, outbound, ...(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS) } : {}) });
+webhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
 async function createAgent(tenant: string, params: any, key?: string) {
@@ -454,7 +454,7 @@ app.route("/", consoleAuth.app);
 app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, usageWebhooks, scheduler, channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, webhooks, scheduler, channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
@@ -588,7 +588,7 @@ async function drain(signal: string) {
   console.log(JSON.stringify({ type: "drain_started", signal, node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
   scheduler.stop();
   channels.stop();
-  usageWebhooks.stop();
+  webhooks.stop();
   clearInterval(tenantsTimer);
   clearInterval(loadTimer);
   clearInterval(sweepTimer);

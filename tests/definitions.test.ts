@@ -271,6 +271,8 @@ test("public configuration waits between turns, preserves history, and reports v
   assert.equal((await r.call(`/v1/agents/${agent}`)).json.systemPrompt, "Before");
   await turn;
   await until(async () => (await r.call(`/v1/agents/${agent}`)).json.systemPrompt === "After", "configuration applied");
+  // The header is written before the request's outcome is: wait for both.
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/config-1`)).json.state === "completed", "the configuration's outcome");
   const history = (await r.call(`/v1/agents/${agent}/history`)).json;
   assert.ok(JSON.stringify(history).includes("Keep this in history"));
   const retried = await r.call(path, { method: "PATCH", body: { requestId: "config-1", systemPrompt: "After" } });

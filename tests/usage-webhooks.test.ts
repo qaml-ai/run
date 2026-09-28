@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createHash, randomBytes } from "node:crypto";
 import { listen, OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 import { anthropic, gateway } from "./provider-fixtures.ts";
-import { signedHeaders } from "../src/usage-webhooks.ts";
+import { signedHeaders } from "../src/webhooks.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100" };

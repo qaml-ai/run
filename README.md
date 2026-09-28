@@ -68,7 +68,7 @@ once. The runtime does not start without a database.
 | schedules and their claims | |
 | channels, conversations, the outbox, dedupe markers, rate counters | |
 | volume headers, snapshots, watchers | |
-| agent spend limits, usage webhooks and their outbox | |
+| agent spend limits, webhook endpoints and their outbox | |
 
 Migrations are plain SQL files, applied at startup in one transaction under an
 advisory lock and recorded in `schema_migrations`, so nodes may start together.
@@ -629,7 +629,7 @@ with 400. Only the tenant sets them; `GET /v1/agents/:id` shows them.
 
 `spendLimit: {"usd": n}` at creation or through `PATCH /v1/agents/:id/configuration`
 is the most the agent may spend on model calls from then on: their cost as the
-[usage webhook](#webhook-usage-and-lifecycle-events) reports it (the provider's own when it reports
+[webhooks](#webhooks) (`usage.recorded`) reports it (the provider's own when it reports
 one, else the catalog price), turns and compaction summaries, whoever's key they
 ran on. Setting a value starts counting from zero, so an
 application can set the remaining allowance before each prompt; `null` removes
@@ -641,67 +641,79 @@ shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
 and writes it to `agent_spend_limits` after each response; only the tenant can
 set it, not the agent's own token.
 
-### Webhook: usage and lifecycle events
+### Webhooks
 
-A tenant can have events POSTed to its own receiver: each model response's usage
-(e.g. to bill its customers per key scope), and its agents' lifecycle (to show
-which are running, act on a turn's outcome, or reply in a channel with no browser
-attached). It picks the types with `events`:
+A tenant registers endpoints, each an HTTPS URL and the event types it wants, and
+the runtime POSTs each event to every endpoint that selected its type:
 
 ```http
-PUT /v1/usage-webhook
-{"url": "https://example.com/hooks/agent-events", "events": ["usage", "run.started", "run.finished", "input.requested", "input.resolved"]}
+POST /v1/webhooks
+{"url": "https://example.com/hooks/agents", "events": ["run.completed", "run.failed", "input.requested"], "description": "prod"}
 ```
 
-The first `PUT` returns the signing `secret` (`whsec_…`), only then; a later one
-changes the URL and keeps it. A new webhook gets `["usage"]` without `events`,
-and a `PUT` without `events` keeps the current selection. `POST /v1/usage-webhook/secret` replaces the secret and
-returns the new one; the old one also signs for 24 hours. `GET` shows the URL and events,
-`DELETE` removes the webhook and its undelivered events. The URL goes through
-the [outbound guard](#outbound-calls) like any tenant URL. One receiver, secret and
-outbox serve every type (the path keeps its first name); receivers tell events apart by `type`.
+The answer carries the endpoint's `id` (`we_…`) and its signing `secret`
+(`whsec_…`), shown only then. `GET /v1/webhooks` lists a tenant's endpoints (at
+most 16), `GET`/`PATCH`/`DELETE /v1/webhooks/:id` read, change (what a `PATCH`
+leaves out stays) and remove one (with its undelivered events), and `POST
+/v1/webhooks/:id/secret` replaces its secret; the old one also signs for 24 hours.
+The URL goes through the [outbound guard](#outbound-calls) like any tenant URL.
 
-Lifecycle events name the tenant, `agent` and `requestId` (the run's, or the one the input's turn ran in), and `at` (ms):
-
-- `run.started`: a run (`method`: `prompt`, `continue`, `resume` or `execute`)
-  began, with its `actor` and, for a turn a new node resumed after its node was
-  lost, `resumes`. A resumed run is announced again with the same `id`.
-- `run.finished`: it ended. `outcome` is the request's (as `GET
-  /v1/agents/:id/requests/:requestId` shows it): `error` (null on success, with
-  `uncertain` when a restart cut it short), and in `result` `stopped`
-  (`input_required` with its `inputs`, or `spend_limit`), `reply` (the final
-  assistant message's text) and `replyIndex` (that message's index in history),
-  `messages`, and any `files`/`presented`. `usage` sums the run's model responses
-  on the node that ended it (`responses`, `input`, `output`, `cacheRead`,
-  `cacheWrite`, `costUsd`), or is null. A prompt a running turn took as a steer
-  gets its own `run.finished` with the turn's outcome, `steeredInto` and null usage.
-- `input.requested` / `input.resolved`: a human input was asked, or settled
-  (answered, declined, cancelled, expired, superseded); `input` is the input as
-  `GET /v1/agents/:id/inputs` lists it.
+Every event is an envelope, documented per type under `webhooks` in `openapi.json`:
 
 ```json
-{"id": "9f2c…", "type": "run.finished", "tenant": "camel", "agent": "client_…", "requestId": "…",
- "method": "prompt", "at": 1790000000000,
- "outcome": {"result": {"messages": 4, "error": null, "reply": "Done.", "replyIndex": 3}},
- "usage": {"responses": 2, "input": 2300, "output": 140, "cacheRead": 0, "cacheWrite": 0, "costUsd": 0.0081}}
+{"id": "evt_3f9c0a1b2c3d4e5f60718293", "type": "run.completed", "created": 1790000000,
+ "data": {"agentId": "client_…", "requestId": "…", "method": "prompt", "metadata": {"source": "web"},
+          "replyIndex": 3, "messageCount": 4,
+          "usage": {"responses": 2, "input": 2300, "output": 140, "cacheRead": 0, "cacheWrite": 0, "costUsd": 0.0081}}}
 ```
 
-Input events are written in the transaction that changes the input's row, and a
-run's events once its record is durable: `run.finished` is marked pending in the
-run's own record, and written again when its agent next runs or loads if the node
-stopped first. Order is not guaranteed across retries: order by `at`, dedupe by `id`.
+| Type | When | `data` |
+| --- | --- | --- |
+| `run.started` | A run (`method`: `prompt`, `continue`, `resume`, `execute`) began | `agentId`, `requestId`, `method`, `actor`, `metadata`; `resumes` when a node resumed a turn whose node was lost |
+| `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, or `spend_limit`) if it stopped early; `replyIndex` (the final assistant message's index in history) and `messageCount`; `steeredInto` for a message a running turn took |
+| `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, and `uncertain` when a restart cut it short |
+| `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
+| `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
+| `usage.recorded` | A model response's usage was counted | as the usage webhook's body below, with `agentId` |
 
-A usage event is:
+- Payloads are small: ids and the key facts. A receiver reads the rest with the
+  tenant token: the request (`GET /v1/agents/:id/requests/:requestId`, with its
+  reply), history, or inputs. `metadata` is what the message that started the run
+  carried ([`metadata`](#matching-a-message-to-its-request-requestid-metadata)), so
+  a receiver can route an event without a lookup. `usage` sums the run's model
+  responses on the node that ended it, or is null.
+- `created` is in Unix seconds. An event's `data` only gains fields; a change a
+  receiver could not ignore comes as a new type.
+- Requests are signed per Standard Webhooks: `webhook-id` (the event's `id`),
+  `webhook-timestamp` (Unix seconds) and `webhook-signature`, `v1,<base64
+  HMAC-SHA256 of "<id>.<timestamp>.<body>">` keyed with the secret's base64 part,
+  space-separated when two secrets sign during a rotation. Any Standard Webhooks
+  library verifies them.
+- Delivery is at least once. Events are written to an outbox in Postgres where
+  they become durable: usage with the flush that counts it (a few seconds after
+  the response), an input's in the transaction that changes it, a run's once its
+  record is (a run whose event a stopped node had not written yet gets it when its
+  agent next runs or loads). Any node sends them, each claimed by one node at a
+  time. A 2xx within 10 seconds acknowledges; else it is retried with exponential
+  backoff (from 5 s, `AGENT_USAGE_WEBHOOK_RETRY_MS`, up to an hour apart) for 3
+  days. An event written again keeps its `id`: receivers dedupe by it, and order
+  by `created` (retries reorder deliveries).
+
+**The usage webhook**, from before endpoints, still works: `PUT
+/v1/usage-webhook {"url"}` sets one endpoint of its own (returning its `secret`
+the first time), `GET` shows it, `POST /v1/usage-webhook/secret` rotates it and
+`DELETE` removes it. It is not listed among `/v1/webhooks`, and it receives each
+response's usage in its original body, not an envelope:
 
 ```json
-{"id": "5d0c…", "type": "usage", "agent": "client_…", "requestId": "…", "tenant": "camel",
+{"id": "5d0c…", "agent": "client_…", "requestId": "…", "tenant": "camel",
  "subject": "u_1", "actor": "u_2", "context": {"org": "org_abc123"}, "keyScope": "org_abc123",
  "provider": "openrouter", "model": "anthropic/claude-sonnet-5", "kind": "response",
  "input": 1200, "output": 85, "cacheRead": 0, "cacheWrite": 0, "reasoning": 40,
  "cost": {"usd": 0.00471, "source": "provider"}, "at": 1790000000000}
 ```
 
-- One event per POST, one per model response a provider completed: `kind` is `response` for the
+- One per model response a provider completed: `kind` is `response` for the
   agent's turns and `compaction` for summaries. `subject` is the agent's (its id
   without one), `actor` the run's (or null), `context` the agent's `ctx`,
   `keyScope` its key scope (or null). `requestId` is the run's. `at` is in ms.
@@ -712,15 +724,8 @@ A usage event is:
   agent names its model: provider `<name>`, model `<provider>/<model id>` (e.g.
   `chiridion` and `openai-codex/gpt-5.5`), with the cost the provider reported,
   else 0. `/v1/usage` and platform charges stay at catalog prices.
-- Requests are signed per Standard Webhooks: `webhook-id` (the event's `id`),
-  `webhook-timestamp` (Unix seconds) and `webhook-signature`, `v1,<base64
-  HMAC-SHA256 of "<id>.<timestamp>.<body>">` keyed with the secret's base64 part,
-  space-separated when two secrets sign during a rotation.
-- Delivery is at least once: events are written to an outbox in Postgres with
-  the usage flush that counts them (a few seconds after the response), and any
-  node sends them, each claimed by one node at a time. A 2xx acknowledges; else it
-  is retried with exponential backoff (from 5 s, `AGENT_USAGE_WEBHOOK_RETRY_MS`,
-  up to an hour apart) for 3 days. Receivers dedupe by `id`.
+
+New integrations should register an endpoint for `usage.recorded` instead.
 
 ## Agent definitions
 
