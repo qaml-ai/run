@@ -38,6 +38,10 @@ export interface AgentConfig {
   model?: string;
   /** The system prompt. */
   instructions?: string;
+  /** Text the model reads after the instructions (a definition's, say), e.g. per-conversation context. */
+  instructionsAppend?: string;
+  /** false: no file tools (read, write, edit, ls, glob, grep), for an application with file tools of its own. */
+  fileTools?: boolean;
   /**
    * Tools that run in this process (`tool({...})`). An agent with them is attached to this process: it
    * answers the agent's tool calls, one process at a time. Serverless or several processes: serve
@@ -209,9 +213,9 @@ export class Agents {
 }
 
 function createOptions(config: AgentConfig): CreateAgentOptions {
-  const { instructions, onEvent, ...rest } = config;
+  const { instructions, instructionsAppend, onEvent, ...rest } = config;
   return {
-    ...rest, ...(instructions !== undefined ? { systemPrompt: instructions } : {}),
+    ...rest, ...(instructions !== undefined ? { systemPrompt: instructions } : {}), ...(instructionsAppend !== undefined ? { systemPromptAppend: instructionsAppend } : {}),
     ...(onEvent ? { onEvent: (event: AgentEvent, requestId?: string) => onEvent(event, requestId) } : {}),
   };
 }
@@ -352,6 +356,10 @@ export class Agent {
   }
   /** Stop the running turn. */
   abort() { return this.client.abort(); }
+  /** Wake the agent later with a message (`text`), or run `code`; `everySeconds` (at least 60) repeats it. */
+  schedule(input: Parameters<AgentClient["schedule"]>[0]) { return this.client.schedule(input); }
+  schedules() { return this.client.schedules(); }
+  unschedule(id: string) { return this.client.unschedule(id); }
   /** Delete the agent, its history and its files, for good. */
   async delete() { try { await this.client.destroy(); } finally { this.closed(); } }
   /** Close this process's connection to it (its runs go on in the runtime). */

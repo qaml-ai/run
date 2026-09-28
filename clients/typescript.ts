@@ -1,4 +1,4 @@
-import type { AgentEvent, ImageContent, Message, ThinkingLevel } from "./types.ts";
+import type { AgentEvent, ImageContent, Message, PresentedFile, ThinkingLevel } from "./types.ts";
 import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -310,6 +310,10 @@ export interface CreateAgentOptions extends AgentOptions {
   /** Non-secret headers for each of its model calls, e.g. cf-aig-metadata; never auth headers. */
   modelHeaders?: Record<string, string>;
   systemPrompt?: string;
+  /** Text the model reads after the system prompt (a definition's, say): per-conversation context. */
+  systemPromptAppend?: string;
+  /** false: no file tools (read, write, edit, ls, glob, grep) for an application with file tools of its own. */
+  fileTools?: boolean;
   name?: string;
   type?: string;
   /**
@@ -436,7 +440,7 @@ export interface RunResult {
   /** Messages in the agent's history after it. */
   messages?: number;
   files?: AgentFile[];
-  presented?: unknown[];
+  presented?: PresentedFile[];
   usage?: RunUsage | null;
   /** A stable name for `error`, where the runtime gives one. */
   code?: string;
@@ -554,7 +558,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools"] as const;
   return Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]]));
 }
 
@@ -617,6 +621,14 @@ export class AgentRuntime {
    * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
    * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
    */
+  /**
+   * A token a browser reads one agent with (`@camelai/agent-runtime/watch`): mint one per user, after your
+   * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for
+   * `ttlSeconds` (default 900, 5 to 3600).
+   */
+  browserToken(agentId: string, options: { ttlSeconds?: number; scopes?: ("events" | "state" | "history" | "inputs")[]; events?: string[]; redact?: "usage.cost"[]; subject?: string } = {}): Promise<{ token: string; expiresAt: number; agentId: string; url?: string }> {
+    return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/browser-tokens`, this.operator(), "POST", options, false);
+  }
   /** Inputs waiting on someone across all the tenant's agents (`pending` ones, say), newest first. */
   inbox(state?: AgentInput["state"]): Promise<AgentInput[]> { return this.transport.json(`/v1/inputs${state ? `?state=${state}` : ""}`, this.operator()); }
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {

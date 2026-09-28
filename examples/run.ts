@@ -12,11 +12,11 @@ const token = randomBytes(32).toString("hex");
 const runtimeArgs = process.versions.bun ? [] : ["--experimental-strip-types"];
 // Scripted agents never call the model, so the tenant's key is a placeholder.
 await writeFile(join(root, "tenants.json"), JSON.stringify({ tenants: { demo: { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: { [process.env.AGENT_PROVIDER ?? "anthropic"]: "unset" } } } }));
-const env = { PATH: process.env.PATH, HOME: root, AGENT_RUNTIME_TOKEN: token, AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: token, AGENT_PROVIDER: process.env.AGENT_PROVIDER, AGENT_DATABASE_URL: process.env.AGENT_DATABASE_URL, AGENT_DATA_DIR: root, AGENT_CLIENT_STATE_DIR: join(root, "sdk"), PORT: "0", AGENT_RUNTIME: process.env.AGENT_RUNTIME };
+const env = { PATH: process.env.PATH, HOME: root, CAMELAI_API_KEY: token, AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: token, AGENT_PROVIDER: process.env.AGENT_PROVIDER, AGENT_DATABASE_URL: process.env.AGENT_DATABASE_URL, AGENT_DATA_DIR: root, AGENT_CLIENT_STATE_DIR: join(root, "sdk"), PORT: "0", AGENT_RUNTIME: process.env.AGENT_RUNTIME };
 const server = spawn(process.execPath, [...runtimeArgs, fileURLToPath(new URL("../src/server.ts", import.meta.url))], { env, stdio: ["ignore", "pipe", "inherit"] });
 const clients = new Set<ChildProcess>();
 async function run(command: string, args: string[], base: string) {
-  const child = spawn(command, args, { env: { ...env, AGENT_URL: base }, stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawn(command, args, { env: { ...env, CAMELAI_BASE_URL: base }, stdio: ["ignore", "pipe", "inherit"] });
   clients.add(child);
   let output = "";
   child.stdout.on("data", data => { output += data; process.stdout.write(data); });

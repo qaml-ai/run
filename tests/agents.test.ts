@@ -183,3 +183,14 @@ test("one process serves an agent's tools at a time; others may still run it, an
   await until(() => errors.some((error: any) => error.code === "APPLICATION_REPLACED"), "the replaced process to hear it");
   assert.deepEqual((await taken.client.execute('return await tools.echo({value:"mine"})')).output, ["mine"]);
 });
+
+test("a browser token minted through the SDK reads its agent, and only that", async t => {
+  const { agents, make, r } = await setup(t, () => ({ role: "assistant", content: "ok" }));
+  const agent = await make();
+  const other = await make();
+  const minted = await agents.runtime.browserToken(agent.id, { ttlSeconds: 60 });
+  assert.equal(minted.agentId, agent.id);
+  const read = (id: string) => fetch(`${r.base}/v1/agents/${id}/state`, { headers: { Authorization: `Bearer ${minted.token}` } });
+  assert.equal((await read(agent.id)).status, 200);
+  assert.equal((await read(other.id)).status, 403);
+});

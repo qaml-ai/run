@@ -500,6 +500,13 @@ class AgentRuntime:
         """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
         return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator(), "PUT", {"mounts": mounts}, retry=False)
 
+    async def browser_token(self, agent_id, *, ttl_seconds=None, scopes=None, events=None, redact=None, subject=None):
+        """A token a browser reads one agent with (the TypeScript SDK's watchAgent): mint one per user, after your own
+        access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for `ttl_seconds`
+        (default 900, 5 to 3600). Returns {"token", "expiresAt", "agentId", "url"}."""
+        body = {key: value for key, value in {"ttlSeconds": ttl_seconds, "scopes": scopes, "events": events, "redact": redact, "subject": subject}.items() if value is not None}
+        return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id, safe='')}/browser-tokens", self._operator(), "POST", body, retry=False)
+
     async def inbox(self, *, state=None):
         """Inputs waiting on someone across all the tenant's agents (state="pending", say), newest first."""
         return await _http(self.http, self.base, "/v1/inputs" + (f"?state={state}" if state else ""), self._operator())
@@ -523,10 +530,11 @@ class AgentRuntime:
 
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
-                  subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None):
+                  subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, system_prompt_append=None, file_tools=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
-                "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "modelHeaders": model_headers}
+                "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "modelHeaders": model_headers,
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools}
     return {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
 
 
@@ -1435,6 +1443,16 @@ class Agent:
         """Stop the running turn."""
         return await self.client.abort()
 
+    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
+        """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it."""
+        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds)
+
+    async def schedules(self):
+        return await self.client.schedules()
+
+    async def unschedule(self, schedule_id):
+        return await self.client.unschedule(schedule_id)
+
     async def delete(self):
         """Delete the agent, its history and its files, for good."""
         try:
@@ -1475,8 +1493,8 @@ class Agents:
         self._open = set()
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
-                     key_scope=None, spend_limit=None, model_headers=None, mounts=None, name=None, on_event=None, on_input=None, on_error=None,
-                     attach=None, takeover=False):
+                     key_scope=None, spend_limit=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
+                     on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -1486,7 +1504,7 @@ class Agents:
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers,
-                                                  mounts=mounts, name=name)
+                                                  mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools)
         return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
 
     async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
