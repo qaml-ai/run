@@ -1,0 +1,48 @@
+{
+  "name": "@camelai/agent-runtime-react",
+  "version": "0.8.0",
+  "description": "React hooks and components for chatting with agents on the camelAI agent runtime.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qaml-ai/agent-runtime.git",
+    "directory": "packages/react"
+  },
+  "homepage": "https://agents.camelai.dev",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./ui": {
+      "types": "./dist/ui/index.d.ts",
+      "default": "./dist/ui/index.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./shadcn.css": "./dist/shadcn.css"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp src/ui/styles.css src/ui/shadcn.css dist/",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@camelai/agent-runtime": "0.8.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0 || ^19.0.0",
+    "react-dom": "^18.2.0 || ^19.0.0"
+  }
+}

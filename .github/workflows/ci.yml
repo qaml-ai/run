@@ -29,6 +29,7 @@ jobs:
       - run: pip install -r clients/python/requirements.txt
       - run: npm run typecheck
       - run: npm run test:python
+      - run: npm run test:ui
       - run: npm run build:console && npm run build
   test:
     # Both hosting modes run the full suite side by side, each split over four shards balanced by
