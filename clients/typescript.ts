@@ -839,8 +839,8 @@ export class AgentClient {
         });
         await rejectRedirect(response);
         if (response.status === 409) {
-          const refusal = await response.json().catch(() => ({})) as { error?: string };
-          if (refusal.error?.startsWith("APPLICATION_CONNECTED")) {
+          const refusal = await response.json().catch(() => ({})) as { error?: string; code?: string };
+          if (refusal.code === "APPLICATION_CONNECTED" || refusal.error?.startsWith("APPLICATION_CONNECTED")) {
             throw Object.assign(new AgentError("Another process serves this agent's tools. One process at a time answers an agent's tool calls: close that one, pass takeover: true to replace it, or connect with attach: false to run the agent without serving its tools", 409), { code: "APPLICATION_CONNECTED" });
           }
           const snapshot = await this.sync();

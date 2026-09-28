@@ -807,10 +807,10 @@ class AgentClient:
                     **({"X-Agent-Connection": self.connection} if self.attach and self.connection else {})}, timeout=20) as response:
                     if response.status_code == 409:
                         try:
-                            refusal = json.loads(await response.aread()).get("error") or ""
+                            refusal = json.loads(await response.aread())
                         except ValueError:
-                            refusal = ""
-                        if refusal.startswith("APPLICATION_CONNECTED"):
+                            refusal = {}
+                        if _code(refusal if isinstance(refusal, dict) else {}) == "APPLICATION_CONNECTED":
                             raise AgentError("Another process serves this agent's tools. One process at a time answers an agent's tool calls: close that one, "
                                              "pass takeover=True to replace it, or attach=False to run the agent without serving its tools", 409, code="APPLICATION_CONNECTED")
                         state = await self._sync()
