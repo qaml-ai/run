@@ -92,8 +92,8 @@ export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
   proxy?: boolean;
   /**
    * `link` signs downloads of the files an agent presented (present_file), and of files in its own
-   * default /workspace. true: of any path in its mounts, including volumes the app mounted that its
-   * users may not all be meant to read (default false).
+   * workspace volume. true: of any path in its mounts; the boundary is then what the agent can read,
+   * including volumes the app mounted that its users may not all be meant to read (default false).
    */
   linkAnyMountedPath?: boolean;
   /** How long an agent with tools served from this process stays attached after its last use. Default 15 minutes. */
@@ -147,10 +147,11 @@ interface Cached {
   /** The agent this process serves tools for, if it does. */
   attached?: Agent;
   used: number;
-  /** Its /workspace is its own default volume (no mounts or definition of the app's), so files there are its own. */
-  ownWorkspace: boolean;
-  /** Paths it presented (present_file), as far as they were looked for. */
+  /** Its own workspace volume's mount path, from its mounts (null: none), once looked up. */
+  workspace?: string | null;
+  /** Paths it presented (present_file), as far as its history was read (up to `scanned`, a history index). */
   presented: Set<string>;
+  scanned: number;
 }
 
 /** The fields of a setup that decide the agent's configuration, as a string (tools by name and description). */
@@ -198,12 +199,12 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         // Tools served from this process: the agent stays attached while it is used, and a while after.
         const agent = await runtime().upsert(key, { ...config, takeover: true, onEvent: () => { touch(key); } });
         startSweeper();
-        return { id: agent.id, token: agent.session.token, fingerprint: fingerprintOf(setup), attached: agent, used: Date.now(), ownWorkspace: !setup.mounts && !setup.definition, presented: new Set() };
+        return { id: agent.id, token: agent.session.token, fingerprint: fingerprintOf(setup), attached: agent, used: Date.now(), presented: new Set(), scanned: -1 };
       }
       const { instructions, ...rest } = config;
       const created: CreateAgentOptions = { ...rest as CreateAgentOptions, ...(instructions !== undefined ? { systemPrompt: instructions } : {}) };
       const { session } = await runtime().runtime.upsertAgent(key, created);
-      return { id: session.id, token: session.token, fingerprint: fingerprintOf(setup), used: Date.now(), ownWorkspace: !setup.mounts && !setup.definition, presented: new Set() };
+      return { id: session.id, token: session.token, fingerprint: fingerprintOf(setup), used: Date.now(), presented: new Set(), scanned: -1 };
     } catch (error) {
       if (error instanceof HandlerError) throw error;
       if (error instanceof AgentError) return fail(error.status >= 400 && error.status < 500 ? error.status : 502, error.code ?? codeFor(error.status), error.message);
@@ -267,15 +268,38 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     });
   }
 
-  /** Whether the agent presented `path` (a present_file call that succeeded), from its history, newest first. */
+  /**
+   * Whether `path` is in the agent's own workspace volume (the one the runtime made for it, not one the
+   * app mounted, which other agents may share), by its actual mounts.
+   */
+  async function ownWorkspace(agent: Cached, path: string): Promise<boolean> {
+    if (agent.workspace === undefined) {
+      const mounts = await get(`/v1/agents/${encodeURIComponent(agent.id)}/mounts`) as { volumeId: string; path: string }[];
+      // The runtime names an agent's own workspace volume after the agent (VolumeService.workspaceOf).
+      const digest = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(`workspace:${agent.id}`)));
+      const own = `vol_${[...digest].map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 24)}`;
+      agent.workspace = mounts.find(mount => mount.volumeId === own)?.path.replace(/\/+$/, "") ?? null;
+    }
+    return agent.workspace !== null && path.startsWith(`${agent.workspace}/`);
+  }
+
+  /**
+   * Whether the agent presented `path` (a present_file call that succeeded), from its history, newest first.
+   * Only history newer than the last look is read again, so a path it never presented costs one page.
+   */
   async function presented(agent: Cached, path: string): Promise<boolean> {
     if (agent.presented.has(path)) return true;
     const calls = new Set<string>();
-    let before: number | null | undefined;
+    const through = agent.scanned;
+    let before: number | null | undefined, newest = through;
+    // Read to the end (or to what was read before): then everything up to the newest message has been seen.
+    const exhausted = () => { agent.scanned = Math.max(agent.scanned, newest); return false; };
     for (let page = 0; page < 20 && before !== null; page++) {
-      const value = await get(`/v1/agents/${encodeURIComponent(agent.id)}/history?limit=200${before !== undefined ? `&before=${before}` : ""}`) as { entries: { message: any }[]; next: number | null };
+      const value = await get(`/v1/agents/${encodeURIComponent(agent.id)}/history?limit=200${before !== undefined ? `&before=${before}` : ""}`) as { entries: { index: number; message: any }[]; next: number | null };
+      if (page === 0) newest = value.entries.at(-1)?.index ?? through;
       // A page holds whole turns, oldest first: a call's result follows it, so read each page backwards.
-      for (const { message } of [...value.entries].reverse()) {
+      for (const { index, message } of [...value.entries].reverse()) {
+        if (index <= through) return exhausted();
         if (message.role === "toolResult" && !message.isError && /(^|__)present_file$/.test(String(message.toolName ?? "")) && !message.details?.inputRequired) {
           calls.add(message.toolCallId);
           // Its result names the file as the agent's mounts show it, which is what a chat asks to link.
@@ -291,7 +315,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
       }
       before = value.next;
     }
-    return false;
+    return before === null ? exhausted() : false;
   }
 
   /** Browser tokens the proxy reads with, by agent: minted on this server, never sent to the browser. */
@@ -382,7 +406,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
       case "link": {
         const file = body.path;
         if (typeof file !== "string" || !file.startsWith("/") || file.length > 1024 || file.split("/").some(segment => segment === ".." || segment === ".")) fail(400, "invalid_request", "path must be a file's absolute path");
-        if (!options.linkAnyMountedPath && !(agent.ownWorkspace && (file as string).startsWith("/workspace/")) && !await presented(agent, file as string)) {
+        if (!options.linkAnyMountedPath && !await ownWorkspace(agent, file as string) && !await presented(agent, file as string)) {
           fail(403, "forbidden", "Only files the agent presented, or in its own workspace, can be linked (see linkAnyMountedPath)");
         }
         const link = await signLink(agent, file as string, () => agentFor(auth, thread, true));

@@ -77,7 +77,7 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 | `onSend({ auth, text, data, request })` | Before each message: return `{ text?, metadata? }`, or `throw new Response(…)` to refuse it (quotas, moderation). |
 | `browserToken` | `{ ttlSeconds, events, redact, url }` for the tokens it mints (default 15 minutes, no provider cost). |
 | `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
-| `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts. Default: only files it presented, or in its own default `/workspace`. |
+| `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts, so the boundary is what the agent can read. Default: only files it presented, or in its own workspace volume. |
 | `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](#reading-through-your-route-proxy)). Default `false`. |
 | `apiKey`, `url` | Default `CAMELAI_API_KEY`, and `CAMELAI_BASE_URL` or https://agents.camelai.dev. |
 
@@ -271,9 +271,10 @@ answer goes through your route as the user, and the run goes on. With hooks:
 
 Files the agent hands over (`present_file`) show as images or downloads. Their signed links come with
 the stream; for older ones the chat asks your route for a fresh link. The route signs links only for
-files the agent presented, or that are in its own default `/workspace`: a volume you mounted into it
-(shared data, say) is not downloadable by its users unless the agent hands a file over, or you set
-`linkAnyMountedPath: true`.
+files the agent presented, or that are in its own workspace volume (the one the runtime made for it):
+a volume you mounted into it (shared data, say) is not downloadable by its users unless the agent
+hands a file over. With `linkAnyMountedPath: true` the boundary is what the agent can read: any file
+in any of its mounts.
 
 ## Conversations (threads)
 

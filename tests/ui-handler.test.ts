@@ -240,7 +240,8 @@ test("link signs only files the agent presented or its own workspace holds, unle
     assert.ok(put.ok, await put.text());
   }
   const mounts = [{ volumeId: volume, path: "/data", mode: "rw" as const }];
-  const handler = handlerFor(t, r, { agent: { instructions: "You help.", mounts } });
+  const historyReads: string[] = [];
+  const handler = handlerFor(t, r, { agent: { instructions: "You help.", mounts }, fetch: (input, init) => { if (String(input).includes("/history")) historyReads.push(String(input)); return fetch(input, init); } });
   const { json: { agentId } } = await post(handler, { action: "token" });
   // Nothing presented yet: a mounted volume's files are not the user's to download.
   assert.equal((await post(handler, { action: "link", path: "/data/secret.txt" })).status, 403);
@@ -250,6 +251,10 @@ test("link signs only files the agent presented or its own workspace holds, unle
   assert.equal(shown.status, 200, JSON.stringify(shown.json));
   assert.equal(await (await fetch(`${r.base}${new URL(shown.json.url).pathname}`)).text(), "shown.txt");
   assert.equal((await post(handler, { action: "link", path: "/data/secret.txt" })).status, 403, "presenting one file opens no other");
+  // Asking again for a file it never presented reads only history newer than the last look: one page.
+  const reads = historyReads.length;
+  for (const path of ["/data/secret.txt", "/data/other.txt", "/data/more.txt"]) assert.equal((await post(handler, { action: "link", path })).status, 403);
+  assert.equal(historyReads.length - reads, 3);
   assert.equal((await post(handler, { action: "link", path: "/data/../data/secret.txt" })).status, 400);
   assert.equal((await post(handler, { action: "link", path: "data/secret.txt" })).status, 400);
   // The app can open all of its mounts to its users.
