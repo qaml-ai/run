@@ -48,6 +48,8 @@ export interface ApiContext {
   links?: FileLinks;
   /** Mints and checks browser tokens (`/v1/agents/:id/browser-tokens`); without it there are none. */
   browserTokens?: BrowserTokens;
+  /** How long a request holds its Idempotency-Key before a retry may take it over (default 2 minutes). */
+  idempotencyLockMs?: number;
   /** Where browsers reach this runtime (a browser token's `url`). */
   publicUrl?: string;
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
@@ -156,7 +158,12 @@ export function api(context: ApiContext) {
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
-  app.use("/v1/*", idempotency(() => clients.db, c => c.var.principal.tenant, (_method, path) => path === "/v1/agents" || /^\/v1\/agents\/[^/]+\/prompt$/.test(path)));
+  app.use("/v1/*", idempotency({
+    db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
+    skip: path => path === "/v1/agents" || /^\/v1\/agents\/[^/]+\/prompt$/.test(path),
+    // Answers with a secret shown once: API tokens, signing secrets, browser tokens, signed links.
+    secret: path => /^\/v1\/(?:tokens|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/browser-tokens|volumes\/[^/]+\/links)$/.test(path),
+  }));
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), c => {
     const principal = c.var.principal;

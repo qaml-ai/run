@@ -478,7 +478,7 @@ app.route("/", consoleAuth.app);
 app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, webhooks, scheduler, channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
