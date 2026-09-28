@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { OPERATOR, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
+import { OPERATOR, runtime, sleep, toolCall, toolResults, until } from "./runtime-server.ts";
 import { agentKeyFor, createAgentHandler, type AgentHandlerOptions } from "../clients/handler.ts";
 import { schema, tool } from "../clients/typescript.ts";
 
@@ -230,4 +230,44 @@ test("an agent several users share (authorize names its key) takes each user's m
   // Its subject is the team's, whoever opened it first.
   const keyed = await r.call("/v1/agents", { body: { systemPrompt: "You help.", subject: "team-acme" }, headers: { "Idempotency-Key": "team-acme" } });
   assert.equal(keyed.status, 201, keyed.text);
+});
+
+test("link signs only files the agent presented or its own workspace holds, unless linkAnyMountedPath", async t => {
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("present_file", { path: "/data/shown.txt" }, "call_present") : { role: "assistant", content: "Here it is." });
+  const volume = (await r.call("/v1/volumes", { body: { name: "shared" } })).json.id as string;
+  for (const name of ["shown.txt", "secret.txt"]) {
+    const put = await fetch(`${r.base}/v1/volumes/${volume}/files/${name}`, { method: "PUT", headers: { Authorization: `Bearer ${OPERATOR}`, "Content-Type": "text/plain" }, body: name });
+    assert.ok(put.ok, await put.text());
+  }
+  const mounts = [{ volumeId: volume, path: "/data", mode: "rw" as const }];
+  const handler = handlerFor(t, r, { agent: { instructions: "You help.", mounts } });
+  const { json: { agentId } } = await post(handler, { action: "token" });
+  // Nothing presented yet: a mounted volume's files are not the user's to download.
+  assert.equal((await post(handler, { action: "link", path: "/data/secret.txt" })).status, 403);
+  const sent = await post(handler, { action: "send", text: "share it", clientId: "cm_link_0001" });
+  await record(r, agentId, sent.json.requestId);
+  const shown = await post(handler, { action: "link", path: "/data/shown.txt" });
+  assert.equal(shown.status, 200, JSON.stringify(shown.json));
+  assert.equal(await (await fetch(`${r.base}${new URL(shown.json.url).pathname}`)).text(), "shown.txt");
+  assert.equal((await post(handler, { action: "link", path: "/data/secret.txt" })).status, 403, "presenting one file opens no other");
+  assert.equal((await post(handler, { action: "link", path: "/data/../data/secret.txt" })).status, 400);
+  assert.equal((await post(handler, { action: "link", path: "data/secret.txt" })).status, 400);
+  // The app can open all of its mounts to its users.
+  const open = handlerFor(t, r, { agent: { instructions: "You help.", mounts }, linkAnyMountedPath: true });
+  assert.equal((await post(open, { action: "link", path: "/data/secret.txt" })).status, 200);
+});
+
+test("an agent whose setup changes is reattached, not attached twice", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const streams: AbortSignal[] = [];
+  let version = 0;
+  const whoami = tool({ description: "Who", input: schema.Object({}), execute: () => "x" });
+  const handler = handlerFor(t, r, {
+    agent: () => ({ instructions: `You help (v${version}).`, tools: { whoami } }),
+    fetch: (input, init) => { if (/\/clients\/[^/]+\/events/.test(String(input)) && init?.signal) streams.push(init.signal); return fetch(input, init); },
+  });
+  for (version = 0; version < 3; version++) assert.equal((await post(handler, { action: "token" })).status, 200);
+  await until(() => streams.filter(signal => !signal.aborted).length === 1, "one attached connection");
+  await sleep(200);
+  assert.equal(streams.filter(signal => !signal.aborted).length, 1);
 });

@@ -61,7 +61,11 @@ export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
    * refuse it (401). `thread` is the browser's name for a conversation: untrusted, and never an agent id.
    */
   authorize(request: Request, context: { thread: string | null; action: HandlerAction }): A | null | Promise<A | null>;
-  /** How the user's agent is made (on first use), and set again when this changes. A function gets the user. */
+  /**
+   * How the user's agent is made (on first use), and set again when this changes. A function gets the
+   * user; keep what it returns stable (build tools once, not per call): a setup that differs from the
+   * last reconfigures the agent, and one with tools reattaches them.
+   */
   agent?: AgentSetup | ((auth: A, context: { thread: string | null }) => AgentSetup | Promise<AgentSetup>);
   /**
    * Before each message is sent: return `{ text?, metadata? }` to change it or label it (metadata is yours,
@@ -86,6 +90,12 @@ export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
    * end a stream at their time limit; the chat reconnects, and falls back to long polls.
    */
   proxy?: boolean;
+  /**
+   * `link` signs downloads of the files an agent presented (present_file), and of files in its own
+   * default /workspace. true: of any path in its mounts, including volumes the app mounted that its
+   * users may not all be meant to read (default false).
+   */
+  linkAnyMountedPath?: boolean;
   /** How long an agent with tools served from this process stays attached after its last use. Default 15 minutes. */
   idleMs?: number;
   fetch?: typeof globalThis.fetch;
@@ -137,6 +147,10 @@ interface Cached {
   /** The agent this process serves tools for, if it does. */
   attached?: Agent;
   used: number;
+  /** Its /workspace is its own default volume (no mounts or definition of the app's), so files there are its own. */
+  ownWorkspace: boolean;
+  /** Paths it presented (present_file), as far as they were looked for. */
+  presented: Set<string>;
 }
 
 /** The fields of a setup that decide the agent's configuration, as a string (tools by name and description). */
@@ -161,10 +175,10 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
   let sweeper: ReturnType<typeof setInterval> | undefined;
 
   /** A call to the runtime with the API key (or an agent's token): its JSON, or a HandlerError with its status and code. */
-  async function call(path: string, body: unknown, token = apiKey!): Promise<any> {
+  async function call(path: string, body: unknown, token = apiKey!, method = "POST"): Promise<any> {
     let response: Response;
     try {
-      response = await doFetch(url + path, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body), redirect: "manual" });
+      response = await doFetch(url + path, { method, headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual" });
     } catch (error) { return fail(502, "runtime_unreachable", `Could not reach the agent runtime: ${(error as Error).message}`); }
     const value = await response.json().catch(() => ({})) as { error?: unknown; code?: unknown };
     if (response.ok) return value;
@@ -172,6 +186,8 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     const code = typeof value.code === "string" ? value.code : /^([A-Z][A-Z0-9_]+):/.exec(message)?.[1] ?? codeFor(response.status);
     return fail(response.status >= 500 ? 502 : response.status, code, message);
   }
+
+  const get = (path: string) => call(path, undefined, apiKey!, "GET");
 
   async function upsert(key: string, setup: AgentSetup, auth: A): Promise<Cached> {
     // A shared agent's subject cannot be whoever opened it first: it is set once, and never changes.
@@ -182,12 +198,12 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         // Tools served from this process: the agent stays attached while it is used, and a while after.
         const agent = await runtime().upsert(key, { ...config, takeover: true, onEvent: () => { touch(key); } });
         startSweeper();
-        return { id: agent.id, token: agent.session.token, fingerprint: fingerprintOf(setup), attached: agent, used: Date.now() };
+        return { id: agent.id, token: agent.session.token, fingerprint: fingerprintOf(setup), attached: agent, used: Date.now(), ownWorkspace: !setup.mounts && !setup.definition, presented: new Set() };
       }
       const { instructions, ...rest } = config;
       const created: CreateAgentOptions = { ...rest as CreateAgentOptions, ...(instructions !== undefined ? { systemPrompt: instructions } : {}) };
       const { session } = await runtime().runtime.upsertAgent(key, created);
-      return { id: session.id, token: session.token, fingerprint: fingerprintOf(setup), used: Date.now() };
+      return { id: session.id, token: session.token, fingerprint: fingerprintOf(setup), used: Date.now(), ownWorkspace: !setup.mounts && !setup.definition, presented: new Set() };
     } catch (error) {
       if (error instanceof HandlerError) throw error;
       if (error instanceof AgentError) return fail(error.status >= 400 && error.status < 500 ? error.status : 502, error.code ?? codeFor(error.status), error.message);
@@ -225,6 +241,8 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
       }
     }
     const pending = upsert(key, setup, auth);
+    // The entry it replaces (a changed setup, or a renewal) no longer serves the agent's tools here.
+    if (cached) void Promise.all([cached, pending]).then(([previous, next]) => { if (previous.attached && previous.attached !== next.attached) return previous.attached.close(); }).catch(() => {});
     cache.delete(key);
     cache.set(key, pending);
     pending.catch(() => { if (cache.get(key) === pending) cache.delete(key); });
@@ -247,6 +265,33 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
       if (!(error instanceof HandlerError) || error.status !== 401) throw error;
       return sign(await renew());
     });
+  }
+
+  /** Whether the agent presented `path` (a present_file call that succeeded), from its history, newest first. */
+  async function presented(agent: Cached, path: string): Promise<boolean> {
+    if (agent.presented.has(path)) return true;
+    const calls = new Set<string>();
+    let before: number | null | undefined;
+    for (let page = 0; page < 20 && before !== null; page++) {
+      const value = await get(`/v1/agents/${encodeURIComponent(agent.id)}/history?limit=200${before !== undefined ? `&before=${before}` : ""}`) as { entries: { message: any }[]; next: number | null };
+      // A page holds whole turns, oldest first: a call's result follows it, so read each page backwards.
+      for (const { message } of [...value.entries].reverse()) {
+        if (message.role === "toolResult" && !message.isError && /(^|__)present_file$/.test(String(message.toolName ?? "")) && !message.details?.inputRequired) {
+          calls.add(message.toolCallId);
+          // Its result names the file as the agent's mounts show it, which is what a chat asks to link.
+          const shown = (() => { try { return JSON.parse(message.content?.find((part: any) => part?.type === "text")?.text ?? "").path; } catch { return undefined; } })();
+          if (typeof shown === "string") { agent.presented.add(shown); if (shown === path) return true; }
+        }
+        if (message.role === "assistant") for (const block of message.content ?? []) {
+          if (block?.type === "toolCall" && calls.has(block.id) && typeof block.arguments?.path === "string") {
+            agent.presented.add(block.arguments.path);
+            if (block.arguments.path === path) return true;
+          }
+        }
+      }
+      before = value.next;
+    }
+    return false;
   }
 
   /** Browser tokens the proxy reads with, by agent: minted on this server, never sent to the browser. */
@@ -336,7 +381,10 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         return call(`${path}/abort`, {});
       case "link": {
         const file = body.path;
-        if (typeof file !== "string" || !file || file.length > 1024) fail(400, "invalid_request", "path must be a file's path");
+        if (typeof file !== "string" || !file.startsWith("/") || file.length > 1024 || file.split("/").some(segment => segment === ".." || segment === ".")) fail(400, "invalid_request", "path must be a file's absolute path");
+        if (!options.linkAnyMountedPath && !(agent.ownWorkspace && (file as string).startsWith("/workspace/")) && !await presented(agent, file as string)) {
+          fail(403, "forbidden", "Only files the agent presented, or in its own workspace, can be linked (see linkAnyMountedPath)");
+        }
         const link = await signLink(agent, file as string, () => agentFor(auth, thread, true));
         return { url: link.url, expiresAt: link.expiresAt };
       }

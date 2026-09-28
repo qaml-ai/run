@@ -77,6 +77,7 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 | `onSend({ auth, text, data, request })` | Before each message: return `{ text?, metadata? }`, or `throw new Response(…)` to refuse it (quotas, moderation). |
 | `browserToken` | `{ ttlSeconds, events, redact, url }` for the tokens it mints (default 15 minutes, no provider cost). |
 | `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
+| `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts. Default: only files it presented, or in its own default `/workspace`. |
 | `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](#reading-through-your-route-proxy)). Default `false`. |
 | `apiKey`, `url` | Default `CAMELAI_API_KEY`, and `CAMELAI_BASE_URL` or https://agents.camelai.dev. |
 
@@ -269,7 +270,10 @@ answer goes through your route as the user, and the run goes on. With hooks:
 (or labels) for a question, or the fields for a form.
 
 Files the agent hands over (`present_file`) show as images or downloads. Their signed links come with
-the stream; for older ones the chat asks your route for a fresh link.
+the stream; for older ones the chat asks your route for a fresh link. The route signs links only for
+files the agent presented, or that are in its own default `/workspace`: a volume you mounted into it
+(shared data, say) is not downloadable by its users unless the agent hands a file over, or you set
+`linkAnyMountedPath: true`.
 
 ## Conversations (threads)
 
@@ -306,6 +310,10 @@ authorize: async (request, { thread }) => {
 - Answers to the agent's questions are checked against who may answer: by default the person whose
   message started the turn.
 - Everyone watching sees the same conversation, live.
+- It is one conversation with one turn at a time: a message sent while the agent works waits for
+  that turn (or joins it, with `whileRunning: "steer"`); anyone's Stop stops the turn for everyone;
+  and a new message while the agent waits on a question supersedes the question (its call closes as
+  not answered). Put per-user work in per-user agents.
 
 ## Theming and accessibility
 
