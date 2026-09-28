@@ -81,6 +81,8 @@ function userTurns(from: number, messages: AgentMessage[]) {
  */
 /** The request a user message was sent by, if it names one. */
 const requestOf = (message: AgentMessage) => message.role === "user" ? (message as { requestId?: string }).requestId : undefined;
+/** The ids of the tool calls an assistant message makes. */
+const callsOf = (message: AgentMessage) => message.role === "assistant" ? message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : [];
 
 export class Transcript {
   /** Messages at absolute indexes `offset` .. `total - 1`. */
@@ -100,6 +102,8 @@ export class Transcript {
   awaiting: string[] = [];
   /** The requests whose user messages the whole log holds (compacted ones included): a request's message is taken once. */
   requests = new Set<string>();
+  /** Each tool call id, and the index of the latest assistant message that made a call with it, over the whole log. */
+  calls = new Map<string, number>();
   /** What the history index lacks, kept while this transcript is written; undefined when nothing indexes it. */
   backlog?: Backlog;
   readonly log: AppendLog<TranscriptRecord>;
@@ -164,6 +168,7 @@ export class Transcript {
       this.total++;
       const request = requestOf(record.message);
       if (request) this.requests.add(request);
+      for (const id of callsOf(record.message)) this.calls.set(id, this.total - 1);
       if (record.message.role === "toolResult") this.awaiting = this.awaiting.filter(id => id !== (record.message as { toolCallId: string }).toolCallId);
     }
     else if (record.t === "retract") {
@@ -171,6 +176,7 @@ export class Transcript {
       if (popped) {
         const request = requestOf(popped);
         if (request) this.requests.delete(request);
+        for (const id of callsOf(popped)) if (this.calls.get(id) === this.total - 1) this.calls.delete(id);
         this.total--;
         if (backlog && this.total >= backlog.kept && this.total === backlog.kept + backlog.messages.length - 1) {
           backlog.messages.pop();
@@ -198,6 +204,7 @@ export class Transcript {
       }
       this.total = record.messages.length;
       this.requests = new Set(record.messages.map(requestOf).filter((request): request is string => !!request));
+      this.calls = new Map(record.messages.flatMap((message, index) => callsOf(message).map(id => [id, index] as const)));
       this.compaction = record.compaction;
       this.context = record.messages.slice(record.compaction?.cut ?? 0);
       this.system = undefined;

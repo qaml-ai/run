@@ -274,3 +274,15 @@ test("an agent made with a history index whose index row was never written gets 
   await r.prompt(agent, "one");
   await until(async () => await indexedOf(r, agent) === 2, "the agent to be indexed after all", 20_000);
 });
+
+test("a transcript knows which message made each tool call, over its whole log, compacted part included", async () => {
+  const call = (id: string) => ({ role: "assistant", content: [{ type: "toolCall", id, name: "t", arguments: {} }], stopReason: "toolUse" });
+  const transcript = new Transcript(memoryLog([
+    { t: "message", message: user("a") }, { t: "message", message: call("call_0") }, { t: "message", message: user("b") }, { t: "message", message: call("call_0") },
+    { t: "compaction", cut: 3, summary: "s", tokensBefore: 1 } as any, { t: "message", message: call("call_9") }, { t: "retract" },
+  ]));
+  await transcript.load();
+  assert.equal(transcript.context.length, 1, "the working set is only the latest call");
+  assert.equal(transcript.calls.get("call_0"), 3, "the latest message to make a call with the id");
+  assert.equal(transcript.calls.get("call_9"), undefined, "a retracted call is forgotten");
+});

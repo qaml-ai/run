@@ -133,7 +133,7 @@ test("a direct tool's large result is cut for the model, as js_exec's output is,
   const tool = { name: "dump", description: "Dumps a lot", inputSchema: { type: "object", properties: {} }, _meta: { "agent-runtime/exposure": "direct" } };
   const r = await runtime(t, (_body, index) => [
     toolCall("dump", {}, "call_big"),
-    toolCall("js_exec", { code: 'return (await fs.readFile("/workspace/tool-results/call_big.txt", { encoding: "utf8" })).length' }, "call_read"),
+    toolCall("js_exec", { code: 'return (await fs.readFile("/workspace/tool-results/1-call_big.txt", { encoding: "utf8" })).length' }, "call_read"),
     { role: "assistant", content: "done" },
   ][index]);
   const created = (await r.call("/v1/agents", { body: { mcp: { tools: [tool] } } })).json;
@@ -141,6 +141,6 @@ test("a direct tool's large result is cut for the model, as js_exec's output is,
   await r.prompt(created.id, "go");
   const seen = toolResults(r.model.bodies[1]).at(-1);
   assert.ok(seen.length < 33_000, `the model got ${seen.length} characters`);
-  assert.match(seen, /cut at 32,000 of 100,000 characters[\s\S]*\/workspace\/tool-results\/call_big\.txt/);
+  assert.match(seen, /cut at 32,000 of 100,000 characters[\s\S]*\/workspace\/tool-results\/1-call_big\.txt/, "named by the message that made the call, and the call");
   assert.match(toolResults(r.model.bodies[2]).at(-1), /100000/, "the whole result is in the file");
 });

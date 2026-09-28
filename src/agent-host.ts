@@ -231,11 +231,8 @@ export function createAgentHost(io: HostIO) {
    * the call for good (providers may number calls per response, so ids repeat across turns), the same on a retry or resume.
    */
   function made(toolCallId: string): { messageIndex?: number } {
-    for (let index = transcript.context.length - 1; index >= 0; index--) {
-      const message = transcript.context[index];
-      if (message.role === "assistant" && message.content.some(part => part.type === "toolCall" && part.id === toolCallId)) return { messageIndex: transcript.offset + index };
-    }
-    return {};
+    const messageIndex = transcript.calls.get(toolCallId);
+    return messageIndex === undefined ? {} : { messageIndex };
   }
 
   /** The tools code can call; `toolCallId` is the js_exec call running it, if the model made one. */
@@ -263,7 +260,9 @@ export function createAgentHost(io: HostIO) {
     const limit = SANDBOX_LIMITS.outputCharacters;
     if (text.length <= limit) return content;
     const mount = config.mounts?.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? config.mounts?.find(entry => entry.mode === "rw");
-    const path = mount && `${mount.path}/tool-results/${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
+    // Named by the message that made the call too: providers may give calls in different turns the same id.
+    const at = made(toolCallId).messageIndex;
+    const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
     const whole = Buffer.from(text, "utf8");
     const saved = path ? await io.fs("writeFile", { path, text: whole.length > FILE_LIMITS.scriptFileBytes ? whole.subarray(0, FILE_LIMITS.scriptFileBytes).toString("utf8") : text }).then(() => true, () => false) : false;
     const where = saved ? ` The whole result${whole.length > FILE_LIMITS.scriptFileBytes ? ` (its first ${FILE_LIMITS.scriptFileBytes.toLocaleString("en-US")} bytes)` : ""} is in ${path}: read it in parts.` : " Ask the tool for less.";
