@@ -167,13 +167,14 @@ function logErrors(pool: Db) {
 
 /**
  * Apply pending `migrations/NNN_name.sql` files in order, one runner at a time per schema. A statement
- * waiting on a lock (an ALTER behind a long transaction) gives up after `lockTimeoutMs`, so it never
- * queues every query on that table behind it; the whole run is then tried again, `attempts` times.
+ * waiting on a lock (an ALTER behind a long transaction) gives up after `lockTimeoutMs` (2 s), so the
+ * queries on that table that queue behind it wait at most that long; the whole run is then tried again,
+ * `attempts` times, and a lock held throughout fails the node's start within about 50 s.
  */
 export async function migrate(db: Db, directory = MIGRATIONS, options: { lockTimeoutMs?: number; attempts?: number; retryMs?: number } = {}): Promise<string[]> {
   const attempts = options.attempts ?? 10;
   for (let attempt = 1; ; attempt++) {
-    try { return await migrateOnce(db, directory, options.lockTimeoutMs ?? 5_000); }
+    try { return await migrateOnce(db, directory, options.lockTimeoutMs ?? 2_000); }
     catch (error) {
       if ((error as { code?: string }).code !== LOCK_NOT_AVAILABLE || attempt >= attempts) throw error;
       console.error(JSON.stringify({ type: "migration_lock_timeout", attempt, error: (error as Error).message }));
