@@ -25,6 +25,16 @@ test("a due wake-up is delivered exactly once even when every node scans at the 
   assert.equal(deliveries.length, 1);
 });
 
+test("a one-off wake-up leaves the list as its delivery begins: the run it starts never sees it", async () => {
+  let listed: Schedule[] | undefined;
+  const { schedulers } = await nodes(1, async (_node, schedule) => { listed = await schedulers[0].list(schedule.agent); });
+  const now = Date.now();
+  await schedulers[0].create({ agent: "client_self", tenant: "alice", text: "Look at your schedules", dueAt: now - 10 });
+  const hourly = await schedulers[0].create({ agent: "client_self", tenant: "alice", text: "Hourly", dueAt: now + 3_600_000, everySeconds: 3600 });
+  await schedulers[0].scan(now);
+  assert.deepEqual(listed?.map(schedule => schedule.id), [hourly.id]);
+});
+
 test("many due wake-ups are each delivered once when three nodes scan concurrently and repeatedly", async () => {
   const deliveries: string[] = [];
   const { schedulers } = await nodes(3, async (_node, _schedule, requestId) => { await new Promise(resolve => setTimeout(resolve, Math.random() * 5)); deliveries.push(requestId); });

@@ -70,8 +70,13 @@ export class Scheduler {
     return created;
   }
 
+  /**
+   * The agent's wake-ups. A one-off one being delivered (claimed by the node delivering it) has left: the run it starts, and
+   * anyone asking meanwhile, never see it; it is deleted once delivered, or listed again if its delivery failed.
+   */
   async list(agent: string): Promise<Schedule[]> {
-    return (await this.db.query(`select ${COLUMNS} from schedules where agent = $1 order by due_at, id`, [agent])).rows.map(schedule);
+    return (await this.db.query(`select ${COLUMNS} from schedules where agent = $1
+      and not (every_seconds is null and claimed_by is not null and claimed_until > now()) order by due_at, id`, [agent])).rows.map(schedule);
   }
 
   async remove(agent: string, id: string, claim?: Claim) {
@@ -107,9 +112,13 @@ export class Scheduler {
   private async fire({ claim, ...due }: Schedule & { claim: string }) {
     try { await this.deliver(due, `schedule-${due.id}-${due.dueAt}`); }
     catch (error) {
-      // The agent was deleted or expired: drop its schedule. Anything else retries after the claim times out.
+      // The agent was deleted or expired: drop its schedule. Anything else retries after the claim times out, listed
+      // again meanwhile (its holder is cleared; the claim's time still keeps other nodes off it).
       const status = (error as { status?: number }).status;
-      if (status !== 404 && status !== 410) throw error;
+      if (status !== 404 && status !== 410) {
+        await this.db.query("update schedules set claimed_by = null where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]).catch(() => {});
+        throw error;
+      }
       await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]);
       return;
     }
