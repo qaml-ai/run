@@ -138,6 +138,21 @@ test("a run's wait has no timeout, and an AbortSignal stops the wait without sto
   assert.equal((await agent.run("Slow", { idempotencyKey: "slow-1" })).text, "Late.");
 });
 
+test("the same key sent again while its run goes on joins that run, and one caller's timeout leaves the other waiting", async t => {
+  const { make, r } = await setup(t, () => ({ role: "assistant", content: "Late.", delayMs: 1000 }));
+  const agent = await make();
+  const [first, again, impatient] = await Promise.allSettled([
+    agent.run("Slow", { idempotencyKey: "same-run" }),
+    agent.run("Slow", { idempotencyKey: "same-run" }),
+    agent.run("Slow", { idempotencyKey: "same-run", signal: AbortSignal.timeout(100) }),
+  ]);
+  assert.equal(first.status === "fulfilled" && first.value.text, "Late.");
+  assert.equal(again.status === "fulfilled" && again.value.text, "Late.");
+  assert.equal(impatient.status === "rejected" && impatient.reason.name, "TimeoutError");
+  assert.equal(r.model.bodies.length, 1, "one run");
+  assert.equal((await agent.client.waitForRequest("same-run")).reply, "Late.");
+});
+
 test("Agents defaults to the hosted runtime, and needs an API key to make agents", async () => {
   const seen: string[] = [];
   const agents = new Agents({ apiKey: "k".repeat(32), fetch: async input => { seen.push(String(input)); return Response.json({ error: "stop here" }, { status: 400 }); } });

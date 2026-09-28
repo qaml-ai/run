@@ -202,7 +202,11 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_parity_history_configure_tools_and_wait_for_request(self):
         agent = await self.make()
-        first = await agent.run("one", idempotency_key="py-first")
+        # The same key sent again while its run goes on joins that run.
+        first, again = await asyncio.gather(agent.run("one", idempotency_key="py-first"), agent.run("one", idempotency_key="py-first"))
+        self.assertEqual(first.text, again.text)
+        joined = await asyncio.gather(agent.client.request("status", idempotency_key="py-status"), agent.client.request("status", idempotency_key="py-status"))
+        self.assertEqual(joined[0], joined[1])
         page = await agent.history_page(limit=1)
         self.assertEqual(page["total"], len((await agent.history())["messages"]))
         self.assertEqual((await agent.client.wait_for_request("py-first"))["reply"], first.text)

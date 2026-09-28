@@ -91,7 +91,7 @@ Run options (`run`, `stream`):
 | `user` | `user=` | who sent it: your user id, or `{ id, name, username }`; the model sees who, tools get `identity.actor` |
 | `files` | `files=` | attachments; see [Files](../guides/files.md) |
 | `metadata` | `metadata=` | your own key-value data about the message (16 strings); the model never sees it |
-| `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run |
+| `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run, joining it if it is still going |
 | `signal` | `timeout=` | stop waiting; the run goes on |
 | `throwOnError` | `throw_on_error=` | `false`: return a failed run instead of throwing `RunError` |
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |

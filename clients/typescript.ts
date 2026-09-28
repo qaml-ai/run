@@ -693,7 +693,8 @@ export class VolumeHandle {
   }
 }
 
-type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
+/** A request's settlement, shared by every call waiting on it (`waiters` of them). */
+type Pending = { promise: Promise<any>; resolve: (value: any) => void; reject: (error: Error) => void; waiters: number };
 /** Requests one client may wait on at once. */
 const MAX_PENDING = 1000;
 /** Events waiting for a slow onEvent; past this, streamed deltas are dropped (the messages they build still arrive). */
@@ -991,10 +992,8 @@ export class AgentClient {
    */
   async request(method: RequestMethod, params: Record<string, unknown> = {}, options: RequestOptions = {}): Promise<any> {
     if (this.closed || this.fatal) throw this.fatal ?? new AgentError("Client closed");
-    if (this.pending.size >= MAX_PENDING) throw new AgentError("Too many outstanding requests");
     const id = options.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
-    if (this.pending.has(id)) throw new AgentError("Request already pending", 409, id);
     options.signal?.throwIfAborted();
     const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");
     try {
@@ -1008,26 +1007,39 @@ export class AgentClient {
     } finally { deferred.done(); }
   }
 
-  /** Wait for request `id` to settle, until `timeoutMs` or `signal` says to stop waiting. */
+  /**
+   * Wait for request `id` to settle, until `timeoutMs` or `signal` says to stop waiting. Calls waiting on the same
+   * request share its settlement (the same key sent again joins the run), and each stops waiting on its own.
+   */
   private waiter(id: string, options: { timeoutMs?: number; signal?: AbortSignal }, timedOut: string) {
-    const deferred = Promise.withResolvers<any>();
-    // Attach immediately, even while the POST is pending, to avoid unhandled errors.
-    deferred.promise.catch(() => {});
-    this.pending.set(id, deferred);
-    const stop = (error: unknown) => { if (this.pending.get(id) === deferred) this.pending.delete(id); deferred.reject(error as Error); };
-    const timer = options.timeoutMs !== undefined ? setTimeout(() => stop(new AgentError(timedOut, 0, id)), options.timeoutMs) : undefined;
-    const aborted = () => stop(options.signal!.reason);
+    let shared = this.pending.get(id);
+    if (!shared) {
+      if (this.pending.size >= MAX_PENDING) throw new AgentError("Too many outstanding requests");
+      shared = { ...Promise.withResolvers<any>(), waiters: 0 };
+      // Attach immediately, even while the POST is pending, to avoid unhandled errors.
+      shared.promise.catch(() => {});
+      this.pending.set(id, shared);
+    }
+    shared.waiters++;
+    const own = Promise.withResolvers<any>();
+    own.promise.catch(() => {});
+    shared.promise.then(own.resolve, own.reject);
+    const timer = options.timeoutMs !== undefined ? setTimeout(() => own.reject(new AgentError(timedOut, 0, id)), options.timeoutMs) : undefined;
+    const aborted = () => own.reject(options.signal!.reason);
     options.signal?.addEventListener("abort", aborted, { once: true });
+    const settled = shared;
     return {
-      promise: deferred.promise,
-      done: () => { clearTimeout(timer); options.signal?.removeEventListener("abort", aborted); if (this.pending.get(id) === deferred) this.pending.delete(id); },
+      promise: own.promise,
+      done: () => {
+        clearTimeout(timer); options.signal?.removeEventListener("abort", aborted);
+        if (--settled.waiters === 0 && this.pending.get(id) === settled) this.pending.delete(id);
+      },
     };
   }
 
   /** Wait for a request already sent (by this process or another) to settle. This never submits or re-executes work. */
   async waitForRequest(id: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<any> {
     if (this.closed || this.fatal) throw this.fatal ?? new AgentError("Client closed");
-    if (this.pending.has(id)) throw new AgentError("Request already pending", 409, id);
     options.signal?.throwIfAborted();
     const deferred = this.waiter(id, options, "Stopped waiting; the request may still be running");
     try {

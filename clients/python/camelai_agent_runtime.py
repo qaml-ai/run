@@ -703,6 +703,8 @@ class AgentClient:
         self.cursor = 0
         # Tool calls running, by JSON-RPC id, so the runtime can cancel them.
         self.pending, self.active = {}, {}
+        # How many calls wait on each pending request's future: the same key sent again joins the first.
+        self.waiting = {}
         # The event stream's connection, named in the MCP messages this client sends back.
         self.connection = None
         self.ready = asyncio.Event()
@@ -975,10 +977,7 @@ class AgentClient:
         import re
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
             raise AgentError(f"An idempotency key is 1 to 80 letters, digits, _ and -: {request_id!r} is not", 400)
-        if request_id in self.pending or len(self.pending) >= _MAX_PENDING:
-            raise AgentError("Request already pending or too many outstanding requests", request_id=request_id)
-        future = asyncio.get_running_loop().create_future()
-        self.pending[request_id] = future
+        future = self._waiter(request_id)
         try:
             record = await self._http("/requests", "POST", {"id": request_id, "method": method, "params": params or {}})
             if "outcome" in record:
@@ -989,7 +988,21 @@ class AgentClient:
         finally:
             self._release(request_id, future)
 
+    def _waiter(self, request_id):
+        """The future of request_id's outcome, shared by every call waiting on it; each stops waiting on its own."""
+        future = self.pending.get(request_id)
+        if future is None:
+            if len(self.pending) >= _MAX_PENDING:
+                raise AgentError("Too many outstanding requests", request_id=request_id)
+            future = self.pending[request_id] = asyncio.get_running_loop().create_future()
+        self.waiting[future] = self.waiting.get(future, 0) + 1
+        return future
+
     def _release(self, request_id, future):
+        self.waiting[future] -= 1
+        if self.waiting[future]:
+            return
+        del self.waiting[future]
         if self.pending.get(request_id) is future:
             self.pending.pop(request_id, None)
         if future.done() and not future.cancelled():
@@ -1001,10 +1014,7 @@ class AgentClient:
         """Wait for a request already sent (by this process or another) to settle. This never submits or re-executes work."""
         if self.closed or self.fatal:
             raise self.fatal or AgentError("Client closed")
-        if request_id in self.pending:
-            raise AgentError("Request already pending", 409, request_id)
-        future = asyncio.get_running_loop().create_future()
-        self.pending[request_id] = future
+        future = self._waiter(request_id)
         try:
             record = await self.request_status(request_id)
             if "outcome" in record:
