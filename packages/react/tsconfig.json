@@ -5,6 +5,7 @@
     "jsx": "react-jsx", "types": ["node"], "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "paths": {
       "@camelai/agent-runtime/chat": ["../../clients/chat.ts"],
+      "@camelai/agent-runtime/markdown": ["../../clients/markdown.ts"],
       "@camelai/agent-runtime-react": ["./src/index.tsx"]
     }
   },

@@ -41,6 +41,10 @@
       "types": "./dist/clients/chat.d.ts",
       "default": "./dist/clients/chat.js"
     },
+    "./markdown": {
+      "types": "./dist/clients/markdown.d.ts",
+      "default": "./dist/clients/markdown.js"
+    },
     "./testing": {
       "types": "./dist/clients/testing.d.ts",
       "default": "./dist/clients/testing.js"

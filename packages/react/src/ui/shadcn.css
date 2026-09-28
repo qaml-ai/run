@@ -1,0 +1,39 @@
+/*
+ * @camelai/agent-runtime-react/shadcn.css: <AgentChat> in your shadcn/ui theme. Import it after
+ * styles.css; it maps the chat's variables onto shadcn's tokens (--background, --foreground, …), so
+ * the chat follows your theme and its .dark class.
+ */
+:where(.agent-chat),
+:where(.dark, [data-theme="dark"]) :where(.agent-chat:not([data-theme="light"])),
+:where(.agent-chat[data-theme="dark"]) {
+  --agent-bg: var(--background);
+  --agent-fg: var(--foreground);
+  --agent-muted: var(--muted);
+  --agent-muted-fg: var(--muted-foreground);
+  --agent-border: var(--border);
+  --agent-accent: var(--primary);
+  --agent-accent-fg: var(--primary-foreground);
+  --agent-user-bg: var(--secondary);
+  --agent-user-fg: var(--secondary-foreground);
+  --agent-code-bg: var(--muted);
+  --agent-danger: var(--destructive);
+  --agent-focus: var(--ring);
+  --agent-radius: var(--radius);
+  --agent-font: inherit;
+}
+@media (prefers-color-scheme: dark) {
+  :where(.agent-chat:not([data-theme="light"], .light .agent-chat, [data-theme="light"] .agent-chat)) {
+    --agent-bg: var(--background);
+    --agent-fg: var(--foreground);
+    --agent-muted: var(--muted);
+    --agent-muted-fg: var(--muted-foreground);
+    --agent-border: var(--border);
+    --agent-accent: var(--primary);
+    --agent-accent-fg: var(--primary-foreground);
+    --agent-user-bg: var(--secondary);
+    --agent-user-fg: var(--secondary-foreground);
+    --agent-code-bg: var(--muted);
+    --agent-danger: var(--destructive);
+    --agent-focus: var(--ring);
+  }
+}
