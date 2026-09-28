@@ -113,19 +113,19 @@ keeps at most a snapshot and 8 segments per log; reads fetch them 8 at a time.
 Tail rows of revoked agents and deleted volumes are dropped with them, and an
 hourly sweep drops any a dead node left.
 
-**Work no one is watching.** An agent with work left and no node holding it (its
-owner died mid-turn, or a drain left runs queued for the next owner) resumes when
-a node loads it: any request for it, a read of it included, or a sweep every node
-runs (`AGENT_ORPHAN_SWEEP_MS`, default 30 s, 0 for none) that loads up to 10 such
-agents at a time, and no more than the node has free agent slots. So a turn
-finishes even when no application or tab is there to reconnect. A node that took
-such runs over but has no room to run them (every slot busy, or the tenant's)
-gives the agent back, still pending, for a node with room, rather than failing
-them; a node without room does not load it for a read (which answers from
-storage) or for a prompt or an application connecting (which get 503 and
-`Retry-After`, to reach a node with room). A load of it that fails, or finds no
-room, puts the next off: by the sweep's interval, doubling, at most an hour, and
-never for good. The agent's listing and state show it (`resume: {failures, after}`).
+**Work no one is watching.** An agent's row is marked when its first run of a
+busy spell opens (`pending_runs`) and cleared when it unloads with none open. An
+agent so marked with no live owner (its node died mid-turn, or a drain left runs
+queued for the next owner) resumes when a node loads it: for a request that acts
+on it (a prompt, an application connecting), or in a sweep every node runs
+(`AGENT_ORPHAN_SWEEP_MS`, default 30 s, 0 for none), for as many such agents as
+it has room for, its tenant's quota included. Reads never load it: they answer
+from storage. A node without room for the work answers an acting request 503
+with `Retry-After`, to reach one with room; one that loaded the agent but lost
+its room before a run began gives it back, still marked, for an interval. A
+failed load puts the next off by the sweep's interval, doubling, at most an
+hour, never for good; the agent's listing and state show it (`resume: {failures,
+after}`).
 
 **Deleting agents.** `DELETE /v1/agents/:id` (or `/clients/:id`) revokes the
 agent, stops it and unloads it at once. A sweep every node runs

@@ -98,28 +98,25 @@ test("an idle agent's history, state and inputs are read without loading it", { 
   assert.equal(poll.status, 200);
 });
 
-test("an agent with work left that cannot be loaded is tried again with capped backoff, counting one failure per window, and says so", { timeout: 60_000 }, async t => {
-  const r = await runtime(t, () => ({ content: "hello" }), { AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "0" });
+test("an agent with work left that cannot be loaded is tried again with capped backoff, never for good, and says so", { timeout: 60_000 }, async t => {
+  const r = await runtime(t, () => ({ content: "hello" }), { AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "200" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(agent, "hi");
   await until(async () => !(await r.db.query("select node from actor_owners where actor = $1", [agent])).rows[0]?.node, "the idle agent to be released", 20_000);
   // Work left, and a header no node can load.
   await r.db.query("update agents set pending_runs = true, header = jsonb_set(header::jsonb, '{version}', '99')::json where id = $1", [agent]);
   const row = async () => (await r.db.query("select resume_failures, resume_after from agents where id = $1", [agent])).rows[0];
-  // Five reads at once, after the same failure: one failure.
-  await Promise.all(Array.from({ length: 5 }, () => r.call(`/v1/agents/${agent}/state`)));
-  await until(async () => (await row()).resume_failures >= 1, "the failure to count");
-  await sleep(300);
-  assert.equal((await row()).resume_failures, 1, "one backoff window counts once");
-  // While it backs off, reads answer from storage, and say it waits.
+  await until(async () => (await row()).resume_failures >= 2, "the sweeps to fail and back off");
+  // Backing off, doubling: a few windows in a couple of seconds, not a try per sweep.
+  await sleep(2_000);
+  assert.ok((await row()).resume_failures <= 5, `${(await row()).resume_failures} failures in about 2.5 s of 200 ms sweeps`);
+  // Reads answer from storage, and say it waits.
   const state = await r.call(`/v1/agents/${agent}/state`);
   assert.equal(state.status, 200);
-  assert.equal(state.json.resume.failures, 1);
-  assert.ok(state.json.resume.after > Date.now());
-  assert.equal((await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).resume.failures, 1, "the listing says so too");
+  assert.ok(state.json.resume.failures >= 2);
+  assert.equal((await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).resume.failures, state.json.resume.failures, "the listing says so too");
   // However many failures, it is tried again: at most an hour apart.
   await r.db.query("update agents set resume_failures = 40, resume_after = 0 where id = $1", [agent]);
-  await r.call(`/v1/agents/${agent}/state`);
   await until(async () => (await row()).resume_failures === 41, "another try");
   const after = Number((await row()).resume_after);
   assert.ok(after - Date.now() <= 3_600_000 && after - Date.now() > 3_500_000, `capped at an hour (${after - Date.now()} ms)`);

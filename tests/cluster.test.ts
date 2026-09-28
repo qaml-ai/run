@@ -136,14 +136,19 @@ async function orphaned(t: Parameters<typeof cluster>[0], env: Record<string, st
   return { c, b, model, agent, call };
 }
 
-test("a tenant's read of an agent whose node died resumes its turn, not only an application reconnecting", { timeout: 90_000 }, async t => {
-  const { b, model, agent, call } = await orphaned(t, { AGENT_ORPHAN_SWEEP_MS: "0" });
-  // Only reads, as a REST tenant with browser watchers makes: history, and state.
+test("reads of an agent whose node died answer from storage, and a prompt, which acts on it, resumes its turn", { timeout: 90_000 }, async t => {
+  const { c, b, model, agent, call } = await orphaned(t, { AGENT_ORPHAN_SWEEP_MS: "0" });
+  // Reads, as a REST tenant with browser watchers makes: from storage, loading nothing.
   await call(b.url, `/v1/agents/${agent}/history?limit=10`);
   const state = await call(b.url, `/v1/agents/${agent}/state`);
-  assert.ok(state.requests.some((request: any) => request.id === "turn-1"));
-  await until(async () => (await call(b.url, `/v1/agents/${agent}/state`)).requests.find((request: any) => request.id === "turn-1")?.state === "completed", "the turn to resume and finish", 20_000);
-  assert.equal(model.bodies.length, 2, "the model was asked once more");
+  assert.equal(state.requests.find((request: any) => request.id === "turn-1").state, "running");
+  await sleep(500);
+  assert.notEqual(await c.owner(agent), b.url);
+  assert.equal(model.bodies.length, 1);
+  // A prompt loads it on B, which resumes the turn first.
+  await call(b.url, `/v1/agents/${agent}/prompt`, { text: "next", requestId: "turn-2" });
+  await until(async () => (await call(b.url, `/v1/agents/${agent}/state`)).requests.filter((request: any) => ["turn-1", "turn-2"].includes(request.id) && request.state === "completed").length === 2, "both turns to finish", 20_000);
+  assert.equal((await call(b.url, `/v1/agents/${agent}/state`)).requests.find((request: any) => request.id === "turn-1").resumes, 1);
 });
 
 test("an agent whose node died is resumed by the others' sweep, with no one reading it", { timeout: 90_000 }, async t => {
@@ -218,7 +223,34 @@ test("a full node's sweep leaves an orphaned turn for a node with room, and neve
   assert.equal(outcome.error, undefined, JSON.stringify(outcome));
   const resumed = (await call(b.url, `/v1/agents/${orphan}/state`)).requests.find((request: any) => request.id === "turn-1");
   assert.equal(resumed.resumes, 1, "handing it back spent no resume");
-  assert.equal((await c.db.query("select pending_runs from agents where id = $1", [orphan])).rows[0].pending_runs, false, "loaded, it is no longer pending");
+  await until(async () => (await c.db.query("select pending_runs from agents where id = $1", [orphan])).rows[0].pending_runs === false, "its unload, with nothing open, to clear its mark", 20_000);
+});
+
+test("a load that fails after reading the agent leaves no session behind: the node forwards to whoever loads it next", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, () => ({ role: "assistant", content: "ok" }));
+  const a = await c.start("a", { ...model.env, AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "0" });
+  const b = await c.start("b", { ...model.env, AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "0" });
+  const call = (base: string, path: string, body?: unknown) => fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const made = await (await call(a.url, "/v1/agents", {})).json() as any;
+  const agent = made.id as string;
+  await until(async () => !await c.owner(agent), "the idle agent to be released", 20_000);
+  // The first write clearing its pending mark fails (a sequence counts it: a failed transaction does not undo that),
+  // as a database failover might make it fail.
+  await c.db.query(`create table fail_once (agent text primary key); create sequence fail_once_count;
+    create function fail_once() returns trigger language plpgsql as $$ begin
+      if old.pending_runs and not new.pending_runs and exists (select from fail_once where agent = new.id) and nextval('fail_once_count') = 1 then raise exception 'injected failure'; end if;
+      return new; end $$;
+    create trigger fail_once before update on agents for each row execute function fail_once();`);
+  await c.db.query("update agents set pending_runs = true where id = $1", [agent]);
+  await c.db.query("insert into fail_once values ($1)", [agent]);
+  const failed = await fetch(`${b.url}/clients/${agent}/events`, { headers: { Authorization: `Bearer ${made.token}` } });
+  await failed.body?.cancel();
+  // Whichever node holds the agent now, a prompt through either reaches the one session it has.
+  assert.equal((await call(a.url, `/v1/agents/${agent}/prompt`, { text: "one", requestId: "via-a" })).status, 202);
+  assert.equal((await call(b.url, `/v1/agents/${agent}/prompt`, { text: "two", requestId: "via-b" })).status, 202);
+  const state = await (await call(a.url, `/v1/agents/${agent}/state`)).json() as any;
+  assert.deepEqual(["via-a", "via-b"].filter(id => state.requests.some((request: any) => request.id === id)), ["via-a", "via-b"]);
 });
 
 test("a volume is served by one node: other nodes forward to it, agents anywhere reach it, and a survivor takes over", { timeout: 90_000 }, async t => {
