@@ -30,7 +30,8 @@ await agents.close();
   [channels](docs/guides/channels.md)
 - [Production checklist](docs/production.md)
 - Reference: [events](docs/reference/events.md), [limits](docs/reference/limits.md),
-  [errors](docs/reference/errors.md), [SDKs](docs/reference/sdk.md), [REST API](openapi.json)
+  [errors](docs/reference/errors.md), [SDKs](docs/reference/sdk.md), [CLI and MCP server](docs/reference/cli.md),
+  [REST API](openapi.json)
 
 The same pages are served as Markdown at <https://agents.camelai.dev/llms.txt>,
 for agents and tools that read documentation.
@@ -39,6 +40,7 @@ for agents and tools that read documentation.
 
 - `src/` server, supervisor, agent host, sessions, scheduler, REST API, sandbox
 - `clients/` the TypeScript and Python SDKs; `sdk/` publishes `@camelai/agent-runtime`
+- `packages/cli/` the `camelai` CLI and MCP server (`@camelai/cli`)
 - `console/` the tenant console; `studio/` a local chat and trace UI
 - `examples/` runnable examples; `docs/` the documentation
 - `migrations/`, `shared/`, `infra/`, `deploy/`, `tests/`

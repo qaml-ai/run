@@ -29,6 +29,7 @@ error). Install `@camelai/agent-runtime` (npm) or `camelai-agent-runtime` (PyPI)
 ## Reference
 
 - [SDKs](https://agents.camelai.dev/docs/reference/sdk.md): the TypeScript and Python SDKs
+- [CLI and MCP server](https://agents.camelai.dev/docs/reference/cli.md): the camelai CLI and MCP server: deploying agent.yaml manifests, running and managing agents from a terminal or a coding agent
 - [Events](https://agents.camelai.dev/docs/reference/events.md): every event on an agent's stream, and a run's outcome
 - [Limits](https://agents.camelai.dev/docs/reference/limits.md): every limit, with its value
 - [Errors](https://agents.camelai.dev/docs/reference/errors.md): HTTP errors, run failures and tool errors, and what to do about each

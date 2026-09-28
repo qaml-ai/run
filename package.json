@@ -10,7 +10,7 @@
     "test": "node --experimental-strip-types --test --test-timeout=300000 tests/*.test.ts",
     "test:shard": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-shard.ts",
     "test:python": "python3 tests/python_sdk.py",
-    "typecheck": "tsc -p tsconfig.json && tsc -p studio/tsconfig.json && tsc -p console/tsconfig.json && tsc -p packages/react/tsconfig.json && tsc -p packages/registry/tsconfig.json && tsc -p packages/bindings.tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p studio/tsconfig.json && tsc -p console/tsconfig.json && tsc -p packages/react/tsconfig.json && tsc -p packages/registry/tsconfig.json && tsc -p packages/bindings.tsconfig.json && tsc -p packages/cli/tsconfig.json",
     "test:ui": "vitest run --config packages/react/vitest.config.ts && vitest run --config packages/registry/vitest.config.ts && vitest run --config packages/bindings.vitest.config.ts",
     "registry": "node --experimental-strip-types --disable-warning=ExperimentalWarning packages/registry/build.ts",
     "studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/server.ts",

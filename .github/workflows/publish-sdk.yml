@@ -1,7 +1,7 @@
 name: Publish SDK
 # Push a tag like sdk-v0.10.0 (matching sdk/package.json), on a commit already on main, to publish the
 # TypeScript release train to npmjs: @camelai/agent-runtime first, then @camelai/agent-runtime-react,
-# -vue, -svelte, -solid and @camelai/create-agent-app. They share one version and depend on exactly
+# -vue, -svelte, -solid, @camelai/create-agent-app and @camelai/cli. They share one version and depend on exactly
 # this core (the shadcn registry installs exactly it too); each is built after sdk/dist, which its types
 # come from. A version already on npm is skipped, so a failed run can be run again.
 #
@@ -14,7 +14,7 @@ name: Publish SDK
 # by an owner of the @camelai scope, in this order:
 #   1. a 0.0.0 placeholder of each new package is on npm (published by hand, with 2FA)
 #   2. npm trust github <package> --repo qaml-ai/agent-runtime --file publish-sdk.yml --env npm --allow-publish
-#      for @camelai/agent-runtime-react, -vue, -svelte, -solid and @camelai/create-agent-app
+#      for @camelai/agent-runtime-react, -vue, -svelte, -solid, @camelai/create-agent-app and @camelai/cli
 #      (the core already trusts this workflow)
 #   3. push the tag: git tag sdk-v0.10.0 <commit on main> && git push origin sdk-v0.10.0
 on:
@@ -57,7 +57,7 @@ jobs:
         run: |
           version="$(node -p 'require("./sdk/package.json").version')"
           test "sdk-v$version" = "$GITHUB_REF_NAME"
-          for dir in packages/react packages/vue packages/svelte packages/solid packages/create-agent-app; do
+          for dir in packages/react packages/vue packages/svelte packages/solid packages/create-agent-app packages/cli; do
             node -e '
               const [dir, version] = process.argv.slice(1);
               const manifest = require(`./${dir}/package.json`);
@@ -76,7 +76,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:ui
       # The SDK's and the frontend's node tests, against a real runtime.
-      - run: node --experimental-strip-types --test --test-timeout=120000 tests/ui-*.test.ts tests/sdk-*.test.ts tests/clients.test.ts tests/watch.test.ts tests/browser-tokens.test.ts
+      - run: node --experimental-strip-types --test --test-timeout=120000 tests/ui-*.test.ts tests/sdk-*.test.ts tests/clients.test.ts tests/watch.test.ts tests/browser-tokens.test.ts tests/cli.test.ts
       # Core first: the others depend on this exact version being on npm.
       - name: Publish
         run: |
@@ -87,4 +87,4 @@ jobs:
           }
           (cd sdk && npm run build)
           publish sdk
-          for dir in packages/react packages/vue packages/svelte packages/solid packages/create-agent-app; do publish "$dir"; done
+          for dir in packages/react packages/vue packages/svelte packages/solid packages/create-agent-app packages/cli; do publish "$dir"; done
