@@ -726,7 +726,9 @@ export class AgentClient {
   private queued = 0;
   private dropped = 0;
   private readonly listeners = new Set<(event: AgentEvent, requestId?: string) => void>();
-  private readonly attaching: boolean;
+  private attaching: boolean;
+  /** The stream was cut on purpose, to reconnect in another mode: not an error to report. */
+  private switching = false;
 
   constructor(runtime: RuntimeOptions, session: SessionCredentials, options: AgentOptions) {
     if (!/^client_[a-f0-9]{40}$/.test(session.id)) throw new AgentError("Invalid session id");
@@ -846,7 +848,7 @@ export class AgentClient {
           for (const waiter of this.pending.values()) waiter.reject(error);
           this.pending.clear(); this.report(error); break;
         }
-        this.report(error);
+        if (this.switching) this.switching = false; else this.report(error);
       } finally { clearTimeout(watchdog); this.options.onConnection?.(false); }
       if (!this.closed) { await pause(backoff); backoff = Math.min(5000, backoff * 2); }
     }
@@ -1067,7 +1069,17 @@ export class AgentClient {
       Object.assign(this.tools, tools);
     }
     if (server) this.server = mcp ?? toolServer(this.tools);
+    // Tools that run here now: answer the agent's calls, as its application.
+    if (server && !this.attaching && (mcp || Object.keys(tools ?? {}).length)) await this.reconnect(true);
     return result;
+  }
+  /** Connect again, attached (answering tool calls) or not. */
+  private async reconnect(attach: boolean) {
+    this.attaching = attach;
+    this.ready = Promise.withResolvers<void>();
+    this.switching = true;
+    this.stream?.abort();
+    await this.connect();
   }
   execute(code: string, options?: RequestOptions & { timeoutMs?: number; executionTimeoutMs?: number; actor?: string }) {
     return this.request("execute", { code, ...(options?.executionTimeoutMs ? { timeoutMs: options.executionTimeoutMs } : {}), ...(options?.actor ? { actor: options.actor } : {}) }, options);

@@ -1,9 +1,18 @@
-"""Hosted agents over SSE + HTTP, with local tool functions and replay receipts."""
+"""The camelAI agent runtime's Python SDK: keyed agents you upsert and run, with tools in your process.
+
+    async with Agents() as agents:  # CAMELAI_API_KEY
+        agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5", instructions="...")
+        run = await agent.run("Summarize ticket 123")
+        print(run.text)
+
+AgentRuntime and AgentClient are the lower-level interface it is built on.
+"""
 import asyncio
 import base64
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import errno
 import inspect
 import json
 import os
@@ -12,19 +21,42 @@ from pathlib import Path
 from typing import get_type_hints
 from urllib.parse import quote, urlencode, urlparse
 import uuid
+import warnings
 
 import httpx
 
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
 _DEFAULT = object()
+# The hosted runtime; `url` points elsewhere (a self-hosted runtime, or http://127.0.0.1:8790 in development).
+DEFAULT_URL = "https://agents.camelai.dev"
+# Requests one client may wait on at once, and events waiting for a slow on_event (past it, streamed deltas are dropped).
+_MAX_PENDING = 1000
+_MAX_QUEUED_EVENTS = 10_000
+
+
+def _env(*names):
+    return next((os.environ[name] for name in names if os.environ.get(name)), None)
 
 
 class AgentError(RuntimeError):
-    def __init__(self, message, status=0, request_id=None, retry_after=None):
+    """`status` is the HTTP status (0 for a run's or the connection's failure); `code` a stable name for the
+    failure where the runtime gives one; `uncertain` that nobody can tell whether the work took effect."""
+
+    def __init__(self, message, status=0, request_id=None, retry_after=None, code=None, uncertain=False):
         super().__init__(message)
         self.status, self.request_id = status, request_id
         # Seconds the runtime asked to wait before retrying (its Retry-After), for 429 and 503.
         self.retry_after = retry_after
+        self.code, self.uncertain = code, uncertain
+
+
+class RunError(AgentError):
+    """A run that failed (agent.run raises it unless throw_on_error=False): `run` is how it ended."""
+
+    def __init__(self, run):
+        super().__init__(run.error["message"] if run.error else "The run failed", request_id=run.id,
+                         code=run.error and run.error["code"], uncertain=bool(run.error and run.error.get("uncertain")))
+        self.run = run
 
 
 @dataclass
@@ -72,14 +104,33 @@ class InputRequired(Exception):
 
 @dataclass
 class ToolContext:
+    # This attempt's id (a JSON-RPC id): a new one each attempt, so never a key for side effects.
     call_id: str
     # Set by the runtime, e.g. {"channel", "conversationId", "sender"} for a turn a channel message started.
     origin: dict | None = None
     # Who the call is for: always set by serve_tools; set for attached tools by runtimes that send it.
     identity: RuntimeIdentity | None = None
+    # The same for every attempt at this call (a retry after a lost connection, a call run again once the user
+    # answered): key your side effects by it, so a call that runs twice acts once.
+    idempotency_key: str = ""
+    # The model's tool call this is (or, from code, the code's call).
+    tool_call_id: str | None = None
     # The user's answers to this call's asks, on the call the runtime makes once they answered.
     input_responses: dict = field(default_factory=dict, repr=False)
     _asked: int = field(default=0, repr=False)
+    _notify: object = field(default=None, repr=False, compare=False)
+    _progress_token: object = field(default=None, repr=False, compare=False)
+    _reported: float = field(default=0, repr=False, compare=False)
+
+    def progress(self, message=None, *, progress=None, total=None):
+        """Report progress: people watching see it, and each report restarts the tool's timeout, so a long call
+        that keeps reporting is not cut off. A message, or how far it is (`progress` of `total`)."""
+        if self._progress_token is None or self._notify is None:
+            return
+        self._reported = max(progress if progress is not None else self._reported + 1, self._reported)
+        params = {"progressToken": self._progress_token, "progress": self._reported,
+                  **({"total": total} if total is not None else {}), **({"message": message} if message is not None else {})}
+        self._notify({"jsonrpc": "2.0", "method": "notifications/progress", "params": params})
 
     # Ask the user and get their answer. The call ends at the first ask and the agent's turn waits, for days if
     # need be; once they answer, the runtime calls the tool again with the same arguments and the ask returns the
@@ -113,16 +164,25 @@ class Tool:
     parameters: dict
     function: object
     with_context: bool
-    # True, or an async function of (arguments, context): the user approves each such call before it runs.
+    # True, or a function of (arguments, context): the user approves each such call before it runs.
     needs_approval: object = None
+    # Seconds one call may take (default 15, at most 900); each context.progress() restarts it.
+    timeout: float | None = None
 
     def definition(self):
         return {"name": self.name, "description": self.description, "parameters": self.parameters}
 
     def mcp_tool(self):
         """This tool as an attached MCP server lists it (tools/list)."""
-        return {"name": self.name, "description": self.description, "inputSchema": self.parameters,
-                **({"_meta": {"agent-runtime/needsApproval": True}} if self.needs_approval else {})}
+        meta = {**({"agent-runtime/needsApproval": True} if self.needs_approval else {}),
+                **({"agent-runtime/timeoutMs": int(self.timeout * 1000)} if self.timeout else {})}
+        return {"name": self.name, "description": self.description, "inputSchema": self.parameters, **({"_meta": meta} if meta else {})}
+
+    async def __call__(self, **arguments):
+        """Run the function (async, or a plain function in a thread, so it never blocks the connection)."""
+        if inspect.iscoroutinefunction(self.function):
+            return await self.function(**arguments)
+        return await asyncio.to_thread(self.function, **arguments)
 
 
 def _call_tool_result(result):
@@ -131,10 +191,12 @@ def _call_tool_result(result):
     return {"content": [{"type": "text", "text": text}], **({"structuredContent": result} if isinstance(result, dict) else {})}
 
 
-def tool(function=None, *, name=None, description=None, needs_approval=None):
-    """Expose an async function; infer its JSON schema from Python annotations. With needs_approval (True, or
-    an async function of the arguments and context), the user approves each call, shown as the runtime sees it,
-    before it runs; such a tool is declared to the model directly, as code cannot wait for a person."""
+def tool(function=None, *, name=None, description=None, needs_approval=None, timeout=None):
+    """Expose a function (async, or plain: it runs in a thread) as a tool; its JSON schema comes from the
+    annotations and its description from the docstring. Return any JSON value (None is fine); raise to tell
+    the model the call failed. `timeout`: seconds one call may take (default 15); context.progress() restarts it.
+    With needs_approval (True, or a function of the arguments and context), the user approves each call, shown
+    as the runtime sees it, before it runs; such a tool is declared to the model directly."""
     def decorate(fn):
         hints = get_type_hints(fn)
         properties, required = {}, []
@@ -152,19 +214,24 @@ def tool(function=None, *, name=None, description=None, needs_approval=None):
             properties[key] = {"type": kinds[annotation]}
             if parameter.default is parameter.empty:
                 required.append(key)
-        if not inspect.iscoroutinefunction(fn):
-            raise TypeError("Tools must be async functions; use asyncio.to_thread for blocking work")
         return Tool(name or fn.__name__, description or inspect.getdoc(fn) or fn.__name__,
-                    {"type": "object", "properties": properties, "required": required, "additionalProperties": False}, fn, with_context, needs_approval)
+                    {"type": "object", "properties": properties, "required": required, "additionalProperties": False}, fn, with_context, needs_approval, timeout)
     return decorate(function) if function else decorate
 
 
-def _tool_context(meta, fallback_id, identity=None):
+def _tool_context(meta, fallback_id, identity=None, notify=None):
     """A call's context from its _meta, with the identity the runtime sent (or `identity`, from a verified token)."""
     sent = identity_from_claims(meta["agent-runtime/identity"]) if isinstance(meta.get("agent-runtime/identity"), dict) else None
     who = identity or sent
     origin = meta.get("agent-runtime/origin") if isinstance(meta.get("agent-runtime/origin"), dict) else (who.origin if who else None)
-    return ToolContext(call_id=meta.get("agent-runtime/callId") or fallback_id, origin=origin, identity=who)
+    call_id = meta.get("agent-runtime/callId") or fallback_id
+    tool_call_id = meta.get("agent-runtime/toolCallId") if isinstance(meta.get("agent-runtime/toolCallId"), str) else None
+    inner = meta.get("agent-runtime/innerCallId") if isinstance(meta.get("agent-runtime/innerCallId"), str) else ""
+    # The runtime's stable key; from a runtime that sends none, the model's call (and the code's call within it).
+    key = meta.get("agent-runtime/idempotencyKey") if isinstance(meta.get("agent-runtime/idempotencyKey"), str) else (
+        ":".join([who.agent if who else "", tool_call_id, inner]) if tool_call_id else call_id)
+    return ToolContext(call_id=call_id, origin=origin, identity=who, idempotency_key=key, tool_call_id=tool_call_id,
+                       _notify=notify, _progress_token=meta.get("progressToken"))
 
 
 async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sdk-python"):
@@ -193,14 +260,16 @@ async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sd
         context.input_responses = {**(earlier if isinstance(earlier, dict) else {}), **(params.get("inputResponses") if isinstance(params.get("inputResponses"), dict) else {})}
         needs = definition.needs_approval
         if callable(needs):
-            needs = await needs(dict(args), context)
+            needs = needs(dict(args), context)
+            if inspect.isawaitable(needs):
+                needs = await needs
         if needs and not (context.identity and context.identity.approval):
             # Not yet approved: the runtime asks the user, showing this call, and calls again once they approve.
             return {"result": {"resultType": "input_required", "inputRequests": {"approval": {"method": "agent-runtime/approval"}}}}
         if definition.with_context:
             args["context"] = context
         try:
-            answer = _call_tool_result(await definition.function(**args))
+            answer = _call_tool_result(await definition(**args))
         except asyncio.CancelledError:
             raise
         except InputRequired as asked:
@@ -242,6 +311,26 @@ def _save(path, value):
         os.close(fd)
 
 
+def _arity(function):
+    """How many positional arguments a callback takes (1 where Python cannot say)."""
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return 1
+    if any(parameter.kind == parameter.VAR_POSITIONAL for parameter in parameters):
+        return 2
+    return sum(1 for parameter in parameters if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD))
+
+
+class _Session(dict):
+    """An agent's credentials ({"id", "token", "expiresAt"}), whose repr leaves the token out."""
+
+    def __repr__(self):
+        return repr({key: ("<redacted>" if key == "token" else value) for key, value in self.items()})
+
+    __str__ = __repr__
+
+
 def _retry_after(response):
     """Retry-After in seconds (delta or HTTP date), capped so a bad value cannot stall a caller."""
     value = response.headers.get("retry-after")
@@ -274,7 +363,8 @@ async def _http(client, base, path, token, method="GET", body=None, retry=True, 
                     value = response.json()
                 except ValueError:
                     value = {}
-                raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response))
+                raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response),
+                                 code=value.get("code") if isinstance(value.get("code"), str) else None)
             return response.json()
         except Exception as error:
             limited = isinstance(error, AgentError) and error.status == 429
@@ -305,9 +395,13 @@ async def _transfer(client, method, url, **options):
 
 
 class AgentRuntime:
+    """The lower-level client: provision agents, definitions, volumes and mounts. `url` defaults to CAMELAI_BASE_URL,
+    else https://agents.camelai.dev; `api_key` to CAMELAI_API_KEY. `state_directory` keeps each agent's event cursor
+    on disk (default .agent-runtime/client-sdk, or memory where that cannot be written; False: memory)."""
+
     def __init__(self, url=None, api_key=None, state_directory=None):
-        self.base = _origin(url or os.environ.get("AGENT_URL", "http://127.0.0.1:8790"))
-        self.api_key = api_key or os.environ.get("AGENT_RUNTIME_TOKEN")
+        self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
+        self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
         self.state_directory = state_directory
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
@@ -323,19 +417,28 @@ class AgentRuntime:
         if not self.api_key:
             raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to provision an agent")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
-        optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level, "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "modelHeaders": model_headers}
-        # The tools are served to the agent as an attached MCP server; this is its tools/list.
-        body = {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
+        body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
+                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers)
         if ttl_seconds is not _DEFAULT:
             body["ttlSeconds"] = ttl_seconds
         session = await _http(self.http, self.base, "/client-sessions", self.api_key, "POST", body,
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input)
 
-    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None):
-        """`on_input(input)` hears each question, approval or setup step the agent's turn now waits on: return an
-        answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer()."""
-        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error, on_input)
+    async def upsert_agent(self, key, *, tools=(), **fields):
+        """The agent for `key`: made if there is none, set to `fields` (create_agent's) if they differ. Returns its
+        credentials ({"id", "token", "expiresAt", "created"}); connect with connect_agent. Keyed agents live until deleted."""
+        if not self.api_key:
+            raise AgentError("Set api_key (or the CAMELAI_API_KEY environment variable): create a key in the console at https://agents.camelai.dev")
+        return await _http(self.http, self.base, f"/v1/agents/by-key/{quote(key, safe='')}", self.api_key, "PUT", _provisioning(tools, **fields))
+
+    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True):
+        """`on_event(event, request_id)` hears every event, for display (a run's result is the truth): a plain or async
+        function, called in order apart from the connection, so a slow one never holds up tool calls; what it raises goes
+        to on_error. `on_input(input)` hears each question, approval or setup step the agent's turn now waits on: return an
+        answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer().
+        `attach=False` follows the agent and runs it without answering its tool calls, as any number of processes may."""
+        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error, on_input, attach=attach)
         self.agents.append(agent)
         try:
             await agent.connect()
@@ -404,6 +507,14 @@ class AgentRuntime:
 
     async def __aexit__(self, *_):
         await self.close()
+
+
+def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
+                  subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None):
+    """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
+    optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
+                "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "modelHeaders": model_headers}
+    return {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
 
 
 class Volume:
@@ -541,21 +652,29 @@ class AgentClient:
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
-    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None, on_input=None):
+    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None, on_input=None, attach=True):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
         self.base = _origin(base)
-        self.session = {key: session[key] for key in ("id", "token", "expiresAt")}
+        # The agent's id (client_...): safe to log and to store.
+        self.id = session["id"]
+        # Its id and token: keep the token secret (it is left out of repr).
+        self.session = _Session({key: session.get(key) for key in ("id", "token", "expiresAt")})
         self.tools = {item.name: item for item in tools}
         self.on_event, self.on_error, self.on_input = on_event, on_error, on_input
+        # Whether this client answers the agent's tool calls: one process at a time. False follows it only.
+        self.attach = attach
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.path = f"/clients/{session['id']}"
-        self.journal_path = Path(state_directory or os.environ.get("AGENT_CLIENT_STATE_DIR", ".agent-runtime/client-sdk")) / f"{session['id']}.json"
+        # False: the cursor is kept in memory only.
+        self.journal_path = None if state_directory is False else Path(state_directory or os.environ.get("AGENT_CLIENT_STATE_DIR", ".agent-runtime/client-sdk")) / f"{session['id']}.json"
         try:
-            self.journal = json.loads(self.journal_path.read_text())
+            self.journal = json.loads(self.journal_path.read_text()) if self.journal_path else {"version": 1, "cursor": 0}
         except FileNotFoundError:
             self.journal = {"version": 1, "cursor": 0}
+        except PermissionError:
+            self.journal, self.journal_path = {"version": 1, "cursor": 0}, None
         if self.journal["version"] != 1:
             raise AgentError("Unsupported client journal")
         # The journal keeps only the event cursor.
@@ -568,9 +687,27 @@ class AgentClient:
         self.runner = None
         self.closed = False
         self.fatal = None
+        # on_event's queue, and its dispatcher: events wait here, in order, so the stream never waits on the application.
+        self.events = None
+        self.dispatcher = None
+        self.dropped = 0
+        self.listeners = set()
+
+    def __repr__(self):
+        return f"AgentClient(id={self.id!r})"
 
     def _save(self):
-        _save(self.journal_path, self.journal)
+        if self.journal_path is None:
+            return
+        try:
+            _save(self.journal_path, self.journal)
+        except (PermissionError, OSError) as error:
+            if isinstance(error, PermissionError) or error.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
+                warnings.warn(f"Cannot write the agent SDK's state to {self.journal_path.parent} ({error}); keeping it in memory. "
+                              "Set state_directory to a writable directory to keep it across restarts.", stacklevel=2)
+                self.journal_path = None
+            else:
+                raise
 
     async def _http(self, suffix, method="GET", body=None, retry=True):
         return await _http(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry)
@@ -578,6 +715,9 @@ class AgentClient:
     async def connect(self):
         if self.closed:
             raise AgentError("Client closed")
+        if self.events is None:
+            self.events = asyncio.Queue()
+            self.dispatcher = asyncio.create_task(self._dispatch())
         if not self.runner:
             self.runner = asyncio.create_task(self._events())
         await asyncio.wait_for(self.ready.wait(), 10)
@@ -586,21 +726,56 @@ class AgentClient:
 
     def _report(self, error):
         if self.on_error:
-            self.on_error(error)
+            try:
+                self.on_error(error)
+            except Exception:
+                pass
+
+    def _emit(self, event, request_id=None):
+        """Hand an event to the listeners, and queue it for on_event: the stream goes on without waiting for either."""
+        for listener in list(self.listeners):
+            try:
+                listener(event, request_id)
+            except Exception as error:
+                self._report(error)
+        if not self.on_event or self.events is None:
+            return
+        if self.events.qsize() >= _MAX_QUEUED_EVENTS and event.get("type") == "message_update":
+            if self.dropped == 0:
+                self._report(AgentError(f"on_event is falling behind: over {_MAX_QUEUED_EVENTS} events wait, so streamed deltas are dropped until it catches up"))
+            self.dropped += 1
+            return
+        self.events.put_nowait((event, request_id))
+
+    async def _dispatch(self):
+        """Call on_event for each queued event, in order: a plain or an async function; what it raises goes to on_error."""
+        while True:
+            event, request_id = await self.events.get()
+            try:
+                answer = self.on_event(event, request_id) if _arity(self.on_event) > 1 else self.on_event(event)
+                if inspect.isawaitable(answer):
+                    await answer
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._report(error)
+            finally:
+                self.events.task_done()
+                if self.events.empty():
+                    self.dropped = 0
 
     async def _events(self):
         backoff = 0.25
         while not self.closed:
             try:
-                async with self.http.stream("GET", self.base + self.path + "/events?snapshot=1", headers={
+                async with self.http.stream("GET", self.base + self.path + "/events?snapshot=1" + ("" if self.attach else "&watch=1"), headers={
                     "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream",
                     "Last-Event-ID": str(self.journal["cursor"])}, timeout=20) as response:
                     if response.status_code == 409:
                         state = await self._sync()
                         self.journal["cursor"] = state["cursor"]
                         self._save()
-                        if self.on_event:
-                            self.on_event({"type": "replay_gap", "cursor": state["cursor"]})
+                        self._emit({"type": "replay_gap", "cursor": state["cursor"]})
                         continue
                     if not response.is_success:
                         raise AgentError(f"Event stream HTTP {response.status_code}", response.status_code)
@@ -637,8 +812,7 @@ class AgentClient:
                             if event.get("type") == "snapshot":
                                 self.journal["cursor"] = cursor
                                 self._save()
-                                if self.on_event:
-                                    self.on_event(event)
+                                self._emit(event)
                                 continue
                             if cursor <= self.journal["cursor"]:
                                 continue
@@ -670,8 +844,7 @@ class AgentClient:
         if event["type"] == "response":
             self._settle(event["id"], event["outcome"])
         elif event["type"] == "event":
-            if self.on_event:
-                self.on_event(event["event"])
+            self._emit(event["event"], event.get("requestId"))
             if self.on_input and event["event"].get("type") == "input_required":
                 self._track(asyncio.ensure_future(self._input(event["event"]["input"])))
 
@@ -686,7 +859,8 @@ class AgentClient:
         future = self.pending.pop(request_id, None)
         if future and not future.done():
             if "error" in value:
-                future.set_exception(AgentError(value["error"], request_id=request_id))
+                future.set_exception(AgentError(value["error"], request_id=request_id, code=value.get("code") if isinstance(value.get("code"), str) else None,
+                                                uncertain=bool(value.get("uncertain"))))
             else:
                 future.set_result(value.get("result"))
 
@@ -734,21 +908,38 @@ class AgentClient:
             await _http(self.http, self.base, self.path + "/mcp", self.session["token"], "POST", {"jsonrpc": "2.0", "id": message["id"], **answer},
                         headers={"X-Agent-Connection": connection or ""})
 
+        loop = asyncio.get_running_loop()
+
+        def notify(notification):
+            # A plain function tool reports from its thread: the send is made on the connection's loop.
+            send = lambda: self._track(asyncio.ensure_future(_http(self.http, self.base, self.path + "/mcp", self.session["token"], "POST", notification,
+                                                                   retry=False, headers={"X-Agent-Connection": connection or ""})))
+            try:
+                here = asyncio.get_running_loop()
+            except RuntimeError:
+                here = None
+            if here is loop:
+                send()
+            else:
+                loop.call_soon_threadsafe(send)
+
         key = str(message["id"])
         if method == "tools/call":
             self.active[key] = asyncio.current_task()
         try:
-            await reply(await _answer_mcp(message, self.tools, lambda meta: _tool_context(meta, key)))
+            await reply(await _answer_mcp(message, self.tools, lambda meta: _tool_context(meta, key, notify=notify)))
         except asyncio.CancelledError:
             pass
         finally:
             self.active.pop(key, None)
 
-    async def request(self, method, params=None, *, idempotency_key=None, timeout=180):
+    async def request(self, method, params=None, *, idempotency_key=None, timeout=None):
+        """Send a request and wait for its outcome, however long the run takes: `timeout` (seconds) only stops the
+        wait, as cancelling the task does; the request goes on."""
         if self.closed or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
-        if request_id in self.pending or len(self.pending) >= 8:
+        if request_id in self.pending or len(self.pending) >= _MAX_PENDING:
             raise AgentError("Request already pending or too many outstanding requests", request_id=request_id)
         future = asyncio.get_running_loop().create_future()
         self.pending[request_id] = future
@@ -758,13 +949,58 @@ class AgentClient:
                 self._settle(request_id, record["outcome"])
             return await asyncio.wait_for(self._outcome(request_id, future), timeout)
         except TimeoutError as error:
-            raise AgentError("Request timed out; inspect request_status() or reuse the same idempotency_key", request_id=request_id) from error
+            raise AgentError("Stopped waiting; the request may still be running: request_status() or wait_for_request() observe it", request_id=request_id) from error
         finally:
+            self._release(request_id, future)
+
+    def _release(self, request_id, future):
+        if self.pending.get(request_id) is future:
             self.pending.pop(request_id, None)
-            if future.done() and not future.cancelled():
-                future.exception()  # An SSE error may arrive while POST fails.
-            elif not future.done():
-                future.cancel()
+        if future.done() and not future.cancelled():
+            future.exception()  # An SSE error may arrive while POST fails.
+        elif not future.done():
+            future.cancel()
+
+    async def wait_for_request(self, request_id, *, timeout=None):
+        """Wait for a request already sent (by this process or another) to settle. This never submits or re-executes work."""
+        if self.closed or self.fatal:
+            raise self.fatal or AgentError("Client closed")
+        if request_id in self.pending:
+            raise AgentError("Request already pending", 409, request_id)
+        future = asyncio.get_running_loop().create_future()
+        self.pending[request_id] = future
+        try:
+            record = await self.request_status(request_id)
+            if "outcome" in record:
+                self._settle(request_id, record["outcome"])
+            return await asyncio.wait_for(self._outcome(request_id, future), timeout)
+        except TimeoutError as error:
+            raise AgentError("Stopped waiting; the request may still be running", request_id=request_id) from error
+        finally:
+            self._release(request_id, future)
+
+    async def history(self):
+        """The agent's whole history: {"messages"}. history_page reads a page at a time."""
+        return await self._http("/history")
+
+    async def history_page(self, *, before=None, limit=50):
+        """The page of whole turns ending before `before` (default: the newest message), with at least `limit`
+        messages where there are that many: {"entries": [{"index", "message"}], "next", "total"}."""
+        return await self._http("/history?" + urlencode({"limit": limit, **({"before": before} if before is not None else {})}))
+
+    async def steer(self, text, *, from_=None, files=None, metadata=None):
+        """Add a message to the running turn."""
+        return await self._message("steer", text, from_=from_, files=files, metadata=metadata)
+
+    async def follow_up(self, text, *, from_=None, files=None, metadata=None):
+        """A message for the agent once its running turn ends."""
+        return await self._message("followUp", text, from_=from_, files=files, metadata=metadata)
+
+    async def _message(self, method, text, *, from_=None, files=None, metadata=None, idempotency_key=None, extra=None, **options):
+        request_id = idempotency_key or str(uuid.uuid4())
+        attached = await self._attach(request_id, files) if files else None
+        return await self.request(method, {"text": text, **({"files": attached} if attached else {}), **(extra or {}), **({"from": from_} if from_ else {}),
+                                           **({"metadata": metadata} if metadata else {})}, idempotency_key=request_id, **options)
 
     async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
@@ -775,9 +1011,8 @@ class AgentClient:
         application's own key-value data about the message (a dict of at most 16 strings): the stored message and
         its request carry it, with the request's id, in history, events and webhooks; the model never sees it. `while_running="steer"` hands
         the message to a running turn, and returns with that turn's outcome."""
-        request_id = idempotency_key or str(uuid.uuid4())
-        attached = await self._attach(request_id, files) if files else None
-        return await self.request("prompt", {"text": text, **({"files": attached} if attached else {}), **({"actor": actor} if actor else {}), **({"from": from_} if from_ else {}), **({"metadata": metadata} if metadata else {}), **({"whileRunning": "steer"} if while_running == "steer" else {})}, idempotency_key=request_id, **options)
+        return await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
+                                   extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {})}, **options)
 
     async def _attach(self, request_id, files):
         names, attached = set(), []
@@ -819,10 +1054,23 @@ class AgentClient:
     async def set_metadata(self, *, name, type):
         return await self._http("/metadata", "POST", {"name": name, "type": type})
 
-    async def configure(self, *, model=None, system_prompt=None, thinking_level=None):
-        """Change the model ("provider/model-id"), system prompt or thinking level between runs."""
+    async def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None):
+        """Change the model ("provider/model-id"), system prompt, thinking level or tools between runs."""
         params = {key: value for key, value in {"model": model, "systemPrompt": system_prompt, "thinkingLevel": thinking_level}.items() if value is not None}
-        return await self.request("configure", params)
+        if tools is not None:
+            params["mcp"] = {"tools": [item.mcp_tool() for item in tools]}
+        result = await self.request("configure", params)
+        if tools is not None:
+            self.tools = {item.name: item for item in tools}
+            # Tools that run here now: answer the agent's calls, as its application.
+            if tools and not self.attach:
+                self.attach = True
+                self.ready.clear()
+                self.runner.cancel()
+                await asyncio.gather(self.runner, return_exceptions=True)
+                self.runner = None
+                await self.connect()
+        return result
 
     async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
         """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it."""
@@ -875,6 +1123,14 @@ class AgentClient:
         if self.runner:
             self.runner.cancel()
             await asyncio.gather(self.runner, return_exceptions=True)
+        if self.dispatcher:
+            # Events received before closing still reach on_event, but a handler that never returns cannot hang shutdown.
+            try:
+                await asyncio.wait_for(self.events.join(), 2)
+            except TimeoutError:
+                pass
+            self.dispatcher.cancel()
+            await asyncio.gather(self.dispatcher, return_exceptions=True)
         for request_id, future in self.pending.items():
             if not future.done():
                 future.set_exception(AgentError("Client closed; request may still be running", request_id=request_id))
@@ -890,6 +1146,316 @@ class AgentClient:
             await self._http("", "DELETE")
         finally:
             await self.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        await self.close()
+
+
+# The simple interface: keyed agents you upsert and run ----------------------------------------------
+
+
+@dataclass
+class Run:
+    """A run of the agent: one message and everything the agent did about it. status: "completed" (it answered: text),
+    "input_required" (it waits on people: inputs; answer them to resume it) or "failed" (error: {"code", "message",
+    "uncertain"?}; agent.run raises RunError unless throw_on_error=False)."""
+    id: str
+    status: str
+    # The final reply's text; "" when it said nothing (or failed first).
+    text: str = ""
+    inputs: list = field(default_factory=list)
+    error: dict | None = None
+    # What its model calls used, where the runtime reports it.
+    usage: dict | None = None
+    # Files it wrote (download them with agent.files).
+    files: list = field(default_factory=list)
+    # The runtime's result as sent.
+    raw: dict | None = field(default=None, repr=False)
+
+
+class RunInput(dict):
+    """Human input a run waits on (a dict: id, kind, message, detail...), with the means to answer it.
+    answer() and decline() return the resumed run."""
+
+    def __init__(self, agent, value):
+        super().__init__(value)
+        self._agent = agent
+
+    async def answer(self, value, *, from_=None, throw_on_error=True, timeout=None):
+        """approval or url: True (yes, done) or False; question: the label chosen (or labels, or your own words), or a
+        dict of question to answer; form: its fields. `from_`: who answers (your user id, or {"id", "name"?})."""
+        return await self._agent._respond(self, _answer_for(self, value), from_, throw_on_error, timeout)
+
+    async def decline(self, *, from_=None, throw_on_error=True, timeout=None):
+        return await self._agent._respond(self, {"action": "decline"}, from_, throw_on_error, timeout)
+
+
+def _answer_for(input, value):
+    kind = input["kind"]
+    if kind in ("approval", "url"):
+        if not isinstance(value, bool):
+            raise AgentError(f"Answer {'an approval' if kind == 'approval' else 'a url step'} with True or False")
+        return {"action": "accept" if value else "decline"}
+    if kind == "question":
+        questions = input["detail"].get("questions") or []
+        if isinstance(value, (str, list)):
+            if len(questions) != 1:
+                raise AgentError(f"This input asks {len(questions)} questions: answer with {{question: answer}} for each")
+            return {"action": "accept", "content": {"answers": {questions[0]["question"]: value}}}
+        if not isinstance(value, dict):
+            raise AgentError("Answer a question with the label chosen, or a dict of question to answer")
+        return {"action": "accept", "content": {"answers": value}}
+    if not isinstance(value, dict):
+        raise AgentError("Answer a form with its fields, as a dict")
+    return {"action": "accept", "content": value}
+
+
+@dataclass
+class StreamPart:
+    """What agent.stream() yields. type: "text" (text), "tool_call" (id, name, arguments), "tool_result" (id, name, output,
+    is_error), "input_required" (input) or, last, "done" (run). raw: the event it came from."""
+    type: str
+    text: str | None = None
+    id: str | None = None
+    name: str | None = None
+    arguments: object = None
+    output: str | None = None
+    is_error: bool | None = None
+    input: RunInput | None = None
+    run: Run | None = None
+    raw: dict | None = field(default=None, repr=False)
+
+
+def _text_of(value):
+    content = value.get("content") if isinstance(value, dict) else None
+    if not isinstance(content, list):
+        return value if isinstance(value, str) else json.dumps(value)
+    return "\n".join(part["text"] for part in content if isinstance(part, dict) and isinstance(part.get("text"), str))
+
+
+def _sender(user):
+    return {"id": user} if isinstance(user, str) else user
+
+
+class RunStream:
+    """async for part in agent.stream(text); `id` is the run's; await result() for the run as `done` has it.
+    Breaking off stops the reading, not the run."""
+
+    def __init__(self, agent, text, options):
+        self.id = options.pop("idempotency_key", None) or str(uuid.uuid4())
+        self._agent, self._throw = agent, options.pop("throw_on_error", True)
+        self._parts = asyncio.Queue()
+        spoke, fresh = False, False
+
+        def listen(event, request_id):
+            nonlocal spoke, fresh
+            if request_id != self.id:
+                return
+            kind = event.get("type")
+            if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
+                fresh = True
+            elif kind == "message_update":
+                delta = event.get("assistantMessageEvent") or {}
+                if delta.get("type") == "text_delta" and delta.get("delta"):
+                    self._parts.put_nowait(StreamPart("text", text=("\n\n" if fresh and spoke else "") + delta["delta"], raw=event))
+                    spoke, fresh = True, False
+            elif kind == "tool_execution_start":
+                self._parts.put_nowait(StreamPart("tool_call", id=event.get("toolCallId"), name=event.get("toolName"), arguments=event.get("args"), raw=event))
+            elif kind == "tool_execution_end":
+                self._parts.put_nowait(StreamPart("tool_result", id=event.get("toolCallId"), name=event.get("toolName"), output=_text_of(event.get("result")),
+                                                  is_error=bool(event.get("isError")), raw=event))
+            elif kind == "input_required":
+                self._parts.put_nowait(StreamPart("input_required", input=RunInput(agent, event["input"]), raw=event))
+
+        self._listen = listen
+        agent.client.listeners.add(listen)
+        self._task = asyncio.ensure_future(agent._run(text, self.id, throw_on_error=False, **options))
+        self._task.add_done_callback(lambda task: (agent.client.listeners.discard(listen), self._parts.put_nowait(None)))
+
+    async def result(self):
+        run = await self._task
+        if run.error and self._throw:
+            raise RunError(run)
+        return run
+
+    async def __aiter__(self):
+        try:
+            while True:
+                part = await self._parts.get()
+                if part is None:
+                    break
+                yield part
+            run = await self._task
+            yield StreamPart("done", run=run)
+            if run.error and self._throw:
+                raise RunError(run)
+        finally:
+            self._agent.client.listeners.discard(self._listen)
+
+
+class Agent:
+    """A keyed agent (from Agents.upsert). `id` is safe to log; `client` is the lower-level AgentClient."""
+
+    def __init__(self, client, closed=None):
+        self.client, self.id, self._closed = client, client.id, closed
+
+    def __repr__(self):
+        return f"Agent(id={self.id!r})"
+
+    @property
+    def session(self):
+        """Its id and token (keep the token secret; repr leaves it out)."""
+        return self.client.session
+
+    @property
+    def files(self):
+        """The agent's files: list, download, upload and link."""
+        return self.client.files
+
+    async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None):
+        """Send a message and wait for the run it starts: its reply, or the input it waits on. There is no timeout
+        unless `timeout` (seconds) says so, and that only stops the wait. `user` (your user id, or {"id", "name"?}) is
+        who sent it: the model sees who, and tools get it as identity.user. A failed run raises RunError (with the run)
+        unless throw_on_error=False. The same idempotency_key returns the same run, never a second one."""
+        return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
+                               throw_on_error=throw_on_error, while_running=while_running)
+
+    def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None):
+        """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
+        waits on and, last, "done" with the run."""
+        return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
+                                      "throw_on_error": throw_on_error, "while_running": while_running})
+
+    async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None):
+        pending = self.client.prompt(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=request_id,
+                                     timeout=timeout, while_running=while_running)
+        return await self._settle(request_id, pending, throw_on_error)
+
+    async def _settle(self, request_id, pending, throw_on_error):
+        try:
+            run = self._to_run(request_id, await pending)
+        except AgentError as error:
+            # A run that ended in an error settles with it; anything else (a refused request, a closed client) is not a run.
+            if error.status != 0 or error.request_id != request_id or str(error).startswith(("Client closed", "Stopped waiting")):
+                raise
+            run = Run(request_id, "failed", error={"code": error.code or "runtime_error", "message": str(error), **({"uncertain": True} if error.uncertain else {})})
+        if run.error and throw_on_error:
+            raise RunError(run)
+        return run
+
+    def _to_run(self, request_id, result):
+        result = result or {}
+        error = ({"code": result.get("code") or "model_error", "message": result["error"]} if result.get("error")
+                 else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit" else None)
+        status = "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
+        return Run(request_id, status, text=result.get("reply") or "", inputs=[RunInput(self, input) for input in result.get("inputs") or []], error=error,
+                   usage=result.get("usage"), files=result.get("files") or [], raw=result)
+
+    async def _respond(self, input, answer, from_, throw_on_error, timeout):
+        audience = (input.get("responders") or {}).get("audience")
+        if audience and not from_:
+            raise AgentError(f"Say who answers (from_): only {', '.join(audience)} may answer this")
+        answered = await self.client.answer(input["id"], **answer, **({"from_": _sender(from_)} if from_ else {}))
+        request = answered.get("request")
+        if request:
+            return await self._settle(request["id"], self.client.wait_for_request(request["id"], timeout=timeout), throw_on_error)
+        # Other inputs of the run still wait: it resumes once they are answered too.
+        pending = [RunInput(self, other) for other in await self.client.inputs(state="pending") if other["requestId"] == input["requestId"]]
+        return Run(input["requestId"], "input_required", inputs=pending)
+
+    async def pending_inputs(self):
+        """Inputs waiting on people, across the agent's runs."""
+        return [RunInput(self, input) for input in await self.client.inputs(state="pending")]
+
+    async def history(self):
+        return await self.client.history()
+
+    async def history_page(self, *, before=None, limit=50):
+        return await self.client.history_page(before=before, limit=limit)
+
+    async def steer(self, text, *, user=None, files=None, metadata=None):
+        """Add a message to the running turn."""
+        return await self.client.steer(text, from_=_sender(user) if user else None, files=files, metadata=metadata)
+
+    async def follow_up(self, text, *, user=None, files=None, metadata=None):
+        """A message for the agent once its running turn ends."""
+        return await self.client.follow_up(text, from_=_sender(user) if user else None, files=files, metadata=metadata)
+
+    async def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None):
+        """Change its model, instructions, thinking level or tools between runs."""
+        return await self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools)
+
+    async def abort(self):
+        """Stop the running turn."""
+        return await self.client.abort()
+
+    async def delete(self):
+        """Delete the agent, its history and its files, for good."""
+        try:
+            await self.client.destroy()
+        finally:
+            self._forget()
+
+    async def close(self):
+        """Close this process's connection to it (its runs go on in the runtime)."""
+        try:
+            await self.client.close()
+        finally:
+            self._forget()
+
+    def _forget(self):
+        if self._closed:
+            self._closed(self)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        await self.close()
+
+
+class Agents:
+    """Keyed agents you upsert and run.
+
+        async with Agents() as agents:
+            agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5", instructions="...")
+            print((await agent.run("Hello")).text)
+
+    api_key defaults to CAMELAI_API_KEY; url to CAMELAI_BASE_URL, else https://agents.camelai.dev. `state_directory` keeps
+    each agent's event cursor on disk (default: memory; a run's result never depends on it)."""
+
+    def __init__(self, api_key=None, *, url=None, state_directory=False):
+        self.runtime = AgentRuntime(url=url, api_key=api_key, state_directory=state_directory)
+        self._open = set()
+
+    async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
+                     key_scope=None, spend_limit=None, model_headers=None, mounts=None, name=None, on_event=None, on_input=None, on_error=None):
+        """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
+        to this configuration if it differs. The same key is the same agent, with its history and files, until
+        agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
+        then answers the agent's tool calls, one process at a time: serverless or several processes, serve tools over
+        HTTP (serve_tools) and name them in a definition instead."""
+        tools = list(tools or [])
+        session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
+                                                  subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers,
+                                                  mounts=mounts, name=name)
+        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error)
+
+    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None):
+        """An agent you hold the credentials of ({"id", "token"}, from another process say)."""
+        tools = list(tools or [])
+        client = await self.runtime.connect_agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=bool(tools))
+        agent = Agent(client, self._open.discard)
+        self._open.add(agent)
+        return agent
+
+    async def close(self):
+        """Close every agent's connection (their runs go on in the runtime)."""
+        await asyncio.gather(*(agent.close() for agent in list(self._open)))
+        await self.runtime.close()
 
     async def __aenter__(self):
         return self

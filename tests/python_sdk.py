@@ -18,7 +18,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_agent_runtime import AgentRuntime, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
+from camelai_agent_runtime import AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -33,6 +33,16 @@ def fake_model(bodies, script=None):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            if script and "httpStatus" in script[0]:
+                # A provider refusing the request.
+                refusal = script.pop(0)
+                body = json.dumps({"error": {"message": refusal["message"], "type": "invalid_request_error"}}).encode()
+                self.send_response(refusal["httpStatus"])
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
@@ -77,13 +87,131 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
         ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))
-        self.runtime = AgentRuntime(url=f"http://127.0.0.1:{ready['address']['port']}", api_key=self.token,
-                                    state_directory=Path(self.directory.name) / "sdk")
+        # Keep reading the host's log, so it never writes into a closed pipe as it shuts down.
+        self.logs = asyncio.create_task(self.host.stdout.read())
+        self.url = f"http://127.0.0.1:{ready['address']['port']}"
+        self.runtime = AgentRuntime(url=self.url, api_key=self.token, state_directory=Path(self.directory.name) / "sdk")
+        self.agents = Agents(self.token, url=self.url)
+
+    async def make(self, tools=(), **options):
+        """An agent made over REST (with `tools` declared), held by the simple interface."""
+        created = await self.runtime.http.post(f"{self.url}/v1/agents", headers={"Authorization": f"Bearer {self.token}"},
+                                               json={"ttlSeconds": None, "mcp": {"tools": [item.mcp_tool() for item in tools]}})
+        self.assertEqual(created.status_code, 201, created.text)
+        return await self.agents.agent(created.json(), tools=tools, **options)
+
+    def call(self, name, arguments, call_id=None):
+        """A scripted model turn that calls tool `name`."""
+        self.script.append({"role": "assistant", "tool_calls": [{"index": 0, "id": call_id or f"call_{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]})
+
+    async def test_run_resolves_with_a_run_and_the_token_stays_out_of_logs(self):
+        agent = await self.make()
+        run = await agent.run("hello", user="u1")
+        self.assertEqual((run.status, run.text, run.inputs, run.error), ("completed", "seen", [], None))
+        self.assertTrue(agent.id.startswith("client_"))
+        token = agent.session["token"]
+        for shown in (repr(agent), repr(agent.session), str(agent.session), repr(agent.client)):
+            self.assertNotIn(token, shown)
+        self.assertEqual(self.bodies[-1]["messages"][-1]["role"], "user")
+
+    async def test_a_failed_run_raises_run_error_or_returns_it(self):
+        agent = await self.make()
+        self.script.extend([{"httpStatus": 400, "message": "model says no"}, {"httpStatus": 400, "message": "model says no"}])
+        with self.assertRaises(RunError) as failed:
+            await agent.run("hi")
+        self.assertEqual((failed.exception.code, failed.exception.run.status), ("model_error", "failed"))
+        self.assertIn("model says no", str(failed.exception))
+        run = await agent.run("again", throw_on_error=False)
+        self.assertEqual((run.status, run.error["code"]), ("failed", "model_error"))
+
+    async def test_stream_yields_tool_calls_results_text_then_done_and_plain_functions_are_tools(self):
+        @tool(timeout=60)
+        def lookup(sku: str, context: ToolContext) -> dict:
+            """Look up a SKU (a plain function: it runs in a thread)"""
+            context.progress("looking")
+            return {"sku": sku, "key": context.idempotency_key}
+
+        self.assertEqual(lookup.mcp_tool()["_meta"], {"agent-runtime/timeoutMs": 60000})
+        agent = await self.make([lookup])
+        self.call("lookup", {"sku": "A1"})
+        stream = agent.stream("look up A1")
+        parts = [part async for part in stream]
+        self.assertEqual([part.type for part in parts], ["tool_call", "tool_result", "text", "done"])
+        self.assertEqual((parts[0].name, parts[0].arguments), ("lookup", {"sku": "A1"}))
+        result = json.loads(parts[1].output)
+        self.assertEqual(result["sku"], "A1")
+        self.assertIn("call_lookup", result["key"])
+        self.assertEqual(parts[2].text, "seen")
+        self.assertEqual(parts[3].run.text, "seen")
+        self.assertEqual((await stream.result()).id, stream.id)
+
+    async def test_async_and_slow_on_event_run_apart_from_the_connection(self):
+        handled, errors = [], []
+
+        async def slow(event, run_id):
+            await asyncio.sleep(0.5)
+            handled.append((event["type"], run_id))
+            if event["type"] == "agent_start":
+                raise ValueError("display broke")
+
+        @tool
+        async def echo(value: str) -> str:
+            """Echo"""
+            return value
+
+        agent = await self.make([echo], on_event=slow, on_error=errors.append)
+        for index in range(3):
+            self.call("echo", {"value": f"v{index}"}, f"call_{index}")
+        started = asyncio.get_running_loop().time()
+        run = await agent.run("echo thrice")
+        self.assertEqual(run.text, "seen")
+        self.assertLess(asyncio.get_running_loop().time() - started, 8, "the run did not wait for on_event")
+        for _ in range(100):
+            if any(isinstance(error, ValueError) for error in errors):
+                break
+            await asyncio.sleep(0.1)
+        self.assertTrue(handled, "the async on_event ran")
+        self.assertTrue(all(run_id == run.id for kind, run_id in handled if kind == "agent_start"))
+        self.assertTrue(any("display broke" in str(error) for error in errors))
+
+    async def test_an_approval_answered_through_the_run_resumes_it(self):
+        done = []
+
+        @tool(needs_approval=True)
+        async def wipe(disk: str):
+            """Wipe a disk"""
+            done.append(disk)
+
+        agent = await self.make([wipe])
+        self.call("wipe", {"disk": "d1"})
+        run = await agent.run("wipe d1")
+        self.assertEqual((run.status, run.inputs[0]["kind"]), ("input_required", "approval"))
+        self.assertEqual(done, [])
+        resumed = await run.inputs[0].answer(True)
+        self.assertEqual((resumed.status, resumed.text, done), ("completed", "seen", ["d1"]))
+
+    async def test_parity_history_configure_tools_steer_follow_up_and_wait_for_request(self):
+        agent = await self.make()
+        first = await agent.run("one", idempotency_key="py-first")
+        page = await agent.history_page(limit=1)
+        self.assertEqual(page["total"], len((await agent.history())["messages"]))
+        self.assertEqual((await agent.client.wait_for_request("py-first"))["reply"], first.text)
+
+        @tool
+        async def added(value: str) -> str:
+            """A tool added later"""
+            return f"added {value}"
+
+        await agent.configure(tools=[added], instructions="Be brief.")
+        self.assertEqual((await agent.client.execute('return await tools.added({value:"x"})'))["output"], ["added x"])
+        await agent.follow_up("later")
 
     async def asyncTearDown(self):
+        await self.agents.close()
         await self.runtime.close()
         self.host.terminate()
         await asyncio.wait_for(self.host.wait(), 10)
+        await self.logs
         database(f"drop schema {self.schema} cascade")
         self.model.shutdown()
         self.model.server_close()
