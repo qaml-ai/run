@@ -139,7 +139,7 @@ variable "runtime_env" {
   type        = map(string)
   default = {
     AGENT_PROVIDER              = "anthropic"
-    AGENT_MODEL                 = "claude-sonnet-5"
+    AGENT_MODEL                 = "claude-sonnet-5-5"
     AGENT_MAX_AGENTS            = "1000"
     AGENT_MAX_AGENTS_PER_TENANT = "500"
     AGENT_IDLE_MS               = "300000"
