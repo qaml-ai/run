@@ -974,6 +974,10 @@
             "type": "string",
             "description": "resume: the request whose turn waited on human input"
           },
+          "steeredInto": {
+            "type": "string",
+            "description": "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares"
+          },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"
           }
@@ -1226,6 +1230,14 @@
           "requestId": {
             "type": "string",
             "description": "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble"
+          },
+          "whileRunning": {
+            "type": "string",
+            "enum": [
+              "queue",
+              "steer"
+            ],
+            "description": "While a turn runs: queue (default) waits for it and runs as a turn of its own; steer hands it to the running turn, which reads it after its current step, and the request ends with that turn (steeredInto names it). With no turn running, both start one"
           },
           "meta": {
             "type": "object",

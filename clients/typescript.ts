@@ -811,9 +811,10 @@ export class AgentClient {
    * `from.id` is the turn's actor. `actor` names someone else acting (`act` in identity tokens) without telling the model.
    * `meta` is the application's own data about the message (at most 4 KB as JSON): the stored message
    * carries it, with the request's id, in history and events; the model never sees it.
+   * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome.
    */
-  prompt(text: string, options?: RequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender; meta?: Record<string, unknown> }) {
-    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}) });
+  prompt(text: string, options?: RequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender; meta?: Record<string, unknown>; whileRunning?: "queue" | "steer" }) {
+    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}) });
   }
 
   /**

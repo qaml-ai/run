@@ -59,7 +59,9 @@ Keep `agent.session` in secret storage and reconnect with
 operate on the same persistent agent. `steer` and `followUp` are accepted while
 the agent is idle and delivered to its next run. `prompt`, `steer` and `followUp`
 take `meta`, the application's own data about the message: the stored message
-carries it, with its request's id, in history and events.
+carries it, with its request's id, in history and events. `prompt(text, { whileRunning: "steer" })`
+hands the message to a running turn instead of queueing it, and resolves with that
+turn's outcome; with no turn running it starts one.
 
 ## Python
 

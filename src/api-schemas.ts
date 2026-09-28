@@ -148,6 +148,7 @@ export const RequestRecord = z.object({
   prompt: z.string().optional(),
   code: z.string().optional(),
   suspension: z.string().optional().openapi({ description: "resume: the request whose turn waited on human input" }),
+  steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares" }),
   outcome: Outcome.optional().openapi({ description: "result.stopped is input_required when the turn waits on human input, listed in result.inputs" }),
 }).openapi("RequestRecord");
 
@@ -249,6 +250,7 @@ export const PromptInput = z.object({
     username: z.string().optional().openapi({ description: "Handle, chosen by the sender" }),
   }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
   requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble" }),
+  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "While a turn runs: queue (default) waits for it and runs as a turn of its own; steer hands it to the running turn, which reads it after its current step, and the request ends with that turn (steeredInto names it). With no turn running, both start one" }),
   meta: z.record(z.string(), z.unknown(), { error: "meta must be a JSON object of at most 4 KB" }).optional().openapi({ description: "Your own data about this message (its source, a client id): at most 4 KB as JSON, kept on the user message in history and events, never shown to the model" }),
   files: z.array(z.union([
     z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }) }),

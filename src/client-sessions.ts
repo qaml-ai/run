@@ -99,6 +99,8 @@ type Session = {
   handedBack?: true;
   /** The assistant message streaming now, as its latest message_update carried it. */
   partial?: unknown;
+  /** Prompts sent with `whileRunning: "steer"` that a running turn took, each with that turn's request: they end with it. */
+  steered?: Map<string, string>;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
   turn?: { requestId: string; start?: number; messages: unknown[]; count: number; bytes: number; truncated?: boolean };
   /** The application's attached MCP server, over the connection `response` is. */
@@ -1829,6 +1831,8 @@ export class ClientSessions {
     const isMessage = ["prompt", "steer", "followUp"].includes(body.method);
     if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer, followUp)");
     if (params.meta !== undefined && !isMessage) throw new HttpError(400, "meta is only for messages (prompt, steer, followUp)");
+    if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
+    if (params.whileRunning === "queue") delete params.whileRunning;
     // A message records the request that sent it, so an application can match it to its own.
     if (isMessage) params.requestId = body.id;
     try {
@@ -1873,7 +1877,19 @@ export class ClientSessions {
     await this.commit(session, true);
     if (queued) this.enqueue(session, record, params);
     else void this.run(session, record, params);
+    if (params.whileRunning === "steer") await this.steerTurn(session, params);
     return { status: 202, record: visible(record) };
+  }
+
+  /**
+   * Offer a prompt sent with `whileRunning: "steer"` to the running turn, if any. The prompt is queued
+   * already: if the turn takes it (its message ends in the turn's events), it ends with that turn;
+   * if not (the turn ended first, or stopped), the agent drops it and it runs as a turn of its own.
+   */
+  private async steerTurn(session: Session, params: Record<string, unknown>) {
+    if (!session.turn) return;
+    try { await this.supervisor.request(session.header.id, "steer", params); }
+    catch { /* Not running after all: the queued prompt runs. */ }
   }
 
   /**
@@ -2091,6 +2107,9 @@ export class ClientSessions {
             this.options.onUsage?.(session.header.tenant, id, { ...event, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
             this.spent(session, responseCost(event.usage));
           }
+          // A prompt steered into this turn has been taken: it ends with the turn.
+          const taken = event?.type === "message_end" && event.message?.role === "user" ? event.message.requestId : undefined;
+          if (taken && taken !== record.id && session.running.get(taken)?.method === "prompt") (session.steered ??= new Map()).set(taken, record.id);
           this.publish(session, { type: "event", requestId: record.id, event });
         } : undefined);
     } finally { session.retries = undefined; }
@@ -2207,13 +2226,30 @@ export class ClientSessions {
     session.settling++;
     try {
       const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now() });
+      const steered = this.endSteered(session, record.id, value);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
       if (RUN_METHODS.includes(record.method)) this.hook("runEnded", session, completed);
       session.lastActive = Date.now();
       this.publish(session, { type: "response", id: record.id, outcome: value });
+      for (const id of steered) this.publish(session, { type: "response", id, outcome: value });
     } finally { session.settling--; }
     await this.fold(session);
+  }
+
+  /** Complete the prompts steered into the turn `turn` with its outcome; their queued runs then do nothing. */
+  private endSteered(session: Session, turn: string, outcome: Outcome) {
+    const ended: string[] = [];
+    for (const [id, into] of session.steered ?? []) {
+      if (into !== turn) continue;
+      session.steered!.delete(id);
+      const queued = session.running.get(id);
+      if (!queued) continue;
+      const { params: _params, ...rest } = queued;
+      this.upsertRequest(session, { ...rest, state: "completed", outcome, endedAt: Date.now(), steeredInto: turn });
+      ended.push(id);
+    }
+    return ended;
   }
 
   /** The agent's spend limit, read once per load; its owner keeps it current. */

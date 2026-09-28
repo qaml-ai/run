@@ -18,6 +18,8 @@ export type RequestRecord = {
   actor?: string;
   /** A `resume` run's suspension: the run whose turn waited on human input, which this one continues. */
   suspension?: string;
+  /** A prompt sent with `whileRunning: "steer"` that a running turn took: that turn's request, whose outcome it shares. */
+  steeredInto?: string;
 };
 /**
  * Events on an agent's stream. `mcp` carries the runtime's JSON-RPC messages to the application's attached MCP server: live only, with no id, never replayed.

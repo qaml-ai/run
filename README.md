@@ -301,6 +301,15 @@ API token; applications attach to their agents with the SDKs (`/clients/*`,
 authenticated by each agent's own token). Each agent admits one prompt or code
 execution at a time; later ones queue.
 
+A prompt sent while a turn runs waits for it by default (`whileRunning: "queue"`).
+With `POST /v1/agents/:id/prompt {text, whileRunning: "steer"}` the running turn
+takes the message instead, reading it after its current step (a model response and
+its tool calls), and the request ends with that turn: it completes with the turn's
+outcome and `steeredInto` naming the turn's request. If the turn ends or stops
+before taking it (it finishes, is aborted, or waits on input), the message runs as a
+turn of its own, once; with no turn running it starts one. Either way the request is
+idempotent by `requestId`, and the message is recorded once, with its `requestId`.
+
 A server that relays agents to its own users needs no per-agent tokens: with its
 tenant token it prompts (`POST /v1/agents/:id/prompt`), answers inputs, aborts, and
 reads what an application would read with the agent's token:

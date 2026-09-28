@@ -72,6 +72,10 @@ export function createAgentHost(io: HostIO) {
   let indexing = Promise.resolve();
   /** When messages the backlog left to the log were last read back (see `index`). */
   let lagRead = 0;
+  /** Whether the running turn can still take a steer sent `whileRunning` (see `steer`). */
+  let steerable = false;
+  /** Steering messages not yet taken, in order; `whileRunning` ones are taken back if the turn ends without them. */
+  let steers: { message: AgentMessage; whileRunning: boolean }[] = [];
 
   /**
    * Add what the history index lacks to it, in the background. Like the log's own segments, chunks
@@ -489,6 +493,7 @@ export function createAgentHost(io: HostIO) {
           return;
         }
         // A call waiting on input has no result yet: the transcript keeps it open instead (`awaiting`).
+        if (event.type === "message_end" && event.message.role === "user") steers = steers.filter(steer => steer.message !== event.message);
         if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
           // One durable append per finished message. Streaming deltas are never persisted.
           try { await transcript.push(event.message); }
@@ -528,14 +533,24 @@ export function createAgentHost(io: HostIO) {
       return backlog && backlog.kept === backlog.from ? { from: backlog.from, messages: backlog.messages, turns: backlog.turns } : null;
     }
     if (method === "steer" || method === "followUp") {
-      // Pi queues these whether or not a run is active; an idle queue drains into the next run.
-      for (const message of userMessages(params)) agent[method](message);
-      return { queued: true, running: busy };
+      const messages = userMessages(params);
+      // A prompt sent `whileRunning: "steer"`: only for the running turn, and only while it can still take it.
+      if (params.whileRunning === "steer" && !steerable) return { steered: false };
+      // Pi queues the rest whether or not a run is active; an idle queue drains into the next run.
+      for (const message of messages) {
+        agent[method](message);
+        if (method === "steer") steers.push({ message, whileRunning: params.whileRunning === "steer" });
+      }
+      return params.whileRunning === "steer" ? { steered: true } : { queued: true, running: busy };
     }
     if (method === "abort") { active?.abort(); agent.abort(); return { aborted: true }; }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
     if (persistenceError) throw new Error(`Session persistence failed: ${String(persistenceError)}`);
+    // A prompt a turn took as a steer before the node running it stopped: it is in the history already.
+    if (method === "prompt" && params.requestId && transcript.context.some(message => message.role === "user" && (message as { requestId?: string }).requestId === params.requestId)) {
+      return { messages: transcript.total, error: null, taken: true };
+    }
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
     stopped = undefined;
@@ -549,6 +564,7 @@ export function createAgentHost(io: HostIO) {
       await transcript.setActive(true);
       // Where the run's messages start in the agent's history, so a client can line up its stream with history pages.
       io.emit({ type: "turn_opened", index: transcript.total });
+      steerable = true;
       if (method === "resume") {
         const settled = await settle(params.calls ?? [], active.signal);
         // Closed without the model (expired or cancelled inputs), still waiting, or nothing left to resume.
@@ -574,6 +590,13 @@ export function createAgentHost(io: HostIO) {
       const last = (transcript.awaiting.length ? agent.state.messages.findLast(message => message.role === "assistant") : agent.state.messages.at(-1)) as AssistantMessage | undefined;
       return { messages: transcript.total, ...answer(last), error: agent.state.errorMessage ?? null, ...(stopped ?? {}) };
     } finally {
+      // Steers sent for this turn that it did not take are taken back: each runs as a turn of its own.
+      steerable = false;
+      if (steers.some(steer => steer.whileRunning)) {
+        agent.clearSteeringQueue();
+        steers = steers.filter(steer => !steer.whileRunning);
+        for (const steer of steers) agent.steer(steer.message);
+      }
       // Release what compaction folded away: the next run starts from summary + kept messages.
       if (method !== "execute" && !persistenceError) {
         agent.state.messages = stateMessages();
