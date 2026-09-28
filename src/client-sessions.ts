@@ -67,6 +67,8 @@ interface SessionHeader {
   identity?: AgentIdentity;
   /** The key scope its model calls take keys from first (key-scopes.ts); set by the tenant, never by the agent. */
   keyScope?: string;
+  /** The key it was made with (an upsert's, or a create's Idempotency-Key), shown in listings; none for one made without. */
+  key?: string;
   /** sha256 of the application's tools as it last declared them (its tools/list as JSON): its ready event tells it, so it reconfigures only on a change. */
   toolsHash?: string;
 }
@@ -1427,9 +1429,11 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, key: string = randomUUID(), metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[] } = {}): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[] } = {}): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
+    // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
+    const key = given ?? randomUUID();
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
     // A key whose agent was deleted or expired makes a fresh one: the next generation of the key, with an id and token
     // of its own, so the old agent's id is never reused and its token never works again.
@@ -1485,7 +1489,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -1563,7 +1567,7 @@ export class ClientSessions {
   /** A tenant's live agents. `running` covers agents served by any node. */
   async list(tenant: string) {
     const { rows } = await this.db.query(`
-      select a.id, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, n.node is not null as served from agents a
+      select a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, n.node is not null as served from agents a
       left join actor_owners o on o.actor = a.id
       left join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
       where a.tenant = $1 and not a.revoked and (a.expires_at is null or a.expires_at > $2) order by a.id`, [tenant, Date.now()]);
@@ -1571,7 +1575,7 @@ export class ClientSessions {
       const local = this.sessions.get(row.id);
       const response = local?.response;
       const running = this.supervisor.agents.has(row.id) || (!local && row.served);
-      return { id: row.id as string, name: row.name as string, type: row.type as string, model: row.model as string, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
+      return { id: row.id as string, key: row.key as string | null, name: row.name as string, type: row.type as string, model: row.model as string, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
         resume: row.resume_failures ? { failures: row.resume_failures as number, after: Number(row.resume_after) } : null };
     });
   }

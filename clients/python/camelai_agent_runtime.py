@@ -494,6 +494,10 @@ class AgentRuntime:
     async def delete_definition(self, definition_id):
         return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "DELETE", retry=False)
 
+    async def list_agents(self):
+        """The tenant's agents, each with the key it was made with (None for one made without) and its name."""
+        return await _http(self.http, self.base, "/v1/agents", self._operator())
+
     async def create_volume(self, *, name=None):
         return await _http(self.http, self.base, "/v1/volumes", self._operator(), "POST", {} if name is None else {"name": name}, retry=False)
 

@@ -206,6 +206,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         first, again = await asyncio.gather(agent.run("one", idempotency_key="py-first"), agent.run("one", idempotency_key="py-first"))
         self.assertEqual(first.text, again.text)
         researcher = await self.agents.upsert("py-researcher", builtins=["web_fetch"])
+        self.assertEqual(next(entry["key"] for entry in await self.runtime.list_agents() if entry["id"] == researcher.id), "py-researcher")
         defined = await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"])
         self.assertEqual((await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"]))["revision"], defined["revision"])
         self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{researcher.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["builtins"], ["web_fetch"])

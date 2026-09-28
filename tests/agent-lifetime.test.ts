@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { lastUser, runtime, until } from "./runtime-server.ts";
+import { lastUser, OPERATOR, runtime, until } from "./runtime-server.ts";
+import { AgentRuntime } from "../clients/typescript.ts";
 
 const system = (body: any) => body.messages.find((message: any) => message.role === "system" || message.role === "developer")?.content ?? "";
 
@@ -15,6 +16,19 @@ test("an agent made with an idempotency key lives until deleted by default; one 
   assert.equal((await r.call("/client-sessions", { body: {}, headers: { "Idempotency-Key": "sdk-invented" } })).status, 404, "agents are made on /v1/agents only");
   const limited = await r.call("/v1/agents", { body: { ttlSeconds: 3600 }, headers: { "Idempotency-Key": "short-lived" } });
   assert.ok(limited.json.expiresAt - Date.now() <= 3_600_000, "ttlSeconds still sets one");
+});
+
+test("agents are listed with the key they were made with, and their name", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const keyed = (await r.call("/v1/agents", { body: { name: "Support" }, headers: { "Idempotency-Key": "support-7" } })).json;
+  const scratch = (await r.call("/v1/agents", { body: {} })).json;
+  const listed = (await r.call("/v1/agents")).json;
+  const of = (id: string) => listed.find((agent: any) => agent.id === id);
+  assert.deepEqual([of(keyed.id).key, of(keyed.id).name], ["support-7", "Support"]);
+  assert.equal(of(scratch.id).key, null, "an agent made without a key has none");
+  assert.equal((await r.call(`/v1/agents/${keyed.id}`)).json.key, "support-7");
+  const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  assert.equal((await sdk.listAgents()).find(agent => agent.id === keyed.id)?.key, "support-7");
 });
 
 test("a key whose agent was deleted or expired makes a fresh agent, with a new token; the old one stays gone", async t => {

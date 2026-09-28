@@ -1113,8 +1113,16 @@
           "id": {
             "type": "string"
           },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key it was made with (an upsert's, or POST /v1/agents' Idempotency-Key); null for one made without"
+          },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Its name; its id when it was given none"
           },
           "type": {
             "type": "string"
@@ -1156,6 +1164,7 @@
         },
         "required": [
           "id",
+          "key",
           "name",
           "type",
           "model",

@@ -188,7 +188,8 @@ export const AgentCreated = z.looseObject({
 
 export const AgentSummary = z.object({
   id: z.string(),
-  name: z.string(),
+  key: z.string().nullable().openapi({ description: "The key it was made with (an upsert's, or POST /v1/agents' Idempotency-Key); null for one made without" }),
+  name: z.string().openapi({ description: "Its name; its id when it was given none" }),
   type: z.string(),
   model: z.string(),
   connected: z.boolean(),

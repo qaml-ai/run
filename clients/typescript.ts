@@ -363,6 +363,8 @@ export interface ToolSource {
   exposure?: "direct" | "codemode" | "both";
   tools: { name: string; description: string; exposure?: "direct" | "codemode" | "both"; executionMode?: "sequential" | "parallel"; parameters?: Record<string, unknown>; excluded?: string }[];
 }
+/** An agent as GET /v1/agents lists it. */
+export interface AgentSummary { id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null }
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
 export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
@@ -615,6 +617,8 @@ export class AgentRuntime {
     if (!this.options.apiKey) throw new AgentError("Set apiKey to manage definitions, volumes and mounts");
     return this.options.apiKey;
   }
+  /** The tenant's agents, each with the key it was made with (null for one made without) and its name. */
+  listAgents(): Promise<AgentSummary[]> { return this.transport.json("/v1/agents", this.operator()); }
   createVolume(options: { name?: string } = {}): Promise<Volume> { return this.transport.json("/v1/volumes", this.operator(), "POST", options, false); }
   listVolumes(): Promise<Volume[]> { return this.transport.json("/v1/volumes", this.operator()); }
   /** A handle on one volume's files, snapshots and forks. */
