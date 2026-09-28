@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler", "strict": true,
+    "noEmit": true, "allowImportingTsExtensions": true, "skipLibCheck": true, "types": ["node"], "lib": ["ES2024", "DOM"],
+    "paths": { "@camelai/agent-runtime/chat": ["../clients/chat.ts"] }
+  },
+  "include": ["./vue/src/**/*.ts", "./vue/test/**/*.ts", "./svelte/src/**/*.ts", "./svelte/test/**/*.ts", "./solid/src/**/*.ts", "./solid/test/**/*.ts", "./bindings.vitest.config.ts"]
+}

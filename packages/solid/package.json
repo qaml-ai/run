@@ -1,0 +1,39 @@
+{
+  "name": "@camelai/agent-runtime-solid",
+  "version": "0.8.0",
+  "description": "Solid bindings for chatting with agents on the camelAI agent runtime.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qaml-ai/agent-runtime.git",
+    "directory": "packages/solid"
+  },
+  "homepage": "https://agents.camelai.dev",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@camelai/agent-runtime": "0.8.0"
+  },
+  "peerDependencies": {
+    "solid-js": "^1.8.0"
+  }
+}
