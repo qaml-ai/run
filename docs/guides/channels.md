@@ -1,7 +1,7 @@
 # Channels
 
-A channel lets people talk to agents from a messaging service: Telegram, Slack or
-Discord. Tenants manage channels with `/v1/channels` or the console's Channels page:
+A channel lets people talk to agents from a messaging service: Telegram, Slack,
+Discord or email. Tenants manage channels with `/v1/channels` or the console's Channels page:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -19,6 +19,7 @@ the channel.
 | `telegram` | `botToken` | webhook, registered for you | a chat |
 | `slack` | `botToken` (`xoxb-…`), `signingSecret` | webhook, pasted into the app | a thread started by an @mention, or a DM |
 | `discord` | `botToken` | the Gateway (a WebSocket) | a DM, or a channel or thread where the bot is @mentioned |
+| `email` | none | SES, on the runtime's domain | an email thread |
 
 Creating a channel checks its credentials with the service. Credentials and a
 random webhook secret are stored encrypted; the API returns only masked values.
@@ -93,3 +94,50 @@ What all three share:
   (the bot was removed from the chat) is not retried. Each part of the text and
   each file is a step recorded as it is sent, so a retry resumes after the last
   one sent rather than sending the reply again.
+
+## Email
+
+An email channel is an address on the runtime's own domain, which it receives
+mail for through Amazon SES (on a runtime with `AGENT_EMAIL_DOMAIN`; see
+[Configuration](../operations/configuration.md)). It takes no credentials:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"type":"email","settings":{"address":"support","fromName":"Acme Support"},
+       "definition":"def_…","access":{"allow":["ada@example.com","@acme.com"]}}' \
+  https://agents.camelai.dev/v1/channels
+```
+
+- **Address.** `settings.address` is the part before the `@` (or the whole
+  address on the domain), unique across the runtime and case-insensitive; the
+  channel's id is its address until one is chosen. Taken addresses answer 409;
+  role addresses (`postmaster`, `abuse`, `noreply`…) and `ch_…` are reserved.
+  Changing it frees the old one, and mail to it is then dropped. Replies come
+  from the same address, under `settings.fromName` if set.
+- **Who may write.** The allowlist holds addresses and `@domain` entries for
+  everyone at a domain. A sender counts only when SES proves the From address:
+  DMARC passed, or SPF passed for the From domain (or one above it), or SES's
+  own `Authentication-Results` shows a DKIM signature from it. Mail that fails
+  DMARC, is spam or carries a virus is dropped, as is mail an agent should not
+  answer: `Auto-Submitted` other than `no`, `Precedence: bulk`, `list` or `junk`,
+  bounces (`mailer-daemon`, `postmaster`), and mail from the runtime's own domain.
+  Drops are logged (`email_inbound`, with a reason), never answered.
+- **Threads.** A conversation is a thread: its root Message-ID (the first in
+  `References`, else `In-Reply-To`), or the thread of any message of ours a reply
+  names, so a client that keeps only `In-Reply-To` stays in its thread. A new
+  message without either starts a new conversation. The agent is named after
+  the subject, and gets `Subject: …` and the new text of each message, with
+  quoted history (`On … wrote:` and what follows, `>` lines, `Original Message`
+  blocks) left out; an HTML-only message is read as text. Attachments are saved
+  like other channels' (images an HTML body shows inline are not).
+- **Replies** go to whoever wrote last in the thread, with `Re: <subject>`,
+  `In-Reply-To` the last message and `References` the thread's root and recent
+  messages, so mail clients thread them, and `Auto-Submitted: auto-replied`, so
+  other systems do not answer them. Each `send_message` and presented file is an
+  email of its own; files up to 10 MiB are attached, larger ones sent as links.
+- **Receiving.** SES stores each message in S3 and notifies an SNS topic, whose
+  HTTPS subscription is `/channels/email/inbound` for every channel. The runtime
+  accepts only messages SNS signed (the certificate from SNS's own host) for its
+  configured topics, less than a day old, confirms the subscription itself, and
+  hands a message to each channel it is addressed to (To, Cc or Bcc). SNS
+  retries what fails; a message is recorded once by Message-ID.

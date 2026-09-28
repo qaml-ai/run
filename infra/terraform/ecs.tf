@@ -13,7 +13,7 @@ locals {
 
   runtime_image = "${aws_ecr_repository.runtime.repository_url}:${var.runtime_image_tag}"
 
-  runtime_environment = merge(var.runtime_env, {
+  runtime_environment = merge(var.runtime_env, local.email_environment, {
     AGENT_PUBLIC_URL = "https://${var.hostname}"
     AGENT_STORAGE    = "s3"
     AGENT_S3_BUCKET  = aws_s3_bucket.state.id

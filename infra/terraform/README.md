@@ -16,6 +16,7 @@ else is here.
 | `dns.tf` | Cloudflare CNAME `agents.camelai.dev` to the ALB (proxied) |
 | `monitoring.tf` | Route 53 health check, `-healthz` alarm and SNS topic in us-east-1 |
 | `alarms.tf` | ALB/ECS alarms and their us-west-2 SNS topic |
+| `email.tf` | email channels, when `email_domain` is set: SES identity and receipt rule, DKIM/MX/DMARC records, inbound mail bucket, SNS topic and subscription, the task's send/read policy |
 
 ## Prerequisites
 
