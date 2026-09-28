@@ -16,5 +16,5 @@ npm run dev                  # http://localhost:3000
   in `@camelai/agent-runtime-react` (`useMessages`, `useSend`, `useAgentStatus`, `useInputs`).
 
 Tools in `route.ts` run inside this server, so they need a long-running process (`next dev`,
-`next start`, a container). On serverless hosting, serve them with `serveTools` from
+`next start`, a container). On serverless hosting, serve them with `serveTools` (with your `tenant`) from
 `@camelai/agent-runtime/server` and name them in a definition (`agent: { definition: "def_…" }`).

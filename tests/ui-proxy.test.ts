@@ -118,7 +118,7 @@ test("proxy: Hono streams it", async t => {
   await streamsIncrementally(t, (path, init) => fetch(base + path, init), model);
 });
 
-test("proxy: Express (nodeListener) streams it", { todo: "nodeListener buffers response bodies until clients/node.ts streams them (asked of the core SDK)" }, async t => {
+test("proxy: Express (nodeListener) streams it", async t => {
   const { model, handler } = await setup(t);
   const app = express();
   app.use("/api/agent", nodeListener(handler));

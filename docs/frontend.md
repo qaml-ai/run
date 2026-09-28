@@ -246,6 +246,18 @@ Tools given in the route run in that server process, so it must keep running (`n
 `next start`, a container, a Node or Bun server). On serverless hosting (Vercel functions,
 Workers), serve the tools over HTTP with `serveTools` and name them in a definition:
 `agent: { definition: "def_…" }` (see `clients/README.md`, "Serving tools to many users").
+`serveTools` checks the runtime's signed identity on every call, and needs your tenant's id
+(`GET /v1/me`), so another tenant's agents can never call your tools as your users:
+
+```ts
+// app/api/tools/route.ts
+import { serveTools } from "@camelai/agent-runtime/server";
+const handler = serveTools(tools, { runtime: "https://agents.camelai.dev", tenant: process.env.CAMELAI_TENANT! });
+export { handler as GET, handler as POST };
+```
+
+With `nodeListener` (Express, node:http) behind a proxy that ends TLS, pass `trustProxy: true` only
+if that proxy sets `X-Forwarded-Proto` and `X-Forwarded-Host` itself; they are ignored otherwise.
 
 ## Questions, approvals and files
 
