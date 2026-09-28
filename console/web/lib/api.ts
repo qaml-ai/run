@@ -100,7 +100,7 @@ export interface Definition {
 export interface Channel {
   id: string; type: string; name: string; webhookUrl?: string; definition?: string;
   access: { public: boolean; allow: string[] }; limits: { perSenderPerMinute: number; turnsPerDay: number };
-  greeting?: string; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
+  greeting?: string; settings?: Record<string, any>; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
 }
 
 export interface VolumeSummary { id: string; name: string; createdAt: number }
