@@ -91,16 +91,19 @@ test("a steered message the running turn did not take (it was aborted) runs once
   assert.equal(history.filter((message: any) => message.requestId === "steer-1").length, 1, "the message is recorded once");
 });
 
-test("steer or followUp sent while no turn runs starts one, as a prompt does, instead of waiting unseen for the next turn", async t => {
-  const r = await runtime(t, (body, index) => ({ role: "assistant", content: `answer ${index}: ${userTexts(body).at(-1)}` }));
+test("the legacy /clients steer holds a message sent while idle for the next run, which a prompt sent in the same tick starts: one turn, in order", async t => {
+  // Chiridion's relay prompts the first queued message and steers the rest at once; its steer can arrive first.
+  const r = await runtime(t, (body, index) => ({ role: "assistant", content: `answer ${index}: ${userTexts(body).join(" + ")}` }));
   const created = (await r.call("/v1/agents", { body: {} })).json;
   const send = (id: string, method: string, text: string) => fetch(`${r.base}/clients/${created.id}/requests`, {
     method: "POST", headers: { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id, method, params: { text } }),
   }).then(response => response.json() as Promise<any>);
-  for (const [id, method] of [["s-1", "steer"], ["f-1", "followUp"]]) {
-    assert.equal((await send(id, method, `${method} while idle`)).state, "running");
-    const done = await until(async () => { const record = await byId(r, created.id, id); return record.state === "completed" && record; }, `${method} to run`);
-    assert.match(done.outcome.result.reply, new RegExp(`${method} while idle`));
-  }
-  assert.equal(r.model.bodies.length, 2, "each ran as its own turn");
+  const steered = await send("s-1", "steer", "second");
+  assert.equal(steered.method, "steer");
+  await send("p-1", "prompt", "first");
+  const done = await until(async () => { const record = await byId(r, created.id, "p-1"); return record.state === "completed" && record; }, "the prompt's turn");
+  assert.equal(done.outcome.result.reply, "answer 0: first + second", "one turn answered both");
+  assert.equal(r.model.bodies.length, 1);
+  const history = (await r.call(`/v1/agents/${created.id}/history`)).json.messages;
+  assert.deepEqual(history.map((message: any) => [message.role, message.requestId]), [["user", "p-1"], ["user", "s-1"], ["assistant", undefined]]);
 });
