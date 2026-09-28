@@ -45,6 +45,10 @@
       "types": "./dist/clients/markdown.d.ts",
       "default": "./dist/clients/markdown.js"
     },
+    "./ai-sdk": {
+      "types": "./dist/clients/ai-sdk.d.ts",
+      "default": "./dist/clients/ai-sdk.js"
+    },
     "./testing": {
       "types": "./dist/clients/testing.d.ts",
       "default": "./dist/clients/testing.js"

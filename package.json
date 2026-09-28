@@ -57,6 +57,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@ai-sdk/react": "^4.0.121",
     "@tailwindcss/postcss": "^4",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
@@ -67,6 +68,7 @@
     "@types/react-dom": "^19",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.2",
+    "ai": "^7.0.118",
     "axe-core": "^4.13.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
