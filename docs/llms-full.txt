@@ -270,10 +270,17 @@ agent upserted without local tools, or with `attach: false`, follows the
 agent's stream read-only. That is how serverless functions, webhook handlers and
 second services run agents whose tools are served elsewhere.
 
-If no process serves an agent's attached tools when the model calls one, the
-call does not run: the model is told, and the run lists it in `toolErrors` with
-code `not_connected`. Agents that must work with nobody attached (from a
-schedule, a channel, or a webhook) should use served tools.
+A run of an agent with attached tools while no process serves them is refused
+up front, with `APPLICATION_NOT_CONNECTED` (after a few seconds' grace for a
+process reconnecting), rather than running without them. Pass
+`allowDisconnected: true` to run anyway: calls to those tools then fail, and the
+run lists them in `toolErrors` with code `not_connected`. Schedules, channels and
+resumed runs are never refused, so agents that must work with nobody attached
+should use served tools.
+
+A process that connects with tools other than those the agent was last given
+(it was restarted with changed code) declares its own, between the agent's
+turns. `upsert` declares them anyway.
 
 ## People in the loop
 
@@ -365,7 +372,9 @@ async def refund(order_id: str, context: ToolContext) -> dict:
 - **Result.** Return any JSON value; `undefined`/`None` is sent as `null`. The
   model reads it as JSON text, and code in `js_exec` gets the value. Throw (raise)
   to tell the model the call failed: it sees your message. A result is at most
-  1 MiB of JSON.
+  1 MiB of JSON. The model reads at most 32,000 characters of a tool's result;
+  a longer one is saved whole (up to 700 KB) to
+  `/workspace/tool-results/<toolCallId>.txt`, where it can read the rest.
 - **Python functions** may be `async` or plain; a plain one runs in a thread, so
   it never blocks the connection.
 - **`context.idempotencyKey`** is the same for every attempt of one call: a
@@ -403,10 +412,11 @@ credentials, and nothing is exposed on the network. The trade-offs:
 - One process at a time serves an agent's tools. Another process that upserts
   with the same tools gets `APPLICATION_CONNECTED` (pass `takeover: true` to
   replace the first, or `attach: false` to run the agent without serving them).
-- A call made while no process is connected does not run. The model is told,
-  and the run lists it in `toolErrors` with code `not_connected`. Runs started by
-  a schedule, a channel or a webhook may find nobody connected: use served tools
-  for those agents.
+- A run while no process serves the tools is refused with
+  `APPLICATION_NOT_CONNECTED`, unless you pass `allowDisconnected: true`
+  (`allow_disconnected=True`): then calls to them fail, listed in the run's
+  `toolErrors` with code `not_connected`. Runs a schedule or a channel starts are
+  never refused and may find nobody connected: use served tools for those agents.
 - If the connection drops while a call runs, its outcome is unknown to the
   runtime, and the model is told so; the call is never sent again.
 
@@ -543,8 +553,11 @@ A [definition](definitions.md) lists tool sources the runtime calls itself.
 - Text reaches the model as it is; images, audio, blobs and text resources over
   64 KiB are saved to the agent's workspace and reach it as files. `isError`
   becomes a tool error; `structuredContent` is what code gets.
-- A server that cannot be reached when the agent starts contributes no tools
-  that run; the run's `sourceErrors` lists it.
+- The runtime lists each server when you save the definition: one that refuses
+  its credentials is a 400 saying so, and the answer's `toolSources` shows what
+  each server offers (`status: listed`, or `error` with why). A server that
+  cannot be reached when an agent starts contributes no tools that run; the
+  run's `sourceErrors` lists it.
 - Tool lists are cached for five minutes and dropped on
   `notifications/tools/list_changed`; a running agent takes a changed list at its
   next start.
@@ -1401,6 +1414,9 @@ const definition = await agents.runtime.createDefinition({
 const agent = await agents.upsert(`ticket-${ticket.id}`, { definition: definition.id, subject: ticket.customerId });
 ```
 
+Saving a definition lists its MCP servers: credentials a server refuses are a
+400 that says so, and the answer's `toolSources` shows what each offers.
+
 The definition supplies the model, prompt, thinking level and tool sources;
 `name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
 its defaults, and tools of your process (`tools`) are added as its attached
@@ -1609,7 +1625,9 @@ Before you ship an application on the runtime, check each of these.
 - [ ] Where tools run matches how you deploy: a long-lived process attaches
       them; serverless or several instances serve them over HTTP. Agents woken by
       schedules, channels or webhooks use served tools, or nobody may be there to
-      answer (`toolErrors` with `not_connected`).
+      answer (`toolErrors` with `not_connected`). A run with nobody serving
+      attached tools is refused (`APPLICATION_NOT_CONNECTED`) unless it passes
+      `allowDisconnected`.
 - [ ] Exactly one process attaches an agent's tools. Others run it with
       `attach: false` (or without tools). A process that loses them
       (`APPLICATION_REPLACED` on `onError`) keeps running the agent without them.
@@ -1747,6 +1765,7 @@ Run options (`run`, `stream`):
 | `signal` | `timeout=` | stop waiting; the run goes on |
 | `throwOnError` | `throw_on_error=` | `false`: return a failed run instead of throwing `RunError` |
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
+| `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
 
 ### `Run`
 
@@ -1871,7 +1890,9 @@ the server (the runtime sends `initialize`, `tools/list`, `tools/call` and
 If the connection drops or the call's deadline passes before its answer arrives,
 the model gets an "outcome unknown" result and the call is never sent again.
 
-One connection at a time serves an agent's tools. A second is refused with
+A connection whose tools differ from those the agent was last given (the ready
+event's `toolsHash`) declares them, between the agent's turns (`syncTools:
+false` to leave them). One connection at a time serves an agent's tools. A second is refused with
 `APPLICATION_CONNECTED` unless it asks to take over (`takeover`); the SDK names
 its connection when it reconnects, so it keeps its place. A connection that was
 replaced, or finds the tools taken when it reconnects, hears
@@ -1988,7 +2009,7 @@ Query parameters and headers:
 | | |
 | --- | --- |
 | `Last-Event-ID: <cursor>` | resume after this event id. Absent or `0` takes everything still buffered. |
-| `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](#snapshot) of the running turn first instead of a 409. The SDKs always ask for one. |
+| `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](#snapshot) of the running turn first instead of a 409. Watchers and polls (`?watch=1`, `?poll=1`, `/v1/agents/:id/events`) get one by default (`?snapshot=0` opts out); the application's connection only when it asks, as the SDKs do. |
 | `?poll=1&wait=N` | answer once, as JSON, instead of streaming: `{cursor, events: [{id, data}]}`, where `data` is a frame. With `wait` (seconds, at most 25) and nothing buffered, it answers when the next event arrives or the wait ends. Poll again with `Last-Event-ID: <cursor>`. For clients that cannot hold a stream open. |
 | `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](#one-application-at-a-time). |
 | `X-Agent-Connection: <connection>` | (application connection only) reconnecting: the `connection` the last `ready` named, so the runtime knows it is the same application coming back. |
@@ -2025,8 +2046,9 @@ report `APPLICATION_REPLACED` to `onError`).
 Event ids rise. The runtime buffers each agent's recent events in memory (the
 last 512, at most 2 MiB) for replay. A `Last-Event-ID` behind that buffer (after
 a long disconnect, or after the agent moved to another node) cannot be replayed:
-without `?snapshot=1` the stream answers **409 `REPLAY_GAP: recover from session
-state`**; with it, the stream starts with a `snapshot`. Recover what settled from
+without a snapshot (the application's connection without `?snapshot=1`, or a
+watcher with `?snapshot=0`) the stream answers **409 `REPLAY_GAP: recover from
+session state`**; otherwise it starts with a `snapshot`. Recover what settled from
 `GET …/state` (each request's outcome) and `GET …/history`. Nothing durable is
 lost in a gap: only display events are.
 
@@ -2287,6 +2309,7 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 
 | Limit | Value |
 | --- | --- |
+| A tool result the model reads | 32,000 characters; a longer one is saved whole (up to 700 KB) to `/workspace/tool-results/<toolCallId>.txt` |
 | Attached tool call deadline (tools in your process) | 15 s without an answer by default; a tool's own `timeoutMs` from 1 s to 20 minutes |
 | Remote MCP server call deadline | the source's `timeoutMs` (1 s to 20 minutes), default 60 s |
 | OpenAPI operation deadline | the source's `timeoutMs` (1 s to 20 minutes), default 30 s |
@@ -2407,6 +2430,7 @@ honour it and retry.
 | --- | --- | --- |
 | `REPLAY_GAP: recover from session state` | The stream cannot replay from your `Last-Event-ID` | Reconnect with `?snapshot=1` (the SDKs do), and recover settled outcomes from `/state` |
 | `APPLICATION_CONNECTED: another connection serves this agent's tools…` | Another process serves this agent's tools. The SDKs raise it as `code: "APPLICATION_CONNECTED"` | Close the other one; or connect with `takeover: true` to replace it; or connect without serving tools (`attach: false`) to run the agent from here |
+| `APPLICATION_NOT_CONNECTED: …` | A run (prompt, continue, execute, steer, follow-up) of an agent with application tools while no process serves them (after about 3 s' grace). The SDKs raise it as `code: "APPLICATION_NOT_CONNECTED"` | Start or reconnect the process that serves the tools; serve them over HTTP instead; or pass `allowDisconnected: true` to run without them |
 | `Not the agent's current connection; reconnect` | An MCP answer on a connection that was replaced | Reconnect (the SDKs do) |
 | `Request ID reused with different arguments` | The same request id (`idempotencyKey`) sent with another prompt | Use a new id for a new message; the same id only to retry the same one |
 | `This Idempotency-Key was sent with another request…` | The same `Idempotency-Key` header on a different method, path or body | A key is for one request |

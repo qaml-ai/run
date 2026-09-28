@@ -194,3 +194,19 @@ test("a browser token minted through the SDK reads its agent, and only that", as
   assert.equal((await read(agent.id)).status, 200);
   assert.equal((await read(other.id)).status, 403);
 });
+
+test("a process that connects with other tools than the agent has declares them; one with none connected is refused unless it allows that", async t => {
+  const { agents, r } = await setup(t, () => ({ role: "assistant", content: "ok" }));
+  const created = await r.call("/v1/agents", { body: { ttlSeconds: null, mcp: { tools: await toolServer({ old: echo(() => "old") }).listTools() } } });
+  const session = { id: created.json.id, token: created.json.token, expiresAt: null };
+  // Nobody serves the agent's tools: a run is refused rather than run without them.
+  const follower = await agents.agent(session);
+  await assert.rejects(follower.run("hi"), (error: any) => error.code === "APPLICATION_NOT_CONNECTED");
+  assert.equal((await follower.run("hi", { allowDisconnected: true })).text, "ok");
+  // A process restarted with changed tools brings the agent up to date as it connects.
+  const serving = await agents.agent(session, { tools: { fresh: echo(({ value }) => `fresh ${value}`) } });
+  await until(async () => {
+    const result = await serving.client.execute('return await tools.fresh({value:"x"})').catch(() => undefined);
+    return result?.output?.[0] === "fresh x";
+  }, "the new tools to be declared");
+});

@@ -271,6 +271,11 @@ export interface AgentOptions {
    * APPLICATION_REPLACED). Without it, connecting while another process serves them fails with APPLICATION_CONNECTED.
    */
   takeover?: boolean;
+  /**
+   * Declare this client's tools when they differ from those the agent has, as it connects (default true), so
+   * a process restarted with changed tools updates its agent. The declaration applies between the agent's turns.
+   */
+  syncTools?: boolean;
 }
 /**
  * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
@@ -402,6 +407,12 @@ export interface Schedule { id: string; agent: string; text?: string; code?: str
  * `signal`: stop waiting (the request goes on; `abort()` stops the agent's turn). `timeoutMs`: the same, after a time.
  */
 export interface RequestOptions { idempotencyKey?: string; timeoutMs?: number; signal?: AbortSignal }
+/**
+ * `allowDisconnected`: run even when no process serves the agent's tools (its calls to them then fail as
+ * not_connected). Without it, a run of an agent with application tools and none connected is refused
+ * with APPLICATION_NOT_CONNECTED.
+ */
+export interface RunRequestOptions extends RequestOptions { allowDisconnected?: boolean }
 /** Who sent a message: `id` is yours and the model may rely on it; the names are the sender's own. */
 export interface Sender { id: string; name?: string; username?: string }
 export class AgentError extends Error {
@@ -860,7 +871,10 @@ export class AgentClient {
                 throw Object.assign(new AgentError("Another process took over this agent's tools (takeover): this client no longer serves them, and follows the agent without them", 409), { code: "APPLICATION_REPLACED" });
               }
               if (lines.includes("event: ready")) {
-                this.connection = (JSON.parse(data) as { connection?: string }).connection;
+                const ready = JSON.parse(data) as { connection?: string; toolsHash?: string };
+                this.connection = ready.connection;
+                // Tools that differ from those the agent was last given: declare these, between its turns.
+                if (this.attaching && ready.toolsHash && this.options.syncTools !== false) void this.syncTools(ready.toolsHash).catch(error => this.report(error));
                 await this.sync();
                 backoff = 250; this.ready.resolve(); this.options.onConnection?.(true);
                 continue;
@@ -898,14 +912,11 @@ export class AgentClient {
         if (error instanceof AgentError && (error.code === "APPLICATION_REPLACED" || (error.code === "APPLICATION_CONNECTED" && this.connection))) {
           this.attaching = false;
           this.report(error);
-          continue;
-        }
-        if (error instanceof AgentError && ([401, 403, 410].includes(error.status) || (error.status >= 300 && error.status < 400) || error.code === "APPLICATION_CONNECTED")) {
+        } else if (error instanceof AgentError && ([401, 403, 410].includes(error.status) || (error.status >= 300 && error.status < 400) || error.code === "APPLICATION_CONNECTED")) {
           this.fatal = error; this.ready.reject(error);
           for (const waiter of this.pending.values()) waiter.reject(error);
           this.pending.clear(); this.report(error); break;
-        }
-        if (this.switching) this.switching = false; else this.report(error);
+        } else if (this.switching) this.switching = false; else this.report(error);
       } finally { clearTimeout(watchdog); this.options.onConnection?.(false); }
       if (!this.closed) { await pause(backoff); backoff = Math.min(5000, backoff * 2); }
     }
@@ -1061,8 +1072,8 @@ export class AgentClient {
    * stored message and its request carry it, with the request's id, in history, events and webhooks; the model never sees it.
    * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome.
    */
-  prompt(text: string, options?: RequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer" }) {
-    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}) });
+  prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer" }) {
+    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) });
   }
 
   /**
@@ -1114,7 +1125,7 @@ export class AgentClient {
     const query = new URLSearchParams({ limit: String(options.limit ?? 50), ...(options.before !== undefined ? { before: String(options.before) } : {}) });
     return this.http(`/history?${query}`);
   }
-  continue(options?: RequestOptions & { actor?: string }) { return this.request("continue", options?.actor ? { actor: options.actor } : {}, options); }
+  continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }
   steer(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("steer", text, options); }
   followUp(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("followUp", text, options); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
@@ -1131,6 +1142,13 @@ export class AgentClient {
     if (server && !this.attaching && (mcp || Object.keys(tools ?? {}).length)) await this.reconnect(true);
     return result;
   }
+  /** Declare this client's tools when they differ from what the agent has (its `toolsHash`). */
+  private async syncTools(declared: string) {
+    const tools = await this.server.listTools();
+    const digest = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(tools))));
+    if ([...digest].map(byte => byte.toString(16).padStart(2, "0")).join("") === declared) return;
+    await this.request("configure", { mcp: { tools } });
+  }
   /** Connect again, attached (answering tool calls) or not. */
   private async reconnect(attach: boolean) {
     this.attaching = attach;
@@ -1139,8 +1157,8 @@ export class AgentClient {
     this.stream?.abort();
     await this.connect();
   }
-  execute(code: string, options?: RequestOptions & { timeoutMs?: number; executionTimeoutMs?: number; actor?: string }) {
-    return this.request("execute", { code, ...(options?.executionTimeoutMs ? { timeoutMs: options.executionTimeoutMs } : {}), ...(options?.actor ? { actor: options.actor } : {}) }, options);
+  execute(code: string, options?: RunRequestOptions & { timeoutMs?: number; executionTimeoutMs?: number; actor?: string }) {
+    return this.request("execute", { code, ...(options?.executionTimeoutMs ? { timeoutMs: options.executionTimeoutMs } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options);
   }
   /**
    * Wake this agent later: with `text` it gets a prompt, with `code` it runs sandboxed

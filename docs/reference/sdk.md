@@ -97,6 +97,7 @@ Run options (`run`, `stream`):
 | `signal` | `timeout=` | stop waiting; the run goes on |
 | `throwOnError` | `throw_on_error=` | `false`: return a failed run instead of throwing `RunError` |
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
+| `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
 
 ### `Run`
 
@@ -221,7 +222,9 @@ the server (the runtime sends `initialize`, `tools/list`, `tools/call` and
 If the connection drops or the call's deadline passes before its answer arrives,
 the model gets an "outcome unknown" result and the call is never sent again.
 
-One connection at a time serves an agent's tools. A second is refused with
+A connection whose tools differ from those the agent was last given (the ready
+event's `toolsHash`) declares them, between the agent's turns (`syncTools:
+false` to leave them). One connection at a time serves an agent's tools. A second is refused with
 `APPLICATION_CONNECTED` unless it asks to take over (`takeover`); the SDK names
 its connection when it reconnects, so it keeps its place. A connection that was
 replaced, or finds the tools taken when it reconnects, hears

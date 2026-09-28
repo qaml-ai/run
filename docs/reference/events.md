@@ -25,7 +25,7 @@ Query parameters and headers:
 | | |
 | --- | --- |
 | `Last-Event-ID: <cursor>` | resume after this event id. Absent or `0` takes everything still buffered. |
-| `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](#snapshot) of the running turn first instead of a 409. The SDKs always ask for one. |
+| `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](#snapshot) of the running turn first instead of a 409. Watchers and polls (`?watch=1`, `?poll=1`, `/v1/agents/:id/events`) get one by default (`?snapshot=0` opts out); the application's connection only when it asks, as the SDKs do. |
 | `?poll=1&wait=N` | answer once, as JSON, instead of streaming: `{cursor, events: [{id, data}]}`, where `data` is a frame. With `wait` (seconds, at most 25) and nothing buffered, it answers when the next event arrives or the wait ends. Poll again with `Last-Event-ID: <cursor>`. For clients that cannot hold a stream open. |
 | `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](#one-application-at-a-time). |
 | `X-Agent-Connection: <connection>` | (application connection only) reconnecting: the `connection` the last `ready` named, so the runtime knows it is the same application coming back. |
@@ -62,8 +62,9 @@ report `APPLICATION_REPLACED` to `onError`).
 Event ids rise. The runtime buffers each agent's recent events in memory (the
 last 512, at most 2 MiB) for replay. A `Last-Event-ID` behind that buffer (after
 a long disconnect, or after the agent moved to another node) cannot be replayed:
-without `?snapshot=1` the stream answers **409 `REPLAY_GAP: recover from session
-state`**; with it, the stream starts with a `snapshot`. Recover what settled from
+without a snapshot (the application's connection without `?snapshot=1`, or a
+watcher with `?snapshot=0`) the stream answers **409 `REPLAY_GAP: recover from
+session state`**; otherwise it starts with a `snapshot`. Recover what settled from
 `GET …/state` (each request's outcome) and `GET …/history`. Nothing durable is
 lost in a gap: only display events are.
 

@@ -108,10 +108,17 @@ agent upserted without local tools, or with `attach: false`, follows the
 agent's stream read-only. That is how serverless functions, webhook handlers and
 second services run agents whose tools are served elsewhere.
 
-If no process serves an agent's attached tools when the model calls one, the
-call does not run: the model is told, and the run lists it in `toolErrors` with
-code `not_connected`. Agents that must work with nobody attached (from a
-schedule, a channel, or a webhook) should use served tools.
+A run of an agent with attached tools while no process serves them is refused
+up front, with `APPLICATION_NOT_CONNECTED` (after a few seconds' grace for a
+process reconnecting), rather than running without them. Pass
+`allowDisconnected: true` to run anyway: calls to those tools then fail, and the
+run lists them in `toolErrors` with code `not_connected`. Schedules, channels and
+resumed runs are never refused, so agents that must work with nobody attached
+should use served tools.
+
+A process that connects with tools other than those the agent was last given
+(it was restarted with changed code) declares its own, between the agent's
+turns. `upsert` declares them anyway.
 
 ## People in the loop
 

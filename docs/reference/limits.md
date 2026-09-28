@@ -58,6 +58,7 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 
 | Limit | Value |
 | --- | --- |
+| A tool result the model reads | 32,000 characters; a longer one is saved whole (up to 700 KB) to `/workspace/tool-results/<toolCallId>.txt` |
 | Attached tool call deadline (tools in your process) | 15 s without an answer by default; a tool's own `timeoutMs` from 1 s to 20 minutes |
 | Remote MCP server call deadline | the source's `timeoutMs` (1 s to 20 minutes), default 60 s |
 | OpenAPI operation deadline | the source's `timeoutMs` (1 s to 20 minutes), default 30 s |

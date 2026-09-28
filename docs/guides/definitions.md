@@ -16,6 +16,9 @@ const definition = await agents.runtime.createDefinition({
 const agent = await agents.upsert(`ticket-${ticket.id}`, { definition: definition.id, subject: ticket.customerId });
 ```
 
+Saving a definition lists its MCP servers: credentials a server refuses are a
+400 that says so, and the answer's `toolSources` shows what each offers.
+
 The definition supplies the model, prompt, thinking level and tool sources;
 `name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
 its defaults, and tools of your process (`tools`) are added as its attached

@@ -240,6 +240,35 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AgentError):
             await self.agents.upsert("not a key!")
 
+    async def test_connecting_with_changed_tools_declares_them_and_a_run_needs_them_served(self):
+        @tool
+        async def old(value: str) -> str:
+            """Old"""
+            return value
+
+        @tool
+        async def fresh(value: str) -> str:
+            """Fresh"""
+            return f"fresh {value}"
+
+        created = (await self.runtime.http.post(f"{self.url}/v1/agents", headers={"Authorization": f"Bearer {self.token}"},
+                                                json={"ttlSeconds": None, "mcp": {"tools": [old.mcp_tool()]}})).json()
+        follower = await self.agents.agent(created)
+        with self.assertRaises(AgentError) as refused:
+            await follower.run("hi")
+        self.assertEqual(refused.exception.code, "APPLICATION_NOT_CONNECTED")
+        self.assertEqual((await follower.run("hi", allow_disconnected=True)).text, "seen")
+        serving = await self.agents.agent(created, tools=[fresh])
+        for _ in range(100):
+            try:
+                if (await serving.client.execute('return await tools.fresh({value:"x"})'))["output"] == ["fresh x"]:
+                    break
+            except AgentError:
+                pass
+            await asyncio.sleep(0.1)
+        else:
+            self.fail("the new tools were not declared")
+
     async def asyncTearDown(self):
         await self.agents.close()
         await self.runtime.close()

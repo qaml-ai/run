@@ -42,7 +42,9 @@ Before you ship an application on the runtime, check each of these.
 - [ ] Where tools run matches how you deploy: a long-lived process attaches
       them; serverless or several instances serve them over HTTP. Agents woken by
       schedules, channels or webhooks use served tools, or nobody may be there to
-      answer (`toolErrors` with `not_connected`).
+      answer (`toolErrors` with `not_connected`). A run with nobody serving
+      attached tools is refused (`APPLICATION_NOT_CONNECTED`) unless it passes
+      `allowDisconnected`.
 - [ ] Exactly one process attaches an agent's tools. Others run it with
       `attach: false` (or without tools). A process that loses them
       (`APPLICATION_REPLACED` on `onError`) keeps running the agent without them.

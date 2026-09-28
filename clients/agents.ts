@@ -145,6 +145,11 @@ export interface RunOptions {
   throwOnError?: boolean;
   /** While a turn runs, "queue" (default) runs after it; "steer" hands the message to it. */
   whileRunning?: "queue" | "steer";
+  /**
+   * Run even when no process serves the agent's tools (calls to them then fail as not_connected). Without
+   * it, such a run is refused with an AgentError, code APPLICATION_NOT_CONNECTED.
+   */
+  allowDisconnected?: boolean;
 }
 
 /** What `agent.stream()` yields. `raw` is the event it came from. */
@@ -191,7 +196,8 @@ export class Agents {
     if (!this.runtime.options.apiKey) throw new AgentError("Set apiKey (or the CAMELAI_API_KEY environment variable): create a key in the console at https://agents.camelai.dev");
     const options = createOptions(config);
     const { session } = await this.runtime.upsertAgent(key, options);
-    return this.connect(session, config, options);
+    // The upsert declared these tools already (between the agent's turns, if it runs).
+    return this.connect(session, config, { ...options, syncTools: false });
   }
 
   /** An agent you hold the credentials of (`agent.session` from another process, say). */
@@ -376,6 +382,7 @@ function promptOptions(id: string, options: RunOptions) {
   return {
     ...messageOptions(options), idempotencyKey: id, ...(options.images ? { images: options.images } : {}),
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
+    ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
   };
 }
 

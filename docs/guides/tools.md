@@ -39,7 +39,9 @@ async def refund(order_id: str, context: ToolContext) -> dict:
 - **Result.** Return any JSON value; `undefined`/`None` is sent as `null`. The
   model reads it as JSON text, and code in `js_exec` gets the value. Throw (raise)
   to tell the model the call failed: it sees your message. A result is at most
-  1 MiB of JSON.
+  1 MiB of JSON. The model reads at most 32,000 characters of a tool's result;
+  a longer one is saved whole (up to 700 KB) to
+  `/workspace/tool-results/<toolCallId>.txt`, where it can read the rest.
 - **Python functions** may be `async` or plain; a plain one runs in a thread, so
   it never blocks the connection.
 - **`context.idempotencyKey`** is the same for every attempt of one call: a
@@ -77,10 +79,11 @@ credentials, and nothing is exposed on the network. The trade-offs:
 - One process at a time serves an agent's tools. Another process that upserts
   with the same tools gets `APPLICATION_CONNECTED` (pass `takeover: true` to
   replace the first, or `attach: false` to run the agent without serving them).
-- A call made while no process is connected does not run. The model is told,
-  and the run lists it in `toolErrors` with code `not_connected`. Runs started by
-  a schedule, a channel or a webhook may find nobody connected: use served tools
-  for those agents.
+- A run while no process serves the tools is refused with
+  `APPLICATION_NOT_CONNECTED`, unless you pass `allowDisconnected: true`
+  (`allow_disconnected=True`): then calls to them fail, listed in the run's
+  `toolErrors` with code `not_connected`. Runs a schedule or a channel starts are
+  never refused and may find nobody connected: use served tools for those agents.
 - If the connection drops while a call runs, its outcome is unknown to the
   runtime, and the model is told so; the call is never sent again.
 
@@ -217,8 +220,11 @@ A [definition](definitions.md) lists tool sources the runtime calls itself.
 - Text reaches the model as it is; images, audio, blobs and text resources over
   64 KiB are saved to the agent's workspace and reach it as files. `isError`
   becomes a tool error; `structuredContent` is what code gets.
-- A server that cannot be reached when the agent starts contributes no tools
-  that run; the run's `sourceErrors` lists it.
+- The runtime lists each server when you save the definition: one that refuses
+  its credentials is a 400 saying so, and the answer's `toolSources` shows what
+  each server offers (`status: listed`, or `error` with why). A server that
+  cannot be reached when an agent starts contributes no tools that run; the
+  run's `sourceErrors` lists it.
 - Tool lists are cached for five minutes and dropped on
   `notifications/tools/list_changed`; a running agent takes a changed list at its
   next start.

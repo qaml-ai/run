@@ -444,14 +444,14 @@ class AgentRuntime:
         # The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
         return await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", _provisioning(tools, **fields), headers={"Idempotency-Key": key})
 
-    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False):
+    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True):
         """`on_event(event, request_id)` hears every event, for display (a run's result is the truth): a plain or async
         function, called in order apart from the connection, so a slow one never holds up tool calls; what it raises goes
         to on_error. `on_input(input)` hears each question, approval or setup step the agent's turn now waits on: return an
         answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer().
         `attach=False` follows the agent and runs it without answering its tool calls, as any number of processes may; one
         process at a time answers them, and another fails with APPLICATION_CONNECTED unless `takeover=True` replaces it."""
-        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error, on_input, attach=attach, takeover=takeover)
+        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools)
         self.agents.append(agent)
         try:
             await agent.connect()
@@ -673,7 +673,7 @@ class AgentClient:
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
-    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None, on_input=None, attach=True, takeover=False):
+    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
@@ -688,6 +688,8 @@ class AgentClient:
         self.attach = attach
         # Replace the process that serves the agent's tools now, instead of failing with APPLICATION_CONNECTED.
         self.takeover = takeover
+        # Declare this client's tools as it connects when they differ from the agent's (a process restarted with changed tools).
+        self.sync_tools = sync_tools
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.path = f"/clients/{session['id']}"
         # False: the cursor is kept in memory only.
@@ -746,6 +748,13 @@ class AgentClient:
         await asyncio.wait_for(self.ready.wait(), 10)
         if self.fatal:
             raise self.fatal
+
+    async def _sync_tools(self, declared):
+        """Declare this client's tools when they differ from what the agent has (its toolsHash, over the JSON the runtime keeps)."""
+        tools = [item.mcp_tool() for item in self.tools.values()]
+        import hashlib
+        if hashlib.sha256(json.dumps(tools, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest() != declared:
+            await self.request("configure", {"mcp": {"tools": tools}})
 
     def _report(self, error):
         if self.on_error:
@@ -829,7 +838,11 @@ class AgentClient:
                                 raise AgentError("Another process took over this agent's tools (takeover): this client no longer serves them, and follows the agent without them",
                                                  409, code="APPLICATION_REPLACED")
                             if "event: ready" in lines:
-                                self.connection = json.loads(data).get("connection")
+                                ready = json.loads(data)
+                                self.connection = ready.get("connection")
+                                # Tools that differ from those the agent was last given: declare these, between its turns.
+                                if self.attach and self.sync_tools and ready.get("toolsHash"):
+                                    self._track(asyncio.ensure_future(self._sync_tools(ready["toolsHash"])))
                                 await self._sync()
                                 backoff = 0.25
                                 self.ready.set()
@@ -867,8 +880,7 @@ class AgentClient:
                 if isinstance(error, AgentError) and (error.code == "APPLICATION_REPLACED" or (error.code == "APPLICATION_CONNECTED" and self.connection)):
                     self.attach = False
                     self._report(error)
-                    continue
-                if isinstance(error, AgentError) and (error.status in (401, 403, 410) or error.code == "APPLICATION_CONNECTED"):
+                elif isinstance(error, AgentError) and (error.status in (401, 403, 410) or error.code == "APPLICATION_CONNECTED"):
                     self.fatal = error
                     self.ready.set()
                     for future in self.pending.values():
@@ -876,7 +888,7 @@ class AgentClient:
                             future.set_exception(error)
                     self._report(error)
                     return
-                if not self.closed:
+                elif not self.closed:
                     self._report(error)
             if not self.closed:
                 await asyncio.sleep(backoff)
@@ -1047,7 +1059,7 @@ class AgentClient:
         return await self.request(method, {"text": text, **({"files": attached} if attached else {}), **(extra or {}), **({"from": from_} if from_ else {}),
                                            **({"metadata": metadata} if metadata else {})}, idempotency_key=request_id, **options)
 
-    async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, **options):
+    async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
         the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
         identity tokens) without telling the model. `files` are attached: bytes, a local path (str or Path),
@@ -1057,7 +1069,8 @@ class AgentClient:
         its request carry it, with the request's id, in history, events and webhooks; the model never sees it. `while_running="steer"` hands
         the message to a running turn, and returns with that turn's outcome."""
         return await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
-                                   extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {})}, **options)
+                                   extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
+                                          **({"allowDisconnected": True} if allow_disconnected else {})}, **options)
 
     async def _attach(self, request_id, files):
         names, attached = set(), []
@@ -1090,8 +1103,8 @@ class AgentClient:
             attached.append({"path": response.json()["path"]})
         return attached
 
-    async def execute(self, code, *, execution_timeout_ms=None, actor=None, **options):
-        params = {"code": code, **({"actor": actor} if actor else {})}
+    async def execute(self, code, *, execution_timeout_ms=None, actor=None, allow_disconnected=False, **options):
+        params = {"code": code, **({"actor": actor} if actor else {}), **({"allowDisconnected": True} if allow_disconnected else {})}
         if execution_timeout_ms is not None:
             params["timeoutMs"] = execution_timeout_ms
         return await self.request("execute", params, **options)
@@ -1365,23 +1378,27 @@ class Agent:
         """The agent's files: list, download, upload and link."""
         return self.client.files
 
-    async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None):
+    async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
+                  allow_disconnected=False):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. There is no timeout
         unless `timeout` (seconds) says so, and that only stops the wait. `user` (your user id, or {"id", "name"?}) is
         who sent it: the model sees who, and tools get it as identity.user. A failed run raises RunError (with the run)
-        unless throw_on_error=False. The same idempotency_key returns the same run, never a second one."""
+        unless throw_on_error=False. The same idempotency_key returns the same run, never a second one. An agent with application
+        tools and no process serving them refuses the run (AgentError, code APPLICATION_NOT_CONNECTED) unless allow_disconnected."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
-                               throw_on_error=throw_on_error, while_running=while_running)
+                               throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected)
 
-    def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None):
+    def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
+               allow_disconnected=False):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
-                                      "throw_on_error": throw_on_error, "while_running": while_running})
+                                      "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected})
 
-    async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None):
+    async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None,
+                   allow_disconnected=False):
         pending = self.client.prompt(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=request_id,
-                                     timeout=timeout, while_running=while_running)
+                                     timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected)
         return await self._settle(request_id, pending, throw_on_error)
 
     async def _settle(self, request_id, pending, throw_on_error):
@@ -1505,13 +1522,15 @@ class Agents:
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers,
                                                   mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools)
-        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
+        # The upsert declared these tools already (between the agent's turns, if it runs).
+        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, _sync=False)
 
-    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
-        """An agent you hold the credentials of ({"id", "token"}, from another process say)."""
+    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, _sync=True):
+        """An agent you hold the credentials of ({"id", "token"}, from another process say). Tools that differ from those
+        the agent has are declared as it connects."""
         tools = list(tools or [])
         client = await self.runtime.connect_agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error,
-                                                  attach=bool(tools) if attach is None else attach, takeover=takeover)
+                                                  attach=bool(tools) if attach is None else attach, takeover=takeover, sync_tools=_sync)
         agent = Agent(client, self._open.discard)
         self._open.add(agent)
         return agent

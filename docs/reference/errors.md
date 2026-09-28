@@ -46,6 +46,7 @@ honour it and retry.
 | --- | --- | --- |
 | `REPLAY_GAP: recover from session state` | The stream cannot replay from your `Last-Event-ID` | Reconnect with `?snapshot=1` (the SDKs do), and recover settled outcomes from `/state` |
 | `APPLICATION_CONNECTED: another connection serves this agent's tools…` | Another process serves this agent's tools. The SDKs raise it as `code: "APPLICATION_CONNECTED"` | Close the other one; or connect with `takeover: true` to replace it; or connect without serving tools (`attach: false`) to run the agent from here |
+| `APPLICATION_NOT_CONNECTED: …` | A run (prompt, continue, execute, steer, follow-up) of an agent with application tools while no process serves them (after about 3 s' grace). The SDKs raise it as `code: "APPLICATION_NOT_CONNECTED"` | Start or reconnect the process that serves the tools; serve them over HTTP instead; or pass `allowDisconnected: true` to run without them |
 | `Not the agent's current connection; reconnect` | An MCP answer on a connection that was replaced | Reconnect (the SDKs do) |
 | `Request ID reused with different arguments` | The same request id (`idempotencyKey`) sent with another prompt | Use a new id for a new message; the same id only to retry the same one |
 | `This Idempotency-Key was sent with another request…` | The same `Idempotency-Key` header on a different method, path or body | A key is for one request |
