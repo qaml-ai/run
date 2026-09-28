@@ -154,7 +154,7 @@ export class ToolFiles {
     run.left -= saved.size;
     const shown = target.show(saved.path);
     this.options.onWrite?.({ path: shown, version: saved.version, size: saved.size, contentType: saved.contentType! });
-    return fileRef(volumes, tenant, mount.volumeId, shown, { ...saved, contentType: saved.contentType! });
+    return fileRef(volumes, tenant, this.options.agent, mount.volumeId, shown, { ...saved, contentType: saved.contentType! });
   }
 }
 

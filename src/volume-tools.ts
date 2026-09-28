@@ -118,7 +118,7 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
       const model = context.model?.();
       // Shown natively: the result carries a reference the agent host turns into the image or document.
       if (model && (type !== "application/pdf" || supportsDocuments(model)) && !offset) {
-        const ref = await fileRef(volumes, tenant, target.mount.volumeId, shown, { ...entry, contentType });
+        const ref = await fileRef(volumes, tenant, context.agent, target.mount.volumeId, shown, { ...entry, contentType });
         const why = unseen(ref, model);
         if (!why) return { ...about, ...(ref.media?.kind === "pdf" ? { pages: ref.media.pages } : ref.media?.kind === "image" ? { width: ref.media.width, height: ref.media.height } : {}), file: ref };
         if (type !== "application/pdf" || ref.media?.kind === "none") return { ...about, note: `Not shown: ${why}` };
@@ -201,6 +201,8 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
     const entry = await file();
     const contentType = await volumes.contentType(tenant, target.path, entry);
     const presented = { type: "file" as const, path: shown, volume: target.mount.volumeId, version: entry.version, size: entry.size, contentType, chunks: entry.chunks, ...(typeof args.caption === "string" ? { caption: args.caption } : {}) };
+    // The run's outcome and stream refer to this version: its chunks stay while the agent does (storage-gc.ts).
+    await volumes.pin(tenant, context.agent, entry.chunks);
     context.onPresent?.(presented, target.path);
     return { path: shown, version: entry.version, size: entry.size, contentType, presented: true };
   }

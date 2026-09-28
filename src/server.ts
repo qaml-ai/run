@@ -9,6 +9,7 @@ import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
 import { loadDocs, loadRegistry } from "./docs.ts";
+import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, sessionConfig } from "./session-config.ts";
 import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -565,6 +566,9 @@ const purgeMs = Number(process.env.AGENT_PURGE_INTERVAL_MS ?? 60_000);
 if (!Number.isInteger(purgeMs) || purgeMs < 1000) throw new Error("AGENT_PURGE_INTERVAL_MS must be an integer of at least 1000");
 const purgeTimer = setInterval(() => void clients.sweep(), purgeMs);
 purgeTimer.unref();
+// Chunks nothing refers to any more, and deleted volumes' objects, collected a tenant at a time by whichever node is free.
+const storageGc = new StorageGc({ db, storage, volumes, graceMs: Number(process.env.AGENT_GC_GRACE_MS ?? 24 * 60 * 60_000), intervalMs: Number(process.env.AGENT_GC_INTERVAL_MS ?? 6 * 60 * 60_000) });
+storageGc.start(Number(process.env.AGENT_GC_POLL_MS ?? 60_000));
 // Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
 // so their runs resume even when no one reads them.
 const orphanMs = Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000);
@@ -631,6 +635,7 @@ async function drain(signal: string) {
   scheduler.stop();
   channels.stop();
   webhooks.stop();
+  storageGc.stop();
   clearInterval(tenantsTimer);
   clearInterval(loadTimer);
   clearInterval(sweepTimer);

@@ -71,8 +71,12 @@ export async function inspectFile(volumes: VolumeService, tenant: string, entry:
   return inspect(await volumes.readRange(tenant, entry, 0, entry.size), text);
 }
 
-/** A volume file as the transcript refers to it, with what inspecting it found. */
-export async function fileRef(volumes: VolumeService, tenant: string, volume: string, shown: string, entry: FileEntry & { contentType: string }): Promise<FileRef> {
+/**
+ * A volume file as the transcript of `agent` refers to it, with what inspecting it found. Its chunks are pinned to the
+ * agent (storage-gc.ts): they stay stored while it exists, whatever becomes of the file.
+ */
+export async function fileRef(volumes: VolumeService, tenant: string, agent: string, volume: string, shown: string, entry: FileEntry & { contentType: string }): Promise<FileRef> {
+  await volumes.pin(tenant, agent, entry.chunks);
   const found = await inspectFile(volumes, tenant, entry, entry.contentType);
   const head = textual(entry.contentType) && entry.size ? firstLines(await volumes.readRange(tenant, entry, 0, FILE_LIMITS.headBytes), entry.size > FILE_LIMITS.headBytes) : undefined;
   return { type: "file", path: shown, volume, version: entry.version, size: entry.size, contentType: entry.contentType, chunks: entry.chunks, ...(found ? { media: found.media } : {}), ...(head ? { head } : {}) };

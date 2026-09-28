@@ -447,9 +447,10 @@ export class VolumeService {
       return snapshot;
     }
     if (op === "deleteSnapshot") {
-      // The file map stays in Storage, like chunks, until garbage collection exists.
+      // Its file map goes with it; the chunks it held are collected once nothing else holds them.
       const snapshot = args.snapshot;
       if (typeof snapshot !== "string" || !(await this.fenced(volume, sql => sql.query("delete from volume_snapshots where id = $1 and volume = $2", [snapshot, id]))).rowCount) throw new HttpError(404, "Unknown snapshot");
+      await this.storage.removeBlob(snapshotFilesKey(id, snapshot));
       return { deleted: true };
     }
     if (op === "fork") {
@@ -511,7 +512,8 @@ export class VolumeService {
     const emit = async (piece: Buffer) => {
       const hash = sha256(piece);
       chunks.push(hash);
-      writes.push(this.storage.writeBlob(chunkKey(tenant, hash), piece));
+      // Touched before it is written (see storage-gc.ts): a collection deleting it meanwhile puts it back.
+      writes.push(this.touch(tenant, [hash]).then(() => this.storage.writeBlob(chunkKey(tenant, hash), piece)));
       if (writes.length >= 4) { await Promise.all(writes); writes = []; }
     };
     for await (const data of source instanceof Uint8Array ? [source] : source) {
@@ -547,6 +549,56 @@ export class VolumeService {
     const stored = await this.store(tenant, source instanceof Uint8Array ? source : peek(source), options.limit);
     const contentType = declaredType(options.contentType) ?? sniffContentType(head, path);
     return this.call(id, tenant, "commit", { path, ...stored, contentType, ...(options.ifMatch !== undefined ? { ifMatch: options.ifMatch } : {}), ...(options.by ? { by: options.by } : {}) });
+  }
+
+  /**
+   * Record that `hashes` were just written or referred to (storage-gc.ts): they become collectable once nothing refers
+   * to them, and a collection of them that began before stands down.
+   */
+  async touch(tenant: string, hashes: string[]) {
+    if (!hashes.length) return;
+    await this.db.query(`
+      with touched as (
+        insert into chunk_touches (tenant, hash, at) select $1, hash, $3 from unnest($2::text[]) as hash
+        on conflict (tenant, hash) do update set at = excluded.at returning 1)
+      insert into storage_gc (tenant) select $1 where exists (select from touched) on conflict do nothing`, [tenant, [...new Set(hashes)], Date.now()]);
+  }
+
+  /** Keep `hashes` stored while `agent` exists: a FileRef it holds refers to them, whatever becomes of the file. */
+  async pin(tenant: string, agent: string, hashes: string[]) {
+    if (!hashes.length) return;
+    await this.touch(tenant, hashes);
+    await this.db.query("insert into chunk_pins (tenant, hash, agent) select $1, hash, $3 from unnest($2::text[]) as hash on conflict do nothing", [tenant, [...new Set(hashes)], agent]);
+  }
+
+  /** The chunks a volume's files refer to, read from its tree wherever it is served (storage-gc.ts). */
+  async referencedChunks(id: string): Promise<Set<string>> {
+    const loaded = this.loaded.get(id);
+    const files = new Map<string, FileEntry>(loaded ? loaded.tree.files : []);
+    if (!loaded) {
+      const log = this.storage.log<TreeRecord>(treeKey(id));
+      try {
+        for (const record of await log.read()) {
+          if (record.t === "put") files.set(record.path, record.entry);
+          else if (record.t === "del") files.delete(record.path);
+        }
+      } finally { await log.close(); }
+    }
+    return new Set([...files.values()].flatMap(entry => entry.chunks));
+  }
+
+  /** The chunks a snapshot's file map refers to. */
+  async snapshotChunks(id: string, snapshot: string): Promise<Set<string>> {
+    const stored = await this.storage.readBlob(snapshotFilesKey(id, snapshot));
+    if (!stored) return new Set();
+    return new Set(Object.values(JSON.parse(Buffer.from(stored).toString("utf8")) as Record<string, FileEntry>).flatMap(entry => entry.chunks));
+  }
+
+  /** Remove a deleted volume's own objects: its tree and its snapshots' file maps (its chunks are collected as any). */
+  async purge(id: string) {
+    await this.storage.removeLog(treeKey(id));
+    await this.storage.removeBlobs(`volumes/${id}/snapshots/`);
+    await this.db.query("update volumes set purged_at = $2 where id = $1 and deleted_at is not null", [id, Date.now()]);
   }
 
   /** A file's content type: as recorded, else sniffed from its first bytes (files from before types were recorded). */

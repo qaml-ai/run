@@ -1,5 +1,5 @@
 import {
-  DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, S3ServiceException,
+  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, S3ServiceException,
 } from "@aws-sdk/client-s3";
 import { meteredSegments, PreconditionFailed, removeSegments, segmentLog, validKey, type LogTail, type SegmentStore, type Storage, type StorageMeter } from "./storage.ts";
 
@@ -92,6 +92,13 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
         await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: batch.map(object => ({ Key: object.key })), Quiet: true } }));
         for (const object of batch) options.meter?.(base ? object.key.slice(base.length + 1) : object.key, -object.size);
       }
+    },
+    async removeBlob(key) {
+      let size: number;
+      try { size = (await client.send(new HeadObjectCommand({ Bucket: bucket, Key: at(key) }))).ContentLength ?? 0; }
+      catch (error) { if (missing(error)) return; throw error; }
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: at(key) }));
+      options.meter?.(key, -size);
     },
     async *objects(prefix) {
       let token: string | undefined;

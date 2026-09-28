@@ -2125,7 +2125,7 @@ export class ClientSessions {
     if (!target) throw new HttpError(400, "Attach a file, not /");
     const entry = await volumes.call(target.mount.volumeId, tenant, "stat", { path: target.path }).catch(error => { throw (error as HttpError).status === 404 ? new HttpError(400, `${target.show(target.path)} does not exist`) : error; });
     if (entry.type !== "file") throw new HttpError(400, `${target.show(target.path)} is a directory`);
-    return fileRef(volumes, tenant, target.mount.volumeId, target.show(entry.path), { ...entry, contentType: await volumes.contentType(tenant, entry.path, entry) });
+    return fileRef(volumes, tenant, session.header.id, target.mount.volumeId, target.show(entry.path), { ...entry, contentType: await volumes.contentType(tenant, entry.path, entry) });
   }
 
   /**
@@ -2163,7 +2163,7 @@ export class ClientSessions {
       else {
         const target = this.uploadTarget(session, requestId, input.name);
         const saved = await volumes!.put(tenant, target.mount.volumeId, target.path, Buffer.from(input.data, "base64"), { contentType: input.contentType, by: session.header.id });
-        refs.push(await fileRef(volumes!, tenant, target.mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! }));
+        refs.push(await fileRef(volumes!, tenant, session.header.id, target.mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! }));
       }
     }
     return refs;
@@ -2718,6 +2718,8 @@ export class ClientSessions {
         await sql.query("delete from volume_watchers where agent = $1", [id]);
         await sql.query("delete from agent_inputs where agent = $1", [id]);
         await sql.query("delete from agent_spend_limits where agent = $1", [id]);
+        // Its FileRefs are gone with its transcript: their chunks may be collected (storage-gc.ts).
+        await sql.query("delete from chunk_pins where agent = $1", [id]);
         const tombstone = { version: 3, id, tenant: header.tenant, digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
         await sql.query("update agents set header = $2, name = $1, type = 'general', revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
           [id, JSON.stringify(tombstone), Date.now()]);

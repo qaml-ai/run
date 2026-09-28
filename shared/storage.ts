@@ -24,6 +24,8 @@ export interface Storage {
   writeBlob(key: string, data: Uint8Array): Promise<void>;
   /** Delete every blob under `prefix` (a directory, ending in "/"), for an actor that is gone. */
   removeBlobs(prefix: string): Promise<void>;
+  /** Delete one blob (a chunk nothing refers to any more); a key that is gone already is a no-op. */
+  removeBlob(key: string): Promise<void>;
   /** Every stored object under `prefix`, with its size: for reconciling metered storage, not for reading state. */
   objects?(prefix: string): AsyncIterable<{ key: string; bytes: number }>;
   /** Whether every object this Storage creates or deletes is reported to its meter (single-host logs, appended files, are not). */
@@ -88,6 +90,13 @@ export function fileStorage(root: string, options: { tail?: LogTail; meter?: Sto
       if (meter) for await (const { key, bytes } of this.objects!(prefix)) meter(key.replace(/\.bin$/, ""), -bytes);
       await rm(join(root, prefix), { recursive: true, force: true });
     },
+    async removeBlob(key) {
+      const file = path(key, ".bin");
+      const size = await stat(file).then(found => found.size, () => undefined);
+      if (size === undefined) return;
+      await rm(file, { force: true });
+      meter?.(key, -size);
+    },
     async *objects(prefix) {
       let entries;
       try { entries = await readdir(join(root, prefix), { recursive: true, withFileTypes: true }); }
@@ -148,6 +157,12 @@ export function memoryStorage(tail: LogTail, meter?: StorageMeter): Storage & { 
     },
     async removeBlobs(prefix: string) {
       for (const [key, data] of blobs) if (key.startsWith(prefix)) { blobs.delete(key); meter?.(key, -data.byteLength); }
+    },
+    async removeBlob(key: string) {
+      const data = blobs.get(validKey(key));
+      if (!data) return;
+      blobs.delete(key);
+      meter?.(key, -data.byteLength);
     },
     async *objects(prefix: string) {
       for (const [key, objects] of logs) if (key.startsWith(prefix)) for (const [name, body] of objects) yield { key: `${key}.log/${name}`, bytes: Buffer.byteLength(body) };
