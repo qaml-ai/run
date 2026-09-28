@@ -61,7 +61,7 @@ SDK as any other application. Their tools/data are not owned by the dashboard.
 Use `STUDIO_EXAMPLES=0 npm run studio` to start without launching sample applications; existing agents remain listed.
 The runtime URL is printed at startup and saved as `runtimeUrl` in `studio.json`;
 the local `secrets.json` holds the server-side operator key for SDK provisioning.
-See [SDK identity examples](../clients/README.md#agent-identity-and-studio).
+See [SDK identity examples](../docs/reference/sdk.md#agent-identity-and-studio).
 
 ## Live model or scripted example
 

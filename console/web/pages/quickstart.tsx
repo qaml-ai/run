@@ -8,67 +8,66 @@ export function QuickstartPage() {
   const available = useApi<Model[]>("/v1/models?available=true");
   const url = location.origin;
   const model = available.data?.find(entry => entry.id === "anthropic/claude-sonnet-5")?.id ?? available.data?.[0]?.id ?? "anthropic/claude-sonnet-5";
-  const typescript = `import { AgentRuntime, schema, tool } from "@camelai/agent-runtime/node";
+  // The hosted runtime is the SDKs' default; another origin (a self-hosted console) is named explicitly.
+  const hosted = url === "https://agents.camelai.dev";
+  const typescript = `import { Agents, schema, tool } from "@camelai/agent-runtime";
 
-const runtime = new AgentRuntime({
-  url: "${url}",
-  apiKey: process.env.AGENT_RUNTIME_TOKEN, // an API token from this console
+const agents = new Agents(${hosted ? "" : `{ url: "${url}" }`}); // reads CAMELAI_API_KEY: an API token from this console
+
+// A tool is an ordinary function: it runs in your process, with your credentials.
+const weather = tool({
+  description: "Today's weather in a city",
+  input: schema.Object({ city: schema.String() }),
+  execute: ({ city }) => ({ city, forecast: "sunny", highC: 24 }),
 });
 
-const agent = await runtime.createAgent({
-  name: "Support triage",
+// The same key is the same agent, with its history, every time.
+const agent = await agents.upsert("quickstart", {
   model: "${model}",
-  systemPrompt: "You triage support tickets. Be concise.",
-  idempotencyKey: "support-triage", // the same key returns the same agent
-  tools: {
-    open_tickets: tool({
-      description: "List open support tickets",
-      input: schema.Object({}),
-      execute: () => db.openTickets(), // runs in your process, with your credentials
-    }),
-  },
-  onEvent: event => console.log(event.type),
+  instructions: "You are a concise assistant.",
+  tools: { weather },
 });
 
-await agent.prompt("Which open tickets look urgent?");
-console.log((await agent.history()).messages.at(-1));`;
-  const python = `import asyncio, os
-from camelai_agent_runtime import AgentRuntime, tool
+const run = await agent.run("Should I bring an umbrella in Lisbon today?");
+console.log(run.text);
+
+await agents.close();`;
+  const python = `import asyncio
+from camelai_agent_runtime import Agents, tool
 
 @tool
-async def open_tickets():
-    """List open support tickets."""
-    return await db.open_tickets()
+def weather(city: str) -> dict:
+    """Today's weather in a city"""
+    return {"city": city, "forecast": "sunny", "highC": 24}
 
 async def main():
-    async with AgentRuntime(url="${url}", api_key=os.environ["AGENT_RUNTIME_TOKEN"]) as runtime:
-        agent = await runtime.create_agent(
-            name="Support triage", model="${model}",
-            system_prompt="You triage support tickets. Be concise.",
-            idempotency_key="support-triage", tools=[open_tickets],
-        )
-        await agent.prompt("Which open tickets look urgent?")
+    async with Agents(${hosted ? "" : `url="${url}"`}) as agents:  # reads CAMELAI_API_KEY
+        agent = await agents.upsert("quickstart", model="${model}",
+                                    instructions="You are a concise assistant.", tools=[weather])
+        run = await agent.run("Should I bring an umbrella in Lisbon today?")
+        print(run.text)
 
 asyncio.run(main())`;
-  const rest = `export AGENT_RUNTIME_TOKEN=art_...   # from API tokens
-
-# Add a provider key (checked with the provider, stored encrypted, never returned)
-curl -X PUT ${url}/v1/providers/anthropic/key \\
-  -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" -H "Content-Type: application/json" \\
-  -d '{"apiKey": "sk-ant-..."}'
+  const rest = `export CAMELAI_API_KEY=art_...   # from API tokens
+BASE=${url}; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
 
 # Models you can use now
-curl "${url}/v1/models?available=true" -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN"
+curl -s "$BASE/v1/models?available=true" -H "$AUTH"
 
-# Create an agent (tools run in your app through the SDK; REST-created agents can use code only)
-curl -X POST ${url}/v1/agents -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" \\
-  -H "Content-Type: application/json" -H "Idempotency-Key: support-triage" \\
-  -d '{"name": "Support triage", "model": "${model}", "systemPrompt": "Be concise."}'
+# Upsert an agent: the Idempotency-Key is its key, so the same key is the same agent.
+# (Tools that run in your code need an SDK or a tool server of yours; this agent has built-in tools only.)
+AGENT=$(curl -s $BASE/v1/agents -H "$AUTH" -H "Content-Type: application/json" -H "Idempotency-Key: quickstart" \\
+  -d '{"model": "${model}", "systemPrompt": "You are a concise assistant."}' | jq -r .id)
 
-# Prompt it, then read the reply
-curl -X POST ${url}/v1/agents/<id>/prompt -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" \\
-  -H "Content-Type: application/json" -d '{"text": "Hello"}'
-curl ${url}/v1/agents/<id>/history -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN"`;
+# Send a message, wait for the run, print its reply
+REQ=$(curl -s $BASE/v1/agents/$AGENT/prompt -H "$AUTH" -H "Content-Type: application/json" \\
+  -d '{"text": "Write a haiku about durable agents."}' | jq -r .id)
+until curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -e '.state == "completed"' > /dev/null; do sleep 1; done
+curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -r '.outcome.result.reply // .outcome.error'`;
+  const stream = `for await (const part of agent.stream("And tomorrow?")) {
+  if (part.type === "text") process.stdout.write(part.text);
+  if (part.type === "tool_call") console.log(\`\\n[\${part.name}]\`);
+}`;
   return (
     <>
       <PageHeader title="Quickstart" description={<>Create an agent from your application. First add a model key under <Link className="underline" to="models">Models &amp; keys</Link> and create an <Link className="underline" to="tokens">API token</Link>.</>} />
@@ -77,21 +76,22 @@ curl ${url}/v1/agents/<id>/history -H "Authorization: Bearer $AGENT_RUNTIME_TOKE
           <CardHeader>
             <CardTitle>1. Install the SDK</CardTitle>
             <CardDescription>
-              The TypeScript SDK is on npm. Requires Node 22+.
+              TypeScript needs Node 22+ (or Bun); Python 3.11+. Export an <Link className="underline" to="tokens">API token</Link> as <code>CAMELAI_API_KEY</code>.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <CodeBlock language="shell" code="npm install @camelai/agent-runtime" />
+            <CodeBlock language="shell" code="pip install camelai-agent-runtime" />
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>2. Create an agent with your tools</CardTitle>
-            <CardDescription>Your tools are ordinary functions in your process. The runtime runs the model loop, keeps history, and sandboxes model-written code that calls your tools.</CardDescription>
+            <CardTitle>2. Run an agent with your tools</CardTitle>
+            <CardDescription>Your tools are ordinary functions in your process. The runtime runs the model loop, keeps the agent's history, and sandboxes model-written code that calls your tools. The script prints the reply and exits; run it again and the agent remembers.</CardDescription>
           </CardHeader>
           <CardContent>
             <Tabs defaultValue="typescript">
-              <TabsList><TabsTrigger value="typescript">TypeScript</TabsTrigger><TabsTrigger value="python">Python</TabsTrigger><TabsTrigger value="rest">REST</TabsTrigger></TabsList>
+              <TabsList><TabsTrigger value="typescript">TypeScript</TabsTrigger><TabsTrigger value="python">Python</TabsTrigger><TabsTrigger value="rest">curl</TabsTrigger></TabsList>
               <TabsContent value="typescript" className="pt-3"><CodeBlock language="ts" code={typescript} /></TabsContent>
               <TabsContent value="python" className="pt-3"><CodeBlock language="python" code={python} /></TabsContent>
               <TabsContent value="rest" className="pt-3"><CodeBlock language="shell" code={rest} /></TabsContent>
@@ -100,10 +100,18 @@ curl ${url}/v1/agents/<id>/history -H "Authorization: Bearer $AGENT_RUNTIME_TOKE
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>3. Change models any time</CardTitle>
-            <CardDescription>Switch an agent to another model between turns; its history carries over. Any model marked “Usable” under Models &amp; keys works.</CardDescription>
+            <CardTitle>3. Stream it</CardTitle>
+            <CardDescription>Show the run as it happens: its text as the model writes it, each tool call, then the run. The run's result is the truth; the stream is for display.</CardDescription>
           </CardHeader>
-          <CardContent><CodeBlock language="ts" code={`await agent.configure({ model: "${model}" });`} /></CardContent>
+          <CardContent><CodeBlock language="ts" code={stream} /></CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Next</CardTitle>
+            <CardDescription>
+              Change models any time with <code>agent.configure({"{"} model {"}"})</code>: the history carries over. For approvals, browsers, files and serving tools to many users, see the docs, also as Markdown for your coding agent at <a className="underline" href="/llms.txt">/llms.txt</a>.
+            </CardDescription>
+          </CardHeader>
         </Card>
       </div>
     </>

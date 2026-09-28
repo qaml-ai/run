@@ -1,0 +1,37 @@
+# camelAI agent runtime
+
+> A hosted runtime for durable agents. You define tools in your code (TypeScript or Python SDK, or an HTTP server of
+> yours); the runtime runs the model loop, keeps each agent's history and files, runs model-written code in a sandbox,
+> and wakes agents when there is work. REST API at https://agents.camelai.dev/v1 (OpenAPI: https://agents.camelai.dev/v1/openapi.json).
+
+Agents are upserted by a key of yours and run with `agent.run(text)`, which resolves with the run (status, text, inputs,
+error). Install `@camelai/agent-runtime` (npm) or `camelai-agent-runtime` (PyPI), and set CAMELAI_API_KEY.
+
+## Start
+
+- [Quickstart](https://agents.camelai.dev/docs/quickstart.md): a working agent in five minutes, in TypeScript, Python or curl
+- [Concepts](https://agents.camelai.dev/docs/concepts.md): durable keyed agents, runs, events, where tools run, processes, people in the loop, idempotency
+
+## Guides
+
+- [Tools](https://agents.camelai.dev/docs/guides/tools.md): writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources
+- [Human input](https://agents.camelai.dev/docs/guides/human-input.md): approvals, questions and forms; answering them and resuming the run
+- [Showing an agent in a browser](https://agents.camelai.dev/docs/guides/browser.md): browser tokens and the watcher: showing an agent live in a web page
+- [Files](https://agents.camelai.dev/docs/guides/files.md): attachments, what the model sees, files out, volumes, signed links
+- [Agents for many users](https://agents.camelai.dev/docs/guides/multi-user.md): an agent per user or conversation, identity, spend limits and keys per customer
+- [Webhooks](https://agents.camelai.dev/docs/guides/webhooks.md): run and input events, signatures, delivery
+- [Models and keys](https://agents.camelai.dev/docs/guides/models-and-keys.md): the model catalog, your own keys and endpoints, key scopes, model headers, spend limits
+- [Definitions](https://agents.camelai.dev/docs/guides/definitions.md): reusable configurations, and rolling changes out to their agents
+- [Channels](https://agents.camelai.dev/docs/guides/channels.md): Slack, Telegram and Discord
+- [Production checklist](https://agents.camelai.dev/docs/production.md): the checklist before shipping
+
+## Reference
+
+- [SDKs](https://agents.camelai.dev/docs/reference/sdk.md): the TypeScript and Python SDKs
+- [Events](https://agents.camelai.dev/docs/reference/events.md): every event on an agent's stream, and a run's outcome
+- [Limits](https://agents.camelai.dev/docs/reference/limits.md): every limit, with its value
+- [Errors](https://agents.camelai.dev/docs/reference/errors.md): HTTP errors, run failures and tool errors, and what to do about each
+
+## Optional
+
+- [Full documentation](https://agents.camelai.dev/docs/llms-full.txt): every page above in one file

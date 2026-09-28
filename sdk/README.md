@@ -1,136 +1,60 @@
 # @camelai/agent-runtime
 
-SDK for the camelAI hosted agent runtime. Your application defines tools as
-ordinary functions; the runtime runs the model loop, keeps each agent's history,
-and executes model-written code in a sandbox that can only call your tools.
-Tool calls come back to your process over SSE, so your data and credentials
-never leave it.
-
-Requires Node 22 or later (or Bun).
-
-## Install
+The TypeScript SDK for the camelAI agent runtime: durable agents you upsert by
+key and run, with tools that are ordinary functions in your code. The runtime
+runs the model loop, keeps each agent's history and files, and runs
+model-written code in a sandbox that can only call your tools.
 
 ```sh
 npm install @camelai/agent-runtime
 ```
 
-Upgrade with `npm update @camelai/agent-runtime`.
-
-The SDK has one runtime dependency (`typebox`). Its message and model types come
-from Pi; for full typing of history and events, also install
-`@earendil-works/pi-agent-core@0.87.1` and `@earendil-works/pi-ai@0.87.1` as dev
-dependencies. Without them those types resolve to `any` (with `skipLibCheck`).
-
-## Use
-
-You need the runtime URL and your tenant's operator token. Keep the operator
-token on your backend; it can create and control every agent in your tenant.
+Node 22 or later, Bun, Deno or Cloudflare Workers. Get an API key from the
+console at <https://agents.camelai.dev/console> and export it as
+`CAMELAI_API_KEY`.
 
 ```ts
-import { AgentRuntime, schema, tool } from "@camelai/agent-runtime/node";
+import { Agents, schema, tool } from "@camelai/agent-runtime";
 
-const runtime = new AgentRuntime({
-  url: "https://agents.camelai.dev",
-  apiKey: process.env.AGENT_RUNTIME_TOKEN,
-  stateDirectory: ".agent-runtime", // tool receipts and cursors survive restarts
+const agents = new Agents();
+
+const weather = tool({
+  description: "Today's weather in a city",
+  input: schema.Object({ city: schema.String() }),
+  execute: ({ city }) => ({ city, forecast: "sunny", highC: 24 }), // runs here, in your process
 });
 
-const agent = await runtime.createAgent({
-  name: "Inventory planner",
-  type: "inventory",
-  model: "anthropic/claude-sonnet-5", // any "provider/model-id" from GET /v1/models
-  systemPrompt: "You plan restocks. Never place orders.",
-  tools: {
-    read_inventory: tool({
-      description: "Read stock and target quantities",
-      input: schema.Object({}),
-      execute: () => db.inventory(),
-    }),
-    plan_restock: tool({
-      description: "Save a restock plan",
-      input: schema.Object({ sku: schema.String(), quantity: schema.Integer() }),
-      // callId is stable across retries: use it as your idempotency key.
-      execute: ({ sku, quantity }, { callId }) => db.plan(sku, quantity, { idempotencyKey: callId }),
-    }),
-  },
-  onEvent: event => console.log(event.type),
+const agent = await agents.upsert("quickstart", {
+  model: "anthropic/claude-sonnet-5",
+  instructions: "You are a concise assistant.",
+  tools: { weather },
 });
 
-await agent.prompt("Plan restocks for anything below target.");
+const run = await agent.run("Should I bring an umbrella in Lisbon today?");
+console.log(run.text);
+
+await agents.close();
 ```
 
-To show an agent in a browser, use `@camelai/agent-runtime/watch` with a browser
-token your server mints (see "Watching from a browser" in `clients/README.md`).
+- **Keyed agents.** `upsert(key, config)` makes the agent for your key, or brings
+  the existing one to `config`; its history and files last until you delete it.
+- **Runs.** `run()` resolves with `{ status, text, inputs, error, toolErrors, … }`
+  and throws `RunError` on failure (unless `throwOnError: false`). No timeout: pass
+  an `AbortSignal` to stop waiting. `stream()` yields text, tool calls and results
+  as they happen, then the run.
+- **People in the loop.** A tool with `needsApproval: true` waits for approval;
+  `run.inputs[0].answer(true, { from })` resumes the run.
+- **Tools.** Each call's `context.idempotencyKey` is stable across retries;
+  `timeoutMs` and `context.progress()` handle long calls. One process at a time
+  serves an agent's tools; serverless and multi-user backends serve them over
+  HTTP with `serveTools` (`@camelai/agent-runtime/server`).
+- **Browsers.** `watchAgent` (`@camelai/agent-runtime/watch`) shows an agent
+  live with a browser token your server mints.
 
-`onEvent` gets the agent's events as they stream. Since 0.6.0 a `message_update`
-is its delta alone (`event.assistantMessageEvent.delta` for text), without the
-message it updates, and a stream that cannot replay starts with a
-`{ type: "snapshot", turn }` of the running turn (see "Deltas and snapshots" in
-`clients/README.md`).
+Documentation: [Quickstart](https://agents.camelai.dev/docs/quickstart.md),
+[Concepts](https://agents.camelai.dev/docs/concepts.md),
+[SDK reference](https://agents.camelai.dev/docs/reference/sdk.md),
+and all of it as Markdown at <https://agents.camelai.dev/llms.txt>.
 
-Already have an MCP server? Attach it instead of (or alongside) `tools`: the SDK
-talks to it in memory, and the same server can later run remotely as a definition's
-`mcpServers` entry without changing its tools. Install `@modelcontextprotocol/sdk` too.
-
-```ts
-import { fromMcpServer } from "@camelai/agent-runtime/mcp";
-
-const agent = await runtime.createAgent({ name: "Inventory planner", mcp: await fromMcpServer(server) });
-```
-
-Serving tools to many users' agents from one server? `serveTools` from
-`@camelai/agent-runtime/server` serves the same `tools` over HTTP and verifies the
-runtime's signed identity token on every call, so each tool knows who it is for:
-
-```ts
-import { serveTools } from "@camelai/agent-runtime/server";
-
-const tools = {
-  list_todos: tool({
-    description: "The current user's to-dos", input: schema.Object({}),
-    execute: (_args, { identity }) => db.todos(identity!.user, identity!.context.team),
-  }),
-};
-export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev" }) };
-```
-
-Name it in a definition with `mcpServers: [{ name: "todos", url, auth: { type: "runtime" } }]`,
-create agents with a `subject` and `context`, and prompt with `from` or `actor`.
-`testRuntime()` from `@camelai/agent-runtime/testing` signs tokens for tests.
-
-Switch models between turns with `await agent.configure({ model: "openai/gpt-5.2" })`;
-the history carries over. Your tenant needs a key for that provider.
-
-A turn can also wait for the user: a tool with `needsApproval: true` is approved
-before each call, and `ctx.confirm`, `ctx.ask` and `ctx.requireUrl` ask from
-inside a tool. `prompt()` then resolves with `stopped: "input_required"` and the
-`inputs`; answer them with `onInput`, or later with `agent.answer(inputId, { action: "accept" })`,
-and the turn resumes. An ask ends the call, and the tool runs again with the
-answer, so everything before an ask runs twice: ask first, act after.
-
-## Console and REST API
-
-Sign in at https://agents.camelai.dev/console with GitHub (qaml-ai members) to add
-provider keys, browse models, create API tokens, watch agents and see usage.
-Everything there is also available over REST with an API token:
-
-```sh
-curl -X PUT https://agents.camelai.dev/v1/providers/anthropic/key \
-  -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" -H "Content-Type: application/json" \
-  -d '{"apiKey": "sk-ant-..."}'
-curl "https://agents.camelai.dev/v1/models?available=true" -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN"
-```
-
-The routes are `/v1/me`, `/v1/providers` (+ `/:provider/key`), `/v1/models`,
-`/v1/agents` (+ `/:id`, `/:id/history`, `/:id/prompt`, `/:id/abort`),
-`/v1/tokens` and `/v1/usage`; see `src/api.ts`.
-
-Save `agent.session` (it contains a scoped credential) to reconnect later with
-`runtime.connectAgent(session, { tools })` (or `{ mcp }`). Pass the same `idempotencyKey` to
-`createAgent` to get the same agent back instead of a new one.
-
-`@camelai/agent-runtime` (without `/node`) is the portable build for Workers and
-other runtimes without a filesystem; supply your own `journalStore`.
-
-See `clients/README.md` in the repository for delivery
-guarantees, tool-call semantics, and the full API.
+`AgentRuntime` and `AgentClient`, the lower-level interface the SDK is built on,
+remain available. See the SDK reference's "Changes in 0.9" when upgrading.

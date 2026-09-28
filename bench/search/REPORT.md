@@ -2,7 +2,7 @@
 
 Which API should back the `web_search` built-in by default, and which should it fall back to? I ran 43 agent-style queries through seven provider configurations, twice each. A judge model graded every result list blind, all in one batch, and 16 known-answer questions were answered using only each provider's results. The tables here come from `results/summary.md`, which `scripts/bench-search.ts` generates from `results/raw.json`.
 
-> **Adopted:** the order Exa (instant), Brave, Parallel (fast) is now `web_search`'s default, with per-provider prices and fallback (README, "Built-ins a definition enables"). Firecrawl renders JavaScript-only pages for `web_fetch` instead of searching. The "before switching" items below are done.
+> **Adopted:** the order Exa (instant), Brave, Parallel (fast) is now `web_search`'s default, with per-provider prices and fallback (docs/guides/tools.md, "Built-ins a definition enables"). Firecrawl renders JavaScript-only pages for `web_fetch` instead of searching. The "before switching" items below are done.
 
 ## Recommendation
 

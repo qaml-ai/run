@@ -1,0 +1,2475 @@
+<!-- https://agents.camelai.dev/docs/quickstart.md -->
+
+# Quickstart
+
+In five minutes you will have an agent that runs in the hosted runtime, calls a
+tool in your own process, and answers you. The runtime keeps the model loop, the
+agent's history and its files; your tools stay in your code, with your
+credentials.
+
+## 1. Get an API key
+
+Sign in to the console at <https://agents.camelai.dev/console>, then:
+
+- under **Models & keys**, check that a model is marked *Usable*. New accounts
+  start with credit for the platform's models. Or you can add your own provider
+  key.
+- under **API tokens**, create a token, and export it:
+
+```sh
+export CAMELAI_API_KEY=art_...
+```
+
+The key can create and control every agent in your account. Keep it on your
+server and never ship it to a browser.
+
+## 2. Install
+
+TypeScript (Node 22 or later, or Bun):
+
+```sh
+npm install @camelai/agent-runtime
+```
+
+Python (3.11 or later):
+
+```sh
+pip install camelai-agent-runtime
+```
+
+## 3. Run an agent
+
+TypeScript, `quickstart.ts`:
+
+```ts
+import { Agents, schema, tool } from "@camelai/agent-runtime";
+
+const agents = new Agents(); // reads CAMELAI_API_KEY
+
+// A tool is an ordinary function: it runs here, in your process.
+const weather = tool({
+  description: "Today's weather in a city",
+  input: schema.Object({ city: schema.String() }),
+  execute: ({ city }) => ({ city, forecast: "sunny", highC: 24 }),
+});
+
+// The same key is the same agent, with its history, every time you run this.
+const agent = await agents.upsert("quickstart", {
+  model: "anthropic/claude-sonnet-5",
+  instructions: "You are a concise assistant.",
+  tools: { weather },
+});
+
+const run = await agent.run("Should I bring an umbrella in Lisbon today?");
+console.log(run.text);
+
+await agents.close();
+```
+
+```sh
+npx tsx quickstart.ts
+```
+
+Python, `quickstart.py`:
+
+```python
+import asyncio
+from camelai_agent_runtime import Agents, tool
+
+@tool
+def weather(city: str) -> dict:
+    """Today's weather in a city"""
+    return {"city": city, "forecast": "sunny", "highC": 24}
+
+async def main():
+    async with Agents() as agents:  # reads CAMELAI_API_KEY
+        agent = await agents.upsert("quickstart", model="anthropic/claude-sonnet-5",
+                                    instructions="You are a concise assistant.", tools=[weather])
+        run = await agent.run("Should I bring an umbrella in Lisbon today?")
+        print(run.text)
+
+asyncio.run(main())
+```
+
+```sh
+python quickstart.py
+```
+
+curl (the agent has no tools of yours here: tools that run in your process need an
+SDK, or a server of your own, see [Tools](guides/tools.md)):
+
+```sh
+BASE=https://agents.camelai.dev; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
+# The Idempotency-Key is the agent's key: the same key is the same agent.
+AGENT=$(curl -s $BASE/v1/agents -H "$AUTH" -H "Content-Type: application/json" -H "Idempotency-Key: quickstart" \
+  -d '{"model": "anthropic/claude-sonnet-5", "systemPrompt": "You are a concise assistant."}' | jq -r .id)
+REQ=$(curl -s $BASE/v1/agents/$AGENT/prompt -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"text": "Write a haiku about durable agents."}' | jq -r .id)
+until curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -e '.state == "completed"' > /dev/null; do sleep 1; done
+curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -r '.outcome.result.reply // .outcome.error'
+```
+
+If you see `No ... API key configured`, pick a model your account can use:
+`GET /v1/models?available=true`, or the console's **Models & keys**.
+
+## 4. Stream it
+
+`run()` waits for the whole run. To show it as it happens, `stream()` yields its
+text as the model writes it, each tool call and result, and last the run:
+
+```ts
+for await (const part of agent.stream("And tomorrow?")) {
+  if (part.type === "text") process.stdout.write(part.text);
+  if (part.type === "tool_call") console.log(`\n[${part.name}(${JSON.stringify(part.arguments)})]`);
+  if (part.type === "done") console.log(`\n(${part.run.status})`);
+}
+```
+
+```python
+async for part in agent.stream("And tomorrow?"):
+    if part.type == "text":
+        print(part.text, end="", flush=True)
+    elif part.type == "tool_call":
+        print(f"\n[{part.name}({part.arguments})]")
+```
+
+The run's result is the truth; the stream is for display. A stream that breaks
+never loses the run: `run()` (or `stream.result()`) still resolves with it.
+
+## What just happened
+
+- `upsert("quickstart", …)` made a keyed agent, or found the one made last time
+  and brought it to this configuration. It lives until you delete it, so running
+  the file again continues the same conversation. See [Concepts](concepts.md).
+- Because the agent has `tools`, this process served them: the runtime called
+  `weather` here, over the connection the SDK holds. One process at a time serves
+  an agent's tools. A serverless function or a multi-user backend serves tools
+  over HTTP instead; see [Tools](guides/tools.md).
+- `run()` resolved with a `Run`: `status` (`completed`, `input_required` or
+  `failed`), `text`, `inputs`, `error`, `toolErrors`. A failed run throws a
+  `RunError` unless you pass `throwOnError: false` (`throw_on_error=False`).
+- `agents.close()` let the process exit. The agent stays in the runtime.
+
+Next: [Concepts](concepts.md), then the guide for what you are building:
+[tools](guides/tools.md), [asking people](guides/human-input.md),
+[showing an agent in a browser](guides/browser.md), [files](guides/files.md),
+[agents for many users](guides/multi-user.md), [webhooks](guides/webhooks.md).
+Before you ship, read the [production checklist](production.md).
+
+---
+
+<!-- https://agents.camelai.dev/docs/concepts.md -->
+
+# Concepts
+
+## Agents are durable and keyed
+
+An agent is a conversation that lasts: its history, its files, its configuration
+(model, instructions, tools) and its pending work live in the runtime, not in
+your process. Most agents are asleep at any moment and cost nothing; a message
+wakes one on whichever node has room, and it picks up where it was.
+
+You name an agent with a **key**, your own id for it: `support-triage`,
+`user-123`, `thread-9f2c`. Keys are 1 to 80 letters, digits, `_` and `-`.
+
+```ts
+const agent = await agents.upsert("user-123", { model, instructions, tools });
+```
+
+- The same key is the same agent, from any process, for as long as you keep it.
+  A keyed agent lives until you delete it (`agent.delete()`).
+- `upsert` makes the agent when there is none, and otherwise brings it to the
+  configuration you pass: a changed model, instructions or tool list is applied
+  between its turns, and its history carries over. Who the agent acts for
+  (`subject`, `context`), its definition and its mounts are fixed when it is
+  made; changing them is a 409 that names the field. Delete it and upsert again
+  to start over.
+- A deleted key makes a fresh agent the next time, with a new id and token.
+- Over REST, the key is the `Idempotency-Key` of `POST /v1/agents`.
+
+Every agent also has an **id** (`client_…`), which is safe to log and store, and
+a **token**, which lets its holder run it and nothing else. The SDKs keep the
+token out of logs; you rarely need it, because upserting by key gives you the
+agent again.
+
+Agents made without a key are scratch agents: they expire after a day unless you
+set `ttlSeconds`.
+
+## Runs
+
+A message to an agent starts a **run**: the model loop, with every tool call it
+makes, until the model answers or something stops it. One run at a time: a
+message sent while a run is going waits for it (`whileRunning: "queue"`, the
+default) or joins it (`whileRunning: "steer"`: the running turn reads it after its
+current step).
+
+```ts
+const run = await agent.run("Summarize ticket 123", { user: "alice" });
+```
+
+A `Run` has:
+
+| field | |
+| --- | --- |
+| `id` | the run's id; pass `idempotencyKey` to choose it, and sending the same key again returns the same run instead of starting another |
+| `status` | `completed`, `input_required` (it waits on a person: see `inputs`), or `failed` |
+| `text` | the final reply |
+| `inputs` | what it waits on, each with `answer()` |
+| `error` | `{code, message, uncertain?}` when it failed |
+| `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
+| `files` | files the run wrote |
+| `usage` | what its model calls used, where the runtime reports it |
+
+`run()` has no timeout: runs can take minutes, and a run waiting on a person can
+wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
+run itself goes on, and `agent.abort()` stops it. A failed run throws a
+`RunError` carrying the run, unless you pass `throwOnError: false`.
+
+## The result is the truth; events are for display
+
+An agent's **events** stream every step: text as the model writes it, tool
+calls and their progress, inputs asked and answered. Use them to show the agent
+working. Do not use them to decide what happened.
+
+- The run's result (`run()`, the webhook `run.completed`, or `GET
+  /v1/agents/:id/requests/:id`) is recorded durably and always arrives, even if
+  your process restarts or the connection drops.
+- The stream is replayed from memory on reconnect, as far as it goes. Where it
+  cannot replay (a restarted node, a long disconnection), the SDK gets a
+  snapshot of the running turn instead; streamed deltas in between are gone.
+
+So reply to your user from the run, and render the stream as progress. See the
+[event reference](reference/events.md).
+
+## Tools: where they run
+
+An agent's tools come from four kinds of place. Pick by where your code runs:
+
+| Your situation | Use | How |
+| --- | --- | --- |
+| A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time |
+| Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for |
+| A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
+| Web search, fetching pages, scheduling, asking the user | **Built-ins** in a definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
+
+The same `tool({...})` definitions work attached and served, so you can start
+attached and move to served without changing a tool. Every agent also has file
+tools over its [files](guides/files.md), and `js_exec`, a sandbox where the model
+writes code that calls all of its tools. See [Tools](guides/tools.md).
+
+## Processes and connections
+
+A process that has an agent's tools **attaches** to it: it holds the agent's
+event stream and answers its tool calls. One process at a time does, so a tool
+call never lands in the wrong process. A second process that tries gets
+`APPLICATION_CONNECTED`, unless it passes `takeover: true`; the one it replaces
+hears `APPLICATION_REPLACED` and goes on without serving the tools.
+
+Any number of processes can **run** an agent without serving its tools: an
+agent upserted without local tools, or with `attach: false`, follows the
+agent's stream read-only. That is how serverless functions, webhook handlers and
+second services run agents whose tools are served elsewhere.
+
+If no process serves an agent's attached tools when the model calls one, the
+call does not run: the model is told, and the run lists it in `toolErrors` with
+code `not_connected`. Agents that must work with nobody attached (from a
+schedule, a channel, or a webhook) should use served tools.
+
+## People in the loop
+
+A run can stop and wait for a person: the model asks a question (`ask_user`), a
+tool needs approval before it runs, or a tool asks for a form or a setup step.
+The run ends with `status: "input_required"` and its `inputs`; the agent sleeps,
+for days if need be; answering the last input resumes it.
+
+```ts
+if (run.status === "input_required") run = await run.inputs[0].answer(true, { from: "alice" });
+```
+
+See [Human input](guides/human-input.md).
+
+## Idempotency
+
+Everything that changes something can be retried safely:
+
+- `upsert` by key, and `run` / `POST /v1/agents/:id/prompt` by `idempotencyKey`
+  (the request id): the same key returns the same agent or run.
+- Every other POST takes an `Idempotency-Key` header: a retry with the same key,
+  path and body gets the first answer again (for a day); the same key with a
+  different body is a 409.
+- Every tool call carries `context.idempotencyKey`, the same for every attempt
+  of that call: a retry after a lost connection, or the call run again after a
+  person answered. Key your side effects by it. (`context.callId` is new each
+  attempt.)
+
+A tool call whose answer was lost (the connection dropped, or its deadline
+passed) is never sent again: the model is told its outcome is unknown, so it can
+check before repeating anything.
+
+## Waking later
+
+An agent can be woken by a schedule (`agent.client.schedule({ text, inSeconds |
+at, everySeconds })`, or the `schedule` built-in for the agent to set its own), by
+a [channel](guides/channels.md) (Slack, Telegram, Discord), or by your own code
+from a [webhook](guides/webhooks.md).
+
+## Definitions
+
+A **definition** is a reusable configuration: model, instructions, tool sources
+(MCP servers, OpenAPI specs, built-ins), limits and mounts. Make agents from one
+(`definition: "def_…"` on `upsert`), and roll a change out to all of them with
+`apply: "all"`. See [Definitions](guides/definitions.md).
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/tools.md -->
+
+# Tools
+
+An agent's tools are how it acts. This guide covers where they run, how to write
+them so a retry never does harm, and how the runtime tells a tool who a call is
+for. For the short version of where tools should run, see the table in
+[Concepts](../concepts.md#tools-where-they-run).
+
+## Writing a tool
+
+```ts
+import { schema, tool } from "@camelai/agent-runtime";
+
+const refund = tool({
+  description: "Refund an order in full",
+  input: schema.Object({ orderId: schema.String() }),
+  timeoutMs: 60_000,
+  execute: async ({ orderId }, context) => {
+    context.progress("Contacting the payment provider");
+    return payments.refund(orderId, { idempotencyKey: context.idempotencyKey, signal: context.signal });
+  },
+});
+```
+
+```python
+from camelai_agent_runtime import ToolContext, tool
+
+@tool(timeout=60)
+async def refund(order_id: str, context: ToolContext) -> dict:
+    """Refund an order in full"""
+    context.progress("Contacting the payment provider")
+    return await payments.refund(order_id, idempotency_key=context.idempotency_key)
+```
+
+- **Input.** TypeScript takes a [TypeBox](https://github.com/sinclairzx81/typebox)
+  schema (`schema` is TypeBox's `Type`), and infers the arguments' type from it.
+  Python derives the schema from the annotations (`str`, `int`, `float`, `bool`,
+  `list`, `dict`) and the description from the docstring. Arguments are checked
+  against the schema before your function runs.
+- **Result.** Return any JSON value; `undefined`/`None` is sent as `null`. The
+  model reads it as JSON text, and code in `js_exec` gets the value. Throw (raise)
+  to tell the model the call failed: it sees your message. A result is at most
+  1 MiB of JSON.
+- **Python functions** may be `async` or plain; a plain one runs in a thread, so
+  it never blocks the connection.
+- **`context.idempotencyKey`** is the same for every attempt of one call: a
+  retry after a lost connection, or the call run again once a person answered.
+  Pass it to anything with side effects. `context.callId` is new on each attempt.
+- **Deadline.** A call may go 15 seconds without answering (`timeoutMs`,
+  `@tool(timeout=)`: 1 s to 20 minutes). Each `context.progress(...)` restarts the
+  wait, up to 20 minutes in all, and people watching the agent see the progress.
+  A call cut off is reported to the model as "outcome unknown" (it may still
+  finish in your process): make the side effect idempotent and the model can
+  check and retry safely.
+- **`context.signal`** aborts when the runtime cancels the call (the run was
+  aborted, or the deadline passed). Cancellation is not rollback.
+- **`context.identity`** says who the call is for; see [Identity](#identity-who-a-call-is-for).
+- **`needsApproval: true`** (`needs_approval=True`) makes a person approve each
+  call first, and `context.confirm/ask/requireUrl` ask from inside the tool; see
+  [Human input](human-input.md).
+- **`exposure`**: `"direct"` (the model calls it as a tool), `"codemode"` (only
+  from code in `js_exec`, as `tools.<name>(args)`), or `"both"`. By default a
+  source of up to 10 tools is `both` and a larger one `codemode`, so big catalogs
+  do not crowd the model's context.
+
+## Attached tools: in your process
+
+Pass `tools` to `upsert` and this process serves them to the agent:
+
+```ts
+const agent = await agents.upsert("ops", { model, instructions, tools: { refund } });
+```
+
+The SDK holds the agent's event stream; the runtime sends each tool call over it
+and the SDK posts the result back. Your tools run with your process's state and
+credentials, and nothing is exposed on the network. The trade-offs:
+
+- One process at a time serves an agent's tools. Another process that upserts
+  with the same tools gets `APPLICATION_CONNECTED` (pass `takeover: true` to
+  replace the first, or `attach: false` to run the agent without serving them).
+- A call made while no process is connected does not run. The model is told,
+  and the run lists it in `toolErrors` with code `not_connected`. Runs started by
+  a schedule, a channel or a webhook may find nobody connected: use served tools
+  for those agents.
+- If the connection drops while a call runs, its outcome is unknown to the
+  runtime, and the model is told so; the call is never sent again.
+
+An existing MCP server (from `@modelcontextprotocol/sdk`) can be attached as is:
+`upsert(key, { mcp: await fromMcpServer(server) })` from
+`@camelai/agent-runtime/mcp`.
+
+## Served tools: over HTTP, for serverless and many users
+
+A server of yours answers tool calls over HTTP (MCP's Streamable HTTP), and a
+definition tells the runtime to call it. Any number of instances can serve,
+nothing needs to stay connected, and the runtime signs a token for each call
+saying which agent it is for, whom that agent acts for, and who is acting.
+
+```ts
+import { serveTools } from "@camelai/agent-runtime/server";
+
+// A fetch handler: Cloudflare Workers, Bun and Deno serve it as is.
+export default { fetch: serveTools({ refund }, { runtime: "https://agents.camelai.dev" }) };
+```
+
+On Node, wrap it: `createServer(nodeListener(serveTools(tools, { runtime })))`
+with `nodeListener` from `@camelai/agent-runtime/node`. Behind a load balancer or
+proxy that ends TLS, `nodeListener` rebuilds the URL the runtime called from
+`X-Forwarded-Proto` and `X-Forwarded-Host`; pass `{ origin: "https://tools.example.com" }`
+to pin it.
+
+```python
+from camelai_agent_runtime import serve_tools
+
+app = serve_tools([refund], runtime="https://agents.camelai.dev")  # ASGI: uvicorn, or mount in FastAPI
+```
+
+(`pip install "camelai-agent-runtime[server]"` for the token checks.)
+
+Then name the server in a definition, and make agents from it:
+
+```ts
+const definition = await agents.runtime.createDefinition({
+  name: "Support",
+  mcpServers: [{ name: "shop", url: "https://tools.example.com/mcp", auth: { type: "runtime" } }],
+});
+const agent = await agents.upsert(`user-${user.id}`, { definition: definition.id, subject: user.id, context: { org: user.orgId } });
+```
+
+Every request without a valid token for your server gets a 401: the signature
+(the runtime's published Ed25519 keys), the issuer, the audience (your server's
+URL as the runtime calls it) and the expiry are checked, and nothing per user is
+stored anywhere. To test your authorization without a runtime,
+`testRuntime()` (`@camelai/agent-runtime/testing`; `TestRuntime()` in Python)
+signs tokens with a key of its own:
+
+```ts
+const rt = await testRuntime();
+const result = await rt.callTool(serveTools(tools, rt.options), "https://app.test/mcp", "refund", { orderId: "o1" }, { subject: "alice" });
+```
+
+Built with the MCP SDK or Cloudflare's `createMcpHandler` instead? Verify with
+`runtimeAuth(request, { runtime })`, pass the result as the request's `auth`, and
+read `runtimeIdentity(extra)` in a handler. `verifyRuntimeToken(token, { runtime,
+audience })` checks a token on its own.
+
+## Identity: who a call is for
+
+Every tool call carries `context.identity`, from the signed token for served
+tools and from the call itself for attached ones, so a tool reads it the same way
+either way:
+
+| field | |
+| --- | --- |
+| `user` | whom to authorize as: the turn's actor, else the agent's subject |
+| `subject` | whom the agent acts for: `subject` given when it was made (its id if none) |
+| `actor` | who is acting in this turn: the run's `user` (`from.id`), or an `actor` given with the message |
+| `context` | claims given when the agent was made (`context: { org, workspace }`) |
+| `tenant`, `agent`, `definition` | whose agent it is, and which |
+| `origin` | where the turn came from: a channel, its conversation and sender |
+| `approval` | the person's approval, for a call that needed one |
+
+`subject` and `context` are set with your API key when the agent is made, and the
+agent's own token cannot change them; the model cannot touch any of it. So a
+tool can trust `identity`, and should never take a user id from the model's
+arguments. See [Many users](multi-user.md).
+
+The token itself (for servers that verify it by hand, e.g. with `jose`):
+
+```json
+{ "iss": "https://agents.camelai.dev", "aud": "https://tools.example.com/mcp",
+  "sub": "u_123", "tenant": "acme", "agent": "client_…", "definition": "def_…",
+  "ctx": { "org": "acme" }, "act": "u_456", "origin": { … },
+  "iat": 1790000000, "exp": 1790000120, "jti": "…" }
+```
+
+```ts
+const jwks = createRemoteJWKSet(new URL("https://agents.camelai.dev/.well-known/jwks.json"));
+const { payload } = await jwtVerify(token, jwks, { issuer: "https://agents.camelai.dev", audience: "https://tools.example.com/mcp", algorithms: ["EdDSA"] });
+```
+
+- `aud` is the server's URL (or the source's `audience`, for a server that knows
+  itself by another URL), so a token cannot be replayed against another server.
+  Tokens live two minutes, and each request gets its own `jti`.
+- `act` and `origin` are absent outside a turn (listing a server's tools as an
+  agent starts).
+- The keys are at `/.well-known/jwks.json` (cache them for minutes);
+  `/.well-known/oauth-authorization-server` names the issuer for MCP clients.
+
+## Definitions' sources
+
+A [definition](definitions.md) lists tool sources the runtime calls itself.
+
+### MCP servers
+
+```json
+{"name": "Support", "mcpServers": [{
+  "name": "kb", "url": "https://mcp.example.com/mcp",
+  "auth": {"type": "bearer", "token": "…"}, "headers": {"X-Team": "support"},
+  "allowTools": ["search", "fetch_article"], "exposure": "both", "timeoutMs": 30000
+}]}
+```
+
+- Streamable HTTP, falling back to the older SSE transport when a server answers
+  its POST with 400, 404 or 405.
+- `auth` is `{"type": "bearer", "token"}` or `{"type": "runtime"}` (signed
+  identity tokens, above). `headers` and `auth` are stored sealed; the API
+  returns only `headerNames` and `auth.type`. Updating a server without them
+  keeps its stored credentials, unless its URL moved to another origin.
+- Tools reach the model as `<server>__<tool>`, filtered by `allowTools` and
+  `denyTools`. A server can set a tool's own exposure in `tools/list` with
+  `_meta["agent-runtime/exposure"]`, and its deadline with
+  `_meta["agent-runtime/timeoutMs"]`.
+- Each call has a deadline (`timeoutMs`, default 60 s, at most 20 minutes). It
+  limits silence: each progress notification restarts it, up to 20 minutes in
+  all. A call from `js_exec` also ends with its execution (120 s at most), so
+  expose long tools directly.
+- Text reaches the model as it is; images, audio, blobs and text resources over
+  64 KiB are saved to the agent's workspace and reach it as files. `isError`
+  becomes a tool error; `structuredContent` is what code gets.
+- A server that cannot be reached when the agent starts contributes no tools
+  that run; the run's `sourceErrors` lists it.
+- Tool lists are cached for five minutes and dropped on
+  `notifications/tools/list_changed`; a running agent takes a changed list at its
+  next start.
+- Progress a server reports for a call (`notifications/progress`) reaches the
+  agent's events as a `tool_execution_update`, at most one per call every 250 ms.
+
+Each call carries `_meta` for the server: `agent-runtime/idempotencyKey` (stable
+across attempts), `agent-runtime/callId`, `agent-runtime/toolCallId` (and
+`agent-runtime/innerCallId` for a call from code), `agent-runtime/actor` and
+`agent-runtime/origin`.
+
+### OpenAPI specs
+
+```json
+{"name": "Support", "openApi": [{
+  "name": "shop", "spec": "https://api.example.com/openapi.json",
+  "auth": {"type": "bearer", "token": "…"}, "allowTools": ["listOrders", "getOrder", "refundOrder"]
+}]}
+```
+
+Every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
+
+- Named `<name>__<operationId>` (or `<name>__<method>_<path>`). Its input is the
+  operation's path, query and header parameters by name, plus `body` for the
+  request body (JSON, or form-encoded with nested values in brackets, as Stripe
+  reads them). A `multipart/form-data` body's file fields, and a binary body,
+  take `{"$file": path}` and stream the file.
+- The spec is fetched and checked when the definition is saved, and its
+  operations (after `allowTools`/`denyTools`, at most 1024) are stored with it:
+  an agent's tools never change under it. Save the definition again to take a
+  spec's changes. `spec` may also be the document itself.
+- Requests go to `baseUrl` (default the spec's first server), with no redirects,
+  `timeoutMs` (default 30 s, at most 20 minutes), and each call's stable key as
+  an `Idempotency-Key` header. A 2xx answer is the result (JSON, text, or a file
+  saved to the workspace); any other status is a tool error quoting the method,
+  path, status and the start of the body.
+
+## Built-ins a definition enables
+
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user"]`:
+
+- `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
+  reduced to readable text, 20,000 characters by default, at most 100,000), or
+  saves any other content (a PDF, an image) to the workspace. Pages that are
+  only a JavaScript shell are rendered when a Firecrawl key is available.
+- `web_search` (`{query, count?, freshness?}`) returns `{query, provider,
+  results: [{title, url, date?, content | snippet}]}`, trying search providers
+  in order (Exa, Brave, Parallel; a definition can pin its own with
+  `"webSearch": {"providers": ["brave"]}`). Your own key for a provider
+  (`PUT /v1/providers/<provider>/key`) is used first; otherwise the platform's,
+  charged per search.
+- `schedule`, `list_schedules`, `cancel_schedule` let the agent manage its own
+  wake-ups (100 per agent, at most a year ahead, repeats at least a minute apart).
+- `ask_user` lets the model ask the user 1 to 4 multiple-choice questions; the
+  run waits for the answer. See [Human input](human-input.md).
+
+## Seeing an agent's tools
+
+`GET /v1/agents/:id` returns `toolSources` (SDK: `agents.runtime.toolSources(agentId)`,
+Python `tool_sources`): every source in order of precedence (the channel's, the
+attached application's, file tools, then the definition's), each with its
+`status` and `tools`, and for each tool why the model does not get it, if it
+does not (an earlier source has its name, or the catalog is full).
+`?schemas=true` adds input schemas; `?refresh=true` lists every MCP server now,
+which is how to check one before the agent runs. The console shows the same on
+an agent's Configuration tab.
+
+## Tools from code: `js_exec`
+
+The model can write JavaScript that calls any of its tools, in a sandbox
+(QuickJS in WebAssembly) that can reach nothing else: `await
+tools.shop__getOrder({ id })`, `Promise.all` for parallel calls, `fs` over its
+files, `tools.search(query)` to find tools in a large catalog, `tools.describe(name)`
+for a schema. Code runs for at most 120 seconds and 256 tool calls; see
+[Limits](../reference/limits.md). `agent.client.execute(code)` runs code
+yourself, outside the model's history, which is handy for testing tools.
+
+## Tool search
+
+Code finds tools with `tools.search(query)` (or `tools.search(query, { namespace,
+limit })`): the best matches as `{name, description, input}`, most relevant
+first (20 by default, at most 128). `tools.namespaces()` lists the sources with
+their tool counts. Only tool names enter the sandbox, so a catalog of thousands
+of tools costs a script nothing until it asks. Ranking is by keywords, and, on
+the hosted runtime, also by meaning (embeddings, then a model that drops tools
+that cannot do what is asked); searches ranked by meaning are billed at cost.
+
+## Files through tool calls
+
+Tools of a definition's sources take and return files without their bytes
+passing through the model:
+
+- **In.** An argument `{"$file": "/workspace/report.pdf"}` names a file in the
+  agent's mounts. The runtime fills it in by the tool's schema: a base64 field
+  gets the content (up to 4 MiB), a URL field a signed link to the file (15
+  minutes), an OpenAPI multipart or binary body the streamed file.
+- **Out.** Images, audio, blobs and file responses are saved to
+  `/workspace/tool-outputs/<tool>/<call>/<name>`, and the model gets a reference
+  to each (shown natively when it is an image or PDF it can view).
+- One call may save 64 MiB, and one run 256 MiB.
+
+## Outbound calls
+
+Every request to a URL you or the model chose (MCP servers, OpenAPI specs and
+APIs, `web_fetch`) goes through one guard: `https://` only, no credentials in
+URLs, and no private, loopback, link-local or otherwise internal address, checked
+on every connection (so DNS rebinding cannot slip past). MCP servers and API
+calls get no redirects; where redirects are followed (`web_fetch`, spec
+downloads) each hop is checked, and credentials never go to another origin.
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/human-input.md -->
+
+# Human input
+
+A run can stop and wait for a person: the model asks a question, a tool needs
+approval before it runs, or a tool asks for a form or a setup step. The call that
+needs the person stays open and the run **suspends**: it ends with
+`status: "input_required"` and the `inputs` it waits on, the agent goes to sleep
+(nothing is billed while it waits), and once the last input is answered, minutes
+or days later and from any process, the turn resumes. The model sees an ordinary
+tool call and result, told who answered and how long it took.
+
+```ts
+let run = await agent.run("Delete the staging database", { user: "alice" });
+while (run.status === "input_required") {
+  const input = run.inputs[0];
+  console.log(input.kind, input.message);          // "approval", "Allow db__drop to run?"
+  run = await input.answer(true, { from: "alice" }); // resolves with the resumed run
+}
+console.log(run.text);
+```
+
+```python
+run = await agent.run("Delete the staging database", user="alice")
+while run.status == "input_required":
+    run = await run.inputs[0].answer(True, from_="alice")
+print(run.text)
+```
+
+## Where inputs come from
+
+- **Approvals.** A tool with `needsApproval: true` (`@tool(needs_approval=True)`),
+  or a function of its arguments deciding per call, is approved before each call.
+  A definition's sources take an approval policy:
+  `"approval": {"default": "never" | "always" | "destructive", "tools": {"delete_repo": "always"}}`
+  (`destructive`: MCP tools annotated `destructiveHint`, OpenAPI operations other
+  than GET, HEAD and OPTIONS; OpenAPI also takes `"methods": ["POST", "DELETE"]`).
+  The person sees the real call: the tool, its source and its arguments. An
+  approved call runs with exactly those arguments, and carries the approval
+  (`context.identity.approval`), so a tool can require it; a declined call never
+  runs.
+- **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` in a
+  definition) lets the model ask 1 to 4 multiple-choice questions, with free text
+  allowed where it says so.
+- **The tool itself.** `context.confirm(message)`, `context.ask(message,
+  schema)` (a flat form) and `context.requireUrl(url, message)` (a step on an
+  https page: connect an account, sign something). An ask ends the call; once the
+  person answers, the runtime calls the tool again with the same arguments and the
+  ask returns the answer. **Everything before an ask runs again then**, so ask
+  first and act after, and key side effects by `context.idempotencyKey`, which is
+  the same on both calls.
+
+```ts
+const deleteApp = tool({
+  description: "Delete an app", input: schema.Object({ app: schema.String() }),
+  execute: async ({ app }, context) => {
+    if (!await context.confirm(`Delete ${app}? Its URL stops working.`)) return { cancelled: true };
+    return apps.delete(app, { idempotencyKey: context.idempotencyKey });
+  },
+});
+```
+
+Code in `js_exec` cannot wait for days: a call from code that would ask fails
+with "needs the user's input: call it directly". Tools that ask are therefore
+always offered to the model directly.
+
+## Answering
+
+`input.answer(value, { from })` takes a plain value by the input's `kind`:
+
+| kind | value |
+| --- | --- |
+| `approval` | `true` to approve, `false` to decline |
+| `question` | the chosen option's label (or labels, or free text where allowed); for several questions, `{ "<question>": answer, … }` |
+| `form` | the fields, as an object (checked against the form's schema) |
+| `url` | `true` once the person has done what the page asks, else `false` |
+
+`input.decline()` declines any input. Answering resolves with the resumed run, or,
+when the run waits on other inputs too, with the run still `input_required`
+listing those. Answering the same way twice is safe; a different answer to an
+input already settled is a 409 that says how it settled.
+
+Inputs outlive your process: answer later from anywhere.
+
+- `agent.pendingInputs()` (Python `pending_inputs()`) lists an agent's waiting
+  inputs, each with `answer()`.
+- `agents.runtime.inbox("pending")` lists the inputs waiting across all your
+  agents, for an approvals queue.
+- Over REST: `GET /v1/agents/:id/inputs?state=pending`, and `POST
+  /v1/agents/:id/inputs/:inputId {action: "accept" | "decline" | "cancel",
+  content?, from?}`. A question's `content` is `{answers: {"<question>":
+  "<label>" | ["<label>"] | "<own words>"}}`, a form's its fields. It answers
+  `{input, request}`, where `request` is the resumed run (null until the last
+  input is answered): poll it like a prompt.
+- `onInput` (`on_input`) on `upsert` hears each input as it is asked: return an
+  answer to give it at once, or nothing to answer later.
+- The agent's events include `input_required` and `input_resolved`, and
+  [webhooks](webhooks.md) `input.requested` and `input.resolved`.
+
+## Who may answer
+
+By default the person whose message started the turn (the run's `user`, or its
+`actor`) and the definition's `humanInput.approvers`. An answer must say who is
+answering (`from`) whenever the input names who may (`responders.audience`, or
+the definition has approvers): the SDKs refuse to send one without it, and the
+runtime refuses it with 400; a `from` who may not answer is a 403. The model has
+no way to answer.
+
+## Waiting, and giving up
+
+- A new message to the agent supersedes its waiting inputs: their calls close
+  with "Not answered: the user sent a new message instead", then the message runs.
+- `agent.abort()` cancels them.
+- Inputs expire after `humanInput.expiresInSeconds` (7 days by default, at most
+  30). Expired and cancelled inputs close their calls and the turn without
+  calling the model, unless `humanInput.onExpire` is `resume`.
+
+```json
+{"name": "Ops", "builtins": ["ask_user"], "humanInput": {"expiresInSeconds": 86400, "approvers": ["slack:U0123"]},
+ "mcpServers": [{"name": "github", "url": "…", "approval": {"tools": {"delete_repo": "always"}}}]}
+```
+
+## In a channel
+
+In Slack, Telegram or Discord, a suspended turn's reply ends with its first input
+as text: a question's numbered options, the call to approve, the URL, a
+confirmation. The next message from someone allowed to answer, if it fits (an
+option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
+anything else is a new message. See [Channels](channels.md).
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/browser.md -->
+
+# Showing an agent in a browser
+
+A browser reads an agent directly from the runtime (its messages as they stream,
+the running turn, tool progress, waiting inputs, older history) with a **browser
+token** your server mints for each user after its own access checks. The browser
+never holds your API key or the agent's token, and your server relays nothing.
+
+## 1. Mint a token on your server
+
+```ts
+// POST /api/threads/:id/token, after checking the user may see this thread
+const agent = await agents.upsert(`thread-${threadId}`, config);
+return Response.json(await agents.runtime.browserToken(agent.id, { ttlSeconds: 900 })); // { token, expiresAt, agentId, url }
+```
+
+(Python: `await agents.runtime.browser_token(agent.id, ttl_seconds=900)`; REST:
+`POST /v1/agents/:id/browser-tokens {ttlSeconds?, scopes?, events?, redact?, subject?}`.)
+
+- The token reads that one agent: only `GET /v1/agents/:id/events`, `/state`,
+  `/history` and `/inputs` (or the `scopes` you name). Everything else is a 403.
+- It lasts `ttlSeconds` (default 900, 5 to 3600), and its event stream ends when
+  it expires. It is stateless: nothing revokes it sooner, so keep it short.
+- `events` limits the event types it gets (the watcher needs `turn_opened`,
+  `message_start`, `message_update` and `message_end` to follow messages);
+  `redact: ["usage.cost"]` leaves provider costs out of everything it reads. It
+  never gets the runtime's internal events, or a run's result, only whether and
+  why a run stopped.
+- It works from any origin, as publishable keys do: the token grants the read,
+  so there is no origin list to keep. Send it as `Authorization: Bearer`, never in
+  a URL.
+
+## 2. Watch from the browser
+
+```ts
+import { watchAgent } from "@camelai/agent-runtime/watch";
+
+const { token, expiresAt, agentId, url } = await fetch(`/api/threads/${id}/token`, { method: "POST" }).then(r => r.json());
+const watcher = watchAgent({
+  url, agentId, token, expiresAt,
+  // Called before the token expires, and if the runtime refuses it.
+  getToken: () => fetch(`/api/threads/${id}/token`, { method: "POST" }).then(r => r.json()),
+  onChange: state => render(state),
+  onError: error => console.warn(error.message),
+});
+// later: watcher.loadOlder() on scroll-up; watcher.close() when the view goes away
+```
+
+`@camelai/agent-runtime/watch` has no dependencies and no Node APIs (it bundles
+to under 30 KB). `state` is:
+
+| field | |
+| --- | --- |
+| `messages`, `indexes` | the agent's messages, oldest first, each at its index in the history; a user message carries its `requestId` and your `metadata`, to match an optimistic bubble |
+| `partial` | the assistant message streaming now, with tool calls' arguments parsed as they stream |
+| `progress` | the latest progress of each running tool call, by tool call id |
+| `running` | whether a turn runs |
+| `pendingInputs` | inputs the agent waits on (answer them through your server) |
+| `lastOutcome` | how the latest run ended: `{id, stopped?, error?}` |
+| `hasOlder` | whether `loadOlder()` has more |
+| `connected`, `transport` | `sse`, or `poll` where a proxy buffers streams |
+| `expired` | the token expired (or was refused) and could not be renewed: the watcher stopped; watch again with a new token |
+
+- It streams over SSE and falls back to long polls where streams deliver
+  nothing. It reconnects from its cursor, or from a snapshot of the running turn
+  where it cannot replay, and closes the stream while the page is hidden
+  (`hiddenGraceMs`, default 30 s).
+- Without `getToken`, the watcher stops when its token expires, with
+  `state.expired` set and an error saying so. Pass `getToken` for any view that
+  stays open longer than the token.
+- In a browser a network failure and a CORS refusal both look like "Failed to
+  fetch"; the watcher's error says which to check. The usual cause is a token
+  that is not a browser token (the runtime allows cross-origin reads only with
+  one), or a wrong `url`.
+
+## Sending messages from the browser
+
+The browser only reads. Send messages, answers and aborts through your server,
+which checks the user and calls the agent:
+
+```ts
+// POST /api/threads/:id/messages
+const agent = await agents.upsert(`thread-${threadId}`, config);
+const run = await agent.run(text, { user: user.id, metadata: { clientId } });
+return Response.json({ reply: run.text });
+```
+
+The watcher shows the run as it happens; `metadata.clientId` lets the page match
+the stored user message to the bubble it showed optimistically.
+
+## Without the watcher
+
+The same reads work from any code: `GET /v1/agents/:id/events` (SSE; `?poll=1&wait=25`
+for one JSON long poll), `/state`, `/history?limit=50` (pages of whole turns,
+newest first, `before` for older) and `/inputs`, with a browser token or your
+API key. See the [event reference](../reference/events.md).
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/files.md -->
+
+# Files
+
+Every agent has files: its own workspace at `/workspace` by default, or the
+**volumes** you mount. Files you attach to a message land there, the model works
+on them with its file tools and with code, tools save their outputs there, and
+you read what the agent made by path.
+
+## Attaching files to a message
+
+```ts
+const run = await agent.run("What changed in Q3?", {
+  files: ["./q3.pdf", screenshotBytes, new File([csv], "data.csv"), { path: "/workspace/notes.md" }],
+});
+```
+
+```python
+run = await agent.run("What changed in Q3?", files=[Path("q3.pdf"), screenshot_bytes, {"name": "data.csv", "data": csv}, {"path": "/workspace/notes.md"}])
+```
+
+A file is bytes, a `Blob` or `File`, `{name, data, contentType?}`, a local path
+(the Node entry `@camelai/agent-runtime/node`, or a `str`/`Path` in Python), or
+`{path}` for a file already in the agent's mounts. The SDKs upload each first,
+streamed, to `uploads/<run id>/<name>` in the agent's workspace, then send the
+message referring to them by path, so a retried run never uploads twice.
+
+- At most 20 files per message, each at most 256 MiB.
+- Over REST, upload with `PUT /v1/agents/:id/uploads/:requestId/:name`, then
+  `POST /v1/agents/:id/prompt {text, requestId, files: [{path}]}`. The prompt also
+  takes small files inline, `{name, data: <base64>, contentType?}`, up to 4 MiB in
+  all.
+
+## What the model sees
+
+The message carries a line per file, such as
+`[File /workspace/uploads/r1/q3.pdf (application/pdf, 2.1 MB)]`, and the file
+itself where the model can take it:
+
+| | Shown natively | Limits |
+| --- | --- | --- |
+| Images (PNG, JPEG, GIF, WebP) | models with image input | 5 MiB and 8,000 px a side each |
+| PDFs | Anthropic, Google, OpenAI and OpenRouter models with image input | 16 MiB and 100 pages each |
+| Per model request | | 24 MiB and 100 files shown; older files past that are named only |
+
+Anything else is only named, and the model reads it with its file tools. The
+transcript keeps a reference to each file's content, never its bytes, so a file
+changed or deleted later still reads as it was when attached.
+
+## The agent's file tools
+
+`read`, `write`, `edit`, `ls`, `glob` and `grep` work on mount paths
+(`/workspace/notes.md`). `read` shows an image or PDF to a model that can view
+it. Every file has a version, and `write` and `edit` take one, so an edit based on
+a stale read fails and the model reads again. An application whose own tools
+handle files can leave these out with `fileTools: false` (in a definition, or when
+the agent is made).
+
+Code in `js_exec` has `fs` over the same mounts:
+
+```js
+const csv = await fs.readFile("/workspace/data.csv", { encoding: "utf8" });
+await fs.writeFile("/workspace/out/chart.png", png, { contentType: "image/png" });
+await fs.stat("/workspace/out/chart.png");  // {path, type, size, version, updatedAt, contentType}
+await fs.list("/workspace/out");
+```
+
+One `fs` call moves at most about 700 KiB; read larger files in windows with
+`tools.read({ path, offset, encoding: "base64" })`.
+
+## Files out
+
+A run lists what it wrote: `run.files` (`[{path, version, size, contentType}]`,
+every file written, up to 100) and, in `run.raw.presented`, the files the model
+handed over with `present_file` (with a caption). Each presented file is also a
+`file_presented` event as soon as it is presented, with a signed download `url`.
+
+Read them with the agent's own access:
+
+```ts
+const { data, contentType } = await agent.files.download("/workspace/out/chart.png");
+const listing = await agent.files.list({ path: "/workspace/out" });
+const link = await agent.files.link("/workspace/out/report.pdf", { expiresIn: 3600 }); // for a browser or another service
+await agent.files.upload("/workspace/in/config.json", JSON.stringify(config));
+```
+
+Python has the same: `agent.files.download(path)`, `list(path=...)`,
+`link(path, expires_in=...)`, `upload(path, data)`.
+
+## Volumes
+
+A volume is a shared file tree. Without `mounts`, each agent gets its own
+workspace volume at `/workspace`; mount the same volume in several agents to
+share files, read-only or read-write:
+
+```ts
+const docs = await agents.runtime.createVolume({ name: "shared docs" });
+await agents.runtime.volume(docs.id).write("handbook.md", handbook);
+const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, path: "/docs", mode: "ro" }], … });
+```
+
+- Mounts are `{volumeId, path, mode: "ro" | "rw", subpath?, notify?}`. `notify`
+  prompts the agent (about a second after, coalesced) when others change files
+  under the mount. Only your own volumes can be mounted, and an agent's mounts
+  are fixed when it is made (`PUT /v1/agents/:id/mounts` replaces them).
+- `volume.write(path, data, { version })` writes only if nobody changed the file
+  since that version (`0`: it must not exist), `read`, `list`, `remove`,
+  `changes(since)`.
+- `volume.snapshot()` and `volume.fork({ snapshot })` copy metadata only: a fork
+  shares its source's content and diverges independently.
+- Every file has a content type: the upload's, else sniffed from its bytes and
+  name. Downloads are served so a file can never run as the runtime's origin.
+- Uploads may take 15 minutes; a volume suits up to about 100,000 files.
+
+## Signed links
+
+`volume.link(path, options)` or `agent.files.link(path, options)` returns `{url,
+expiresAt}`: a URL that downloads (`GET`) or uploads (`PUT`, with `maxBytes` and
+`contentType`) that one file without a token, so a browser, a tool server or a
+channel moves the bytes directly. Links last 15 minutes by default, at most 24
+hours, and cannot be revoked sooner. Downloads take `Range`.
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/multi-user.md -->
+
+# Agents for many users
+
+Most applications give each user, or each conversation, an agent of its own, and
+serve every agent's tools from one backend. This guide puts the pieces
+together: keys, identity, served tools, per-user limits and keys.
+
+## One agent per user or conversation
+
+Key agents by your own ids, and upsert on each request:
+
+```ts
+const agent = await agents.upsert(`thread-${thread.id}`, {
+  definition: SUPPORT_DEFINITION,         // tools served by your backend, see below
+  subject: thread.ownerId,                // whom the agent acts for
+  context: { org: thread.orgId },         // claims your tools authorize against
+});
+const run = await agent.run(message, { user: currentUser.id });
+```
+
+- `subject` and `context` are set when the agent is made, with your API key; the
+  agent's own token cannot change them, and nor can the model. Your tools get them
+  as `identity.subject` and `identity.context`.
+- `user` names who sent this message. The model sees who sent it (in a block only
+  the runtime can write), and tools get it as `identity.actor` (and
+  `identity.user`). Use `user: { id, name }` to give the model a display name too;
+  names are the sender's own and never proof of anything, which the runtime tells
+  the model.
+- An agent shared by several people (a team channel) shares its whole
+  conversation with all of them: keep private data in agents of one person each.
+
+## Serve the tools from your backend
+
+A multi-user backend runs many instances, so its tools are served over HTTP,
+not attached to one process. Each call carries a signed token saying which agent
+it is for and who is acting, so one endpoint answers every user's agents safely:
+
+```ts
+const tools = {
+  list_todos: tool({
+    description: "The current user's to-dos", input: schema.Object({}),
+    execute: (_args, { identity }) => db.todos({ user: identity!.user, org: identity!.context.org }),
+  }),
+};
+export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev" }) };
+```
+
+```ts
+const definition = await agents.runtime.createDefinition({
+  name: "Support",
+  mcpServers: [{ name: "app", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],
+});
+```
+
+Authorize every call as `identity.user` within `identity.context`, never from
+the model's arguments. See [Tools](tools.md#served-tools-over-http-for-serverless-and-many-users)
+and [Identity](tools.md#identity-who-a-call-is-for).
+
+Your request handlers can be serverless: an agent upserted without local tools
+follows its stream read-only, so any number of instances run agents at once.
+
+## Showing each user their agent
+
+Mint a browser token per user and let the browser read the agent directly; send
+messages through your server. See [Showing an agent in a browser](browser.md).
+
+## Spend: limits and keys per user
+
+- `spendLimit: { usd }` caps what one agent may spend on model calls from now on
+  (set it on upsert, or `PATCH /v1/agents/:id/configuration`). Setting it starts
+  counting from zero, so you can set the remaining allowance before each run. An
+  agent at its limit gets 402 for new runs, and a running turn ends with the run
+  failed as `spend_limit`.
+- A **key scope** per customer holds that customer's own provider keys, so their
+  agents call providers with them: `PUT /v1/key-scopes/:scope/providers/:provider`,
+  then `keyScope` on upsert. See [Models and keys](models-and-keys.md).
+- `modelHeaders` label each model call, e.g. for a gateway's per-conversation logs.
+- The `usage.recorded` [webhook](webhooks.md) reports each model response's cost
+  with the agent's `subject`, `context`, `actor` and `keyScope`, to meter per user.
+
+## Matching messages to your records
+
+`run(text, { metadata })` attaches your own key-value data to the message (at
+most 16 string values): the stored message and its run carry it, in history,
+events and webhooks; the model never sees it. Pass `idempotencyKey` to choose the
+run's id, so a retried request never runs twice, and to find the run later.
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/webhooks.md -->
+
+# Webhooks
+
+The runtime can tell your server when runs start and end, when an agent asks a
+person for input, and what each model response cost, so you react without
+holding a connection open. Register an endpoint with the event types it wants:
+
+```http
+POST /v1/webhooks
+Authorization: Bearer $CAMELAI_API_KEY
+
+{"url": "https://example.com/hooks/agents", "events": ["run.completed", "run.failed", "input.requested"], "description": "prod"}
+```
+
+The answer carries the endpoint's `id` (`we_…`) and its signing `secret`
+(`whsec_…`), shown only then. `GET /v1/webhooks` lists your endpoints (at most
+16); `GET`, `PATCH` and `DELETE /v1/webhooks/:id` read, change and remove one;
+`POST /v1/webhooks/:id/secret` replaces its secret (the old one also signs for 24
+hours).
+
+## Events
+
+Every event is an envelope:
+
+```json
+{"id": "evt_3f9c0a1b2c3d4e5f60718293", "type": "run.completed", "created": 1790000000,
+ "data": {"agentId": "client_…", "requestId": "…", "method": "prompt", "metadata": {"source": "web"},
+          "replyIndex": 3, "messageCount": 4,
+          "usage": {"responses": 2, "input": 2300, "output": 140, "cacheRead": 0, "cacheWrite": 0, "costUsd": 0.0081}}}
+```
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `run.started` | A run (`method`: `prompt`, `continue`, `resume`, `execute`) began | `agentId`, `requestId`, `method`, `actor`, `metadata`; `resumes` when a node resumed a turn whose node was lost |
+| `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, or `spend_limit`) if it stopped early; `replyIndex` and `messageCount`; `steeredInto` for a message a running turn took |
+| `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, and `uncertain` when a restart cut it short |
+| `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
+| `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
+| `usage.recorded` | A model response's usage was counted | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response` or `compaction`), tokens, `cost: {usd, source}`, `at` |
+
+- Payloads are small: ids and the key facts. Read the rest with your API key: the
+  run (`GET /v1/agents/:id/requests/:requestId`, with its reply in
+  `outcome.result.reply`), history, or inputs. `metadata` is what the message that
+  started the run carried, so you can route an event without a lookup.
+- `created` is in Unix seconds. An event's `data` only gains fields; a change you
+  could not ignore comes as a new type.
+- An endpoint receives the runs that begin after it is made.
+
+## Verifying and handling
+
+Requests are signed per [Standard Webhooks](https://www.standardwebhooks.com/):
+`webhook-id` (the event's `id`), `webhook-timestamp` (Unix seconds) and
+`webhook-signature`, `v1,<base64 HMAC-SHA256 of "<id>.<timestamp>.<body>">` keyed
+with the secret's base64 part (space-separated when two secrets sign during a
+rotation). Any Standard Webhooks library verifies them:
+
+```ts
+import { Webhook } from "standardwebhooks";
+const event = new Webhook(process.env.WEBHOOK_SECRET!.replace(/^whsec_/, "")).verify(body, headers) as WebhookEvent;
+```
+
+(`WebhookEvent` is typed in `@camelai/agent-runtime`.)
+
+- Delivery is at least once. Answer 2xx within 10 seconds; anything else is
+  retried with exponential backoff, from 5 seconds to an hour apart, for 3 days.
+- Dedupe by `id` (a retried event keeps it), and order by `created`: retries can
+  reorder deliveries.
+- Do the work after answering: queue it, then return 200.
+
+## Continuing from a webhook
+
+A handler can act on the agent itself. Send your own ids as `metadata` with each
+message; they come back on the run's events, so the handler finds the agent by
+its key without a lookup:
+
+```ts
+// When the message was sent: agent.run(text, { metadata: { thread: thread.id } })
+if (event.type === "run.failed" && event.data.metadata?.thread) {
+  const agent = await agents.upsert(`thread-${event.data.metadata.thread}`, config);
+  await agent.run("The last step failed; tell the user what happened and what to try.");
+}
+```
+
+A serverless handler that upserts without local tools never contends with the
+process serving the agent's tools; see [Concepts](../concepts.md#processes-and-connections).
+
+## The usage webhook (deprecated)
+
+Before endpoints, `PUT /v1/usage-webhook {"url"}` set one URL that receives each
+model response's usage in its own body (not an envelope). It still works, but
+new integrations should register an endpoint for `usage.recorded` instead.
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/models-and-keys.md -->
+
+# Models and keys
+
+## Choosing a model
+
+Agents name a model as `provider/model-id` from the catalog: `GET /v1/models`
+(`?available=true` for the ones your account can use now), or the console's
+**Models & keys**. For example `anthropic/claude-sonnet-5`,
+`openai/gpt-5.2`, `openrouter/anthropic/claude-sonnet-5`. Change an agent's model
+between runs with `upsert` (a changed `model`) or `agent.configure({ model })`;
+its history carries over.
+
+A model call uses, in order: the key of the agent's [key scope](#key-scopes) for
+the model's provider, else your account's own key for the provider
+(`PUT /v1/providers/:provider/key`, or the console), else, for prepaid accounts,
+the platform's key, charged to your credit. Agents cannot be made on a provider
+none of these has a key for.
+
+## Your own model endpoint
+
+A tenant can have its agents' model calls go through its own pass-through
+gateway, e.g. a proxy that checks credit per call, swaps in the real provider
+key (its customers' own, a subscription) and meters usage, the way Cloudflare's
+AI Gateway does. The runtime speaks each provider's native protocol to it, so
+nothing is translated: the gateway forwards the bytes as they are. Its entry in
+the tenants file names the endpoint as a provider:
+
+```json
+"camel": {"tokenSha256": "…", "modelEndpoints": {"chiridion": {
+  "baseUrl": "https://camelai.com/agent-runtime/llm",
+  "models": {"openrouter/deepseek/deepseek-v4:free": {"contextWindow": 128000, "maxTokens": 8192, "reasoning": true, "input": ["text"]}}
+}}}
+```
+
+- Agents name its models as `<name>/<provider>/<model id>`, e.g.
+  `"chiridion/anthropic/claude-opus-5"` or
+  `"chiridion/openrouter/anthropic/claude-sonnet-5:nitro"`, at creation, in a
+  definition or through `PATCH /v1/agents/:id/configuration`. Bedrock models also
+  name their region: `"chiridion/amazon-bedrock/us-west-2/us.anthropic.claude-sonnet-5"`.
+  The model is Pi's catalog model `<provider>/<model id>` (its metadata, API and
+  compatibility; a routing variant like `:nitro` or `:free` is looked up without
+  the suffix). Or it is one declared in `models` under everything after
+  `<name>/`. `GET /v1/models` lists the declared ones. The model id is sent
+  exactly as given, variant and all.
+- `<baseUrl>/<provider>` stands for the provider's API root below. The gateway
+  strips `<baseUrl>/<provider>` (plus the region, for Bedrock) and appends the
+  rest of the path, query included, to the root. The runtime puts its identity
+  token where the provider takes its key.
+
+  | provider | upstream root | requests | key header |
+  |---|---|---|---|
+  | `anthropic` | `https://api.anthropic.com` | `POST /v1/messages?beta=true` | `x-api-key` |
+  | `openai` | `https://api.openai.com/v1` | `POST /responses` | `Authorization: Bearer` |
+  | `openrouter` | `https://openrouter.ai/api` | `POST /v1/responses`; Anthropic models `POST /v1/messages?beta=true` | `Authorization: Bearer`; `x-api-key` |
+  | `google` | `https://generativelanguage.googleapis.com/v1beta` | `POST /models/<id>:streamGenerateContent?alt=sse` | `x-goog-api-key` |
+  | `amazon-bedrock` | `https://bedrock-runtime.<region>.amazonaws.com`, from `<baseUrl>/amazon-bedrock/<region>` | `POST /model/<URL-encoded id>/converse-stream` | `Authorization: Bearer` (unsigned; no SigV4) |
+  | `openai-codex` | `https://chatgpt.com/backend-api` | `POST /codex/responses` (SSE, body `Content-Encoding: zstd`) | `Authorization: Bearer`, with `chatgpt-account-id: passthrough` |
+
+  OpenRouter's models use its Responses API, stateless (`store: false`, the whole
+  conversation each call), with reasoning kept and sent back as it came
+  (`encrypted_content` or `signature`). Its Anthropic models keep its Messages API,
+  as in Pi's catalog, because Responses gets them no prompt caching. Bedrock
+  requests are HTTP/1.1, and their ids are sent as given: a model id
+  (`anthropic.claude-sonnet-5`) or an inference profile's (`us.…`, `eu.…`,
+  `global.…`); Pi's catalog has both.
+  `openai-codex` is ChatGPT's Codex backend, e.g.
+  `"chiridion/openai-codex/gpt-5.5"`: the tenant replaces `Authorization` with
+  the user's ChatGPT access token and sets the real `chatgpt-account-id`. Its
+  requests are stateless too, and also carry `originator`, `OpenAI-Beta`, and,
+  in a turn, `session-id` and `x-client-request-id` (the agent's id), which the
+  backend takes as they are.
+- Every call also carries the token as `X-Agent-Runtime-Identity`. This is the
+  EdDSA JWT that MCP servers with `auth: {"type": "runtime"}` get (see
+  [Identity tokens](tools.md#identity-who-a-call-is-for)). Its `aud` is the
+  endpoint's `baseUrl` exactly as configured, and it has the same claims:
+  `tenant`, `agent`, `sub`, `act` (the turn's actor), `ctx` and `definition`. A
+  fresh token is minted for every call, compaction summaries included, and lasts
+  two minutes. Verify it against `/.well-known/jwks.json`; the runtime sends no
+  key.
+- The runtime does not retry the endpoint's errors, since the gateway retries
+  itself. A refusal before the stream (e.g. an HTTP 402 or 429 in the
+  provider's error format), a 5xx or an error mid-stream ends the turn, with the
+  message as the outcome's `error`. A context overflow still compacts and
+  continues once.
+- Calls to it cost the runtime nothing. They are counted in `/v1/usage` under
+  `<name>/<provider>/<model id>` at zero cost, and are never charged as platform
+  tokens or counted toward `maxMonthlyCost`. Agent time is charged as with a
+  tenant's own key.
+- The endpoint is the operator's: it must be HTTPS (plain HTTP only to
+  localhost, for development), and its name cannot be one of Pi's providers.
+  Changes apply from the next tenants reload to agents created or configured
+  after it.
+
+## Key scopes
+
+An application that serves many customers can give each its own provider
+credentials, so its agents call providers directly with that customer's keys: a
+**key scope** per customer (e.g. `org_abc123`), holding one entry per provider.
+
+```http
+PUT /v1/key-scopes/org_abc123/providers/openrouter
+{"apiKey": "sk-or-…", "baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openrouter",
+ "headers": {"cf-aig-authorization": "Bearer <gateway token>"}}
+```
+
+- An entry is `{apiKey?, baseUrl?, headers?, region?}`. `headers` are sent with
+  every call, sealed like the key. The provider is any model provider of
+  `GET /v1/providers` that takes a key, or `amazon-bedrock`.
+- `baseUrl` (HTTPS; plain HTTP only to localhost) replaces the provider's API
+  root in each request's URL, as an AI gateway's provider path stands for it
+  (Cloudflare AI Gateway's `…/openrouter`, `…/anthropic`, `…/openai`):
+
+  | provider | root `baseUrl` replaces | requests |
+  |---|---|---|
+  | `openrouter` | `https://openrouter.ai/api/v1` | `POST <baseUrl>/responses`; Anthropic models (its Messages API) `POST <baseUrl>/messages?beta=true` |
+  | `anthropic` | `https://api.anthropic.com` | `POST <baseUrl>/v1/messages?beta=true` |
+  | `openai` | `https://api.openai.com/v1` | `POST <baseUrl>/responses` (or `/chat/completions`, per the catalog's API for the model) |
+  | `amazon-bedrock` | `https://bedrock-runtime.<region>.amazonaws.com` | `POST <baseUrl>/model/<URL-encoded id>/converse-stream` |
+  | others | the model's base URL in `GET /v1/models` | as the provider's API appends |
+
+- `apiKey` may be left out for `openrouter`, `anthropic` or `openai` behind a
+  `baseUrl`: a gateway that holds the provider's key itself (authenticated by,
+  say, `cf-aig-authorization` in `headers`). Its calls send no `Authorization` or
+  `x-api-key` header, only the entry's `headers`.
+- For `amazon-bedrock` the key is a Bedrock API key, sent as a bearer token (no
+  SigV4), and the entry needs its region: `region`, or a regional `baseUrl`
+  `https://bedrock-runtime.<region>.amazonaws.com`, which it is read from. Model
+  ids are the catalog's, inference profiles included
+  (`amazon-bedrock/us.anthropic.claude-sonnet-5`).
+- `GET /v1/key-scopes/:scope` lists the providers set, with each key's last four
+  characters, `baseUrl`, `region` and the extra headers' names, never a secret.
+  `DELETE /v1/key-scopes/:scope/providers/:provider` removes an entry, and
+  `DELETE /v1/key-scopes/:scope` the whole scope. Scope ids are 1–100 letters,
+  digits, `_`, `.` and `-`. Keys and headers are stored sealed, bound to your account, the scope and the provider.
+- An agent gets `keyScope` at creation (`POST /v1/agents`, `/client-sessions`,
+  the SDKs' `createAgent`), or through `PATCH /v1/agents/:id/configuration`
+  (`null` clears it; the agent's own token cannot change it). Applying a
+  definition keeps it. Models are named as usual, e.g.
+  `openrouter/anthropic/claude-sonnet-5` (a routing variant like `:nitro` too),
+  `anthropic/claude-opus-5` or `amazon-bedrock/us.anthropic.claude-sonnet-5`.
+  OpenRouter's models are called through its Responses API (stateless, reasoning
+  carried back as it came), whatever key they use, except Anthropic's, which keep
+  its Messages API for prompt caching: the same rule as on a tenant's endpoint.
+- Each model call, compaction summaries included, takes the key of the agent's
+  scope for the model's provider, else the tenant's own key, else an admin's,
+  else (prepaid) the platform's. It is read at the call, so a changed key applies
+  to every agent of the scope from its next call, within five seconds. An agent may be
+  created on a provider only its scope has a key for.
+- Scope keys are the tenant's own: no platform token charge, like a tenant's key
+  (agent time is charged as usual), and their calls are counted in `/v1/usage`
+  under the model as usual.
+
+## Model headers
+
+`modelHeaders: {name: value}` at creation or through `PATCH
+/v1/agents/:id/configuration` are non-secret headers sent on each of the agent's
+model calls, compaction included, e.g. `{"cf-aig-metadata": "{\"org\": …, \"thread\": …}"}`
+to label a shared gateway's logs per conversation. A PATCH replaces them whole;
+`null` or `{}` removes them. They come after a key scope entry's `headers` (and
+win on a clash). At most 20 and 8 KB; `authorization`, `x-api-key`,
+`x-goog-api-key`, `cf-aig-authorization`, `chatgpt-account-id`,
+`x-agent-runtime-identity`, `x-amz-*` and transport headers (`host`,
+`content-length`, `content-type`, `transfer-encoding`, `connection`) are refused
+with 400. Only the tenant sets them; `GET /v1/agents/:id` shows them.
+
+## Spend limits
+
+`spendLimit: {"usd": n}` at creation or through `PATCH /v1/agents/:id/configuration`
+is the most the agent may spend on model calls from then on: their cost as the
+[webhooks](webhooks.md) (`usage.recorded`) reports it (the provider's own when it reports
+one, else the catalog price), turns and compaction summaries, whoever's key they
+ran on. Setting a value starts counting from zero, so an
+application can set the remaining allowance before each prompt; `null` removes
+it. A PATCH applies it at once, ahead of runs already queued. `GET /v1/agents/:id`
+shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
+`prompt` and `continue` runs, and a running turn ends after the response that
+crossed it (its tool calls run and are recorded), with `stopped: "spend_limit"`:
+the SDKs' `run()` fails with code `spend_limit`. Only you can set it, not the
+agent's own token.
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/definitions.md -->
+
+# Definitions
+
+A definition is a reusable agent configuration: name, model, system prompt,
+thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
+limits (`ttlSeconds`) and mounts. Manage them with the SDKs
+(`agents.runtime.createDefinition`, `updateDefinition`, `definition(s)`,
+`deleteDefinition`; `create_definition` and so on in Python), `/v1/definitions`,
+or the console's Definitions page, and make agents from one:
+
+```ts
+const definition = await agents.runtime.createDefinition({
+  name: "Support", model: "anthropic/claude-sonnet-5", systemPrompt: "You answer support tickets.",
+  builtins: ["web_search", "ask_user"],
+  mcpServers: [{ name: "app", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],
+});
+const agent = await agents.upsert(`ticket-${ticket.id}`, { definition: definition.id, subject: ticket.customerId });
+```
+
+The definition supplies the model, prompt, thinking level and tool sources;
+`name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
+its defaults, and tools of your process (`tools`) are added as its attached
+server.
+
+An agent can also have configuration of its own, which applying its definition
+leaves alone:
+
+```json
+{"definition": "def_…", "model": "anthropic/claude-opus-5", "thinkingLevel": "low",
+ "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
+```
+
+- `model` and `thinkingLevel` given at creation, or later through
+  `PATCH /v1/agents/:id/configuration`, and `fileTools` given at creation, are
+  the agent's own: an apply changes every other field and keeps them.
+- `systemPromptAppend` is text the model reads after the definition's prompt
+  (after the runtime's default prompt without one), e.g. per-conversation
+  context. An apply replaces the prompt and keeps the addition; configuring
+  `systemPromptAppend` changes it, and `""` removes it. Agents not made from a
+  definition can have one too.
+- `systemPrompt` cannot be given with a definition: the definition owns the
+  prompt, so an apply would silently replace it. A `systemPrompt` configured
+  on one agent later lasts until the next apply.
+
+Every change is a new revision (`PATCH` replaces the fields given; `null`
+removes one; `revision` makes it conditional). An agent records the definition
+and revision it was made from (`definition` in `GET /v1/agents/:id`), and keeps
+that configuration when the definition changes: only new agents get the new
+revision. `PATCH … {"apply": "all"}` also reconfigures every live agent made
+from the definition, through each agent's `configure` request, queued behind its
+runs so it lands between turns; the application's attached tools are kept. Only
+the tenant can apply a definition, never an agent's own token. `GET
+/v1/definitions/:id/agents` lists the agents and the revision each has. Deleting
+a definition leaves its agents as they are; a definition a channel uses cannot
+be deleted.
+
+The response's `applied` lists each agent with its `requestId` and `status`:
+`updated` (it has the revision), `queued` (it takes it after its current turn;
+poll `GET /v1/agents/:id/requests/:requestId` for the outcome) or `failed`, with
+an `error`. On the console's Channels page, **Model & prompt** opens a channel's
+definition with apply selected.
+
+`PATCH /v1/agents/:id/configuration` changes one agent's `model`,
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
+
+```http
+PATCH /v1/agents/client_…/configuration
+Authorization: Bearer <API token>
+Content-Type: application/json
+
+{"requestId": "model-change-1", "model": "openrouter/openai/gpt-6-luna"}
+```
+
+It answers `202` with the request, which is queued like an applied definition
+and survives a restart; poll it for the outcome, and reuse `requestId` to retry.
+A model must be in `GET /v1/models`, and the tenant must have a key for its
+provider, or the change is refused with `400`. An agent that is not running
+takes the change when it next starts.
+
+---
+
+<!-- https://agents.camelai.dev/docs/guides/channels.md -->
+
+# Channels
+
+A channel lets people talk to agents from a messaging service: Telegram, Slack or
+Discord. Tenants manage channels with `/v1/channels` or the console's Channels page:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"type":"telegram","credentials":{"botToken":"<from @BotFather>"},
+       "definition":"def_…","access":{"allow":["@ada","123456789"]}}' \
+  https://agents.camelai.dev/v1/channels
+```
+
+Each conversation's agent is made from the channel's `definition`. A channel
+created without one gets an empty definition of its own, which is deleted with
+the channel.
+
+| Service | Credentials | Messages arrive | A conversation (one agent) is |
+| --- | --- | --- | --- |
+| `telegram` | `botToken` | webhook, registered for you | a chat |
+| `slack` | `botToken` (`xoxb-…`), `signingSecret` | webhook, pasted into the app | a thread started by an @mention, or a DM |
+| `discord` | `botToken` | the Gateway (a WebSocket) | a DM, or a channel or thread where the bot is @mentioned |
+
+Creating a channel checks its credentials with the service. Credentials and a
+random webhook secret are stored encrypted; the API returns only masked values.
+
+- **Telegram.** `https://agents.camelai.dev/channels/telegram/<id>` is registered as the
+  bot's webhook with the random secret, which each delivery must echo (compared
+  in constant time). Deleting the channel removes the webhook. `/start` gets the
+  channel's `greeting` without a model call.
+- **Slack.** Create an app with the bot scopes `app_mentions:read`, `chat:write`,
+  `im:history`, `channels:history` (and `groups:history` for private channels),
+  `files:read` (attachments in) and `files:write` (files out), and install it. Slack has no API to set an app's event URL,
+  so paste the channel's `webhookUrl` into Event Subscriptions and subscribe to
+  `app_mention`, `message.im` and `message.channels`. Deliveries must carry a
+  valid `X-Slack-Signature` from the signing secret, at most five minutes old; the
+  URL check is answered once it verifies. A mention starts a thread and replies go
+  there; later messages in that thread reach its agent without a mention. The
+  same message sent as both `app_mention` and `message` is handled once. Slack has
+  no typing indicator for bots.
+- **Discord.** Create an application, add a bot, and invite it with View
+  Channel, Send Messages, Send Messages in Threads, Attach Files and Read
+  Message History.
+  There is no webhook for ordinary messages: the runtime keeps the bot's Gateway
+  connection itself, reconnecting and resuming as needed. A token Discord rejects
+  is retried every five minutes. The bot needs no privileged intents: it
+  answers only DMs and messages that mention the bot user. A mention of a role
+  with the bot's name does not count: in autocomplete, pick the entry with the
+  App badge. Replies never ping anyone (`allowed_mentions` is empty). The health
+  log counts messages received, accepted and ignored by reason, and a message
+  ignored as a role mention (`role_mention_without_bot_mention`) or as empty is
+  logged with its id. Once the token is saved, the console shows an invite link
+  and a test mention to paste into Discord.
+
+What all three share:
+
+- Each external conversation gets its own agent, made on first contact from
+  the channel's definition, at its revision then.
+- Senders must be on the allowlist unless the channel sets `access.public`:
+  Telegram and Discord user ids or @usernames, Slack member ids (`U0123ABCD`).
+  Each sender is rate limited (`limits.perSenderPerMinute`, default 10) and the
+  channel has a daily turn cap (`limits.turnsPerDay`, default 1000).
+- Each message carries its sender as `from` (see [Who sent a message](multi-user.md#one-agent-per-user-or-conversation)), and tool calls carry a runtime-set `origin`
+  (`{channel, conversationId, sender}`, `context.origin` in the SDKs) that
+  tools can authorize against.
+- Attachments of any type (Telegram photos, documents, audio, voice notes,
+  videos and animations; Slack files; Discord attachments) are streamed into the
+  agent's workspace at `uploads/<requestId>/<name>` and the prompt refers to
+  them by path (`files: [{path}]`), as in [Attaching files](files.md#attaching-files-to-a-message).
+  Up to 10 files and 25 MiB each (20 MB on Telegram, the most a bot may
+  download), 100 MiB per message. Downloads go only to the service's file host
+  (Slack's with the bot token, Discord's CDN, Telegram's file API), never follow
+  redirects, and have 60 seconds each. A file too large or that fails to
+  download is left out, and the prompt says so: `(file big.zip too large, not
+  attached)`. A message with only files reads `(sent a file)`.
+- The turn's final answer is sent back when the turn ends, split to the
+  service's limit (4,096 characters on Telegram, 4,000 on Slack, 2,000 on
+  Discord), with a typing indicator meanwhile where the service has one. Channel
+  agents also get a `send_message` tool for updates mid-turn, which takes
+  `files` too: paths in the agent's mounts, each checked and pinned to its
+  current version when the tool is called.
+- Files the turn presents (`present_file`, the run's `result.presented`) follow
+  the reply's text, each with its caption: on Telegram images (JPEG, PNG, WebP,
+  up to 10 MB) as photos and anything else as documents (up to 50 MB); on Slack
+  through the external upload (`files.getUploadURLExternal`, the bytes, then
+  `files.completeUploadExternal` into the thread; up to 100 MiB); on Discord as
+  a multipart attachment (up to 10 MiB, the limit in servers without boosts). A
+  file over the service's limit is sent as a [signed link](files.md#signed-links) that
+  works for 24 hours, the longest a link may last.
+- A message is recorded durably before it is acknowledged, and duplicates
+  (provider retries, a Gateway resume) are dropped by message id for seven days.
+  Replies go through a durable outbox: a failed send is retried with backoff,
+  each message is sent once, and a permanent failure
+  (the bot was removed from the chat) is not retried. Each part of the text and
+  each file is a step recorded as it is sent, so a retry resumes after the last
+  one sent rather than sending the reply again.
+
+---
+
+<!-- https://agents.camelai.dev/docs/production.md -->
+
+# Production checklist
+
+Before you ship an application on the runtime, check each of these.
+
+## Keys and access
+
+- [ ] Your API key is only on your servers, in a secret store, never in a
+      browser, a mobile app or a repository. Browsers get [browser
+      tokens](guides/browser.md), minted per user after your own access checks.
+- [ ] An agent's token (`agent.session.token`) is secret too. You rarely need it:
+      upsert by key instead. The SDKs keep it out of logs and JSON; do not print it
+      yourself.
+- [ ] Tools authorize every call as `context.identity.user` within
+      `identity.context`, never from ids in the model's arguments. `subject` and
+      `context` are set when the agent is made. See [Identity](guides/tools.md#identity-who-a-call-is-for).
+- [ ] Served tools verify the runtime's token (`serveTools`, `serve_tools`,
+      `runtimeAuth` do), and behind a TLS-terminating proxy the audience is your
+      public URL (`nodeListener` reads `X-Forwarded-Proto`/`Host`; or pass
+      `origin`). Test with `testRuntime()`.
+
+## Agents
+
+- [ ] Agents are keyed by your ids (`upsert("user-123", …)`), so any process finds
+      them and a retry never makes a second. Keyed agents live until deleted:
+      delete the ones you no longer need (`agent.delete()`), e.g. when the user or
+      thread is deleted.
+- [ ] Configuration lives in one place: the `upsert` call (or a definition, with
+      `apply: "all"` to roll changes out). Fields fixed at creation (`subject`,
+      `context`, `definition`, `mounts`) are a 409 if they change; handle that as
+      "delete and recreate" only where you mean it.
+- [ ] You pick a model your account has a key for, and set `spendLimit` on agents
+      that act for untrusted users.
+
+## Tools
+
+- [ ] Every tool with side effects passes `context.idempotencyKey` to what it
+      calls, so a retried or re-run call acts once.
+- [ ] Long tools set `timeoutMs` and report `context.progress()`; nothing relies
+      on a call finishing within the default 15 seconds.
+- [ ] Tools that ask a person (`needsApproval`, `context.confirm/ask`) ask
+      before they act: everything before an ask runs again once answered.
+- [ ] Where tools run matches how you deploy: a long-lived process attaches
+      them; serverless or several instances serve them over HTTP. Agents woken by
+      schedules, channels or webhooks use served tools, or nobody may be there to
+      answer (`toolErrors` with `not_connected`).
+- [ ] Exactly one process attaches an agent's tools. Others run it with
+      `attach: false` (or without tools). A process that loses them
+      (`APPLICATION_REPLACED` on `onError`) keeps running the agent without them.
+
+## Runs
+
+- [ ] You reply to users from the run's result (`run.text`), not from the event
+      stream. The stream is for display.
+- [ ] Failures are handled: `run()` throws `RunError` (with `code`, and
+      `uncertain` when a restart cut the run short); `run.toolErrors` lists tool
+      calls that did not complete.
+- [ ] Runs that wait on people (`status: "input_required"`) are shown to someone
+      who can answer, or answered from your inbox (`agents.runtime.inbox("pending")`
+      and the `input.requested` webhook). Inputs expire after 7 days by default.
+- [ ] Retries reuse the run's `idempotencyKey`, so a request retried after a
+      timeout observes the same run instead of starting another.
+- [ ] Waits have a bound where your caller needs one (`signal`, Python
+      `timeout=`), knowing the run goes on; `agent.abort()` stops it.
+- [ ] `onEvent` handlers are quick or queue their work; they run in order, apart
+      from the connection, and their errors go to `onError`.
+
+## Operations
+
+- [ ] Your process closes its agents on shutdown (`await agents.close()`, or
+      `await using`), so it exits promptly and releases the agents' tools.
+- [ ] You register a [webhook](guides/webhooks.md) endpoint for `run.failed` and
+      `input.requested` (and `usage.recorded` to meter spend), verify signatures,
+      dedupe by event `id`, and answer within 10 seconds.
+- [ ] You handle 429 and 503 by waiting `Retry-After` (the SDKs retry them),
+      and know the [limits](reference/limits.md) your workload approaches.
+- [ ] Serverless: set `stateDirectory` only to a writable path (the default keeps
+      the stream's cursor in memory, which is all it needs), and prefer served
+      tools.
+
+---
+
+<!-- https://agents.camelai.dev/docs/reference/sdk.md -->
+
+# SDKs
+
+The TypeScript SDK (`@camelai/agent-runtime`) and the Python SDK
+(`camelai-agent-runtime`). Start with the [Quickstart](../quickstart.md);
+this page is the reference.
+
+```sh
+npm install @camelai/agent-runtime      # Node 22+, Bun, Deno, Cloudflare Workers
+pip install camelai-agent-runtime       # Python 3.11+; "camelai-agent-runtime[server]" for serve_tools
+```
+
+| TypeScript entry | |
+| --- | --- |
+| `@camelai/agent-runtime` | everything portable: `Agents`, `tool`, `schema`, the lower-level `AgentRuntime` and `AgentClient`, the types |
+| `@camelai/agent-runtime/node` | the same for Node and Bun, plus local file paths as attachments, `stateDirectory`, `nodeListener`, `fileJournalStore` |
+| `@camelai/agent-runtime/server` | `serveTools`, `verifyRuntimeToken`, `runtimeAuth`, `runtimeIdentity`: serving tools over HTTP |
+| `@camelai/agent-runtime/watch` | `watchAgent`: reading an agent from a browser |
+| `@camelai/agent-runtime/mcp` | `fromMcpServer`: attaching an MCP SDK server (needs `@modelcontextprotocol/sdk`) |
+| `@camelai/agent-runtime/testing` | `testRuntime`: signing identity tokens in tests |
+
+The public types need nothing else installed: messages and events are declared
+in the SDK (`Message`, `AgentEvent`, `AssistantMessage`, …).
+
+## Agents
+
+```ts
+const agents = new Agents({ apiKey, url });   // or `await using agents = new Agents()`
+```
+
+```python
+async with Agents(api_key, url=url) as agents: ...
+```
+
+- `apiKey` defaults to the `CAMELAI_API_KEY` environment variable, `url` to
+  `CAMELAI_BASE_URL`, else `https://agents.camelai.dev`.
+- `agents.close()` closes every agent's connection so the process can exit;
+  their runs go on in the runtime.
+- `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
+  mounts, `browserToken(agentId)`, `inbox()`, `toolSources(agentId)`.
+- Node: `new Agents({ stateDirectory })` keeps each agent's stream cursor on disk.
+  The default keeps it in memory, which is all a run needs.
+
+### `agents.upsert(key, config)`
+
+The agent for `key` (1 to 80 of `A-Z a-z 0-9 _ -`), made if there is none, and
+brought to `config` if it differs. Returns a connected `Agent`. See
+[Concepts](../concepts.md#agents-are-durable-and-keyed).
+
+| TypeScript | Python | |
+| --- | --- | --- |
+| `model` | `model=` | `"provider/model-id"` from `GET /v1/models` |
+| `instructions` | `instructions=` | the system prompt |
+| `instructionsAppend` | `instructions_append=` | text after the prompt (a definition's, say): per-conversation context |
+| `tools` | `tools=` | tools served from this process: `{ name: tool({...}) }`, or a list of `@tool` functions |
+| `mcp` | | an MCP server of yours to attach instead (`fromMcpServer`) |
+| `definition` | `definition=` | make it from a definition (its model, prompt and tool sources) |
+| `thinkingLevel` | `thinking_level=` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
+| `keyScope`, `spendLimit`, `modelHeaders` | `key_scope=`, `spend_limit=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
+| `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
+| `name` | `name=` | a label, shown in the console |
+| `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
+| `takeover` | `takeover=` | replace the process serving the tools now |
+| `onEvent(event, runId)` | `on_event=` | every event, for display; runs in order, apart from the connection; plain or async |
+| `onInput(input)` | `on_input=` | each input as it is asked: return an answer, or nothing |
+| `onError(error)` | `on_error=` | errors from the connection and from `onEvent` |
+
+`agents.agent(session, { tools, … })` connects to an agent you hold the
+credentials of (`{id, token}`) without changing it.
+
+### `Agent`
+
+| TypeScript | Python | |
+| --- | --- | --- |
+| `agent.id` | `agent.id` | `client_…`: safe to log and store |
+| `agent.run(text, options)` | `await agent.run(text, …)` | send a message, wait for the run: a `Run` |
+| `agent.stream(text, options)` | `agent.stream(text, …)` | the run as it happens: `for await` / `async for` over parts |
+| `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
+| `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history, or a page of whole turns |
+| `agent.steer(text)`, `followUp(text)` | `steer()`, `follow_up()` | a message for the running turn, or for after it |
+| `agent.configure({ model, instructions, thinkingLevel, tools })` | `configure(…)` | change it between runs |
+| `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
+| `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
+| `agent.abort()` | `abort()` | stop the running turn |
+| `agent.delete()` | `delete()` | delete it, its history and files |
+| `agent.close()` | `close()` | close this process's connection |
+| `agent.client` | `agent.client` | the lower-level `AgentClient` |
+
+Run options (`run`, `stream`):
+
+| TypeScript | Python | |
+| --- | --- | --- |
+| `user` | `user=` | who sent it: your user id, or `{ id, name, username }`; the model sees who, tools get `identity.actor` |
+| `files`, `images` | `files=` | attachments; see [Files](../guides/files.md) |
+| `metadata` | `metadata=` | your own key-value data about the message (16 strings); the model never sees it |
+| `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run |
+| `signal` | `timeout=` | stop waiting; the run goes on |
+| `throwOnError` | `throw_on_error=` | `false`: return a failed run instead of throwing `RunError` |
+| `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
+
+### `Run`
+
+`{ id, status, text, inputs, error, usage, files, toolErrors, sourceErrors, raw }`
+(Python: `tool_errors`, `source_errors`). `status` is `completed`,
+`input_required` or `failed`; `error` is `{ code, message, uncertain? }`. See
+[Concepts](../concepts.md#runs) and [Errors](../reference/errors.md#run-failures).
+
+Each of `run.inputs` is the input (`id`, `kind`, `message`, `detail`,
+`responders`, `expiresAt`, …) with `answer(value, { from })` and
+`decline({ from })`, which resolve with the resumed run. See [Human
+input](../guides/human-input.md#answering).
+
+### Stream parts
+
+| `type` | fields |
+| --- | --- |
+| `text` | `text`: reply text as it is written (successive messages separated by a blank line) |
+| `tool_call` | `id`, `name`, `arguments` |
+| `tool_result` | `id`, `name`, `output` (the result's text), `isError` (`is_error`) |
+| `input_required` | `input`, with `answer()` |
+| `done` | `run`: always last |
+
+Every part but `done` has `raw`, the event it came from. `stream.result()`
+resolves with the run; breaking out of the loop stops the reading, not the run.
+
+## Tools
+
+```ts
+tool({ description, input: schema.Object({...}), execute: (args, context) => result, timeoutMs?, needsApproval?, exposure?, executionMode?, resultFormat? })
+```
+
+```python
+@tool(name=None, description=None, timeout=None, needs_approval=None)
+def or_async_def(arg: str, context: ToolContext): ...
+```
+
+`context` (`ToolContext`):
+
+| TypeScript | Python | |
+| --- | --- | --- |
+| `idempotencyKey` | `idempotency_key` | the same for every attempt of this call: key side effects by it |
+| `callId` | `call_id` | this attempt's id |
+| `toolCallId` | `tool_call_id` | the model's tool call |
+| `identity` | `identity` | who the call is for: `user`, `subject`, `actor`, `tenant`, `agent`, `context`, `origin`, `approval` |
+| `origin` | `origin` | where the turn came from (a channel) |
+| `signal` | (task cancellation) | aborted when the runtime cancels the call |
+| `progress(message \| { progress, total, message })` | `progress(message, progress=, total=)` | report progress; restarts the deadline |
+| `confirm`, `ask`, `requireUrl` | `confirm`, `ask`, `require_url` | ask the user; see [Human input](../guides/human-input.md) |
+
+See [Tools](../guides/tools.md) for attached and served tools, identity and
+the definitions' sources, and `serveTools` / `serve_tools`.
+
+## Errors
+
+- `AgentError`: `status` (HTTP, or 0), `code` (a stable name where the runtime
+  gives one: `APPLICATION_CONNECTED`, `APPLICATION_REPLACED`, `REPLAY_GAP`,
+  `spend_limit`, …), `requestId`, `uncertain`, `retryAfterMs` (Python
+  `retry_after`, seconds).
+- `RunError extends AgentError`: a failed run, with `run`.
+
+The SDKs retry 429 and 503 (honouring `Retry-After`) and transient failures of
+idempotent requests. See [Errors](../reference/errors.md).
+
+## The lower-level API
+
+`Agents` and `Agent` are built on `AgentRuntime` and `AgentClient`, which stay
+available and stable for code that needs the wire's shape: `agents.runtime`,
+`agent.client`, or `new AgentRuntime({ url, apiKey })` directly.
+
+| TypeScript | Python | |
+| --- | --- | --- |
+| `runtime.upsertAgent(key, options)` | `runtime.upsert_agent(key, …)` | upsert, returning credentials (not connected) |
+| `runtime.createAgent({ tools, ttlSeconds, idempotencyKey, … })` | `runtime.create_agent(tools=[...], …)` | provision and connect; with `idempotencyKey`, the same as an upsert |
+| `runtime.connectAgent(session, { tools, attach, takeover })` | `runtime.connect_agent(session, tools=, attach=, takeover=)` | connect with stored credentials |
+| `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
+| `runtime.createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `create_definition`, … | definitions |
+| `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
+| `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
+| `client.prompt(text, { from, actor, files, metadata, whileRunning, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error |
+| `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`) |
+| `client.waitForRequest(id)` | `wait_for_request(id)` | wait for a request already sent, from any process |
+| `client.requestStatus(id)`, `outcomes()` | `request_status(id)`, `outcomes()` | a request's record; every request's state |
+| `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
+| `client.execute(code)` | `execute(code)` | run code in the sandbox with the agent's tools, outside its history |
+| `client.setMetadata({ name, type })` | `set_metadata(name=, type=)` | rename or regroup |
+| `client.destroy()`, `close()` | same | delete the agent; close the connection |
+
+`client.prompt()` resolves with the run's raw result, even when the model
+failed (`result.error`), and rejects only on a runtime error. Requests have no
+timeout unless you pass `timeoutMs` or `signal` (Python: `timeout`).
+
+### Events, reconnects and replay
+
+The SDK holds one SSE stream per agent (`GET /clients/:id/events`) and
+reconnects with backoff. The runtime numbers events and replays them from memory
+from `Last-Event-ID`: up to 512 events or about 2 MiB. Where it cannot (a
+restarted node, a cursor too old), the SDK asks for a snapshot of the running
+turn instead (`?snapshot=1`), and recovers every settled request's outcome from
+`/state`, so a run's result never depends on its event arriving. A request still
+waiting also asks for its own status every 30 s (`pollMs`, Python
+`poll_interval`).
+
+A `message_update` is its delta alone (`assistantMessageEvent`), not the whole
+message: fold the message from its `message_start` and the deltas since
+(`@camelai/agent-runtime/watch` does). A subscriber that cannot replay gets a
+`snapshot` of the running turn first. See the [event
+reference](../reference/events.md).
+
+`onEvent` (`on_event`) handlers run one at a time, in order, apart from the
+stream: a slow handler never holds up tool calls, and what it throws goes to
+`onError`. Past 10,000 events waiting, streamed deltas are dropped (with one
+`onError`) until it catches up. `close()` waits up to 2 seconds for handlers to
+finish.
+
+### Tool calls and connections
+
+Tool calls are MCP: each attached connection is an MCP session with the SDK as
+the server (the runtime sends `initialize`, `tools/list`, `tools/call` and
+`notifications/cancelled` as `mcp` events, and the SDK answers with `POST
+/clients/:id/mcp`, naming its connection). A call goes to one connection, once.
+If the connection drops or the call's deadline passes before its answer arrives,
+the model gets an "outcome unknown" result and the call is never sent again.
+
+One connection at a time serves an agent's tools. A second is refused with
+`APPLICATION_CONNECTED` unless it asks to take over (`takeover`); the SDK names
+its connection when it reconnects, so it keeps its place. A connection that was
+replaced, or finds the tools taken when it reconnects, hears
+`APPLICATION_REPLACED` / `APPLICATION_CONNECTED` on `onError` and goes on
+following the agent without serving them. A client with `attach: false` follows
+the stream read-only (`?watch=1`) and never contends.
+
+This is not an exactly-once transaction across the runtime and your database.
+Authorization, transactional writes and idempotency stay in your tools: use
+`context.idempotencyKey`.
+
+### History in pages
+
+`historyPage({ limit, before })` (`GET /clients/:id/history?limit=50`) answers
+whole turns, oldest first, with at least `limit` messages where there are that
+many: `{ entries: [{ index, message }], next, total }`. Pass `next` as `before`
+for the page before it (`null` at the start). A settled page never changes, so it
+can be cached. `history()` answers the whole transcript.
+
+### Portable use
+
+The portable entry (`@camelai/agent-runtime`) imports no Node modules and reads
+environment variables only where the platform has them. On Cloudflare Workers
+and other runtimes without a filesystem, pass `journalStore: { load, save }` to
+keep the stream's cursor in your own storage, or leave the default (memory).
+
+### The wire
+
+`GET /clients/:id/events` streams SSE; `POST /clients/:id/requests` accepts
+idempotent requests; `POST /clients/:id/mcp` carries the application's MCP
+messages; all with the agent's token as `Authorization: Bearer`. `/clients/*`
+refuses requests with a browser `Origin`. Application code should use the SDK
+rather than speak this protocol.
+
+## Agent identity and Studio
+
+`name` identifies an agent and `type` groups agents in Studio, e.g. `September
+release` and `Docs launch`, both `release-reviewer`. Rename or regroup without
+changing its history with `agent.client.setMetadata({ name, type })`
+(`set_metadata(name=, type=)`). SDK-created agents appear in a local Studio
+(`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
+application keeps serving its tools.
+
+## Changes in 0.9 (Python 0.5)
+
+- New: `Agents`, `upsert`, `run`, `stream`, `Run`, `RunError`, `input.answer()`.
+  The lower-level API stays.
+- The default `url` is `https://agents.camelai.dev` (was localhost); the API key
+  also reads `CAMELAI_API_KEY`.
+- `onEvent` is no longer awaited in the stream: handlers run in order apart from
+  it, and their errors go to `onError`. Python's async `on_event` now runs.
+- Requests have no default timeout (was 180 s); pass `signal` / `timeoutMs`
+  (Python `timeout=`). At most 1000 may wait at once (was 8).
+- A tool returning `undefined` sends `null` (was a failure).
+- `context.idempotencyKey` is the stable key for side effects; `callId` changes
+  with each attempt, as it always did.
+- Tools may time out per tool (`timeoutMs`, `@tool(timeout=)`) and report
+  `context.progress()`.
+- Python tools may be plain functions (run in a thread).
+- One process serves an agent's tools at a time (`APPLICATION_CONNECTED`,
+  `takeover`, `attach: false`).
+- `agent.session`'s token is left out of logs and JSON; use `agent.id` to name an
+  agent.
+- The types no longer come from Pi: `Message`, `AgentEvent` and the rest are the
+  SDK's own.
+- Keyed agents (made with an idempotency key) live until deleted, and upsert
+  instead of failing when their configuration changes (server-side).
+
+## Examples
+
+[`examples/`](../../examples) has runnable programs, each of which exits when done:
+
+| | |
+| --- | --- |
+| [`quickstart.ts`](../../examples/quickstart.ts), [`quickstart.py`](../../examples/quickstart.py) | the quickstart |
+| [`stream.ts`](../../examples/stream.ts) | streaming a run to the terminal |
+| [`approval.ts`](../../examples/approval.ts) | a tool that needs approval, answered in code |
+| [`release-board.ts`](../../examples/release-board.ts), [`inventory.py`](../../examples/inventory.py) | an application's tools over its own data |
+| [`team-todos.ts`](../../examples/team-todos.ts) | served tools with the runtime's identity tokens |
+| [`file-report.ts`](../../examples/file-report.ts) | files in and out |
+
+Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
+`npm run demo:clients` runs the release board and inventory examples against a
+temporary local runtime with scripted code, calling no model.
+
+---
+
+<!-- https://agents.camelai.dev/docs/reference/events.md -->
+
+# Events
+
+An agent's event stream says what it is doing as it does it: text as the model
+writes it, tool calls and their progress, questions it waits on, files it
+presents. Use it for display. **A run's result is the truth; events are for
+display**: a stream can drop events (a restart, a slow reader, a frame too
+large), and every SDK settles a run from its outcome, never from its events.
+
+- [Reading the stream](#reading-the-stream): endpoints, framing, cursors, snapshots
+- [Frames](#frames): `event`, `response`, `snapshot`, `mcp`
+- [Event types](#event-types): every `event.type`
+- [Run outcomes](#run-outcomes): what a `response` frame carries
+- [Webhook events](#webhook-events)
+
+## Reading the stream
+
+| Endpoint | Who | Mode |
+| --- | --- | --- |
+| `GET /clients/:id/events` | the agent's own token (the SDKs) | the application's connection: it also carries the runtime's MCP calls to the application's tools (`mcp` frames) |
+| `GET /clients/:id/events?watch=1` | the agent's own token | a read-only watcher: every event, no MCP calls, holds nothing |
+| `GET /v1/agents/:id/events` | an API key, or a [browser token](../guides/browser.md) | always a read-only watcher |
+
+Query parameters and headers:
+
+| | |
+| --- | --- |
+| `Last-Event-ID: <cursor>` | resume after this event id. Absent or `0` takes everything still buffered. |
+| `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](#snapshot) of the running turn first instead of a 409. The SDKs always ask for one. |
+| `?poll=1&wait=N` | answer once, as JSON, instead of streaming: `{cursor, events: [{id, data}]}`, where `data` is a frame. With `wait` (seconds, at most 25) and nothing buffered, it answers when the next event arrives or the wait ends. Poll again with `Last-Event-ID: <cursor>`. For clients that cannot hold a stream open. |
+| `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](#one-application-at-a-time). |
+| `X-Agent-Connection: <connection>` | (application connection only) reconnecting: the `connection` the last `ready` named, so the runtime knows it is the same application coming back. |
+
+The response is `text/event-stream`. Each frame is `data:` JSON; most have an
+`id:` line, the cursor. A comment line (`: heartbeat`) arrives about every
+5 seconds, so a stream that delivers nothing for much longer than that is dead:
+reconnect with the last cursor.
+
+```text
+event: ready
+data: {"version":5,"agentId":"client_…","connection":"…"}
+
+id: 1727520000000123
+data: {"type":"event","requestId":"8c1…","event":{"type":"agent_start"}}
+```
+
+### `event: ready`
+
+The first frame of every stream: `{version, agentId, connection?, watch?}`.
+`connection` (the application's connection only) names this connection: the
+application's MCP answers (`POST /clients/:id/mcp`) must carry it as
+`X-Agent-Connection`, and a reconnect sends it back. `watch: true` on a watcher.
+
+### `event: closed`
+
+`{"reason": "replaced"}`: another process took over this agent's tools
+(`?takeover=true`), and this stream ends. Stop; do not reconnect and take them
+back. The SDKs raise `APPLICATION_REPLACED`.
+
+### Cursors and gaps
+
+Event ids rise. The runtime buffers each agent's recent events in memory (the
+last 512, at most 2 MiB) for replay. A `Last-Event-ID` behind that buffer (after
+a long disconnect, or after the agent moved to another node) cannot be replayed:
+without `?snapshot=1` the stream answers **409 `REPLAY_GAP: recover from session
+state`**; with it, the stream starts with a `snapshot`. Recover what settled from
+`GET …/state` (each request's outcome) and `GET …/history`. Nothing durable is
+lost in a gap: only display events are.
+
+### One application at a time
+
+One process at a time serves an agent's tools (the application connection that
+answered MCP's `initialize`). Another application connection is refused with
+**409 `APPLICATION_CONNECTED`**, unless it asks `?takeover=true` (the one serving
+gets `event: closed` and stops) or names the connection it held
+(`X-Agent-Connection`, reconnecting). Watchers and a connection that serves no
+tools hold nothing. See [Concepts](../concepts.md) and [Errors](errors.md).
+
+## Frames
+
+### `event`
+
+```json
+{ "type": "event", "requestId": "…", "event": { "type": "message_update", … } }
+```
+
+One [event](#event-types). `requestId` is the run it belongs to (the id you sent
+the prompt with, or the SDK's). It is `""` for events of no run: `turn_resumed`
+and `turn_recovered`, and a file presented or a tool's progress when no run had
+begun.
+
+### `response`
+
+```json
+{ "type": "response", "id": "<requestId>", "outcome": { "result": { … } } }
+{ "type": "response", "id": "<requestId>", "outcome": { "error": "…", "uncertain": true } }
+```
+
+A request settled. `outcome.result` is what it produced ([run
+outcomes](#run-outcomes) for prompts); `outcome.error` means the runtime could not
+carry it out, and `uncertain: true` that nobody can tell whether its work took
+effect (a restart cut it short). The same outcome is at
+`GET …/requests/:requestId` and in `GET …/state`, which is what to trust.
+
+A browser token sees an outcome only as `{id, outcome: {stopped?, error?}}`.
+
+### `snapshot`
+
+```json
+{ "type": "snapshot", "cursor": 1727…, "requestId": "…" | null,
+  "turn": { "start": 42, "count": 3, "messages": [ … ], "partial": { … } | null, "truncated": true } | null }
+```
+
+Sent (with `?snapshot=1`) in place of what the stream could not replay: the
+running turn as a subscriber that saw every event since it began would have it.
+`turn` is null when no turn runs. `messages` are the messages the turn finished,
+in order; `partial` the assistant message streaming now. `start` is the index its
+first message has in the agent's history (null if unknown), and `count` how many
+it finished; the next message takes index `start + count`. `truncated`: the
+messages were too large to send (over about 1 MB), so read them from history.
+A snapshot restarts the stream at its `cursor`, even one below yours.
+
+A browser token that neither reads `history` nor gets `message_end` sees
+`turn: null`; one that does not get `message_update` sees no `partial`.
+
+### `mcp`
+
+```json
+{ "type": "mcp", "message": { "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { … } } }
+```
+
+The application connection only: the runtime's JSON-RPC messages to the
+application's tools (`initialize`, `ping`, `tools/list`, `tools/call`,
+`notifications/cancelled`). They have no `id:` line and are never replayed. The
+application answers each with `POST /clients/:id/mcp` (and may send
+`notifications/progress` there). The SDKs do all of this; see
+[Tools](../guides/tools.md).
+
+## Event types
+
+The model loop's events, then the runtime's. New types may be added: ignore
+those you do not know. Marked *internal* are the runtime's own, which a browser
+token does not receive unless it lists them in `events`.
+
+### Runs and turns
+
+| Type | Fields | When |
+| --- | --- | --- |
+| `turn_opened` | `index` | a model run (prompt, continue, resume) begins: `index` is where its first message will sit in the agent's history |
+| `agent_start` | | the model loop starts |
+| `turn_start` | | a model round starts (one response and its tool calls) |
+| `turn_end` | `message`, `toolResults` | a round ends |
+| `agent_end` | `messages` | the model loop ends: the messages it added |
+| `turn_resumed` | `reason` | the node running this turn was lost; it continues here, with unresolved tool calls marked unknown (`requestId` is `""`) |
+| `turn_recovered` | `reason` | the runtime restarted during a turn; unresolved tool calls were marked unknown (`requestId` is `""`) |
+
+### Messages
+
+| Type | Fields | When |
+| --- | --- | --- |
+| `message_start` | `message` | a message begins: the user's, an assistant response (empty so far), a tool result |
+| `message_update` | `assistantMessageEvent` | the assistant message streaming grew. The delta **alone**, without the message it updates: fold it into the message from its `message_start` (see below) |
+| `message_end` | `message` | a message finished: this is the message as history keeps it |
+| `message_retracted` | `index` | a response taken back (before a retry, or a compaction on overflow): the message at `index` is gone, and the next takes its place |
+| `event_omitted` | `reason`, `was?` | an event was too large for the stream (over the transport limit, 1.1 MB). `was` is its type; for a `message_end`, the message still takes its place: read it from history |
+
+`assistantMessageEvent` is one of:
+
+| `type` | Fields |
+| --- | --- |
+| `start` | |
+| `text_start`, `thinking_start` | `contentIndex` |
+| `text_delta`, `thinking_delta` | `contentIndex`, `delta` (the new text) |
+| `text_end`, `thinking_end` | `contentIndex`, `content` (the block's whole text) |
+| `toolcall_start` | `contentIndex`, `id?`, `name?` |
+| `toolcall_delta` | `contentIndex`, `delta` (more of the arguments' JSON; parse it partially) |
+| `toolcall_end` | `contentIndex`, `toolCall` (`{type: "toolCall", id, name, arguments}`) |
+| `done`, `error` | `reason?` |
+
+Only `text_delta` is reply text. `thinking_*` is the model's reasoning, and
+`toolcall_delta` is JSON. The SDKs' `stream()` yields only reply text, and the
+watcher (`@camelai/agent-runtime/watch`) folds all of them for you.
+
+Messages (`message` fields, and history) are one of:
+
+| `role` | Fields |
+| --- | --- |
+| `user` | `content`: a string, or `[{type: "text", text} \| {type: "image", data, mimeType}]`; `timestamp`. History also records `from`, `requestId`, `metadata` |
+| `assistant` | `content`: `[{type: "text", text} \| {type: "thinking", thinking} \| {type: "toolCall", id, name, arguments}]`; `provider`, `model`, `usage`, `stopReason` (`stop`, `length`, `toolUse`, `error`, `aborted`), `errorMessage?`, `timestamp` |
+| `toolResult` | `toolCallId`, `toolName`, `content` (text and image blocks), `details?`, `isError`, `timestamp` |
+| `system` | `content`: instructions the runtime added (a changed configuration, a compaction summary) |
+
+### Tools
+
+| Type | Fields | When |
+| --- | --- | --- |
+| `tool_execution_start` | `toolCallId`, `toolName`, `args` | a tool call starts |
+| `tool_execution_update` | `toolCallId`, `toolName`, `args`, `partialResult` | progress. A tool's own progress (MCP `notifications/progress`, `context.progress()`) arrives as `partialResult: {content: [{type: "text", text}], details: {type: "progress", tool, innerCallId?, progress, total?, message?}}`, at most every 250 ms per call. A call from js_exec code reports on js_exec's `toolCallId`, with `innerCallId` |
+| `tool_execution_end` | `toolCallId`, `toolName`, `result` (`{content, details}`), `isError` | a tool call finished |
+| `codemode` *internal* | `toolCallId`, `event: {type: "output", text}` | js_exec's code printed `text` (`console.log`, `text()`), as it runs |
+| `output` | `text` | an `execute` request's code printed `text` (not a model run: no `codemode` wrapper) |
+| `file_presented` | `file` (`{type: "file", path, volume, version, size, contentType, caption?, …}`), `url?`, `expiresAt?` | the agent presented a file to the user (`present_file`): `url` is a signed download link |
+
+### People
+
+| Type | Fields | When |
+| --- | --- | --- |
+| `input_required` | `input` | the turn waits on a person: a question, an approval, a form or a URL step. `input`: `{id, agent, requestId, toolCallId, kind: "question" \| "approval" \| "form" \| "url", message, detail, responders: {audience?}, state, createdAt, expiresAt}`. See [Human input](../guides/human-input.md) |
+| `input_resolved` | `id`, `state` (`answered`, `declined`, `cancelled`, `expired`, `superseded`), `by?` | an input settled |
+
+### The runtime
+
+| Type | Fields | When |
+| --- | --- | --- |
+| `auto_retry_start` | `attempt`, `maxAttempts`, `delayMs`, `errorMessage` | a transient provider failure (overload, rate limit, 5xx, dropped stream) is being retried; the failed response was retracted |
+| `auto_retry_end` | `success`, `attempt`, `finalError?` | retrying ended |
+| `compaction_start` | `reason` | the conversation is being summarized to fit the model's context |
+| `compaction_end` | `reason`, and `skipped`, or `tokensBefore`, `summarizedMessages`, `keptMessages`, or `error` | summarizing ended |
+| `compaction_usage` *internal* | `provider`, `model`, `usage`, `timestamp` | what the summary's model call used |
+| `context_trimmed` | `retainedMessages`, `omittedMessages` | older messages were left out of a model request to fit it |
+| `spend_limit_reached` *internal* | `message` | the agent (or tenant) reached its spend limit; the turn stops after this response's tool calls |
+
+## Run outcomes
+
+A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
+
+| Field | |
+| --- | --- |
+| `reply` | the final assistant message's text; absent when it said nothing |
+| `replyIndex` | that message's index in the agent's history |
+| `messages` | how many messages the agent's history holds after the run |
+| `error` | the model's error (a provider refusal after retries), or `null` |
+| `stopped` | why the run stopped early: `input_required` (it waits on `inputs`) or `spend_limit` (with the reason in `error`) |
+| `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
+| `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
+| `presented` | files the run presented to the user (at most 20) |
+| `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](errors.md#tool-errors) |
+| `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
+
+An `execute` request's result is `{output: string[], truncated}` (plus `files`,
+`presented`, `toolErrors`, `sourceErrors` as above). A steered prompt shares its
+turn's outcome, and its record names the turn's request as `steeredInto`.
+
+The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
+`failed`), `text`, `inputs`, `error: {code, message, uncertain?}`, `files`,
+`toolErrors`, `sourceErrors`.
+
+## Webhook events
+
+A tenant's webhook endpoints (`POST /v1/webhooks {url, events}`) receive
+signed events (Standard Webhooks) in an envelope `{id, type, created, data}`;
+dedupe by `id`. See [Webhooks](../guides/webhooks.md).
+
+| Type | `data` |
+| --- | --- |
+| `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?` |
+| `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?` |
+| `run.failed` | the above, `usage`, `error`, `uncertain?`, `steeredInto?` |
+| `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
+| `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
+| `usage.recorded` | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `cost: {usd, source}`, `at` |
+
+---
+
+<!-- https://agents.camelai.dev/docs/reference/limits.md -->
+
+# Limits
+
+Every limit a developer can hit, from the runtime's code. Sizes: KiB = 1024
+bytes, MiB = 1024 KiB. Past a size limit the request is refused (400 or 413);
+past a count or rate limit, 409 or 429 (with `Retry-After`). See
+[Errors](errors.md) for what to do about each.
+
+## Agents
+
+| Limit | Value |
+| --- | --- |
+| An agent's key (`Idempotency-Key` on `POST /v1/agents`, the SDKs' `upsert(key)`) | 1–80 characters of `A-Z a-z 0-9 _ -` |
+| Lifetime (`ttlSeconds`) | 60 s to 31,622,400 s (366 days), or `null`: until deleted. Default: until deleted for an agent made with a key; 1 day for one made without |
+| Create body (`POST /v1/agents`, with `initialMessages`) | 18 MiB |
+| `systemPrompt`, `systemPromptAppend` | 32,000 characters each |
+| `modelHeaders` | at most 20 headers, 8 KB in all; never auth headers |
+| `spendLimit.usd` | 0 to 1,000,000 |
+| `subject` | a string; `context`: at most 4 KB |
+| Mounts | at most 16 per agent |
+| Agents awake at once per tenant | set per deployment (`AGENT_MAX_AGENTS_PER_TENANT`, or the tenant's `maxAgents`); the free tier allows 2. Past it, the least recently active idle agent is stopped to make room; with none idle, 429 |
+| Tools in an agent's catalog | 4,096 tools, 16 MiB of schemas; at most 64 declared directly to the model (the rest are reached from js_exec) |
+
+## Runs and requests
+
+| Limit | Value |
+| --- | --- |
+| Request id (a prompt's `requestId`, the SDKs' `idempotencyKey`) | 1–80 characters of `A-Z a-z 0-9 _ -` |
+| Settled requests kept per agent for idempotent retries | the most recent 256 |
+| Open requests per agent (running and queued) | 32; more is 429 `Too many requests queued for this agent` |
+| Prompt body (`POST /v1/agents/:id/prompt`) | 6 MiB, with inline files |
+| Request body over an agent's own token (`/clients/:id/requests`, `/mcp`) | 1.1 MB (1,100,000 bytes) |
+| `text` | must not be blank |
+| `from` | `id` 1–200 characters; `name`, `username` at most 200 each |
+| `metadata` | at most 16 keys of 1–64 characters, string values of at most 512 characters |
+| `configure` body | 1 MiB |
+| Provider retries within a turn | 3 attempts, backing off from 2 s (overload, rate limits, 5xx, dropped streams); context overflow is not retried |
+| Wait | none: a run may take as long as it takes, or wait on people for days. The SDKs have no default timeout |
+| `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
+
+## Files
+
+| Limit | Value |
+| --- | --- |
+| Files attached to one message | 20 |
+| Inline (base64) file bytes in one message | 4 MiB in all, decoded; upload larger ones first (`PUT …/uploads/:requestId/:name`) and attach them by path |
+| One file (upload, volume write) | 256 MiB |
+| An upload's whole request | 15 minutes (other requests: 30 s without progress in the SDKs) |
+| Image the model sees natively | 5 MiB and 8,000 pixels a side (larger ones are described in text) |
+| PDF the model sees natively | 16 MiB and 100 pages |
+| Files in one model request | 24 MiB and 100 images; older files past that are described in text |
+| Parsing an untrusted file for its text | 32 MiB in, 10 s, 1,000,000 characters out |
+| Files a run lists in its outcome | 100 written (`files`), 20 presented (`presented`) |
+| Signed links (`POST …/links`) | `expiresIn` 1 to 86,400 s, default 900 |
+| A volume | 100,000 files, 100 snapshots; the change feed keeps the last 1,000 changes; a listing page is at most 1,000 files |
+| Channel attachments | 10 files a message, 25 MiB each, 100 MiB in all |
+
+## Tools
+
+| Limit | Value |
+| --- | --- |
+| Attached tool call deadline (tools in your process) | 15 s without an answer by default; a tool's own `timeoutMs` from 1 s to 20 minutes |
+| Remote MCP server call deadline | the source's `timeoutMs` (1 s to 20 minutes), default 60 s |
+| OpenAPI operation deadline | the source's `timeoutMs` (1 s to 20 minutes), default 30 s |
+| Progress | each progress notification restarts a call's deadline, up to 20 minutes in all. Progress events are published at most every 250 ms per call |
+| One MCP result from the SDKs (a tool's return value) | 1 MiB of JSON |
+| A remote MCP server's response | 8 MiB |
+| An OpenAPI spec | 8 MiB; at most 1,024 operations allowed (`allowTools`) |
+| Tool sources per definition | 64 MCP servers, 64 OpenAPI specs; `allowTools`/`denyTools` at most 512 names (MCP) |
+| A file in a tool's arguments (base64) | 4 MiB |
+| A binary tool response saved to the workspace | 64 MiB; 64 MiB per call and 256 MiB per run saved in all |
+| An MCP text resource shown inline | 64 KiB (longer ones are saved as files) |
+
+### js_exec (code the model writes) and `execute`
+
+| Limit | Value |
+| --- | --- |
+| Wall time | 30 s by default, at most 120 s (`timeoutMs`) |
+| Guest CPU time | 2 s of executing code (time waiting on tools does not count) |
+| Memory | 32 MiB WebAssembly memory, 16 MiB QuickJS heap, 256 KiB stack |
+| Output | 32,000 characters by default, at most 128,000 (`maxOutputCharacters`); 1,024 chunks |
+| Tool calls | 256 per script, at most 32 in flight |
+| Tool traffic | arguments at most 128 KiB of JSON a call, results at most 1 MiB, 8 MiB in all |
+| One `fs.readFile` / `fs.writeFile` | 700 KiB |
+
+## People
+
+| Limit | Value |
+| --- | --- |
+| How long an input waits | 7 days by default; a definition's `humanInput.expiresInSeconds` from 60 s to 30 days, never past the agent's expiry |
+| Inputs one tool call may ask at once | 8 |
+| An input's message, an approval's shown arguments | 4,000 characters |
+| Answers in one batch (`POST …/inputs`) | 1–100; one answer's body 256 KiB |
+| Approvers (`humanInput.approvers`) | 100 |
+| `ask_user` | 1–4 questions, each with 2–4 options and a header of at most 12 characters |
+
+## Streams and browsers
+
+| Limit | Value |
+| --- | --- |
+| One SSE frame | 1.1 MB; a larger event is sent as `event_omitted` |
+| Events buffered per agent for replay | the last 512, at most 2 MiB; a cursor behind them gets a snapshot (or `REPLAY_GAP`) |
+| A snapshot's messages | about 1 MB; more is `truncated: true` (read history) |
+| Long poll `wait` | at most 25 s |
+| Read-only subscribers (watchers and waiting polls) | 32 per agent, 1,024 per tenant on a node (or the tenant's `maxWatchers`), 4,096 per node; past it, 429 |
+| Browser token lifetime | 5 to 3,600 s, default 900; its stream ends when it expires |
+| Browser token `events` list | 64 types |
+| History page (`?limit=`) | 1 to 500 messages, default 50 |
+
+## Schedules, channels and webhooks
+
+| Limit | Value |
+| --- | --- |
+| Schedules per agent | 100 |
+| Repeating schedules | `everySeconds` at least 60 |
+| Schedule body | 64 KiB |
+| Channel senders | `perSenderPerMinute` 1–600 (default 10), `turnsPerDay` 1–1,000,000 (default 1,000); `allow` at most 1,000 senders |
+| Webhook endpoints per tenant | 16 |
+| A webhook delivery | 10 s to answer; retried until delivered, for up to 3 days |
+| A rotated webhook secret | keeps signing beside the new one for 24 hours |
+
+## Spending
+
+| Limit | Value |
+| --- | --- |
+| An agent's spend limit | from when it is set: new prompts are refused, and a running turn stops after the response that crossed it (`stopped: "spend_limit"`) |
+| A tenant's monthly cap (`maxMonthlyCost`) | 402 for new runs once reached |
+| Prepaid credit | 402 at a zero balance; free credit allows $1 of usage per hour (429 past it) |
+
+---
+
+<!-- https://agents.camelai.dev/docs/reference/errors.md -->
+
+# Errors
+
+Three kinds of failure, and where each shows:
+
+1. **The API refused a request**: an HTTP status and a JSON body
+   `{"error": "<message>"}` ([below](#http-errors)). The SDKs throw `AgentError`
+   with `status`.
+2. **A run failed**: the request was accepted, and the run ended badly. Its
+   outcome says why ([Run failures](#run-failures)); the SDKs' `run()` throws
+   `RunError` with the run, unless `throwOnError: false`.
+3. **A tool call did not complete** within a run that otherwise went on: the
+   model was told, and the run's outcome lists it in `toolErrors`
+   ([Tool errors](#tool-errors)). Nothing throws; check them where a tool's
+   side effect matters.
+
+## HTTP errors
+
+Error bodies are `{"error": "<message>"}`. Some messages start with a stable
+name and a colon (`REPLAY_GAP:`, `APPLICATION_CONNECTED:`): match on that name,
+not on the rest of the text. A conflict about an input also carries the input as
+it now is (`{"error", "input"}`). Every 429 and 503 has `Retry-After`; the SDKs
+honour it and retry.
+
+| Status | Meaning | What to do |
+| --- | --- | --- |
+| 400 | The request is malformed: a field fails validation (the message names it and what it takes), an unknown option, a blank `text`, an invalid request id or agent key, an answer that does not fit its input, an answer that names no one for an input meant for particular people (`This input is for …: answer with from or actor naming who answers`) | Fix the request; retrying it unchanged fails again |
+| 401 | No token, an unknown or wrong token, or an expired browser token (`This browser token has expired; mint a new one`); an agent's token used on another agent | Send `Authorization: Bearer <token>` with a valid key. A browser: mint a new browser token (the watcher's `getToken`) |
+| 402 | Payment required: the tenant's prepaid credit is used up, or its monthly model spend cap is reached. Queued runs fail with the same message | Add credit in the console, or raise the cap |
+| 403 | Authenticated but not allowed: a browser token outside its agent or its scopes, an agent token changing what only the tenant may (`keyScope`, `spendLimit`, `modelHeaders`), a person not allowed to answer an input, a write to a read-only mount, an expired signed link | Use a token that may do it (usually the tenant's API key, server-side) |
+| 404 | No such agent, request, input, volume, file, definition, schedule, webhook or route; or the feature is not enabled on this runtime. Another tenant's agent is a 404 too | Check the id. A deleted agent is 404 on `/v1/agents/:id` |
+| 405 | A signed link used with the other method | Use the method it was made for |
+| 409 | A conflict: see [409s](#409s) | Depends on the case |
+| 410 | The agent was deleted or expired (`Session expired or revoked`, on `/clients/:id/*`) | Stop using that id and token. With a key, `upsert` it again: the key makes a fresh agent |
+| 412 | A versioned write lost (a volume file changed since the `version` you gave) | Read it again and retry with the new version |
+| 413 | Too large: the request body, inline files over 4 MiB, a file over 256 MiB, an upload over a link's `maxBytes` | See [Limits](limits.md); upload large files first and attach them by path |
+| 415 | An upload through a signed link with another content type | Send the type the link names |
+| 422 | A channel's credentials were rejected by the provider (Slack, Telegram, Discord) | Fix the bot token |
+| 429 | Too many: the tenant's agents awake at once, the agent's 32 open requests, event-stream subscribers, or free credit's hourly allowance | Retry after `Retry-After` (the SDKs do, up to 8 times) |
+| 500 | A bug | Retry; report it with the request id |
+| 503 | The runtime cannot serve it right now: a node is draining or starting, lost ownership of an agent, has no room for its work, or the database is failing over; also a feature this runtime is not configured for | Retry after `Retry-After` (the SDKs retry); nothing happened |
+| 507 | A volume is full (100,000 files) | Delete files, or use another volume |
+
+### 409s
+
+| Message | Meaning | What to do |
+| --- | --- | --- |
+| `REPLAY_GAP: recover from session state` | The stream cannot replay from your `Last-Event-ID` | Reconnect with `?snapshot=1` (the SDKs do), and recover settled outcomes from `/state` |
+| `APPLICATION_CONNECTED: another connection serves this agent's tools…` | Another process serves this agent's tools. The SDKs raise it as `code: "APPLICATION_CONNECTED"` | Close the other one; or connect with `takeover: true` to replace it; or connect without serving tools (`attach: false`) to run the agent from here |
+| `Not the agent's current connection; reconnect` | An MCP answer on a connection that was replaced | Reconnect (the SDKs do) |
+| `Request ID reused with different arguments` | The same request id (`idempotencyKey`) sent with another prompt | Use a new id for a new message; the same id only to retry the same one |
+| `This Idempotency-Key was sent with another request…` | The same `Idempotency-Key` header on a different method, path or body | A key is for one request |
+| `A request with this Idempotency-Key is still running; retry` / `…just finished; retry` | A retry raced the first request | Retry shortly: it then gets the first one's answer |
+| `An existing agent's subject, context, definition, mounts cannot change…` | An upsert of an existing key with a different value for a field set only at creation | Delete the agent (`DELETE /v1/agents/:id`) or use another key |
+| `Idempotency key belongs to another tenant` | Two tenants' keys cannot collide in practice; this guards it | Use another key |
+| `This input is already answered` (or declined, cancelled, expired, superseded) | Someone answered first. The body's `input` says how. Answering again with the same answer is 200 | Show the input as it is |
+| `The definition is at revision N, not M` / `The definition changed meanwhile; retry` | A definition update with a stale `revision` | Read it again and retry |
+| `A volume keeps at most 100 snapshots…`, `A tenant has at most 16 webhook endpoints`, `Channel … uses this definition…`, `Volume … already exists` | A count limit or a dependency | Remove one first |
+
+## Run failures
+
+A run ends in one of three ways: it answered, it waits on people
+(`stopped: "input_required"`), or it failed. It failed when:
+
+| Code (SDK `RunError.code`) | Outcome | Meaning |
+| --- | --- | --- |
+| `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, an invalid key, content refused, context overflow that compaction could not fix |
+| `spend_limit` | `result.stopped: "spend_limit"` | The agent's spend limit (or the tenant's monthly cap) stopped the turn after the response that crossed it; its tool calls ran. Raise the limit and send the next message |
+| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent's model has no key, the agent was deleted, code execution failed, a queued run refused for credit |
+| (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
+
+A failed model response that is retried is retracted from history (`message_retracted`); the last one stays, with its `errorMessage`. A run
+whose node was lost mid-turn resumes on another (`turn_resumed`), with any tool
+call whose answer was lost marked "outcome unknown" for the model; tool calls
+are never sent twice.
+
+## Tool errors
+
+A run's outcome lists each tool call that did not complete as
+`toolErrors: [{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}]`
+(the SDKs: `run.toolErrors`). The model got the same message as the call's
+result and carried on.
+
+| `code` | Meaning | `outcomeUnknown` |
+| --- | --- | --- |
+| `timeout` | No answer (or progress) within the tool's deadline | yes: it may have taken effect |
+| `connection_lost` | The connection the call went out on closed before its answer | yes |
+| `not_connected` | No process served the agent's tools (no application attached), so the call did not run. Typical for REST, schedules and channels driving an agent whose tools live in a process that is not running: serve them over HTTP instead ([Tools](../guides/tools.md)) | no |
+| `source_unavailable` | Its MCP server could not be reached, listed or authenticated with | no |
+| `failed` | Anything else that kept it from running or answering | no |
+
+A tool that ran and reported its own failure (threw, or answered `isError`) is
+not a tool error: that is the tool's answer, which the model reads.
+
+`sourceErrors: [{kind, source, message}]` lists tool sources (MCP servers,
+OpenAPI specs) that could not be listed when the run began, so the model went
+without their tools.
+
+Every attempt at one tool call carries the same idempotency key
+(`_meta["agent-runtime/idempotencyKey"]`, an OpenAPI operation's
+`Idempotency-Key` header, the SDKs' `context.idempotencyKey`): key side effects
+by it, and a call that runs twice acts once.
+
+## SDK errors
+
+| | TypeScript | Python |
+| --- | --- | --- |
+| Any failure | `AgentError`: `message`, `status` (HTTP status, or 0 for a run's or the connection's), `code?`, `requestId?`, `uncertain?`, `retryAfterMs?` | `AgentError`: `status`, `code`, `request_id`, `uncertain`, `retry_after` (seconds) |
+| A failed run | `RunError extends AgentError`: `run` (the `Run`, `status: "failed"`, `error: {code, message, uncertain?}`) | `RunError`: `run` |
+| Another process took the agent's tools | `code: "APPLICATION_REPLACED"`, through `onError`; the client stops | the same, through `on_error` |
+| A tool server's token check | `RuntimeTokenError` (`serveTools`, `verifyRuntimeToken`): the call gets 401 | `RuntimeTokenError` |
+
+Stopping a wait (`signal`, `timeoutMs`; Python `timeout`) throws the signal's
+reason (an `AbortError` or `TimeoutError`), or an `AgentError` saying the request may still be running:
+the run goes on in the runtime. Wait for it again with the same
+`idempotencyKey`, or `waitForRequest(id)`.

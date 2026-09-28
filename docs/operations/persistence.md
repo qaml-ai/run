@@ -1,0 +1,137 @@
+# Persistence
+
+Nothing is serialized per streamed delta. Each agent has two append-only logs:
+
+- `transcript.jsonl`: one durable record per finished native Pi message
+  (`message_end`), plus turn start/end markers. Messages stay native instead of
+  being converted to UI messages. A retried provider error is retracted. The
+  supervisor writes it under the agent's ownership claim; an agent in its own
+  process sends records over IPC and holds no database connection.
+- History chunks (`sessions/<id>/history/<start>-<count>-<hash>`, indexed in
+  `agent_history_chunks`): the settled messages again, in immutable chunks of
+  whole turns of about 1 MB, so a page of history (`/history?limit=`) reads a
+  few index rows and the chunks it returns, never the whole log (whose snapshot
+  is every record in one object). Like the log's segments, chunks are written
+  when the agent stops and when what is unindexed passes a chunk's size, never
+  per turn; what is newer comes from the running agent, which keeps at most
+  8 MB of it in memory (past that it reads the rest back from its log to index
+  it, a chunk at a time). An agent made
+  before the index has none and is never indexed: its pages are read from its
+  whole log, as `/history` without paging is. So is the rest of an index behind
+  what the agent's runs reported (a stop that could not write), until the
+  agent's next start indexes it.
+- `<session>.journal.jsonl`: request state changes. It is fsynced only where
+  correctness needs it: accepting a request, a run's start (before its first tool
+  call can have an effect), and recording outcomes. Tool calls are not journaled:
+  the transcript has them. Old settled records are folded away, keeping the most
+  recent 256 for idempotent retries.
+
+Streamed events (token deltas, tool progress) are kept in a bounded in-memory
+buffer for SSE replay. After a host restart a client's cursor falls outside the
+buffer, it receives `REPLAY_GAP`, and it recovers durable state from `/state`
+and `/history`. A result never depends on its event arriving: the SDKs also
+settle requests from `/state` on every reconnect, and a request still waiting
+asks for its own status every 30 s (`pollMs`; Python `poll_interval`), so a
+result lost with a connection, or across a deploy, still reaches its caller.
+The session header (a row in `agents`) is rewritten only when
+configuration or metadata changes.
+
+If the runtime dies mid-turn, the next owner resumes the turn (see
+[Turn handoff](architecture.md#turn-handoff)): tool calls without results get an explicit
+"outcome unknown" result so the model neither assumes success nor repeats the
+effect blindly, and the model continues from there. A turn that cannot resume
+(a code execution, or one resumed twice already) is closed with a runtime notice
+and its request completes with an `uncertain` error. Tool calls are never re-sent,
+and nothing blocks later requests.
+
+Transient provider failures (overload, rate limits, 5xx, dropped streams) are
+retried in the same turn with exponential backoff (3 attempts from 2 s).
+Context overflow is not retried.
+
+Sessions load lazily and unload after `AGENT_IDLE_MS` (default 5 minutes)
+without activity; the agent's process stops at the same point. When all
+`AGENT_MAX_AGENTS` slots are in use (hosted agents per node, processes or inline;
+`AGENT_MAX_AGENTS_PER_TENANT` per tenant), the least recently active idle
+agent is stopped to make room. If none is idle, creating or waking an agent is
+refused with 429 (the tenant's limit) or 503 (the node's), with `Retry-After`;
+the SDKs retry both. A tenant's entry in the tenants file or secret may set its own
+`maxAgents` (a positive integer), which replaces `AGENT_MAX_AGENTS_PER_TENANT` for
+it; it applies from the next tenants reload (SIGHUP, or the secret's refresh every
+minute) to new starts, and agents already running above a lowered limit keep
+running.
+
+A tenant's entry may also set `maxMonthlyCost`, a monthly model spend cap in USD
+(`infra/tenant.sh set-spend-limit`; absent means unlimited). Spend is the tenant's
+usage cost this UTC month, turns and compaction summaries, cached per node for 5
+seconds. A tenant at its cap gets 402 Payment Required for new `prompt` and
+`continue` runs (queued runs complete with the same error), and a running turn ends
+cleanly after the model response that crossed it: that response's tool calls run
+and their results are recorded, then the turn stops before the next model request,
+with `stopped: "spend_limit"` and the reason as `error` in its outcome. The
+transcript stays valid, so once the cap is raised (at the next tenants reload) the
+agent carries on. `execute` makes no model calls and is not limited.
+
+With `AGENT_STORAGE=file`, logs are local files, not
+replicated storage, and their writes are not fenced: it is for a single node. A node
+with it refuses to start while another node's heartbeat is live in the same database
+(after waiting one lease for a peer that just stopped). The whole transcript of an
+active agent is still held in memory.
+
+The host provider key is only sent to trusted endpoints: the default model's,
+Pi's published endpoint for the requested provider and model, or an entry in
+`AGENT_ALLOWED_BASE_URLS` (comma-separated). Scoped credentials can only submit
+user messages; assistant and tool-result history is produced by the runtime.
+
+## Volume storage
+
+A volume is an actor, like an agent: one node at a time owns it, and requests
+to `/v1/volumes/:id` are forwarded to that node. Headers, snapshot summaries and
+watchers are rows in Postgres; the rest is in Storage:
+
+```text
+volumes/<id>/tree                 append log of puts and deletes, folded into a base every 1,024 records
+volumes/<id>/snapshots/<snap>     a snapshot's file map (a blob)
+chunks/<tenant>/<aa>/<sha256>     contents, in 1 MiB content-addressed chunks
+```
+
+Writes: any node splits the content into chunks and stores those not already
+present, then asks the owner to commit the path. The owner checks the version,
+appends the record durably and applies it; a node that lost ownership is fenced
+by the log. Reads ask the owner only for the path's chunk list, then fetch the chunks
+needed for the requested range directly from storage. Downloads stream a chunk at
+a time and support `Range`. Snapshots and forks copy metadata only, so a fork and
+its source share chunks and diverge independently. `GET /v1/volumes/:id/changes`
+lists recent changes; a mount with `notify` prompts the agent (about a second
+after changes, coalesced) when others change files under it.
+
+Not yet built: garbage collection of unreferenced chunks and snapshot file maps
+(deleting a file, volume or snapshot leaves them), quotas per tenant, restoring a snapshot in
+place, empty directories, renames, and durable change notifications (a crash
+during the one-second window drops that notification). Listings and snapshots
+hold a volume's file map in memory and in one blob, which suits volumes of
+up to about 100,000 files.
+
+## File references in the transcript
+
+The transcript stores a reference, never bytes:
+
+```ts
+type FileRef = {
+  type: "file"; path: string;            // as the agent saw it, e.g. /workspace/uploads/r1/q3.pdf
+  volume: string; version: number;       // the volume file it was
+  size: number; contentType: string;
+  chunks: string[];                      // its content: content-addressed chunks, never rewritten
+  media?: { kind: "image"; mimeType: string; width: number; height: number } | { kind: "pdf"; pages: number } | { kind: "none"; reason: string };
+};
+```
+
+The chunk list pins the content, so a file deleted or overwritten after it was
+attached still reads as it was (chunks are never garbage-collected yet; see
+[Volume storage](#volume-storage)). The agent host hydrates references into native blocks
+each time it builds a model request, fetching the bytes through its supervisor
+(an agent process has no storage access) and keeping up to 32 MiB of them
+between requests. The same references always produce the same request, so the
+provider's cached prefix holds. Request records keep references too, so a queued
+prompt's journal entry is small. Context estimates count what a reference stands
+for (an image like one of pi's, a PDF at about 3,000 tokens a page), not its JSON,
+so compaction triggers as it would for the bytes.
