@@ -643,10 +643,11 @@ export function createAgentHost(io: HostIO) {
     return wanted.length;
   }
 
-  /** The final answer's text, for callers that relay it (channels). */
+  /** The final answer's text, for callers that relay it (channels), and that message's index in the history. */
   function answer(last: AssistantMessage | undefined) {
     const reply = last?.role === "assistant" && last.stopReason !== "error" ? last.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
-    return { error: last?.stopReason === "error" ? last.errorMessage ?? "The model returned an error" : null, ...(reply ? { reply } : {}) };
+    const at = reply ? transcript.context.lastIndexOf(last as AgentMessage) : -1;
+    return { error: last?.stopReason === "error" ? last.errorMessage ?? "The model returned an error" : null, ...(reply ? { reply } : {}), ...(at >= 0 ? { replyIndex: transcript.offset + at } : {}) };
   }
 
   /**

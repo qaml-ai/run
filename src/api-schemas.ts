@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import { WEBHOOK_EVENTS } from "./usage-webhooks.ts";
 
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
 const SEND_TEXT = "Send {\"text\": \"...\"}";
@@ -54,10 +55,14 @@ export const KeyScope = z.object({
   })),
 }).openapi("KeyScope");
 
-export const UsageWebhookInput = z.object({ url: z.string().openapi({ description: "An HTTPS URL that receives each model response's usage", example: "https://example.com/hooks/agent-usage" }) }).strict().openapi("UsageWebhookInput");
-export const UsageWebhook = z.object({ url: z.string(), createdAt: z.number() }).openapi("UsageWebhook");
+const webhookEvents = z.array(z.enum(WEBHOOK_EVENTS)).openapi({ description: "The event types it receives. usage: each model response's usage and cost. run.started / run.finished: each run (prompt, continue, resume, execute) as it begins and ends, the end with its outcome (stopped, error, reply and replyIndex: the final assistant message's index in history) and usage. input.requested / input.resolved: each human input as it is asked and settled" });
+export const UsageWebhookInput = z.object({
+  url: z.string().openapi({ description: "An HTTPS URL that receives the selected events", example: "https://example.com/hooks/agent-events" }),
+  events: webhookEvents.optional().openapi({ description: "The event types it receives; a new webhook gets [\"usage\"] without it, and leaving it out keeps the current selection" }),
+}).strict().openapi("UsageWebhookInput");
+export const UsageWebhook = z.object({ url: z.string(), events: webhookEvents, createdAt: z.number() }).openapi("UsageWebhook");
 const signingSecret = z.string().openapi({ description: "The Standard Webhooks signing secret (whsec_…); shown only this once" });
-export const UsageWebhookSet = z.object({ url: z.string(), secret: signingSecret.optional() }).openapi("UsageWebhookSet");
+export const UsageWebhookSet = z.object({ url: z.string(), events: webhookEvents, secret: signingSecret.optional() }).openapi("UsageWebhookSet");
 export const UsageWebhookSecret = z.object({ secret: signingSecret }).openapi("UsageWebhookSecret");
 
 export const Model = z.object({

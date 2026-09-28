@@ -1,20 +1,27 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { UsageRecord } from "./client-sessions.ts";
-import type { Db } from "./db.ts";
+import type { Db, Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import type { Outbound } from "./outbound.ts";
 import { errorText } from "./protocol.ts";
 
 /**
- * Usage webhooks: a tenant's receiver gets one POST per model response (turns and compaction
- * summaries) with its usage and cost, signed per Standard Webhooks. Events are written to a
- * Postgres outbox in the same transaction as the usage flush that counts them, and any node
- * sends them, each claimed by one node at a time, retrying with backoff until acknowledged, so
- * delivery is at least once: receivers dedupe by `id`.
+ * A tenant's webhook: its receiver gets the event types it selects, each a POST signed per Standard
+ * Webhooks. `usage` is one per model response (turns and compaction summaries) with its usage and
+ * cost, written to a Postgres outbox in the same transaction as the usage flush that counts it.
+ * Lifecycle events (`run.started`, `run.finished`, `input.requested`, `input.resolved`) are written
+ * to it as the run's record or the input's row becomes durable. Any node sends them, each claimed
+ * by one node at a time, retrying with backoff until acknowledged, so delivery is at least once:
+ * receivers dedupe by `id`, which a lifecycle event keeps when it is written again.
  */
+export const WEBHOOK_EVENTS = ["usage", "run.started", "run.finished", "input.requested", "input.resolved"] as const;
+export type WebhookEventType = typeof WEBHOOK_EVENTS[number];
+/** An event for a tenant's webhook: its type, and what the type says. */
+export type WebhookEvent = { id: string; type: WebhookEventType; tenant: string; at: number } & Record<string, unknown>;
+
 export type UsageEvent = {
-  id: string; agent: string; requestId: string | null; tenant: string; subject: string; actor: string | null; context: Record<string, unknown>;
+  id: string; type: "usage"; agent: string; requestId: string | null; tenant: string; subject: string; actor: string | null; context: Record<string, unknown>;
   keyScope: string | null; provider: string; model: string; kind: "response" | "compaction";
   input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
   cost: { usd: number; source: "provider" | "catalog" }; at: number;
@@ -31,6 +38,30 @@ const ROTATION_MS = 24 * 60 * 60_000;
 const aad = (tenant: string) => `usage-webhook:${tenant}`;
 const newSecret = () => `whsec_${randomBytes(24).toString("base64")}`;
 
+/** A lifecycle event's id, the same each time it is written: a UUID from `key` (its type and what it is about). */
+export function eventId(key: string) {
+  const hex = createHash("sha256").update(key).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Add events to the outbox of each tenant whose webhook selects their type; one already there is left as it is. */
+export async function enqueueEvents(sql: Sql, events: WebhookEvent[]) {
+  if (!events.length) return;
+  await sql.query(`
+    insert into usage_webhook_outbox (id, tenant, body, due, created_at)
+    select (e->>'id')::uuid, e->>'tenant', e, $2, $2 from jsonb_array_elements($1::jsonb) as e
+    where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant' and e->>'type' = any(w.events))
+    on conflict (id) do nothing`, [JSON.stringify(events), Date.now()]);
+}
+
+/** A webhook's event selection: known types, at least one, each once. */
+function eventsInput(value: unknown): WebhookEventType[] {
+  if (!Array.isArray(value) || !value.length || value.some(type => !WEBHOOK_EVENTS.includes(type)) || new Set(value).size !== value.length) {
+    throw new HttpError(400, `events must list some of ${WEBHOOK_EVENTS.join(", ")}, each once`);
+  }
+  return value;
+}
+
 /** A model response's cost: the provider's own report when it made one (OpenRouter's), else the catalog price. */
 export function usageCost(usage: any): { usd: number; source: "provider" | "catalog" } {
   return typeof usage?.providerCost === "number" ? { usd: usage.providerCost, source: "provider" } : { usd: Number(usage?.cost?.total) || 0, source: "catalog" };
@@ -44,7 +75,7 @@ export function usageEvent(tenant: string, agent: string, message: UsageRecord):
   const [provider, ...upstream] = (message.provider ?? "unknown").split("/");
   const model = [...upstream, message.model ?? "unknown"].join("/");
   return {
-    id: randomUUID(), agent, requestId: message.requestId ?? null, tenant, subject: message.identity?.subject ?? agent, actor: message.actor ?? null,
+    id: randomUUID(), type: "usage", agent, requestId: message.requestId ?? null, tenant, subject: message.identity?.subject ?? agent, actor: message.actor ?? null,
     context: message.identity?.context ?? {}, keyScope: message.keyScope ?? null, provider, model,
     kind: message.kind === "compaction" ? "compaction" : "response",
     input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0,
@@ -75,19 +106,24 @@ export class UsageWebhooks {
   }
 
   async get(tenant: string) {
-    const row = (await this.db.query("select url, created_at from usage_webhooks where tenant = $1", [tenant])).rows[0];
-    return row && { url: row.url as string, createdAt: Number(row.created_at) };
+    const row = (await this.db.query("select url, events, created_at from usage_webhooks where tenant = $1", [tenant])).rows[0];
+    return row && { url: row.url as string, events: row.events as WebhookEventType[], createdAt: Number(row.created_at) };
   }
 
-  /** Set the receiver. A tenant's first one gets a signing secret, returned only now. */
-  async set(tenant: string, url: unknown) {
+  /**
+   * Set the receiver, and the event types it gets: a new one gets `usage` unless it says, and
+   * `events` left out keeps the current selection. A tenant's first one gets a signing secret, returned only now.
+   */
+  async set(tenant: string, url: unknown, events?: unknown) {
     if (typeof url !== "string") throw new HttpError(400, "url must be a string");
     try { this.outbound.check(url); } catch (error) { throw new HttpError(400, errorText(error)); }
+    const selected = events === undefined ? null : eventsInput(events);
     const secret = newSecret();
     const { rows } = await this.db.query(`
-      insert into usage_webhooks (tenant, url, secret, created_at) values ($1, $2, $3, $4)
-      on conflict (tenant) do update set url = excluded.url returning (xmax = 0) as created`, [tenant, url, this.accounts.seal(aad(tenant), secret), Date.now()]);
-    return { url, ...(rows[0].created ? { secret } : {}) };
+      insert into usage_webhooks (tenant, url, secret, created_at, events) values ($1, $2, $3, $4, coalesce($5, '{usage}'::text[]))
+      on conflict (tenant) do update set url = excluded.url, events = coalesce($5, usage_webhooks.events) returning (xmax = 0) as created, events`,
+      [tenant, url, this.accounts.seal(aad(tenant), secret), Date.now(), selected]);
+    return { url, events: rows[0].events as WebhookEventType[], ...(rows[0].created ? { secret } : {}) };
   }
 
   /** A new signing secret, returned only now; the old one also signs for a day, so receivers can switch. */
@@ -141,7 +177,7 @@ export class UsageWebhooks {
     return { url: row.url as string, secrets };
   }
 
-  private async deliver(row: { id: string; tenant: string; body: UsageEvent; attempts: number }, receiver?: { url: string; secrets: string[] }) {
+  private async deliver(row: { id: string; tenant: string; body: WebhookEvent; attempts: number }, receiver?: { url: string; secrets: string[] }) {
     if (!receiver) { await this.db.query("delete from usage_webhook_outbox where id = $1", [row.id]); return; }
     const body = JSON.stringify(row.body);
     let failure: string;

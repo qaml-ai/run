@@ -215,8 +215,8 @@ export function api(context: ApiContext) {
     return context.usageWebhooks;
   };
   route(createRoute({ method: "put", path: "/v1/usage-webhook", request: { body: content(schema.UsageWebhookInput) }, responses: { 200: reply("The receiver; with its signing secret the first time only", schema.UsageWebhookSet) } }), async c => {
-    const { url } = parse(schema.UsageWebhookInput, await readJson(c.req.raw.body, 16 * 1024, {}));
-    return json(c, 200, await webhooks().set(c.var.principal.tenant, url));
+    const { url, events } = parse(schema.UsageWebhookInput, await readJson(c.req.raw.body, 16 * 1024, {}));
+    return json(c, 200, await webhooks().set(c.var.principal.tenant, url, events));
   });
   route(createRoute({ method: "get", path: "/v1/usage-webhook", responses: { 200: reply("The receiver", schema.UsageWebhook) } }), async c => {
     const webhook = await webhooks().get(c.var.principal.tenant);

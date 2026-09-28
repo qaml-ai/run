@@ -6,7 +6,7 @@ import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, Credentials, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
-import { usageCost } from "./usage-webhooks.ts";
+import { enqueueEvents, eventId, usageCost, type WebhookEvent } from "./usage-webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { configurationUpdate, type ModelEndpoints } from "./session-config.ts";
 import { validateDefinitions } from "./tool-policy.ts";
@@ -68,8 +68,13 @@ interface SessionHeader {
   /** Made with a history index (history-pages.ts); agents made before it have none, and are never indexed. */
   history?: true;
 }
-/** Upserts of request records, appended as their state changes. Journals from before tool calls were MCP also hold call records, which are skipped. */
-type JournalRecord = { t: "request"; record: RequestRecord };
+/**
+ * Upserts of request records, appended as their state changes, and runs whose `run.finished` webhook event is written
+ * (`announced`). Journals from before tool calls were MCP also hold call records, which are skipped.
+ */
+type JournalRecord = { t: "request"; record: RequestRecord } | { t: "announced"; ids: string[] };
+/** What a run's model responses (compaction summaries included) used, for its `run.finished` event. */
+type RunUsage = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number };
 type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; Variables: { session: Session } };
 type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
 /** What a running agent's history index lacks (its transcript's backlog). */
@@ -99,6 +104,10 @@ type Session = {
   handedBack?: true;
   /** The assistant message streaming now, as its latest message_update carried it. */
   partial?: unknown;
+  /** What each running run's model responses used so far, for its `run.finished` event. */
+  usage?: Map<string, RunUsage>;
+  /** Writing the latest run's `run.started` event, which its `run.finished` waits for. */
+  started?: Promise<void>;
   /** Prompts sent with `whileRunning: "steer"` that a running turn took, each with that turn's request: they end with it. */
   steered?: Map<string, string>;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
@@ -251,7 +260,7 @@ const json = (c: Context, status: number, value: unknown) => c.json(value, statu
 const expired = (expiresAt: number | null, now = Date.now()) => expiresAt !== null && expiresAt <= now;
 const settled = (state: string) => state !== "running";
 /** A request as callers see it: queued parameters stay internal. */
-const visible = ({ params: _params, ...record }: RequestRecord): RequestRecord => record;
+const visible = ({ params: _params, announce: _announce, ...record }: RequestRecord): RequestRecord => record;
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
@@ -490,7 +499,7 @@ export class ClientSessions {
       if (request.params !== undefined) queued.push(request);
       // Counted when the resumed run begins (see `run`), so a load that fails, or hands the agent back, spends none.
       else if (resumable(request) && (request.resumes ?? 0) < MAX_RESUMES) resumed.push(request);
-      else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true } });
+      else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true }, ...(RUN_METHODS.includes(request.method) ? { announce: true as const } : {}) });
     }
     await log.flush(true);
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
@@ -499,11 +508,47 @@ export class ClientSessions {
     session.inherited = new Set([...resumed, ...queued].map(record => record.id));
     for (const record of resumed) { session.resuming.add(record.id); this.enqueue(session, record, undefined); }
     for (const record of queued.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) this.enqueue(session, record, record.params);
+    // Runs that ended without their event written (the node stopped first, or the write failed): written now.
+    const unannounced = [...session.requests.values()].filter(record => record.announce);
+    if (unannounced.length) void this.announce(session, unannounced);
     return session;
   }
 
   private apply(session: Session, entry: JournalRecord) {
     if (entry.t === "request") this.track(session, entry.record);
+    else if (entry.t === "announced") {
+      for (const id of entry.ids) {
+        const record = session.requests.get(id);
+        if (record?.announce) { const { announce: _, ...rest } = record; session.requests.set(id, rest); }
+      }
+    }
+  }
+
+  /** A run's lifecycle event for the tenant's webhook, with an id each rewrite keeps. */
+  private runEvent(session: Session, type: "run.started" | "run.finished", record: RequestRecord, usage?: RunUsage): WebhookEvent {
+    const { id: agent, tenant } = session.header;
+    return {
+      id: eventId(`${type}:${agent}:${record.id}`), type, tenant, agent, requestId: record.id, method: record.method,
+      ...(record.actor ? { actor: record.actor } : {}),
+      ...(type === "run.started" ? { at: record.began ?? Date.now(), ...(record.resumes ? { resumes: record.resumes } : {}) }
+        : { at: record.endedAt ?? Date.now(), outcome: record.outcome, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null }),
+    };
+  }
+
+  /** Write finished runs' `run.finished` events, then journal that they are written; a failure leaves them for the next load. */
+  private async announce(session: Session, records: RequestRecord[], usage?: Map<string, RunUsage>) {
+    try {
+      await session.started;
+      await enqueueEvents(this.db, records.map(record => this.runEvent(session, "run.finished", record, usage?.get(record.id))));
+    } catch (error) {
+      console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: errorText(error) }));
+      return;
+    }
+    if (this.sessions.get(session.header.id) !== session || session.fault) return;
+    const entry: JournalRecord = { t: "announced", ids: records.map(record => record.id) };
+    this.apply(session, entry);
+    session.log.append(entry);
+    this.commitLater(session);
   }
 
   private snapshot(session: Session): JournalRecord[] {
@@ -2102,10 +2147,12 @@ export class ClientSessions {
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
             this.options.onUsage?.(session.header.tenant, id, { ...event.message, ...run, provider: via + event.message.provider, platform: !!session.platformKey });
             this.spent(session, responseCost(event.message.usage));
+            this.tally(session, record.id, event.message.usage);
           }
           if (event?.type === "compaction_usage" && event.usage) {
             this.options.onUsage?.(session.header.tenant, id, { ...event, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
             this.spent(session, responseCost(event.usage));
+            this.tally(session, record.id, event.usage);
           }
           // A prompt steered into this turn has been taken: it ends with the turn.
           const taken = event?.type === "message_end" && event.message?.role === "user" ? event.message.requestId : undefined;
@@ -2196,6 +2243,8 @@ export class ClientSessions {
         if (record.method === "execute") session.beginning = {};
         else await this.commit(session, true);
         this.hook("runStarted", session, record);
+        session.started = enqueueEvents(this.db, [this.runEvent(session, "run.started", record)])
+          .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: errorText(error) })));
         if (record.method !== "execute") session.turn = { requestId: record.id, messages: [], count: 0, bytes: 0 };
       }
       if (RUN_METHODS.includes(record.method)) {
@@ -2225,16 +2274,32 @@ export class ClientSessions {
     // Until the response is published, a drain or release must not close the stream and drop it.
     session.settling++;
     try {
-      const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now() });
+      const run = RUN_METHODS.includes(record.method);
+      const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now(), ...(run ? { announce: true as const } : {}) });
       const steered = this.endSteered(session, record.id, value);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
-      if (RUN_METHODS.includes(record.method)) this.hook("runEnded", session, completed);
+      if (run) {
+        this.hook("runEnded", session, completed);
+        const usage = session.usage;
+        session.usage = undefined;
+        // With this run's event (and those of prompts steered into it), any an earlier failure left.
+        void this.announce(session, [...session.requests.values()].filter(request => request.announce), usage);
+      }
       session.lastActive = Date.now();
       this.publish(session, { type: "response", id: record.id, outcome: value });
       for (const id of steered) this.publish(session, { type: "response", id, outcome: value });
     } finally { session.settling--; }
     await this.fold(session);
+  }
+
+  /** Count a model response's usage toward its run's `run.finished` event. */
+  private tally(session: Session, requestId: string, usage: any) {
+    const total = (session.usage ??= new Map()).get(requestId) ?? { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
+    session.usage.set(requestId, {
+      responses: total.responses + 1, input: total.input + (usage.input ?? 0), output: total.output + (usage.output ?? 0),
+      cacheRead: total.cacheRead + (usage.cacheRead ?? 0), cacheWrite: total.cacheWrite + (usage.cacheWrite ?? 0), costUsd: total.costUsd + responseCost(usage),
+    });
   }
 
   /** Complete the prompts steered into the turn `turn` with its outcome; their queued runs then do nothing. */
@@ -2246,7 +2311,7 @@ export class ClientSessions {
       const queued = session.running.get(id);
       if (!queued) continue;
       const { params: _params, ...rest } = queued;
-      this.upsertRequest(session, { ...rest, state: "completed", outcome, endedAt: Date.now(), steeredInto: turn });
+      this.upsertRequest(session, { ...rest, state: "completed", outcome, endedAt: Date.now(), steeredInto: turn, announce: true });
       ended.push(id);
     }
     return ended;

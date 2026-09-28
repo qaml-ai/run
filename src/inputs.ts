@@ -6,6 +6,7 @@ import { underClaim, type Claim } from "./ownership.ts";
 import { canonical } from "../shared/durable-json.ts";
 import { schemaAccepts } from "./tool-policy.ts";
 import type { Sender } from "./sender.ts";
+import { enqueueEvents, eventId, type WebhookEvent } from "./usage-webhooks.ts";
 
 /**
  * Human input: a question the model asks (ask_user), an approval the runtime's policy or a tool asks
@@ -205,6 +206,10 @@ const row = (value: any): InputRow => {
 /** An input as callers see it: never how its call is retried. */
 export const inputView = ({ stored: _stored, ...input }: InputRow): Input => input;
 
+/** A tenant webhook's event for an input asked (`input.requested`) or settled (`input.resolved`), written with the row's change. */
+const inputEvent = (type: "input.requested" | "input.resolved", input: InputRow): WebhookEvent =>
+  ({ id: eventId(`${type}:${input.id}`), type, tenant: input.tenant, agent: input.agent, requestId: input.requestId, at: Date.now(), input: inputView(input) });
+
 /** The `agent_inputs` rows. Creates are written under the agent's claim; settling is a compare-and-set any node may make. */
 export class Inputs {
   readonly db: Db;
@@ -229,6 +234,7 @@ export class Inputs {
         await sql.query("insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
           [input.id, input.agent, input.tenant, input.requestId, input.toolCallId, input.kind, JSON.stringify(input.stored), input.createdAt, input.expiresAt]);
       }
+      await enqueueEvents(sql, rows.map(input => inputEvent("input.requested", input)));
     });
     return rows;
   }
@@ -262,10 +268,14 @@ export class Inputs {
     return (await this.db.query("select * from agent_inputs where agent = $1 and state = 'pending' order by created_at, id", [agent])).rows.map(row);
   }
 
-  /** Settle a pending input, once: undefined when it had already settled (or does not exist). */
-  async settle(id: string, answer: Answer, state: InputState = FINAL[answer.action], sql: Sql = this.db): Promise<InputRow | undefined> {
-    const updated = (await sql.query("update agent_inputs set state = $2, answer = $3 where id = $1 and state = 'pending' returning *", [id, state, JSON.stringify(answer)])).rows[0];
-    return updated && row(updated);
+  /** Settle a pending input, once: undefined when it had already settled (or does not exist). Inside `sql`'s transaction, if given. */
+  async settle(id: string, answer: Answer, state: InputState = FINAL[answer.action], sql?: Sql): Promise<InputRow | undefined> {
+    const work = async (sql: Sql) => {
+      const updated = (await sql.query("update agent_inputs set state = $2, answer = $3 where id = $1 and state = 'pending' returning *", [id, state, JSON.stringify(answer)])).rows[0];
+      if (updated) await enqueueEvents(sql, [inputEvent("input.resolved", row(updated))]);
+      return updated && row(updated);
+    };
+    return sql ? work(sql) : transaction(this.db, work);
   }
 
   /** Settle several pending inputs, all or none: undefined when any had already settled. */

@@ -20,6 +20,8 @@ export type RequestRecord = {
   suspension?: string;
   /** A prompt sent with `whileRunning: "steer"` that a running turn took: that turn's request, whose outcome it shares. */
   steeredInto?: string;
+  /** The runtime's own: a finished run whose `run.finished` webhook event is not written yet. */
+  announce?: true;
 };
 /**
  * Events on an agent's stream. `mcp` carries the runtime's JSON-RPC messages to the application's attached MCP server: live only, with no id, never replayed.

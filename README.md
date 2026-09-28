@@ -624,7 +624,7 @@ with 400. Only the tenant sets them; `GET /v1/agents/:id` shows them.
 
 `spendLimit: {"usd": n}` at creation or through `PATCH /v1/agents/:id/configuration`
 is the most the agent may spend on model calls from then on: their cost as the
-[usage webhook](#usage-webhook) reports it (the provider's own when it reports
+[usage webhook](#webhook-usage-and-lifecycle-events) reports it (the provider's own when it reports
 one, else the catalog price), turns and compaction summaries, whoever's key they
 ran on. Setting a value starts counting from zero, so an
 application can set the remaining allowance before each prompt; `null` removes
@@ -636,24 +636,60 @@ shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
 and writes it to `agent_spend_limits` after each response; only the tenant can
 set it, not the agent's own token.
 
-### Usage webhook
+### Webhook: usage and lifecycle events
 
-A tenant can have each model response's usage POSTed to its own receiver, e.g.
-to bill its customers per key scope:
+A tenant can have events POSTed to its own receiver: each model response's usage
+(e.g. to bill its customers per key scope), and its agents' lifecycle (to show
+which are running, act on a turn's outcome, or reply in a channel with no browser
+attached). It picks the types with `events`:
 
 ```http
 PUT /v1/usage-webhook
-{"url": "https://example.com/hooks/agent-usage"}
+{"url": "https://example.com/hooks/agent-events", "events": ["usage", "run.started", "run.finished", "input.requested", "input.resolved"]}
 ```
 
 The first `PUT` returns the signing `secret` (`whsec_…`), only then; a later one
-changes the URL and keeps it. `POST /v1/usage-webhook/secret` replaces it and
-returns the new one; the old one also signs for 24 hours. `GET` shows the URL,
+changes the URL and keeps it. A new webhook gets `["usage"]` without `events`,
+and a `PUT` without `events` keeps the current selection. `POST /v1/usage-webhook/secret` replaces the secret and
+returns the new one; the old one also signs for 24 hours. `GET` shows the URL and events,
 `DELETE` removes the webhook and its undelivered events. The URL goes through
-the [outbound guard](#outbound-calls) like any tenant URL. Each event is:
+the [outbound guard](#outbound-calls) like any tenant URL. One receiver, secret and
+outbox serve every type (the path keeps its first name); receivers tell events apart by `type`.
+
+Lifecycle events name the tenant, `agent` and `requestId` (the run's, or the one the input's turn ran in), and `at` (ms):
+
+- `run.started`: a run (`method`: `prompt`, `continue`, `resume` or `execute`)
+  began, with its `actor` and, for a turn a new node resumed after its node was
+  lost, `resumes`. A resumed run is announced again with the same `id`.
+- `run.finished`: it ended. `outcome` is the request's (as `GET
+  /v1/agents/:id/requests/:requestId` shows it): `error` (null on success, with
+  `uncertain` when a restart cut it short), and in `result` `stopped`
+  (`input_required` with its `inputs`, or `spend_limit`), `reply` (the final
+  assistant message's text) and `replyIndex` (that message's index in history),
+  `messages`, and any `files`/`presented`. `usage` sums the run's model responses
+  on the node that ended it (`responses`, `input`, `output`, `cacheRead`,
+  `cacheWrite`, `costUsd`), or is null. A prompt a running turn took as a steer
+  gets its own `run.finished` with the turn's outcome, `steeredInto` and null usage.
+- `input.requested` / `input.resolved`: a human input was asked, or settled
+  (answered, declined, cancelled, expired, superseded); `input` is the input as
+  `GET /v1/agents/:id/inputs` lists it.
 
 ```json
-{"id": "5d0c…", "agent": "client_…", "requestId": "…", "tenant": "camel",
+{"id": "9f2c…", "type": "run.finished", "tenant": "camel", "agent": "client_…", "requestId": "…",
+ "method": "prompt", "at": 1790000000000,
+ "outcome": {"result": {"messages": 4, "error": null, "reply": "Done.", "replyIndex": 3}},
+ "usage": {"responses": 2, "input": 2300, "output": 140, "cacheRead": 0, "cacheWrite": 0, "costUsd": 0.0081}}
+```
+
+Input events are written in the transaction that changes the input's row, and a
+run's events once its record is durable: `run.finished` is marked pending in the
+run's own record, and written again when its agent next runs or loads if the node
+stopped first. Order is not guaranteed across retries: order by `at`, dedupe by `id`.
+
+A usage event is:
+
+```json
+{"id": "5d0c…", "type": "usage", "agent": "client_…", "requestId": "…", "tenant": "camel",
  "subject": "u_1", "actor": "u_2", "context": {"org": "org_abc123"}, "keyScope": "org_abc123",
  "provider": "openrouter", "model": "anthropic/claude-sonnet-5", "kind": "response",
  "input": 1200, "output": 85, "cacheRead": 0, "cacheWrite": 0, "reasoning": 40,

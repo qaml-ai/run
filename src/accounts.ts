@@ -6,7 +6,7 @@ import { accrueUsage, Billing, type UsageCharge } from "./billing.ts";
 import { activeCharge, MICROS, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
 import type { HttpError } from "./http.ts";
-import { usageEvent, type UsageEvent } from "./usage-webhooks.ts";
+import { enqueueEvents, usageEvent, type UsageEvent } from "./usage-webhooks.ts";
 
 /**
  * Tenant state that tenants manage themselves: provider keys (encrypted at rest),
@@ -378,11 +378,8 @@ export class Accounts {
           platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
       [JSON.stringify(rows)]);
       await accrueUsage(sql, billed);
-      // Only tenants with a usage webhook keep their events.
-      if (events.length) await sql.query(`
-        insert into usage_webhook_outbox (id, tenant, body, due, created_at)
-        select (e->>'id')::uuid, e->>'tenant', e, $2, $2 from jsonb_array_elements($1::jsonb) as e
-        where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')`, [JSON.stringify(events), Date.now()]);
+      // Only tenants whose webhook selects usage keep their events.
+      await enqueueEvents(sql, events);
     });
     this.billing.invalidate(charges.keys());
   }

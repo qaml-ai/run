@@ -305,13 +305,28 @@
           "url": {
             "type": "string"
           },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "usage",
+                "run.started",
+                "run.finished",
+                "input.requested",
+                "input.resolved"
+              ]
+            },
+            "description": "The event types it receives. usage: each model response's usage and cost. run.started / run.finished: each run (prompt, continue, resume, execute) as it begins and ends, the end with its outcome (stopped, error, reply and replyIndex: the final assistant message's index in history) and usage. input.requested / input.resolved: each human input as it is asked and settled"
+          },
           "secret": {
             "type": "string",
             "description": "The Standard Webhooks signing secret (whsec_…); shown only this once"
           }
         },
         "required": [
-          "url"
+          "url",
+          "events"
         ]
       },
       "UsageWebhookInput": {
@@ -319,8 +334,22 @@
         "properties": {
           "url": {
             "type": "string",
-            "description": "An HTTPS URL that receives each model response's usage",
-            "example": "https://example.com/hooks/agent-usage"
+            "description": "An HTTPS URL that receives the selected events",
+            "example": "https://example.com/hooks/agent-events"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "usage",
+                "run.started",
+                "run.finished",
+                "input.requested",
+                "input.resolved"
+              ]
+            },
+            "description": "The event types it receives; a new webhook gets [\"usage\"] without it, and leaving it out keeps the current selection"
           }
         },
         "required": [
@@ -334,12 +363,27 @@
           "url": {
             "type": "string"
           },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "usage",
+                "run.started",
+                "run.finished",
+                "input.requested",
+                "input.resolved"
+              ]
+            },
+            "description": "The event types it receives. usage: each model response's usage and cost. run.started / run.finished: each run (prompt, continue, resume, execute) as it begins and ends, the end with its outcome (stopped, error, reply and replyIndex: the final assistant message's index in history) and usage. input.requested / input.resolved: each human input as it is asked and settled"
+          },
           "createdAt": {
             "type": "number"
           }
         },
         "required": [
           "url",
+          "events",
           "createdAt"
         ]
       },
