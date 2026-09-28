@@ -1849,18 +1849,22 @@ export class ClientSessions {
       const again = existing();
       if (again) return { status: 200, record: visible(again) };
     }
+    // Work is open: marked before the request is taken (a failed write takes nothing, so a retry starts afresh) and before
+    // it is durable, so a node dying with it leaves it for another's sweep (see `resumeOrphans`).
+    // One write per busy spell: the mark stays until an unload with nothing open clears it.
+    if (queued && !session.pending) {
+      await underClaim(this.db, session.claim, sql => sql.query("update agents set pending_runs = true where id = $1 and not pending_runs", [session.header.id]));
+      session.pending = true;
+      // A retry of the same id may have been taken while this waited.
+      const again = existing();
+      if (again) return { status: 200, record: visible(again) };
+    }
     const record = this.upsertRequest(session, {
       startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
       ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
       id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}),
       ...(body.method === "resume" ? { suspension: params.suspension } : {}),
     });
-    // Work is open: marked before it is durable, so a node dying with it leaves it for another's sweep (see `resumeOrphans`).
-    // One write per busy spell: the mark stays until an unload with nothing open clears it.
-    if (queued && !session.pending) {
-      await underClaim(this.db, session.claim, sql => sql.query("update agents set pending_runs = true where id = $1 and not pending_runs", [session.header.id]));
-      session.pending = true;
-    }
     await this.commit(session, true);
     if (queued) this.enqueue(session, record, params);
     else void this.run(session, record, params);

@@ -121,3 +121,20 @@ test("an agent with work left that cannot be loaded is tried again with capped b
   const after = Number((await row()).resume_after);
   assert.ok(after - Date.now() <= 3_600_000 && after - Date.now() > 3_500_000, `capped at an hour (${after - Date.now()} ms)`);
 });
+
+test("a request whose open-work mark could not be written is not taken, and its retry runs", { timeout: 60_000 }, async t => {
+  const r = await runtime(t, () => ({ content: "ran" }));
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  // The first write marking the agent's work open fails, once, as a database blip would.
+  await r.db.query(`create sequence mark_fails;
+    create function mark_fails() returns trigger language plpgsql as $$ begin
+      if not old.pending_runs and new.pending_runs and nextval('mark_fails') = 1 then raise exception 'injected failure'; end if;
+      return new; end $$;
+    create trigger mark_fails before update on agents for each row execute function mark_fails();`);
+  const first = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go", requestId: "retried" } });
+  assert.notEqual(first.status, 202);
+  const retry = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go", requestId: "retried" } });
+  assert.equal(retry.status, 202, retry.text);
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/retried`)).json.state === "completed", "the retried request to run");
+  assert.equal((await r.call(`/v1/agents/${agent}/requests/retried`)).json.outcome.result.reply, "ran");
+});
