@@ -284,8 +284,9 @@ test("watchers each get the whole stream beside the application's connection, ne
   const woken = await waiting;
   assert.ok(woken.json.events.length > 0 && woken.json.events[0].id === last + 1, "a waiting poll answers with the next event");
   assert.equal(woken.json.cursor, woken.json.events.at(-1).id);
-  assert.equal((await poll(1)).status, 409, "a cursor behind the buffer is a replay gap");
-  assert.equal((await watchEvents(t, events, auth, { cursor: 1 })).status, 409);
+  assert.equal((await poll(1, "&snapshot=0")).status, 409, "a cursor behind the buffer is a replay gap, for one that asks for no snapshot");
+  assert.equal((await watchEvents(t, events, auth, { cursor: 1, query: "watch=1&snapshot=0" })).status, 409);
+  assert.equal((await poll(1)).json.events[0].data.type, "snapshot", "by default, a snapshot");
   assert.equal(executions, 2);
 });
 

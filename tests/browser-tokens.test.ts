@@ -93,7 +93,7 @@ test("a browser token's scopes, event list and redaction limit what it reads; a 
   const assistant = events.find(event => event.message.role === "assistant").message;
   assert.ok(assistant.usage && !("cost" in assistant.usage), "no cost in the stream");
   // Nor anywhere else in a frame: every event, whatever holds the messages.
-  const everything = await (await fetch(`${r.base}/v1/agents/${agent}/events?poll=1`, { headers: { ...bearer((await mint({ redact: ["usage.cost"] })).json.token), "Last-Event-ID": String(watcher.frames.find(frame => frame.id)!.id! - 1) } })).json() as any;
+  const everything = await (await fetch(`${r.base}/v1/agents/${agent}/events?poll=1`, { headers: { ...bearer((await mint({ redact: ["usage.cost"] })).json.token), "Last-Event-ID": String(watcher.frames.find(frame => frame.id && frame.data.type !== "snapshot")!.id! - 1) } })).json() as any;
   const costs = (value: any): number => !value || typeof value !== "object" ? 0 : (value.usage && typeof value.usage === "object" && "cost" in value.usage ? 1 : 0) + Object.values(value).reduce((sum: number, item) => sum + costs(item), 0);
   assert.ok(everything.events.some((event: any) => event.data.event?.type === "agent_end"), "agent_end is there to check");
   assert.equal(costs(everything), 0, "no usage anywhere carries its cost");

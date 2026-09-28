@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { listen, runtime } from "./runtime-server.ts";
+import { listen, runtime, until } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
@@ -31,4 +31,5 @@ test("an Idempotency-Key header on any POST replays its first success, refuses o
   assert.equal(prompt.status, 202, prompt.text);
   assert.equal(prompt.json.id, "prompt-1");
   assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "hi" }, headers: { "Idempotency-Key": "prompt-1" } })).json.startedAt, prompt.json.startedAt);
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/prompt-1`)).json.state === "completed", "the prompt");
 });
