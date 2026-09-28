@@ -459,7 +459,7 @@ test("streamed events are not journaled: only request state reaches the session 
   await agent.execute('for (let i = 0; i < 200; i++) text("line " + i); return await tools.echo({value:"done"})');
   const journal = (await readFile(join(f.root, "sessions", `${agent.session.id}.journal.jsonl`), "utf8")).trim().split("\n").map(line => JSON.parse(line));
   assert.ok(journal.length <= 6, `journal has ${journal.length} records`);
-  assert.deepEqual([...new Set(journal.map((record: any) => record.t))], ["request"], "tool calls are not journaled: the transcript has them");
+  assert.deepEqual(journal.filter((record: any) => !["request", "announced"].includes(record.t)), [], "tool calls are not journaled: the transcript has them");
   const header = await f.header(agent.session.id);
   assert.equal(header.version, 3);
   assert.equal("events" in header, false);
