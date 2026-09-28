@@ -77,6 +77,7 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 | `onSend({ auth, text, data, request })` | Before each message: return `{ text?, metadata? }`, or `throw new Response(…)` to refuse it (quotas, moderation). |
 | `browserToken` | `{ ttlSeconds, events, redact, url }` for the tokens it mints (default 15 minutes, no provider cost). |
 | `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
+| `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](#reading-through-your-route-proxy)). Default `false`. |
 | `apiKey`, `url` | Default `CAMELAI_API_KEY`, and `CAMELAI_BASE_URL` or https://agents.camelai.dev. |
 
 ### 2. The UI
@@ -92,6 +93,34 @@ export default function Support() {
 ```
 
 `<AgentChat>` fills its container: give that a height.
+
+### Reading through your route (proxy)
+
+By default the browser reads its agent's stream straight from the runtime, with the browser token
+your route gave it: the stream never passes through your server. With `proxy: true`, your route
+passes those reads through as well (the event stream, its long-poll fallback, history, state and
+inputs), so the browser only ever talks to your origin: nothing to allow in a Content Security
+Policy, and no runtime URL in the page. The chat needs no other change.
+
+```ts
+// app/api/agent/[[...path]]/route.ts: the route and every path under it
+const handler = createAgentHandler({ authorize, agent, proxy: true });
+export const GET = handler;
+export const POST = handler;
+```
+
+Hono: `app.all("/api/agent/*", c => handler(c.req.raw))` as well as `/api/agent`. Express:
+`app.use("/api/agent", nodeListener(handler))`. Workers: the same `fetch` handler.
+
+Each read is checked with `authorize` like everything else and must name the user's own agent; the
+route adds a browser token it keeps on the server (the browser never sees one), and streams each
+chunk as it arrives. A browser that goes away cancels the read upstream.
+
+The cost: every open chat holds a request on your server for as long as it is open. Serverless
+functions cut a request at their time limit (on Vercel, the function's maximum duration); the chat
+then reconnects from where it was, and after two streams that deliver nothing it switches to long
+polls of at most 25 seconds, which fit any limit. Direct reads keep that load off your servers, so
+they stay the default: use the proxy when policy requires a single origin.
 
 ## How it stays secure
 
@@ -240,9 +269,31 @@ history:
 ```
 
 The route receives it in `authorize(request, { thread })`. By default each user and thread is one
-agent; return `agentKey` to choose yourself, e.g. one agent a whole team shares
-(`{ userId, name, agentKey: `team-${team.id}` }`, after checking the user is in the team). In a shared
-agent each message shows who sent it.
+agent (`agentKeyFor(userId, thread)`).
+
+**Agents several people share** (a team's assistant, a support conversation a customer and an agent
+of yours both join): return the agent's key yourself, after checking the user may use it.
+
+```ts
+authorize: async (request, { thread }) => {
+  const user = await getUser(request);
+  if (!user) return null;
+  // thread is the team's id here: only its members get its agent.
+  if (thread && !(await isMember(user.id, thread))) return null;
+  return { userId: user.id, name: user.name, agentKey: thread ? `team-${thread}` : undefined };
+},
+```
+
+- The key is yours: 1 to 80 letters, digits, `_` and `-`, stable for as long as the conversation
+  lives. Never build it from untrusted input without checking access first, as above.
+- Each message is sent as its user (`from`), so the model knows who said what and the chat shows each
+  sender's name; tools get the sender as `identity.actor`.
+- The agent's `subject` (what its tools see as `identity.subject`) is the user who first opened it,
+  and it never changes. For a shared agent, give it a stable subject of its own, e.g. make the
+  first `authorize` for a team return the team's owner, or use `context` in `agent` for the team.
+- Answers to the agent's questions are checked against who may answer: by default the person whose
+  message started the turn.
+- Everyone watching sees the same conversation, live.
 
 ## Theming and accessibility
 

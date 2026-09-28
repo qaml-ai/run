@@ -20,7 +20,7 @@
  * needs no dependency on it.
  */
 import { watchAgent, type Watcher } from "./watch.ts";
-import { answerValue, projectMessages, type ChatMessage, type InputAnswer, type InputValue } from "./chat.ts";
+import { answerValue, projectMessages, readsFrom, type ChatMessage, type InputAnswer, type InputValue } from "./chat.ts";
 import type { AgentInput } from "./typescript.ts";
 import type { AgentEvent, MessageDelta } from "./types.ts";
 
@@ -110,9 +110,9 @@ export class AgentRuntimeChatTransport {
     const ready = Promise.withResolvers<void>();
     let watcher!: Watcher;
     watcher = watchAgent({
-      url: minted.url, agentId: minted.agentId, token: minted.token, expiresAt: minted.expiresAt,
+      ...readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials),
+      agentId: minted.agentId, token: minted.token, expiresAt: minted.expiresAt,
       getToken: async () => { const renewed = await this.call("token", thread); return { token: renewed.token, expiresAt: renewed.expiresAt }; },
-      ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
       onEvent,
       onChange: state => { if (state.connected) ready.resolve(); if (watcher) onChange(watcher); },
       onError: error => { if (!watcher?.state.connected) ready.reject(error); },
@@ -170,7 +170,8 @@ export class AgentRuntimeChatTransport {
   async loadMessages(options: { chatId?: string; limit?: number } = {}): Promise<AgentUIMessage[]> {
     const thread = this.threadOf(options.chatId);
     const minted = await this.call("token", thread);
-    const response = await this.doFetch(`${minted.url.replace(/\/+$/, "")}/v1/agents/${encodeURIComponent(minted.agentId)}/history?limit=${options.limit ?? 50}`, { headers: { Authorization: `Bearer ${minted.token}` } });
+    const reads = readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials);
+    const response = await reads.fetch!(`${reads.url.replace(/\/+$/, "")}/v1/agents/${encodeURIComponent(minted.agentId)}/history?limit=${options.limit ?? 50}`, { headers: { Authorization: `Bearer ${minted.token}` } });
     if (!response.ok) throw new Error(`history: HTTP ${response.status}`);
     const page = await response.json() as { entries: { index: number; message: any }[] };
     return toUIMessages(projectMessages({ messages: page.entries.map(entry => entry.message), indexes: page.entries.map(entry => entry.index), partial: null, running: false }));

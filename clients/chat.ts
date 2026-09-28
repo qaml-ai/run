@@ -422,6 +422,26 @@ function fileAt(callId: string, args: Record<string, unknown>, result: ToolResul
 // ---------------------------------------------------------------------------------------------
 // The store
 
+/**
+ * Where the watcher reads the agent: the runtime (with the browser token), or, when the handler proxies
+ * reads, the handler itself (under the thread's path), with the chat's own headers and credentials.
+ */
+export function readsFrom(minted: { url?: string; proxy?: boolean }, endpoint: string, thread: string | null | undefined, doFetch: typeof globalThis.fetch,
+  headers?: AgentChatOptions["headers"], credentials?: RequestCredentials): Pick<WatchOptions, "url" | "fetch"> {
+  if (!minted.proxy) return { url: minted.url!, fetch: doFetch };
+  const base = `${endpoint.replace(/\/+$/, "")}${thread ? `/threads/${encodeURIComponent(thread)}` : ""}`;
+  return {
+    url: base,
+    fetch: async (input, init = {}) => {
+      const own = typeof headers === "function" ? await headers() : headers ?? {};
+      // The watcher's Authorization is a placeholder here: the handler adds the real token, and yours goes instead.
+      const merged: Record<string, string> = { ...init.headers as Record<string, string>, ...own };
+      if (!own.Authorization && !own.authorization) delete merged.Authorization;
+      return doFetch(input, { ...init, headers: merged, credentials: credentials ?? "same-origin" });
+    },
+  };
+}
+
 const newId = () => `cm_${globalThis.crypto.randomUUID().replace(/-/g, "")}`;
 const EMPTY: ChatSnapshot = { status: "connecting", messages: [], inputs: [], error: null, hasOlder: false, connected: false, agentId: null };
 
@@ -516,7 +536,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
     const mine = ++generation;
     fatal = false;
     void (async () => {
-      let minted: { token: string; expiresAt: number; agentId: string; url: string };
+      let minted: { token: string; expiresAt: number; agentId: string; url?: string; proxy?: boolean };
       // A refusal (not signed in, not allowed) stops here; anything else is tried again, backing off.
       for (let backoff = 1000; ; backoff = Math.min(backoff * 2, 30_000)) {
         try { minted = await call("token"); break; }
@@ -532,8 +552,8 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
       try {
         agentId = minted.agentId;
         watcher = watchAgent({
-          ...options.watch, url: minted.url, agentId: minted.agentId, token: minted.token, expiresAt: minted.expiresAt,
-          ...(options.fetch ? { fetch: options.fetch } : {}),
+          ...options.watch, ...readsFrom(minted, options.endpoint, options.thread, doFetch, options.headers, options.credentials),
+          agentId: minted.agentId, token: minted.token, expiresAt: minted.expiresAt,
           getToken: async () => { const renewed = await call("token"); return { token: renewed.token, expiresAt: renewed.expiresAt }; },
           onChange: state => {
             if (mine !== generation) return;

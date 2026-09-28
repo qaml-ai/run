@@ -11,6 +11,9 @@
  *
  * Fetch-standard: Next.js route handlers, Hono (`c => handler(c.req.raw)`), Workers, Bun and Deno take it
  * as is; Express and node:http with `nodeListener(handler)` from "@camelai/agent-runtime/node".
+ *
+ * With `proxy: true`, browsers read their agent through this route too (GET <route>/v1/agents/:id/…),
+ * so they only ever talk to your origin: mount it on the route and everything under it.
  */
 import { Agents, type Agent, type AgentConfig } from "./agents.ts";
 import { AgentError, DEFAULT_URL, type CreateAgentOptions, type Sender } from "./typescript.ts";
@@ -70,13 +73,23 @@ export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
   };
   /** Other origins whose pages may call this route (with CORS); by default only this site's. */
   allowedOrigins?: string[];
+  /**
+   * Pass the browser's reads (the event stream, its long-poll fallback, history, state and inputs) through
+   * this route, so the browser talks only to your origin (default false: it reads the runtime directly,
+   * with a browser token). The route must then also take GET requests under its path. Each read is
+   * checked with `authorize` like everything else, and streams as it arrives. Serverless functions
+   * end a stream at their time limit; the chat reconnects, and falls back to long polls.
+   */
+  proxy?: boolean;
   /** How long an agent with tools served from this process stays attached after its last use. Default 15 minutes. */
   idleMs?: number;
   fetch?: typeof globalThis.fetch;
 }
 
-export type HandlerAction = "token" | "send" | "answer" | "stop" | "link";
+export type HandlerAction = "token" | "send" | "answer" | "stop" | "link" | "read";
 const ACTIONS = new Set<HandlerAction>(["token", "send", "answer", "stop", "link"]);
+/** A read the proxy passes through: [thread segment, agent id, route]. */
+const READ = /(?:\/threads\/([^/]+))?\/v1\/agents\/([^/]+)\/(events|history|state|inputs)$/;
 
 /** The route: a fetch handler. `close()` detaches agents whose tools this process serves. */
 export type AgentHandler = ((request: Request) => Promise<Response>) & { close(): Promise<void> };
@@ -212,12 +225,72 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     return pending;
   }
 
+  /**
+   * A download link for a file in the agent's mounts. For now the agent's own token signs it (so only its
+   * mounts are reachable), renewed once if it expired; once the runtime has POST /v1/agents/:id/links,
+   * the tenant key signs it here instead and nothing else changes.
+   */
+  async function signLink(agent: Cached, path: string, renew: () => Promise<Cached>): Promise<{ url: string; expiresAt: number }> {
+    const sign = (entry: Cached) => call(`/clients/${encodeURIComponent(entry.id)}/links`, { path, method: "GET" }, entry.token);
+    return sign(agent).catch(async error => {
+      if (!(error instanceof HandlerError) || error.status !== 401) throw error;
+      return sign(await renew());
+    });
+  }
+
+  /** Browser tokens the proxy reads with, by agent: minted on this server, never sent to the browser. */
+  const readTokens = new Map<string, { token: string; expiresAt: number }>();
+  async function readToken(agent: Cached, auth: A, fresh = false): Promise<string> {
+    const known = readTokens.get(agent.id);
+    if (known && !fresh && known.expiresAt - Date.now() > 120_000) return known.token;
+    const token = options.browserToken ?? {};
+    const minted = await call(`/v1/agents/${encodeURIComponent(agent.id)}/browser-tokens`, {
+      subject: auth.userId.slice(0, 200), redact: token.redact ?? ["usage.cost"], ttlSeconds: token.ttlSeconds ?? 3600, ...(token.events ? { events: token.events } : {}),
+    });
+    if (readTokens.size >= MAX_CACHED) readTokens.delete(readTokens.keys().next().value!);
+    readTokens.set(agent.id, { token: minted.token, expiresAt: minted.expiresAt });
+    return minted.token;
+  }
+
+  /**
+   * A read passed through to the runtime, streamed as it arrives: the user's own agent only (as
+   * `authorize` says), with a browser token added here, and cancelled when the browser goes away.
+   */
+  async function read(request: Request, match: RegExpExecArray): Promise<Response> {
+    const thread = match[1] === undefined ? null : decodeURIComponent(match[1]);
+    if (thread !== null && (!thread || thread.length > 200)) fail(400, "invalid_request", "thread is a string of 1 to 200 characters");
+    const auth = await options.authorize(request, { thread, action: "read" });
+    if (!auth) fail(401, "unauthorized", "Sign in first");
+    const agent = await agentFor(auth!, thread);
+    // The path names an agent; only the user's own is readable (another is not found, as on the runtime).
+    if (decodeURIComponent(match[2]) !== agent.id) fail(404, "not_found", "No such agent");
+    const target = `${url}/v1/agents/${encodeURIComponent(agent.id)}/${match[3]}${new URL(request.url).search}`;
+    const forward = async (fresh: boolean) => {
+      const headers: Record<string, string> = { Authorization: `Bearer ${await readToken(agent, auth!, fresh)}` };
+      for (const name of ["accept", "last-event-id"]) { const value = request.headers.get(name); if (value !== null) headers[name] = value; }
+      try { return await doFetch(target, { headers, signal: request.signal, redirect: "manual" }); }
+      catch (error) {
+        if (request.signal.aborted) throw error;
+        return fail(502, "runtime_unreachable", `Could not reach the agent runtime: ${(error as Error).message}`);
+      }
+    };
+    let upstream = await forward(false);
+    if (upstream.status === 401) { await upstream.body?.cancel(); upstream = await forward(true); }
+    const headers = new Headers({ "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });
+    const type = upstream.headers.get("content-type");
+    if (type) headers.set("Content-Type", type);
+    // The body as it comes: each chunk is passed on as it arrives, nothing is buffered or rewritten.
+    return new Response(upstream.body, { status: upstream.status, headers });
+  }
+
   async function handle(request: Request, body: Record<string, unknown>, auth: A, action: HandlerAction, thread: string | null): Promise<unknown> {
     const agent = await agentFor(auth, thread);
     const path = `/v1/agents/${encodeURIComponent(agent.id)}`;
     const from: Sender = { id: auth.userId, ...(auth.name ? { name: auth.name } : {}) };
     switch (action) {
       case "token": {
+        // Proxied, the browser reads through this route (its own endpoint), and needs no token of its own.
+        if (options.proxy) return { proxy: true, agentId: agent.id, token: "", expiresAt: Date.now() + 3_600_000 };
         const token = options.browserToken ?? {};
         const minted = await call(`${path}/browser-tokens`, {
           subject: auth.userId.slice(0, 200), redact: token.redact ?? ["usage.cost"],
@@ -253,12 +326,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
       case "link": {
         const file = body.path;
         if (typeof file !== "string" || !file || file.length > 1024) fail(400, "invalid_request", "path must be a file's path");
-        const sign = (entry: Cached) => call(`/clients/${encodeURIComponent(entry.id)}/links`, { path: file, method: "GET" }, entry.token);
-        // The agent's own token signs it (so only its mounts are reachable); an expired one is renewed once.
-        const link = await sign(agent).catch(async error => {
-          if (!(error instanceof HandlerError) || error.status !== 401) throw error;
-          return sign(await agentFor(auth, thread, true));
-        });
+        const link = await signLink(agent, file as string, () => agentFor(auth, thread, true));
         return { url: link.url, expiresAt: link.expiresAt };
       }
     }
@@ -273,9 +341,18 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
   const handler = (async (request: Request) => {
     const origin = request.headers.get("origin");
     if (request.method === "OPTIONS" && origin && allowed.has(origin)) {
-      return new Response(null, { status: 204, headers: { ...cors(origin), "Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Max-Age": "86400" } });
+      return new Response(null, { status: 204, headers: { ...cors(origin), "Access-Control-Allow-Methods": options.proxy ? "GET, POST" : "POST", "Access-Control-Allow-Headers": "Content-Type, Authorization, Last-Event-ID", "Access-Control-Max-Age": "86400" } });
     }
     try {
+      if (request.method === "GET" && options.proxy) {
+        const match = READ.exec(new URL(request.url).pathname);
+        if (!match) fail(404, "not_found", "No such route");
+        const site = request.headers.get("sec-fetch-site");
+        if ((site === "cross-site" || site === "same-site") && !(origin && allowed.has(origin))) fail(403, "forbidden_origin", "This route takes requests from its own site; list other origins in allowedOrigins");
+        const response = await read(request, match!);
+        for (const [name, value] of Object.entries(cors(origin))) response.headers.set(name, value);
+        return response;
+      }
       if (request.method !== "POST") fail(405, "method_not_allowed", "POST a JSON body");
       // Only JSON (a form on another site cannot post it), and only from this site unless allowed.
       if (!/^application\/json\s*(;|$)/i.test(request.headers.get("content-type") ?? "")) fail(415, "unsupported_media_type", "Send Content-Type: application/json");
@@ -301,6 +378,8 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         return new Response(error.body, { status: error.status, statusText: error.statusText, headers });
       }
       if (error instanceof HandlerError) return respond(error.status, { error: { code: error.code, message: error.message } }, origin);
+      // The browser went away mid-read: nobody to answer.
+      if (request.signal?.aborted) return new Response(null, { status: 499 });
       console.error("[agent handler]", error);
       return respond(500, { error: { code: "internal_error", message: "The agent handler failed" } }, origin);
     }
