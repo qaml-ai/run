@@ -1,16 +1,60 @@
 {
   "compilerOptions": {
-    "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler", "strict": true,
-    "noEmit": true, "allowImportingTsExtensions": true, "skipLibCheck": true,
-    "jsx": "react-jsx", "types": ["node"], "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2024",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "paths": {
-      "@camelai/agent-runtime/chat": ["../../clients/chat.ts"],
-      "@camelai/agent-runtime/markdown": ["../../clients/markdown.ts"],
-      "@camelai/agent-runtime/server": ["../../clients/server.ts"],
-      "@camelai/agent-runtime-react": ["../react/src/index.tsx"],
-      "@/components/ui/button": ["./test/stubs/button.tsx"],
-      "@/lib/utils": ["./test/stubs/utils.ts"]
+      "@camelai/agent-runtime": [
+        "../../clients/typescript.ts"
+      ],
+      "@camelai/agent-runtime/server": [
+        "../../clients/server.ts"
+      ],
+      "@camelai/agent-runtime/chat": [
+        "../../clients/chat.ts"
+      ],
+      "@camelai/agent-runtime/markdown": [
+        "../../clients/markdown.ts"
+      ],
+      "@camelai/agent-runtime/watch": [
+        "../../clients/watch.ts"
+      ],
+      "@camelai/agent-runtime/ai-sdk": [
+        "../../clients/ai-sdk.ts"
+      ],
+      "@camelai/agent-runtime-react": [
+        "../react/src/index.tsx"
+      ],
+      "@camelai/agent-runtime-react/ui": [
+        "../react/src/ui/index.tsx"
+      ],
+      "@/components/ui/button": [
+        "./test/stubs/button.tsx"
+      ],
+      "@/lib/utils": [
+        "./test/stubs/utils.ts"
+      ]
     }
   },
-  "include": ["./src/**/*.ts", "./src/**/*.tsx", "./test/**/*.ts", "./test/**/*.tsx", "./vitest.config.ts", "./build.ts"]
+  "include": [
+    "./src/**/*.ts",
+    "./src/**/*.tsx",
+    "./test/**/*.ts",
+    "./test/**/*.tsx",
+    "./vitest.config.ts",
+    "./build.ts"
+  ]
 }
