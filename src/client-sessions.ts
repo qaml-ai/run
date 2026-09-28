@@ -1781,12 +1781,12 @@ export class ClientSessions {
     let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.supervisor.request(id, "historyTail") as HistoryTail | null : undefined;
     if (!tail) {
       // The index should have every message the agent's runs reported, or the running agent the rest. An index
-      // behind (a stop that could not write its last chunks), or a running agent keeping no backlog: the rest is read
-      // from its log, whole, as a full history read does. Nothing is indexed here; an agent's own process indexes
-      // from where its index ends.
-      const indexed = (await this.historyIndex.indexed(id)) ?? 0;
+      // behind (a stop that could not write its last chunks), none yet (an agent from before the index, until its next
+      // start), or a running agent keeping no backlog: the rest is read from its log, whole, as a full history read
+      // does. Nothing is indexed here; an agent's own process indexes from where its index ends.
+      const indexed = await this.historyIndex.indexed(id);
       const reported = "unloaded" in session ? await this.historyIndex.reported(id) : Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
-      if (tail === null || indexed < reported) tail = await this.supervisor.backlog(id, indexed);
+      if (tail === null || indexed === undefined || indexed < reported) tail = await this.supervisor.backlog(id, indexed ?? 0);
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
   }

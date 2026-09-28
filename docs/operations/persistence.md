@@ -16,7 +16,8 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
   per turn; what is newer comes from the running agent, which keeps at most
   8 MB of it in memory (past that it reads the rest back from its log to index
   it, a chunk at a time). The rest of an index behind what the agent's runs
-  reported (a stop that could not write) is read from its whole log, as
+  reported (a stop that could not write), or all of an agent's history when it
+  has no index yet (made before the index), is read from its whole log, as
   `/history` without paging is, until the agent's next start indexes it.
 - `<session>.journal.jsonl`: request state changes. It is fsynced only where
   correctness needs it: accepting a request, a run's start (before its first tool
@@ -121,7 +122,10 @@ refers to any more, so they stop being stored and billed:
   agent drops its pins.
 - **Only chunks written since.** A chunk is collectable once a write has stored it
   (`chunk_touches`); bytes stored before collection began and never written again
-  are left alone.
+  are left alone. Accepted in the closed alpha: a chunk stored before collection
+  began and written again since is collectable even if a FileRef from before
+  (which has no pin) still refers to it, so such a file can go once its volume
+  no longer holds it.
 - **Two passes.** A pass marks what is referred to; a chunk it finds unreferenced
   becomes a candidate, and a later pass at least `AGENT_GC_GRACE_MS` (a day) on
   deletes it if it is still unreferenced and nothing touched it since. Writes, pins,

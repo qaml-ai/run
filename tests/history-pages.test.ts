@@ -257,7 +257,7 @@ test("more unindexed history than a backlog holds is still paged, and indexed fr
   assert.deepEqual(paged.map(entry => head(entry.message)), whole.map(head), "every page of about 4 MB, together, is the whole history");
 });
 
-test("an agent without an index row gets one at its next start, indexed from its log", async t => {
+test("an agent without an index row pages from its log, and gets one at its next start, indexed from its log", async t => {
   const r = await runtime(t, body => ({ content: `reply ${lastUser(body)}` }), { AGENT_IDLE_MS: "1000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(agent, "one");
@@ -268,6 +268,8 @@ test("an agent without an index row gets one at its next start, indexed from its
   await r.db.query("delete from agent_history_index where agent = $1", [agent]);
   await r.db.query("update agents set header = (header::jsonb - 'history')::json where id = $1", [agent]);
   await sleep(2500);
+  // Until then, unloaded, its pages come from its log.
+  assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=2`)).json.entries.map((entry: any) => entry.index), [0, 1]);
   await r.prompt(agent, "two");
   await until(async () => await indexedOf(r, agent) === 4, "the agent to be indexed after all", 20_000);
   assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=1&before=2`)).json.entries.map((entry: any) => entry.index), [0, 1]);
