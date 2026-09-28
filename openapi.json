@@ -1225,7 +1225,12 @@
           },
           "requestId": {
             "type": "string",
-            "description": "Idempotency: retrying with the same id returns the same request"
+            "description": "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Your own data about this message (its source, a client id): at most 4 KB as JSON, kept on the user message in history and events, never shown to the model"
           },
           "files": {
             "type": "array",

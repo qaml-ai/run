@@ -1048,6 +1048,20 @@ or `prompt(text, { from })` in the SDKs (`from_=` in Python; also on `steer` and
 - Channels set it for every message: `from.id` is `<type>:<the service's user id>`
   (`telegram:42`, `slack:U0123ABCD`), with the sender's display name and username.
 
+### Matching a message to its request (`requestId`, `meta`)
+
+Each user message the runtime records carries the `requestId` of the request
+that sent it (given, or generated) and, if the request gave one, `meta`: the
+application's own JSON object about the message (its source, a client-side id),
+at most 4 KB. `POST /v1/agents/:id/prompt {text, requestId?, meta?}`, or
+`prompt(text, { meta })` in the SDKs (also on `steer` and `followUp`).
+
+- Both are on the message wherever it appears: history (`/history` and its
+  pages), `message_start`/`message_end` events and snapshots. A UI that showed an
+  optimistic bubble matches the stored message by its own id, and tells the
+  message's source from `meta`.
+- The model sees neither: they are dropped when the message is rendered for it.
+
 ### Tool search
 
 Code finds tools with `tools.search(query)`, `tools.search(query, { namespace, limit })`

@@ -766,15 +766,17 @@ class AgentClient:
             elif not future.done():
                 future.cancel()
 
-    async def prompt(self, text, *, actor=None, from_=None, files=None, idempotency_key=None, **options):
+    async def prompt(self, text, *, actor=None, from_=None, files=None, meta=None, idempotency_key=None, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
         the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
         identity tokens) without telling the model. `files` are attached: bytes, a local path (str or Path),
         {"name", "data": bytes, "content_type"?}, or {"path"} for a file already in the agent's mounts. Each is
-        uploaded to the agent's workspace (uploads/<request>/<name>) first, then attached by path."""
+        uploaded to the agent's workspace (uploads/<request>/<name>) first, then attached by path. `meta` is the
+        application's own data about the message (a dict, at most 4 KB as JSON): the stored message carries it,
+        with the request's id, in history and events; the model never sees it."""
         request_id = idempotency_key or str(uuid.uuid4())
         attached = await self._attach(request_id, files) if files else None
-        return await self.request("prompt", {"text": text, **({"files": attached} if attached else {}), **({"actor": actor} if actor else {}), **({"from": from_} if from_ else {})}, idempotency_key=request_id, **options)
+        return await self.request("prompt", {"text": text, **({"files": attached} if attached else {}), **({"actor": actor} if actor else {}), **({"from": from_} if from_ else {}), **({"meta": meta} if meta else {})}, idempotency_key=request_id, **options)
 
     async def _attach(self, request_id, files):
         names, attached = set(), []

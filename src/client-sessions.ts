@@ -29,7 +29,7 @@ import { callParams, contentResult, type McpResult } from "./mcp-results.ts";
 import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
-import { senderInput } from "./sender.ts";
+import { metaInput, senderInput } from "./sender.ts";
 import { callMeta, compose, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
@@ -1826,9 +1826,14 @@ export class ClientSessions {
     let { actor: rawActor, ...params } = body.params;
     if (spendLimit !== undefined) delete params.spendLimit;
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
-    if (params.from !== undefined && !["prompt", "steer", "followUp"].includes(body.method)) throw new HttpError(400, "from is only for messages (prompt, steer, followUp)");
+    const isMessage = ["prompt", "steer", "followUp"].includes(body.method);
+    if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer, followUp)");
+    if (params.meta !== undefined && !isMessage) throw new HttpError(400, "meta is only for messages (prompt, steer, followUp)");
+    // A message records the request that sent it, so an application can match it to its own.
+    if (isMessage) params.requestId = body.id;
     try {
       if (params.from !== undefined) params.from = senderInput(params.from);
+      if (params.meta !== undefined) params.meta = metaInput(params.meta);
       // The sender acts, unless the application names someone else.
       actor = actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
       // A resumed turn acts for whoever the suspended one did.

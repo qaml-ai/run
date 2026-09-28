@@ -38,6 +38,13 @@ export function senderInput(value: unknown): Sender | undefined {
   return { id, ...(name ? { name: name as string } : {}), ...(username ? { username: username as string } : {}) };
 }
 
+/** An application's own data about a message (`meta`): a JSON object of at most 4 KB, kept on the message but never shown to the model. */
+export function metaInput(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > 4096) throw new HttpError(400, "meta must be a JSON object of at most 4 KB");
+  return value as Record<string, unknown>;
+}
+
 function contextBlock(from: Sender): string {
   const quoted = Object.fromEntries(Object.entries(from).map(([key, value]) => [key, escapeMarkers(value)]));
   return `${CONTEXT_OPEN}\n${JSON.stringify({ from: quoted })}\n${CONTEXT_CLOSE}`;
@@ -57,16 +64,19 @@ export function renderMessage(message: AgentMessage): AgentMessage {
   const from = (message as { from?: Sender }).from;
   const parts = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
   const content = [...(from ? [{ type: "text", text: contextBlock(from) }] : []), ...escapeParts(parts)];
-  const { from: _, ...rest } = message as typeof message & { from?: Sender };
+  const { from: _, requestId: _request, meta: _meta, ...rest } = message as typeof message & Stamp;
   return { ...rest, content } as AgentMessage;
 }
 
 export const renderMessages = (messages: AgentMessage[]) => messages.map(renderMessage);
 
-/** Mark user messages with their sender, or clear a sender a caller tried to set another way. */
-export function withSender<T extends AgentMessage>(messages: T[], from: Sender | undefined): T[] {
+/** What the runtime records on a user message beside its content: its sender, the request that sent it, and the application's `meta`. */
+export type Stamp = { from?: Sender; requestId?: string; meta?: Record<string, unknown> };
+
+/** Mark user messages with their stamp, clearing any a caller tried to set another way. */
+export function stamp<T extends AgentMessage>(messages: T[], { from, requestId, meta }: Stamp): T[] {
   return messages.map(message => {
-    const { from: _, ...rest } = message as T & { from?: Sender };
-    return (from ? { ...rest, from } : rest) as T;
+    const { from: _, requestId: _request, meta: _meta, ...rest } = message as T & Stamp;
+    return { ...rest, ...(from ? { from } : {}), ...(requestId ? { requestId } : {}), ...(meta ? { meta } : {}) } as T;
   });
 }

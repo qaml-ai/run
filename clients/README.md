@@ -57,7 +57,9 @@ Keep `agent.session` in secret storage and reconnect with
 `onEvent(event, requestId)` finishes before the SDK moves past its event.
 `history()`, `continue()`, `steer(text)`, `followUp(text)`, and `configure(...)`
 operate on the same persistent agent. `steer` and `followUp` are accepted while
-the agent is idle and delivered to its next run.
+the agent is idle and delivered to its next run. `prompt`, `steer` and `followUp`
+take `meta`, the application's own data about the message: the stored message
+carries it, with its request's id, in history and events.
 
 ## Python
 

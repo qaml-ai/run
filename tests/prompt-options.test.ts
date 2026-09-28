@@ -1,0 +1,42 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { OPERATOR, runtime, until, watchEvents } from "./runtime-server.ts";
+
+const auth = { Authorization: `Bearer ${OPERATOR}` };
+
+test("a prompt's requestId and meta are kept on its user message: in history, the stream and snapshots, never shown to the model", async t => {
+  const r = await runtime(t, (_body, index) => ({ role: "assistant", content: "ok", ...(index === 0 ? { delayMs: 1_500 } : {}) }));
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const events = `${r.base}/v1/agents/${agent}/events`;
+  const plain = await watchEvents(t, events, auth, { query: "" });
+
+  const meta = { source: "web", bubble: "b-1", nested: { tab: 3 } };
+  const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "hi", requestId: "bubble-1", meta } });
+  assert.equal(accepted.status, 202, accepted.text);
+  await until(() => r.model.bodies.length === 1, "the model call");
+  const late = await watchEvents(t, events, auth, { query: "snapshot=1" });
+  const snapshot = (await until(() => late.frames.find(frame => frame.data.type === "snapshot"), "a snapshot")).data;
+  assert.deepEqual(snapshot.turn.messages.map((message: any) => [message.role, message.requestId, message.meta]), [["user", "bubble-1", meta]]);
+
+  await until(() => plain.frames.some(frame => frame.data.type === "response" && frame.data.id === "bubble-1"), "the outcome");
+  const ended = plain.frames.filter(frame => frame.data.type === "event" && frame.data.event.type === "message_end").map(frame => frame.data.event.message);
+  assert.deepEqual([ended[0].role, ended[0].requestId, ended[0].meta], ["user", "bubble-1", meta]);
+  assert.equal(ended[1].meta, undefined, "only the user's message carries them");
+
+  const whole = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  assert.deepEqual([whole[0].requestId, whole[0].meta], ["bubble-1", meta]);
+  const page = (await r.call(`/v1/agents/${agent}/history?limit=10`)).json;
+  assert.deepEqual([page.entries[0].message.requestId, page.entries[0].message.meta], ["bubble-1", meta]);
+  assert.doesNotMatch(JSON.stringify(r.model.bodies[0].messages), /bubble|nested/, "the model sees neither");
+
+  // Without meta, the message still names its request, generated or given.
+  const next = await r.prompt(agent, "again");
+  const messages = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  assert.deepEqual([messages[2].requestId, messages[2].meta], [next.id, undefined]);
+
+  for (const bad of [[1], "text", { big: "x".repeat(4096) }]) {
+    const refused = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "no", meta: bad } });
+    assert.equal(refused.status, 400, JSON.stringify(bad).slice(0, 40));
+    assert.match(refused.json.error, /meta/);
+  }
+});

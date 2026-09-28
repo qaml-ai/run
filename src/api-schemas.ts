@@ -248,7 +248,8 @@ export const PromptInput = z.object({
     name: z.string().optional().openapi({ description: "Display name, chosen by the sender" }),
     username: z.string().optional().openapi({ description: "Handle, chosen by the sender" }),
   }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
-  requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request" }),
+  requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble" }),
+  meta: z.record(z.string(), z.unknown(), { error: "meta must be a JSON object of at most 4 KB" }).optional().openapi({ description: "Your own data about this message (its source, a client id): at most 4 KB as JSON, kept on the user message in history and events, never shown to the model" }),
   files: z.array(z.union([
     z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }) }),
     z.strictObject({ name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a message's inline files" }), contentType: z.string().optional() }),

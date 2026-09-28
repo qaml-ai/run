@@ -809,8 +809,10 @@ export class AgentClient {
   /**
    * `from` says who sent the message: the model sees it in a block only the runtime can write, and
    * `from.id` is the turn's actor. `actor` names someone else acting (`act` in identity tokens) without telling the model.
+   * `meta` is the application's own data about the message (at most 4 KB as JSON): the stored message
+   * carries it, with the request's id, in history and events; the model never sees it.
    */
-  prompt(text: string, options?: RequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender }) {
+  prompt(text: string, options?: RequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender; meta?: Record<string, unknown> }) {
     return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}) });
   }
 
@@ -818,10 +820,10 @@ export class AgentClient {
    * Send a message with its files: each is uploaded to the agent's workspace under the request's
    * id first, then attached by path. `images` (base64 blocks) are sent inline and saved as files.
    */
-  private async message(method: "prompt" | "steer" | "followUp", text: string, options: (RequestOptions & { files?: Attachment[]; images?: ImageContent[]; from?: Sender }) | undefined, extra: Record<string, unknown> = {}) {
+  private async message(method: "prompt" | "steer" | "followUp", text: string, options: (RequestOptions & { files?: Attachment[]; images?: ImageContent[]; from?: Sender; meta?: Record<string, unknown> }) | undefined, extra: Record<string, unknown> = {}) {
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
-    return this.request(method, { text, ...(files ? { files } : {}), ...(options?.images ? { images: options.images } : {}), ...extra, ...(options?.from ? { from: options.from } : {}) }, { ...options, idempotencyKey: id });
+    return this.request(method, { text, ...(files ? { files } : {}), ...(options?.images ? { images: options.images } : {}), ...extra, ...(options?.from ? { from: options.from } : {}), ...(options?.meta ? { meta: options.meta } : {}) }, { ...options, idempotencyKey: id });
   }
 
   private async attach(requestId: string, files: Attachment[]): Promise<{ path: string }[]> {
@@ -864,8 +866,8 @@ export class AgentClient {
     return this.http(`/history?${query}`);
   }
   continue(options?: RequestOptions & { actor?: string }) { return this.request("continue", options?.actor ? { actor: options.actor } : {}, options); }
-  steer(text: string, options?: { from?: Sender; files?: Attachment[] }) { return this.message("steer", text, options); }
-  followUp(text: string, options?: { from?: Sender; files?: Attachment[] }) { return this.message("followUp", text, options); }
+  steer(text: string, options?: { from?: Sender; files?: Attachment[]; meta?: Record<string, unknown> }) { return this.message("steer", text, options); }
+  followUp(text: string, options?: { from?: Sender; files?: Attachment[]; meta?: Record<string, unknown> }) { return this.message("followUp", text, options); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string }) {
     const { tools, mcp, ...rest } = options;

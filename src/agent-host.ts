@@ -9,7 +9,7 @@ import { executeCode, presentResult } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
-import { renderMessages, senderInput, withSender, type Sender } from "./sender.ts";
+import { renderMessages, senderInput, stamp } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
@@ -316,19 +316,19 @@ export function createAgentHost(io: HostIO) {
     }));
   }
 
-  /** The user messages a request adds: given whole, or as text and attached files; marked with its sender, if any. */
+  /** The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request and meta. */
   function userMessages(params: Record<string, any>): AgentMessage[] {
-    const from = senderInput(params.from);
+    const marks = { from: senderInput(params.from), requestId: params.requestId, meta: params.meta };
     if (params.message !== undefined) {
       const messages = (Array.isArray(params.message) ? params.message : [params.message]) as AgentMessage[];
       validateUserMessages(messages);
-      return withSender(messages, from);
+      return stamp(messages, marks);
     }
     if (typeof params.text !== "string" || !params.text.trim()) throw new Error("Prompt text is required");
     const files = params.files ?? [];
     if (!Array.isArray(files) || files.length > FILE_LIMITS.attachments || !files.every(validFileRef)) throw new Error("Invalid attached files");
     // Images inline in `images` come only from runs queued before attachments were saved as files.
-    return [{ role: "user", content: [{ type: "text", text: params.text }, ...files, ...(params.images ?? [])], timestamp: Date.now(), ...(from ? { from } : {}) } as AgentMessage & { from?: Sender }];
+    return stamp([{ role: "user", content: [{ type: "text", text: params.text }, ...files, ...(params.images ?? [])], timestamp: Date.now() } as AgentMessage], marks);
   }
 
   /**
