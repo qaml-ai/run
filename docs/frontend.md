@@ -206,7 +206,7 @@ useEffect(() => { void transport.loadMessages({ chatId: threadId }).then(setMess
 
 The agent keeps the conversation, so only the new message is sent. Tool calls arrive as
 `dynamic-tool` parts, approvals as tool approval requests, other questions as `data-agent-input`
-parts (answer with `transport.answer(input, value)`, then `resumeStream()`).
+parts (answer with `transport.answer(input, value, { chatId: threadId })`, then `resumeStream()`).
 
 Without React, the store behind all of these is `createAgentChat` from
 `@camelai/agent-runtime/chat`: `subscribe`, `getSnapshot`, `send`, `answer`, `stop`, `loadOlder`.

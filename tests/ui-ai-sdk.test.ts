@@ -94,3 +94,27 @@ test("an approval the agent waits on is a tool approval request; answering it in
   const output = second.parts.find(part => part.type === "dynamic-tool") as any;
   assert.equal(output?.state, "output-available");
 });
+
+test("a question the agent asks arrives as a data part; answering it for the chat, then resuming, streams the rest", async t => {
+  const ASK = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
+  const { transport } = await setup(t, (index, body) => {
+    if (index === 0) return callDeltas("call_ask", "ask_user", ASK);
+    const answer = JSON.parse(body.messages.filter((message: any) => message.role === "tool").at(-1).content).answers["Which region?"];
+    return words(`Deploying to ${answer}.`);
+  }, async r => ({ definition: (await r.call("/v1/definitions", { body: { name: "Asker", builtins: ["ask_user"] } })).json.id }));
+  const first = await reply(await transport.sendMessages({ trigger: "submit-message", chatId: "deploys", messageId: undefined, messages: [userMessage("msg_00000003", "Deploy it")], abortSignal: undefined }));
+  const asked = first.parts.find(part => part.type === "data-agent-input") as any;
+  assert.equal(asked?.data.kind, "question", JSON.stringify(first.parts));
+  // useChat({ id: "deploys" }): the answer goes to that chat's agent, not the default one.
+  await transport.answer(asked.data, "EU", { chatId: "deploys" });
+  // resumeStream() right away follows the run the answer resumed, even before it starts.
+  const rest = await transport.reconnectToStream({ chatId: "deploys" });
+  assert.ok(rest, "a stream to follow");
+  const resumed = await reply(rest!, first);
+  assert.deepEqual(resumed.parts.filter(part => part.type === "text").map(part => (part as any).text), ["Deploying to EU."]);
+  const history = await transport.loadMessages({ chatId: "deploys" });
+  assert.equal((history[1].parts.at(-1) as any).text, "Deploying to EU.");
+  // Without a chat id it answers for the chat it last streamed; a fresh transport must be told.
+  const fresh = new AgentRuntimeChatTransport({ endpoint: "/api/agent" });
+  await assert.rejects(fresh.answer(asked.data, "EU"), /which chat/);
+});
