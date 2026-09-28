@@ -884,6 +884,12 @@ export class ClientSessions {
     // Gone while the request was authorized and its agent loaded: its close has fired already, so nothing
     // registered from here would ever be released. (No await follows, so it cannot close unseen after this.)
     if (gone(c)) return RESPONSE_ALREADY_SENT;
+    // One application serves an agent's tools at a time: another is refused, unless it takes over (or names the connection
+    // it held, reconnecting). A connection that serves no tools (it never answered MCP's initialize) holds nothing.
+    const held = mode === "attach" && session.attached?.open && session.attached.initialized ? session.attached : undefined;
+    if (held && c.req.query("takeover") !== "true" && c.req.header("x-agent-connection") !== held.id) {
+      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools; reconnect with ?takeover=true to replace it");
+    }
     const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), c.req.query("snapshot") === "1");
     const release = mode === "watch" ? this.hold(session.header.tenant, session.watchers.size + session.polls.size) : undefined;
     const res = c.env.outgoing;
@@ -898,7 +904,8 @@ export class ClientSessions {
       res.on("close", () => this.unwatch(res));
       ready = { ...ready, watch: true };
     } else {
-      session.response?.end();
+      const replaced = session.response;
+      if (replaced && !replaced.destroyed) replaced.end(`event: closed\ndata: ${JSON.stringify({ reason: "replaced" })}\n\n`);
       session.response = res;
       res.on("close", () => { if (session.response === res) session.response = undefined; });
     }

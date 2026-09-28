@@ -21,6 +21,8 @@ export class AttachedServer implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
   onclose?: () => void;
   onerror?: (error: Error) => void;
+  /** The application answered: it serves the agent's tools on this connection. */
+  initialized = false;
   private closed = false;
   private readonly res: ServerResponse;
 
@@ -28,7 +30,7 @@ export class AttachedServer implements Transport {
     this.res = res;
     res.on("close", () => void this.close());
     this.ready = this.client.connect(this, { timeout: 10_000 });
-    this.ready.catch(() => {});
+    this.ready.then(() => { this.initialized = true; }, () => {});
   }
 
   get open() { return !this.closed && !this.res.destroyed; }
