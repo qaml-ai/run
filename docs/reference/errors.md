@@ -15,11 +15,34 @@ Three kinds of failure, and where each shows:
 
 ## HTTP errors
 
-Error bodies are `{"error": "<message>"}`. Some messages start with a stable
-name and a colon (`REPLAY_GAP:`, `APPLICATION_CONNECTED:`): match on that name,
-not on the rest of the text. A conflict about an input also carries the input as
-it now is (`{"error", "input"}`). Every 429 and 503 has `Retry-After`; the SDKs
-honour it and retry.
+Error bodies are `{"error": "<message, for people>", "code": "<for code>"}`
+(`type: "error"` too on some routes). The message may change; the code does not,
+so switch on `code` (the SDKs' `AgentError.code`). Codes may be added: treat an
+unknown one by its status. A conflict about an input also carries the input as it
+now is (`"input"`). Every 429 and 503 has `Retry-After`; the SDKs honour it and
+retry.
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
+| 401 | `UNAUTHORIZED` | No valid token (a bare 401 from the authentication layer has no body) |
+| 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap |
+| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent |
+| 403 | `FORBIDDEN` | The token may not do this |
+| 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account |
+| 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
+| 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
+| 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
+| 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
+| 409 | `REPLAY_GAP` | The Last-Event-ID is behind the buffer; read `/state` (or ask for a snapshot) and continue from its cursor |
+| 409 | `CONFLICT` | Another conflict, named in the message |
+| 410 | `GONE` | The agent was deleted or has expired |
+| 413 | `TOO_LARGE` | The request body is too large |
+| 429 | `RATE_LIMITED` | Too many agents, requests or subscribers at once; retry after `Retry-After` |
+| 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
+| 500 | `INTERNAL` | A bug; retry, and report it with the request id |
+
+In more detail:
 
 | Status | Meaning | What to do |
 | --- | --- | --- |
