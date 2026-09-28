@@ -96,14 +96,15 @@ variable "task_memory" {
 }
 
 variable "service_min_count" {
-  description = "Minimum (and initial) number of runtime tasks. Three from chiridion's production launch, so losing a task or an AZ leaves two to take its agents."
+  description = "Minimum (and initial) number of runtime tasks. Two, one per AZ; CPU and memory autoscaling add tasks up to service_max_count under load."
   type        = number
-  default     = 3
+  default     = 2
 }
 
 variable "service_max_count" {
-  type    = number
-  default = 10
+  description = "Most runtime tasks autoscaling may run. Each holds up to AGENT_DATABASE_POOL_SIZE (10) connections, all through RDS Proxy."
+  type        = number
+  default     = 20
 }
 
 variable "service_cpu_target" {
