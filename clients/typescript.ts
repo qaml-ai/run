@@ -307,9 +307,21 @@ export interface VolumeChanges { seq: number; changes: { seq: number; path: stri
 export interface FileLink { url: string; method: "GET" | "PUT"; path: string; expiresAt: number; maxBytes?: number; contentType?: string }
 /** A link's options: `expiresIn` seconds (default 900, at most 86400); for PUT, the largest upload and its content type. */
 export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBytes?: number; contentType?: string }
-export interface AgentHistory { messages: AgentMessage[] }
+/** A message as the runtime records it: a user message also names its sender (if given), the request that sent it, and the application's `meta`. */
+export type RecordedMessage = AgentMessage & { from?: Sender; requestId?: string; meta?: Record<string, unknown> };
+export interface AgentHistory { messages: RecordedMessage[] }
 /** A page of history: whole turns, oldest first, each message at its index in the agent's history. `next` is the older page's `before` (null at the start). */
-export interface HistoryPage { entries: { index: number; message: AgentMessage }[]; next: number | null; total: number; split?: true }
+export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true }
+/** What a run's model responses used (`run.finished`). */
+export interface RunUsage { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number }
+/** An event the tenant's webhook receives (`PUT /v1/usage-webhook {url, events}`), signed per Standard Webhooks; dedupe by `id`, order by `at`. */
+export type WebhookEvent = { id: string; tenant: string; at: number } & (
+  | { type: "usage"; agent: string; requestId: string | null; subject: string; actor: string | null; context: Record<string, unknown>; keyScope: string | null;
+      provider: string; model: string; kind: "response" | "compaction"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
+      cost: { usd: number; source: "provider" | "catalog" } }
+  | { type: "run.started"; agent: string; requestId: string; method: RequestMethod; actor?: string; resumes?: number }
+  | { type: "run.finished"; agent: string; requestId: string; method: RequestMethod; actor?: string; outcome: Outcome; steeredInto?: string; usage: RunUsage | null }
+  | { type: "input.requested" | "input.resolved"; agent: string; requestId: string; input: AgentInput });
 /**
  * A file to attach to a message: bytes or a Blob (a File keeps its name and type), `{ name, data,
  * contentType? }`, a local path (Node entry), or `{ path }` for a file already in the agent's mounts.
