@@ -4,7 +4,7 @@ import type { Db } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { FETCH_PROVIDERS } from "./catalog.ts";
 import { SEARCH_PROVIDERS } from "./web-search.ts";
-import { endpoint, reachableEndpoint } from "./key-scopes.ts";
+import { endpoint, reachableEndpoint, RESERVED_HEADERS as RESERVED } from "./key-scopes.ts";
 import type { Outbound } from "./outbound.ts";
 import type { CustomModel, CustomProvider, CustomProviders } from "./session-config.ts";
 
@@ -24,12 +24,11 @@ const MAX_PROVIDERS = 20;
 const MAX_MODELS = 200;
 const aad = (tenant: string, name: string) => `model-provider:${tenant}:${name}`;
 const invalid = (message: string): never => { throw new HttpError(400, message); };
-/** Headers only the runtime sets on a model call, besides the key (`apiKey`, sent as Authorization). */
-const RESERVED = new Set(["authorization", "host", "content-length", "content-type", "transfer-encoding", "connection", "x-agent-runtime-identity"]);
 /** Pi's switches for servers that differ from OpenAI's, which a model may set. */
 const COMPAT: Record<string, (value: unknown) => boolean> = {
   supportsDeveloperRole: value => typeof value === "boolean",
   supportsUsageInStreaming: value => typeof value === "boolean",
+  supportsFinishReason: value => typeof value === "boolean",
   supportsReasoningEffort: value => typeof value === "boolean",
   maxTokensField: value => value === "max_tokens" || value === "max_completion_tokens",
   thinkingFormat: value => typeof value === "string" && ["openai", "openrouter", "deepseek", "together", "zai", "qwen", "qwen-chat-template"].includes(value),
@@ -134,11 +133,16 @@ export class ModelProviders {
     return (await this.list(tenant)).find(entry => entry.id === name)!;
   }
 
+  /** Delete `name`, and every key scope's entry for it: nothing of it is left to call. */
   async delete(tenant: string, name: string) {
     const { rowCount } = await this.db.query("delete from model_providers where tenant = $1 and name = $2", [tenant, name]);
+    if (rowCount) await this.db.query("delete from key_scope_providers where tenant = $1 and provider = $2", [tenant, name]);
     this.cache.delete(tenant);
+    this.onDelete?.(tenant, name);
     return !!rowCount;
   }
+  /** Told of a deleted provider, to drop cached copies of what it deleted (key scopes' entries). */
+  onDelete?: (tenant: string, name: string) => void;
 
   /** The tenant's providers as GET /v1/providers lists them: never their key or header values. */
   async list(tenant: string) {

@@ -80,8 +80,7 @@ function customModel(name: string, id: string, provider: CustomProvider): AgentC
     contextWindow: declared.contextWindow, maxTokens: declared.maxOutputTokens ?? Math.min(DEFAULT_MAX_OUTPUT, Math.floor(declared.contextWindow / 2)),
     reasoning: declared.reasoning ?? false, input: declared.input ?? ['text'],
     cost: { input: pricing?.input ?? 0, output: pricing?.output ?? 0, cacheRead: pricing?.cacheRead ?? 0, cacheWrite: pricing?.cacheWrite ?? 0 },
-    // Many servers end a stream without finish_reason: Pi then reads the reason from what came (one it is sent still counts).
-    compat: { supportsFinishReason: false, ...compat },
+    ...(compat ? { compat } : {}),
   } as AgentConfig['model'];
 }
 

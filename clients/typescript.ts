@@ -385,7 +385,7 @@ export interface ToolSource {
 export interface CustomModel {
   id: string; contextWindow: number; maxOutputTokens?: number; input?: ("text" | "image")[]; reasoning?: boolean;
   pricing?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
-  compat?: { supportsDeveloperRole?: boolean; supportsUsageInStreaming?: boolean; supportsReasoningEffort?: boolean; maxTokensField?: "max_tokens" | "max_completion_tokens"; thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "qwen-chat-template" };
+  compat?: { supportsDeveloperRole?: boolean; supportsUsageInStreaming?: boolean; supportsFinishReason?: boolean; supportsReasoningEffort?: boolean; maxTokensField?: "max_tokens" | "max_completion_tokens"; thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "qwen-chat-template" };
 }
 /** A provider of your own: a public https server that speaks OpenAI Chat Completions (`POST <baseUrl>/chat/completions`). */
 export interface CustomProviderInput { type: "openai-compatible"; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] }

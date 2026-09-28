@@ -824,6 +824,9 @@
               "supportsUsageInStreaming": {
                 "type": "boolean"
               },
+              "supportsFinishReason": {
+                "type": "boolean"
+              },
               "supportsReasoningEffort": {
                 "type": "boolean"
               },

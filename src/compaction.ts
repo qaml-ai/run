@@ -2,14 +2,15 @@ import {
   BACKGROUND_CONTEXT, compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact, withAbortSignal,
   type AgentMessage, type CompactionSettings, type StreamFn,
 } from "@earendil-works/pi-agent-core";
-import { completeSimple, streamSimple, type Api, type Model, type Models } from "@earendil-works/pi-ai/compat";
+import { completeSimple, getProviders, streamSimple, type Api, type Model, type Models } from "@earendil-works/pi-ai/compat";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { CompactionState } from "./transcript.ts";
 import { messageChars } from "./history.ts";
 import { fileChars as charsOf, validFileRef } from "./files.ts";
 import type { Credentials } from "./protocol.ts";
-import { guardedModelFetch } from "./outbound.ts";
+import { guardedModelFetch, guardedNodeAgents } from "./outbound.ts";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 
 /**
  * Context compaction on top of pi-agent-core's compaction functions. Pi picks the
@@ -102,13 +103,26 @@ const codexOptions = (token: string) => ({
  */
 const noRetries = { acquireInitialRetryToken: async () => ({ getRetryCount: () => 0, getRetryDelay: () => 0 }), refreshRetryTokenForRetry: async () => { throw new Error("No retries"); }, recordSuccess: () => {} };
 const send = BedrockRuntimeClient.prototype.send;
-BedrockRuntimeClient.prototype.send = function (this: BedrockRuntimeClient, ...args: unknown[]) {
+/** Bedrock's own regional endpoint: never a gateway. */
+const AWS_BEDROCK = /^bedrock-runtime(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com$/;
+/** Hosts of gateways tenants gave for Bedrock (key scopes' baseUrl), as `authorize` meets them; an operator's endpoint is not one. */
+const tenantGateways = new Set<string>();
+const guarded = new WeakSet<BedrockRuntimeClient>();
+BedrockRuntimeClient.prototype.send = async function (this: BedrockRuntimeClient, ...args: unknown[]) {
   (this.config as { retryStrategy: unknown }).retryStrategy = async () => noRetries;
+  // A gateway's address is called through the outbound guard, as every URL a tenant gives is: the client takes no fetch,
+  // so its connections go through agents whose lookup checks each address it connects to (HTTP/1.1, as for gateways).
+  const endpoint = await (this.config as { endpoint?: () => Promise<{ protocol: string; hostname: string; port?: number }> }).endpoint?.();
+  if (endpoint && tenantGateways.has(endpoint.hostname) && !AWS_BEDROCK.test(endpoint.hostname) && !guarded.has(this)) {
+    const url = `${endpoint.protocol}//${endpoint.hostname.includes(":") ? `[${endpoint.hostname}]` : endpoint.hostname}${endpoint.port ? `:${endpoint.port}` : ""}/`;
+    (this.config as { requestHandler: unknown }).requestHandler = new NodeHttpHandler(guardedNodeAgents(url));
+    guarded.add(this);
+  }
   return (send as (...args: unknown[]) => unknown).apply(this, args);
 } as typeof send;
 
 /** APIs whose clients take the runtime's fetch, so it can read their cost, move their endpoint, and drop auth headers. Google's, for one, takes none. */
-const FETCH_APIS = ["openai-completions", "openai-responses", "anthropic-messages"];
+export const FETCH_APIS = ["openai-completions", "openai-responses", "anthropic-messages"];
 /**
  * What a key scope's `baseUrl` stands for: the provider's API root as gateways in front of it name
  * it (Cloudflare AI Gateway's `/openrouter`, `/anthropic`, `/openai`), else the model's own base URL.
@@ -181,10 +195,14 @@ function authorize(model: Model<Api>, options: any, credentials: Credentials, si
     // Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
     env: model.api === "bedrock-converse-stream" && baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {},
   };
+  if (!fetchable && baseUrl) tenantGateways.add(new URL(baseUrl).hostname);
   if (!fetchable) return [baseUrl ? { ...model, baseUrl } : model, callOptions];
-  const from = [PROVIDER_ROOTS[model.provider], model.baseUrl].filter(Boolean).map(prefix => prefix.replace(/\/+$/, "")).sort((a, b) => b.length - a.length);
-  // An endpoint the tenant gave is called through the outbound guard, as every URL a tenant gives is.
-  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl }, base: guardedModelFetch() } : {}), keyless: !apiKey }) }];
+  const from = [Object.hasOwn(PROVIDER_ROOTS, model.provider) ? PROVIDER_ROOTS[model.provider] : undefined, model.baseUrl]
+    .filter((prefix): prefix is string => !!prefix).map(prefix => prefix.replace(/\/+$/, "")).sort((a, b) => b.length - a.length);
+  // An endpoint the tenant gave is called through the outbound guard, as every URL a tenant gives is: a key scope's
+  // baseUrl, and whatever a model not of Pi's providers (a tenant's own provider's) was made with.
+  const tenantGiven = !!baseUrl || !getProviders().includes(model.provider as never);
+  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl } } : {}), ...(tenantGiven ? { base: guardedModelFetch() } : {}), keyless: !apiKey }) }];
 }
 
 /**

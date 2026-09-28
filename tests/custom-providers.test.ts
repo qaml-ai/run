@@ -118,15 +118,15 @@ test("a tenant's OpenAI-compatible provider: stored sealed, listed with its mode
   assert.equal((await r.call("/v1/providers", { token: OTHER_OPERATOR })).json.some((entry: any) => entry.id === "mine"), false);
 });
 
-test("a server without usage, finish_reason or reasoning support still runs tools; images reach only a model declared to see them", async t => {
+test("a server without usage or finish_reason (so declared) still runs tools; images reach only a model declared to see them", async t => {
   const server = await chatServer(t, (body, index) => {
     if (body.messages.at(-1).role === "tool") return { text: `tool said ${body.messages.at(-1).content}` };
     return index === 0 ? { tool: { name: "js_exec", args: { code: "return 6 * 7" } } } : { text: "seen" };
   }, { bare: true });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
   const models = [
-    { id: "text-only", contextWindow: 32768, compat: { supportsUsageInStreaming: false, maxTokensField: "max_tokens" } },
-    { id: "vision", contextWindow: 32768, input: ["text", "image"] },
+    { id: "text-only", contextWindow: 32768, compat: { supportsUsageInStreaming: false, supportsFinishReason: false, maxTokensField: "max_tokens" } },
+    { id: "vision", contextWindow: 32768, input: ["text", "image"], compat: { supportsFinishReason: false } },
   ];
   assert.equal((await r.call("/v1/providers/local", { method: "PUT", body: { type: "openai-compatible", baseUrl: server.url, models } })).status, 200, "a server that takes no key");
   const agent = (await r.call("/v1/agents", { body: { model: "local/text-only" } })).json.id;
@@ -154,6 +154,7 @@ test("a key scope can bring its own key and endpoint for a custom provider, and 
   await r.call("/v1/providers/mine", { method: "PUT", body: provider(server.url) });
   assert.equal((await r.call("/v1/key-scopes/org_1/providers/mine", { method: "PUT", body: { apiKey: "org-key", baseUrl: orgs.url } })).status, 200);
   assert.equal((await r.call("/v1/key-scopes/org_1/providers/other", { method: "PUT", body: { apiKey: "org-key" } })).status, 400, "only a provider the tenant has");
+  assert.equal((await r.call("/v1/key-scopes/org_1/providers/mine", { method: "PUT", body: { headers: { Authorization: "Bearer x" } } })).status, 400, "the key goes in apiKey");
   const scoped = (await r.call("/v1/agents", { body: { model: "mine/llama-4-scout", keyScope: "org_1" } })).json.id;
   assert.equal((await r.prompt(scoped, "Hi")).outcome.result.reply, "org endpoint");
   assert.equal(orgs.headers[0].authorization, "Bearer org-key");
@@ -165,13 +166,28 @@ test("a key scope can bring its own key and endpoint for a custom provider, and 
   await assert.rejects(r.prompt(limited, "Three"), /402.*spend limit of \$0\.75 \(\$1 spent/);
 });
 
+test("deleting a provider takes its key scopes' entries with it: its agents call nothing, anywhere", async t => {
+  const server = await chatServer(t, () => ({ text: "ok" }));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  await r.call("/v1/providers/mine", { method: "PUT", body: provider(server.url) });
+  assert.equal((await r.call("/v1/key-scopes/org_1/providers/mine", { method: "PUT", body: { apiKey: "org-key" } })).status, 200);
+  const agent = (await r.call("/v1/agents", { body: { model: "mine/llama-4-scout", keyScope: "org_1" } })).json.id;
+  await r.prompt(agent, "Hi");
+  const calls = server.bodies.length;
+  assert.equal((await r.call("/v1/providers/mine", { method: "DELETE" })).status, 200);
+  assert.deepEqual((await r.call("/v1/key-scopes/org_1")).json.providers, [], "the scope's entry for it is gone too");
+  const failed = await r.prompt(agent, "Still there?");
+  assert.match(failed.outcome.result.error, /mine/);
+  assert.equal(server.bodies.length, calls, "nothing was called");
+});
+
 test("a custom model is Pi's openai-completions model with the declared window, output cap, pricing and compat", () => {
   const custom = { mine: { type: "openai-compatible" as const, baseUrl: "https://llm.example.com/v1", models: [{ id: "org/model:tag", contextWindow: 65536, reasoning: true, input: ["text", "image"] as ("text" | "image")[], pricing: { input: 1, output: 2, cacheRead: 0.1 }, compat: { supportsDeveloperRole: false } }] } };
   const model = resolveModel("mine/org/model:tag", undefined, custom) as any;
   assert.deepEqual({ ...model }, {
     id: "org/model:tag", name: "org/model:tag", provider: "mine", api: "openai-completions", baseUrl: "https://llm.example.com/v1",
     contextWindow: 65536, maxTokens: 8192, reasoning: true, input: ["text", "image"], cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 },
-    compat: { supportsFinishReason: false, supportsDeveloperRole: false },
+    compat: { supportsDeveloperRole: false },
   });
   assert.throws(() => resolveModel("mine/other", undefined, custom), /Unknown model "mine\/other"/);
 });

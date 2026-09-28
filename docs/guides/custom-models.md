@@ -47,7 +47,9 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
 - A [key scope](models-and-keys.md#key-scopes) can have its own entry for your
   provider (`PUT /v1/key-scopes/{scope}/providers/{name}`, `{apiKey?, baseUrl?,
   headers?}`). Agents in the scope then call with that key, address or headers,
-  e.g. each customer's own deployment.
+  e.g. each customer's own deployment. What the entry gives replaces the
+  provider's own (its `headers` all of the provider's); what it leaves out is the
+  provider's, the key included. Deleting the provider deletes its scopes' entries.
 
 ## Models
 
@@ -70,16 +72,19 @@ Each model is `{id, contextWindow, maxOutputTokens?, input?, reasoning?, pricing
 The runtime streams, sends tools as OpenAI function tools and reads tool calls
 as they arrive in pieces. It copes with what many servers leave out:
 
-- A stream that ends without `finish_reason` ends the reply anyway, as a tool
-  call or a stop.
 - A stream without usage costs nothing and counts no tokens. Set
   `compat.supportsUsageInStreaming: false` if the server refuses
   `stream_options`.
+- A server that ends its streams without `finish_reason` needs
+  `compat.supportsFinishReason: false`: the reply then ends as a tool call or a
+  stop by what came. Without it such a stream fails, rather than risk taking a
+  reply cut off mid-way for a whole one.
 
 Other switches, per model:
 
 | `compat` | |
 | --- | --- |
+| `supportsFinishReason` | `false` for a server that ends streams without `finish_reason` |
 | `maxTokensField` | `"max_tokens"` for a server that doesn't take `max_completion_tokens` |
 | `supportsDeveloperRole` | `false` sends the system prompt as a `system` message, not `developer` |
 | `supportsReasoningEffort` | whether the server takes `reasoning_effort` |

@@ -25,6 +25,7 @@ import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
 import { Definitions, sources, validTtl } from "./definitions.ts";
 import { ModelProviders } from "./model-providers.ts";
+import { providerInfo } from "./catalog.ts";
 import { outboundFromEnvironment } from "./outbound.ts";
 import { McpConnections } from "./mcp.ts";
 import { ToolSources } from "./tool-sources.ts";
@@ -167,6 +168,7 @@ const definitions = new Definitions({ db, accounts, outbound, customProviders: t
 // Saving a definition lists its MCP servers, as its agents would.
 definitions.listMcp = (tenant, id, servers) => toolSources.listed(tenant, id, servers);
 const keyScopes = new KeyScopes({ db, accounts, outbound });
+modelProviders.onDelete = (tenant, name) => keyScopes.forgetProvider(tenant, name);
 // Each model response's usage, POSTed to the tenant's receiver from a durable outbox any node sends from.
 // Which tenants have endpoints for run events: runs of the others write none.
 const subscribers = new Subscribers(db);
@@ -356,6 +358,8 @@ const clients = new ClientSessions(supervisor, {
     // The tenant's own provider: the scope's key or address where it gives one, else the provider's; never the platform's.
     const own = await modelProviders.credentials(tenant, provider);
     if (own) return { ...own, ...entry, baseUrl: entry?.baseUrl ?? own.baseUrl, apiKey: entry?.apiKey ?? own.apiKey ?? "", platform: false };
+    // A scope's entry for a provider that is neither built in nor the tenant's any more (deleted) is nothing to call.
+    if (entry && !providerInfo(provider)) return undefined;
     if (entry) return { ...entry, apiKey: entry.apiKey ?? "", platform: false };
     const resolved = await accounts.providerKey(tenant, provider);
     return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant" };

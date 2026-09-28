@@ -1,5 +1,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP, type LookupFunction } from "node:net";
+import { Agent as HttpAgent } from "node:http";
+import { Agent as HttpsAgent } from "node:https";
 import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit, type Response as UndiciResponse } from "undici";
 
 /**
@@ -96,6 +98,8 @@ export class Outbound {
   private readonly block: Cidr[];
   private readonly resolve: Resolve;
   readonly dispatcher: Agent;
+  /** The connection-time lookup the dispatcher uses, for clients that take a node:http agent instead (see `guardedNodeAgents`). */
+  readonly lookup: LookupFunction;
 
   constructor(policy: OutboundPolicy = {}) {
     this.allowHttp = !!policy.allowHttp;
@@ -111,6 +115,7 @@ export class Outbound {
       }, error => callback(error, "", 0));
     };
     // The connection itself resolves, checks and connects in one step: nothing can change in between.
+    this.lookup = lookup;
     this.dispatcher = new Agent({ connect: { lookup, timeout: 10_000 }, keepAliveTimeout: 30_000, connections: 64 });
   }
 
@@ -217,13 +222,23 @@ function capped(response: Response, url: URL, maxBytes: number, done: () => void
 export const OUTBOUND_ENV = ["AGENT_OUTBOUND_ALLOW_HTTP", "AGENT_OUTBOUND_ALLOW_CIDRS", "AGENT_OUTBOUND_BLOCK_CIDRS"];
 
 let modelOutbound: Outbound | undefined;
+const outboundForModels = () => modelOutbound ??= outboundFromEnvironment();
+
+/**
+ * node:http agents for `url`, for SDKs that take no fetch (Bedrock's): its scheme and a literal address are checked
+ * now, and each connection's lookup checks the addresses a host name resolves to, as the guard's own fetch does.
+ */
+export function guardedNodeAgents(url: string) {
+  const outbound = outboundForModels();
+  outbound.check(url);
+  return { httpAgent: new HttpAgent({ lookup: outbound.lookup, keepAlive: true }), httpsAgent: new HttpsAgent({ lookup: outbound.lookup, keepAlive: true }) };
+}
 /**
  * The fetch for a model call to an endpoint a tenant gave (a key scope's `baseUrl`, a custom provider's): through the
  * outbound guard, like any URL a tenant gives. A model's reply streams for as long as it takes; its start has ten minutes.
  */
 export function guardedModelFetch(): typeof fetch {
-  modelOutbound ??= outboundFromEnvironment();
-  const outbound = modelOutbound;
+  const outbound = outboundForModels();
   return (input, init) => outbound.fetch(String(input), { ...init as RequestInit, stream: true, timeoutMs: 600_000, maxBytes: 1024 * 1024 * 1024 });
 }
 

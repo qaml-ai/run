@@ -1,7 +1,9 @@
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { Db } from "./db.ts";
 import { HttpError } from "./http.ts";
-import { providerInfo } from "./catalog.ts";
+import { openRouterApi, providerInfo } from "./catalog.ts";
+import { getModels } from "./pi-catalog.ts";
+import { FETCH_APIS } from "./compaction.ts";
 import { OutboundBlocked, type Outbound } from "./outbound.ts";
 
 /**
@@ -20,6 +22,8 @@ const CACHE_MS = 5_000;
 const validScope = (scope: string) => /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(scope);
 const aad = (tenant: string, scope: string, provider: string) => `key-scope:${tenant}:${scope}:${provider}`;
 const invalid = (message: string): never => { throw new HttpError(400, message); };
+/** Headers only the runtime sets on a call to a tenant's own provider, besides the key (`apiKey`, sent as Authorization). */
+export const RESERVED_HEADERS = new Set(["authorization", "host", "content-length", "content-type", "transfer-encoding", "connection", "x-agent-runtime-identity"]);
 /** Bedrock's own regional endpoint, which names the region. */
 const BEDROCK = /^https:\/\/bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com\/?$/;
 
@@ -61,7 +65,8 @@ export function scopeEntry(provider: string, input: any, custom = false): ScopeE
   if (headers !== undefined) {
     if (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.keys(headers).length > 20) invalid("headers must be an object of at most 20 header names and string values");
     for (const [name, value] of Object.entries(headers)) {
-      if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,100}$/.test(name) || typeof value !== "string" || value.length > 4096 || /[\r\n]/.test(value)) invalid(`Invalid header ${name}`);
+      if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,100}$/.test(name) || typeof value !== "string" || value.length > 4096 || /[\r\n\0]/.test(value)) invalid(`Invalid header ${name}`);
+      if (custom && RESERVED_HEADERS.has(name.toLowerCase())) invalid(`headers cannot set ${name}: give the key as apiKey`);
     }
   }
   // Bedrock's region is given, or read from its regional endpoint as baseUrl.
@@ -89,7 +94,14 @@ export class KeyScopes {
     checkScope(scope);
     if (!this.accounts.canStoreKeys) throw new HttpError(503, "This runtime is not configured to store provider keys");
     // A gateway's address is the tenant's to give, and checked; Bedrock's own regional endpoint is AWS's.
-    if (entry.baseUrl !== undefined && !BEDROCK.test(entry.baseUrl)) await reachableEndpoint(this.outbound, entry.baseUrl);
+    if (entry.baseUrl !== undefined && !BEDROCK.test(entry.baseUrl)) {
+      // Calls through a gateway go through the outbound guard: Pi's fetch-taking clients through its fetch, Bedrock's
+      // through guarded connections (compaction.ts). The others (Google's, Mistral's) would connect past it.
+      if (provider !== "amazon-bedrock" && getModels(provider).some(model => !FETCH_APIS.includes(provider === "openrouter" ? openRouterApi(model.api) : model.api))) {
+        invalid(`${provider}'s calls cannot go through a gateway (baseUrl)`);
+      }
+      await reachableEndpoint(this.outbound, entry.baseUrl);
+    }
     const { apiKey, headers, ...settings } = entry;
     await this.db.query(`
       insert into key_scope_providers (tenant, scope, provider, sealed, last4, settings, set_at) values ($1, $2, $3, $4, $5, $6, $7)
@@ -128,6 +140,14 @@ export class KeyScopes {
     if (this.cache.size > 10_000) this.cache.clear();
     this.cache.set(key, { entry, until: Date.now() + CACHE_MS });
     return entry;
+  }
+
+  /** Drop cached entries for a tenant's `provider` in every scope (its entries were deleted with it). */
+  forgetProvider(tenant: string, provider: string) {
+    for (const key of this.cache.keys()) {
+      const [t, , p] = JSON.parse(key);
+      if (t === tenant && p === provider) this.cache.delete(key);
+    }
   }
 
   private forget(tenant: string, scope: string) {

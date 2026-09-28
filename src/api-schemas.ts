@@ -42,7 +42,7 @@ const CustomModel = z.object({
   reasoning: z.boolean().optional().openapi({ description: "Whether it reasons (thinkingLevel applies)" }),
   pricing: z.object({ input: z.number(), output: z.number(), cacheRead: z.number().optional(), cacheWrite: z.number().optional() }).optional().openapi({ description: "USD per million tokens, for usage, spend limits and webhooks; none: free" }),
   compat: z.object({
-    supportsDeveloperRole: z.boolean().optional(), supportsUsageInStreaming: z.boolean().optional(), supportsReasoningEffort: z.boolean().optional(),
+    supportsDeveloperRole: z.boolean().optional(), supportsUsageInStreaming: z.boolean().optional(), supportsFinishReason: z.boolean().optional(), supportsReasoningEffort: z.boolean().optional(),
     maxTokensField: z.enum(["max_tokens", "max_completion_tokens"]).optional(),
     thinkingFormat: z.enum(["openai", "openrouter", "deepseek", "together", "zai", "qwen", "qwen-chat-template"]).optional(),
   }).optional().openapi({ description: "Switches for a server that differs from OpenAI's: a developer role, usage in the stream (default true), reasoning_effort, the max tokens field, how thinking is asked for" }),

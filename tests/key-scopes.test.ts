@@ -20,6 +20,8 @@ test("key scopes store sealed entries, and an agent's calls use its scope's curr
     ["org_1", "openrouter", { apiKey: "k", region: "us-west-2" }],
     ["org_1", "openrouter", { apiKey: "k", headers: { "bad header": "x" } }],
     ["org_1", "no-such-provider", { apiKey: "k" }],
+    // Google's client takes no fetch, so it could not be kept to the outbound guard.
+    ["org_1", "google", { apiKey: "k", baseUrl: "https://gateway.example.com/google" }],
     ["bad scope!", "openrouter", { apiKey: "k" }],
   ] as const) assert.equal((await put(scope, provider, body)).status, 400, JSON.stringify([scope, provider, body]));
 
@@ -163,4 +165,17 @@ test("a scope's baseUrl is a public address the runtime may call, checked when s
   assert.equal((await put(allowed, gateway.url)).status, 200);
   const agent = (await allowed.call("/v1/agents", { body: { keyScope: "org_1" } })).json.id;
   assert.equal((await allowed.prompt(agent, "Hi")).outcome.result.reply, "gateway");
+});
+
+test("a Bedrock call through a scope's gateway connects only where the outbound guard allows, checking the address it connects to", async () => {
+  // In this process the operator allows nothing: loopback and private addresses, by literal or by name, are refused.
+  const { explicitKeyStream } = await import("../src/compaction.ts");
+  const { resolveModel } = await import("../src/session-config.ts");
+  const model = resolveModel("amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0");
+  for (const baseUrl of ["https://127.0.0.1:9", "https://localhost:9", "https://10.0.0.5", "http://gateway.example.com"]) {
+    const stream = await explicitKeyStream(() => Promise.resolve({ apiKey: "k", baseUrl, region: "us-west-2" }))(model, { messages: [{ role: "user", content: "hi", timestamp: 1 }] } as never, { apiKey: "per-call" });
+    let failure = "";
+    for await (const event of stream) if (event.type === "error") failure = event.error.errorMessage ?? "";
+    assert.match(failure, /private, local or reserved|Only https/, baseUrl);
+  }
 });

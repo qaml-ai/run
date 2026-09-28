@@ -115,7 +115,8 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
   `GET /v1/providers` that takes a key, or `amazon-bedrock`.
 - `baseUrl` (HTTPS, on a public address: it is checked when saved, and each call
   goes through the same [outbound guard](tools.md#outbound-calls) as MCP servers
-  and `web_fetch`) replaces the provider's API
+  and `web_fetch`; Google's and Mistral's clients can't be kept to it, so their
+  entries take no `baseUrl`) replaces the provider's API
   root in each request's URL, as an AI gateway's provider path stands for it
   (Cloudflare AI Gateway's `…/openrouter`, `…/anthropic`, `…/openai`):
 
