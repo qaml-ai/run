@@ -621,7 +621,9 @@ export function createAgentHost(hostIO: HostIO) {
       await transcript.setActive(false);
       // A suspended turn ends on its open calls: what the model said as it made them is the reply so far.
       const last = (transcript.awaiting.length ? agent.state.messages.findLast(message => message.role === "assistant") : agent.state.messages.at(-1)) as AssistantMessage | undefined;
-      return { messages: transcript.total, ...answer(last), error: agent.state.errorMessage ?? null, ...(stopped ?? {}) };
+      // A failed model call fails the run, whether Pi kept its error or only the message does.
+      const answered = answer(last);
+      return { messages: transcript.total, ...answered, error: agent.state.errorMessage ?? answered.error, ...(stopped ?? {}) };
     } finally {
       // Steers sent for this turn that it did not take are taken back: each runs as a turn of its own.
       steerable = false;

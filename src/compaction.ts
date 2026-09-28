@@ -10,6 +10,7 @@ import { messageChars } from "./history.ts";
 import { fileChars as charsOf, validFileRef } from "./files.ts";
 import type { Credentials } from "./protocol.ts";
 import { guardedModelFetch, guardedNodeAgents } from "./outbound.ts";
+import { reasoningFloor } from "./pi-catalog.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 
 /**
@@ -181,7 +182,10 @@ function callFetch(sink: { cost?: number }, plan: { rebase?: { from: string[]; t
  * A key scope's `baseUrl` replaces the provider's root (`PROVIDER_ROOTS`) in each request's URL, or for
  * an API that takes no fetch (Bedrock, Google), the model's base URL. An entry without a key sends none.
  */
-function authorize(model: Model<Api>, options: any, credentials: Credentials, sink: { cost?: number }, modelHeaders?: Record<string, string> | null): [Model<Api>, any] {
+function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: { cost?: number }, modelHeaders?: Record<string, string> | null): [Model<Api>, any] {
+  // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
+  const floor = asked?.reasoning ? undefined : reasoningFloor(model);
+  const options = floor ? { ...asked, reasoning: floor } : asked;
   if (credentials.identity) {
     const target = upstream(model);
     const callOptions = identityOptions(model, { ...options, headers: { ...options?.headers, ...modelHeaders } }, credentials.apiKey);
