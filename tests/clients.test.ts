@@ -384,11 +384,14 @@ test("history answers while the agent is starting, whole or in pages", async t =
   assert.deepEqual(statuses, []);
 });
 
-test("retired request methods are refused: history (read GET /history) and followUp (a prompt queues)", async t => {
+test("retired requests are refused: history (read GET /history), followUp (a prompt queues) and inline images (attach files)", async t => {
   const f = await fixture(t);
   const agent = await f.start();
   assert.equal((await f.post(agent, "/requests", { id: "whole", method: "history", params: {} })).status, 400);
   assert.equal((await f.post(agent, "/requests", { id: "later", method: "followUp", params: { text: "later" } })).status, 400);
+  const images = await f.post(agent, "/requests", { id: "shot", method: "prompt", params: { text: "see", images: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] } });
+  assert.equal(images.status, 400, "images are attached as files");
+  assert.match((await images.json() as any).error, /files/);
 });
 
 test("a call with no application connected fails as not run; one the application never answers times out as unknown", async t => {

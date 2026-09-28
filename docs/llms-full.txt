@@ -1804,7 +1804,7 @@ Run options (`run`, `stream`):
 | TypeScript | Python | |
 | --- | --- | --- |
 | `user` | `user=` | who sent it: your user id, or `{ id, name, username }`; the model sees who, tools get `identity.actor` |
-| `files`, `images` | `files=` | attachments; see [Files](../guides/files.md) |
+| `files` | `files=` | attachments; see [Files](../guides/files.md) |
 | `metadata` | `metadata=` | your own key-value data about the message (16 strings); the model never sees it |
 | `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run |
 | `signal` | `timeout=` | stop waiting; the run goes on |

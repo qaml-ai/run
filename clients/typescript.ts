@@ -1,4 +1,4 @@
-import type { AgentEvent, ImageContent, Message, PresentedFile, ThinkingLevel } from "./types.ts";
+import type { AgentEvent, Message, PresentedFile, ThinkingLevel } from "./types.ts";
 import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -1077,18 +1077,18 @@ export class AgentClient {
    * stored message and its request carry it, with the request's id, in history, events and webhooks; the model never sees it.
    * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome.
    */
-  prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; images?: ImageContent[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer" }) {
+  prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer" }) {
     return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) });
   }
 
   /**
    * Send a message with its files: each is uploaded to the agent's workspace under the request's
-   * id first, then attached by path. `images` (base64 blocks) are sent inline and saved as files.
+   * id first, then attached by path.
    */
-  private async message(method: "prompt" | "steer", text: string, options: (RequestOptions & { files?: Attachment[]; images?: ImageContent[]; from?: Sender; metadata?: Record<string, string> }) | undefined, extra: Record<string, unknown> = {}) {
+  private async message(method: "prompt" | "steer", text: string, options: (RequestOptions & { files?: Attachment[]; from?: Sender; metadata?: Record<string, string> }) | undefined, extra: Record<string, unknown> = {}) {
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
-    return this.request(method, { text, ...(files ? { files } : {}), ...(options?.images ? { images: options.images } : {}), ...extra, ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}) }, { ...options, idempotencyKey: id });
+    return this.request(method, { text, ...(files ? { files } : {}), ...extra, ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}) }, { ...options, idempotencyKey: id });
   }
 
   private async attach(requestId: string, files: Attachment[]): Promise<{ path: string }[]> {

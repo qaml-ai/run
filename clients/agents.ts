@@ -14,7 +14,7 @@ import {
   type AgentFiles, type AgentInput, type AgentHistory, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type ToolServer, type Tools, type AgentFile,
 } from "./typescript.ts";
-import type { AgentEvent, ImageContent, ThinkingLevel } from "./types.ts";
+import type { AgentEvent, ThinkingLevel } from "./types.ts";
 
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 const env = (name: string): string | undefined => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[name] || undefined;
@@ -134,7 +134,6 @@ export interface RunOptions {
   /** Who sent it (your user id, or a Sender): the model sees who, and tools get it as `identity.user`. */
   user?: string | Sender;
   files?: Attachment[];
-  images?: ImageContent[];
   /** Your own key-value data about the message; the model never sees it. */
   metadata?: Record<string, string>;
   /** The run's id: sending the same key again returns the same run, never a second one. */
@@ -381,7 +380,7 @@ function messageOptions(options: Pick<RunOptions, "user" | "files" | "metadata">
 }
 function promptOptions(id: string, options: RunOptions) {
   return {
-    ...messageOptions(options), idempotencyKey: id, ...(options.images ? { images: options.images } : {}),
+    ...messageOptions(options), idempotencyKey: id,
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
   };

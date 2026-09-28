@@ -1988,6 +1988,7 @@ export class ClientSessions {
     const isMessage = ["prompt", "steer"].includes(body.method);
     if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer)");
     if (params.metadata !== undefined && !isMessage) throw new HttpError(400, "metadata is only for messages (prompt, steer)");
+    if (params.images !== undefined) throw new HttpError(400, "Attach images as files: files: [{ name, data (base64), contentType }]");
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     if (params.whileRunning === "queue") delete params.whileRunning;
     // A message records the request that sent it, so an application can match it to its own.
@@ -2015,9 +2016,8 @@ export class ClientSessions {
     const raced = existing();
     if (raced) return { status: 200, record: visible(raced) };
     // Attached files are saved and referenced before the request is: its params keep references, never bytes.
-    if (["prompt", "steer"].includes(body.method) && (params.files !== undefined || params.images !== undefined)) {
-      const { files, images, ...rest } = params;
-      params = { ...rest, files: await this.attach(session, body.id, files, images) };
+    if (["prompt", "steer"].includes(body.method) && params.files !== undefined) {
+      params = { ...params, files: await this.attach(session, body.id, params.files) };
       const again = existing();
       if (again) return { status: 200, record: visible(again) };
     }
@@ -2141,12 +2141,11 @@ export class ClientSessions {
 
   /**
    * A message's attachments as file references: files already in the agent's mounts ({path}), and
-   * small files sent inline ({name, data: base64, contentType?}, and legacy `images`), saved first.
+   * small files sent inline ({name, data: base64, contentType?}), saved first.
    * Everything is checked before anything is saved.
    */
-  private async attach(session: Session, requestId: string, files: unknown = [], images: unknown = []): Promise<FileRef[]> {
-    if (!Array.isArray(files) || !Array.isArray(images)) throw new HttpError(400, "files must be an array");
-    const inputs = [...files, ...images.map((image, index) => ({ name: `image-${index + 1}.${String(image?.mimeType ?? "").split("/")[1] ?? "png"}`, data: image?.data, contentType: image?.mimeType }))];
+  private async attach(session: Session, requestId: string, inputs: unknown): Promise<FileRef[]> {
+    if (!Array.isArray(inputs)) throw new HttpError(400, "files must be an array");
     if (inputs.length > FILE_LIMITS.attachments) throw new HttpError(400, `At most ${FILE_LIMITS.attachments} files can be attached to a message`);
     let inline = 0;
     const names = new Set<string>();
