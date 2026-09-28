@@ -10,10 +10,9 @@ name: Publish SDK
 # provenance for these releases. Add required reviewers to the `npm` environment in GitHub to gate
 # releases on an approval.
 #
-# FIRST PUBLISH of a new package: npm can only trust a workflow for a package that exists, so an owner
-# of the @camelai scope does this once, before the first tag that includes it:
-#   1. scripts/publish-placeholders.sh   (publishes an empty 0.0.0 placeholder of each new package; npm
-#                                         asks for 2FA)
+# FIRST PUBLISH of a new package (npm trust answers 404 for a package that does not exist yet), once,
+# by an owner of the @camelai scope, in this order:
+#   1. a 0.0.0 placeholder of each new package is on npm (published by hand, with 2FA)
 #   2. npm trust github <package> --repo qaml-ai/agent-runtime --file publish-sdk.yml --env npm --allow-publish
 #      for @camelai/agent-runtime-react, -vue, -svelte, -solid and @camelai/create-agent-app
 #      (the core already trusts this workflow)
