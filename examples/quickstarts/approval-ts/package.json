@@ -1,0 +1,8 @@
+{
+  "name": "approval-ts",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "tsx index.ts" },
+  "dependencies": { "@camelai/agent-runtime": "^0.9.0" },
+  "devDependencies": { "tsx": "^4.20.0" }
+}

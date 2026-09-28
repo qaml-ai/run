@@ -1,0 +1,5 @@
+.venv/
+package-lock.json
+approval-ts/playground/
+data-analyst-py/report.md
+uv.lock

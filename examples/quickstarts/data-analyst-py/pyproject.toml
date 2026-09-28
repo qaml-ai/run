@@ -1,0 +1,8 @@
+[project]
+name = "data-analyst-py"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["camelai-agent-runtime>=0.5.0", "httpx"]
+
+[tool.uv]
+package = false
