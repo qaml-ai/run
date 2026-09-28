@@ -35,6 +35,34 @@ export function callMeta({ toolCallId, innerCallId, idempotencyKey, origin, acto
     ...(origin ? { "agent-runtime/origin": origin } : {}), ...(actor ? { "agent-runtime/actor": actor } : {}),
   };
 }
+/** Tool calls' deadlines: how long a call may go without an answer (each progress notification restarts it), and in all. */
+export const TOOL_DEADLINES = Object.freeze({ attachedMs: 15_000, remoteMs: 60_000, minMs: 1_000, maxTotalMs: 1_200_000 });
+
+/**
+ * Why a tool call did not complete, as a run's outcome lists it (`toolErrors`): `timeout` (no answer by its deadline),
+ * `connection_lost` (the connection it was sent on closed), both with `outcomeUnknown`; `not_connected` (no application
+ * attached to answer it: it did not run); `source_unavailable` (its server could not be reached, listed or authenticated
+ * with); `failed` (anything else that kept it from running or answering).
+ */
+export type ToolErrorCode = "timeout" | "connection_lost" | "not_connected" | "source_unavailable" | "failed";
+export type ToolError = { tool: string; toolCallId?: string; innerCallId?: string; code: ToolErrorCode; outcomeUnknown?: true; message: string };
+export class ToolFailure extends Error {
+  readonly code: ToolErrorCode;
+  readonly outcomeUnknown: boolean;
+  constructor(code: ToolErrorCode, message: string, outcomeUnknown = false) { super(message); this.code = code; this.outcomeUnknown = outcomeUnknown; }
+}
+/** A call that timed out after being sent: whatever it did may or may not have happened. */
+export function timedOut(ms: number) {
+  return new ToolFailure("timeout", `No answer within ${ms} ms, its deadline (progress notifications extend it, up to ${TOOL_DEADLINES.maxTotalMs / 60_000} minutes in all). Its outcome is unknown: it may or may not have taken effect.`, true);
+}
+/** A tool's own deadline, from its `_meta["agent-runtime/timeoutMs"]`, if it gives a valid one. */
+export function declaredTimeout(meta: Record<string, unknown> | undefined): number | undefined {
+  const value = meta?.["agent-runtime/timeoutMs"];
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || (value as number) < TOOL_DEADLINES.minMs || (value as number) > TOOL_DEADLINES.maxTotalMs) throw new Error(`agent-runtime/timeoutMs must be an integer from ${TOOL_DEADLINES.minMs} to ${TOOL_DEADLINES.maxTotalMs}`);
+  return value as number;
+}
+
 /** An MCP `notifications/progress`: `progress` rises, `total` if known, `message` for people. */
 export type Progress = { progress: number; total?: number; message?: string };
 

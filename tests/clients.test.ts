@@ -384,7 +384,7 @@ test("a call with no application connected fails as not run; one the application
   await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /No application is connected[\s\S]*did not run/);
 
   const app = await attachSilently(t, f.url, agent.session.id, agent.session.token);
-  await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /timed out[\s\S]*outcome is unknown/);
+  await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /No answer within[\s\S]*outcome is unknown/);
   assert.equal(app.calls.length, 1);
   assert.deepEqual(app.calls[0].params.arguments, { value: "write" });
   // Nothing waits for an operator: the next run is accepted straight away.

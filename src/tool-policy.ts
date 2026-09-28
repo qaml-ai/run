@@ -24,6 +24,7 @@ export function validateDefinitions(definitions: ToolDefinition[]) {
     if (tool.exposure !== undefined && !["direct", "codemode", "both"].includes(tool.exposure)) throw new Error("Invalid tool exposure");
     if (tool.executionMode !== undefined && !["sequential", "parallel"].includes(tool.executionMode)) throw new Error("Invalid tool execution mode");
     if (tool.resultFormat !== undefined && !["json", "content"].includes(tool.resultFormat)) throw new Error("Invalid tool result format");
+    if (tool.timeoutMs !== undefined && (!Number.isInteger(tool.timeoutMs) || tool.timeoutMs < 1_000 || tool.timeoutMs > 1_200_000)) throw new Error("Invalid tool timeoutMs");
     names.add(tool.name);
   }
   validated.add(definitions);

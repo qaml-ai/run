@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "./protocol.ts";
 import { compiles, validateDefinitions } from "./tool-policy.ts";
 import { validFileRef } from "./files.ts";
+import { declaredTimeout } from "./tool-servers.ts";
 
 /**
  * MCP tools and results, whichever way the server is reached: remote servers the runtime
@@ -72,10 +73,11 @@ export function attachedTools(tools: unknown): ToolDefinition[] {
     const exposure = meta[`${META}exposure`], executionMode = meta[`${META}executionMode`];
     // A tool that asks the user's approval (the SDKs' needsApproval) is declared directly: code cannot wait for the user.
     const approval = meta[`${META}needsApproval`] === true;
+    const timeoutMs = declaredTimeout(meta);
     return {
       name: tool.name, description: tool.description || tool.title || tool.name, parameters: tool.inputSchema,
       ...(exposure !== undefined ? { exposure: exposure as ToolDefinition["exposure"] } : {}), ...(executionMode !== undefined ? { executionMode: executionMode as ToolDefinition["executionMode"] } : {}),
-      ...(approval ? { exposure: "direct" as const, needsApproval: true } : {}),
+      ...(approval ? { exposure: "direct" as const, needsApproval: true } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     };
   });
   validateDefinitions(definitions);

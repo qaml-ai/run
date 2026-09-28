@@ -137,6 +137,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
   // A named model's endpoint is the catalog's or the tenant's own; an endpoint's models can only be named.
   if (!named && endpoints && Object.hasOwn(endpoints, model.provider)) throw new Error(`Name ${model.provider}'s models as "${model.provider}/<provider>/<model id>"`);
   if (!named) assertTrustedEndpoint(model, defaultModel, allowedBaseUrls);
+  if (input.systemPrompt === null) throw new Error('systemPrompt must contain 1–32000 characters');
   const updates = configurationUpdate({
     ...(input.systemPrompt !== undefined || defaultPrompt !== undefined ? { systemPrompt: input.systemPrompt !== undefined ? input.systemPrompt : defaultPrompt } : {}),
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),

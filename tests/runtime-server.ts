@@ -131,10 +131,22 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
  * call: calls it gets stay in flight until they time out. `calls` collects them.
  */
 export async function attachSilently(t: T, base: string, agent: string, token: string) {
+  return attach(t, base, agent, token);
+}
+
+/**
+ * An application attached to an agent over its MCP connection, answering each tool call with `answer` (if given):
+ * `reply(result)` sends the call's result, `progress(n)` a progress notification for it. `calls` collects them.
+ */
+export async function attach(t: T, base: string, agent: string, token: string,
+  answer?: (call: any, tools: { reply: (result: object) => Promise<unknown>; progress: (progress: number) => Promise<unknown> }) => void, query = "") {
   const stream = new AbortController();
   t.after(() => stream.abort());
   const headers = { Authorization: `Bearer ${token}` };
-  const response = await fetch(`${base}/clients/${agent}/events`, { headers: { ...headers, Accept: "text/event-stream" }, signal: stream.signal });
+  const response = await fetch(`${base}/clients/${agent}/events${query}`, { headers: { ...headers, Accept: "text/event-stream" }, signal: stream.signal });
+  const frames: string[] = [];
+  const ended = Promise.withResolvers<void>();
+  if (!response.ok) return { calls: [] as any[], status: response.status, body: await response.text(), frames, ended: ended.promise, close: () => stream.abort() };
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let connection = "";
@@ -146,10 +158,11 @@ export async function attachSilently(t: T, base: string, agent: string, token: s
     try {
       for (;;) {
         const { value, done } = await reader.read();
-        if (done) return;
+        if (done) { ended.resolve(); return; }
         buffer += decoder.decode(value, { stream: true });
         for (let end; (end = buffer.indexOf("\n\n")) !== -1;) {
           const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+          frames.push(frame);
           const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
           if (!data) continue;
           const event = JSON.parse(data);
@@ -157,13 +170,21 @@ export async function attachSilently(t: T, base: string, agent: string, token: s
           else if (event.type === "mcp" && event.message.method === "initialize") {
             await post({ jsonrpc: "2.0", id: event.message.id, result: { protocolVersion: event.message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "silent", version: "1" } } });
             initialized.resolve();
-          } else if (event.type === "mcp" && event.message.method === "tools/call") calls.push(event.message);
+          } else if (event.type === "mcp" && event.message.method === "tools/call") {
+            const message = event.message;
+            calls.push(message);
+            answer?.(message, {
+              reply: result => post({ jsonrpc: "2.0", id: message.id, result }),
+              progress: progress => post({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: message.params._meta?.progressToken, progress } }),
+            });
+          }
         }
       }
     } catch { /* the stream ended */ }
+    ended.resolve();
   })();
   await initialized.promise;
-  return { calls };
+  return { calls, status: response.status, body: "", frames, ended: ended.promise, close: () => stream.abort() };
 }
 
 /**

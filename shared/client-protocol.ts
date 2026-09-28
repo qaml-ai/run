@@ -55,4 +55,6 @@ export interface ToolDefinition {
   executionMode?: "sequential" | "parallel";
   /** The user approves each call before it runs (a source's approval policy, or the tool's own needsApproval); such a tool is declared directly. */
   needsApproval?: boolean;
+  /** How long a call may go without an answer or progress (ms): the tool's `_meta["agent-runtime/timeoutMs"]`. */
+  timeoutMs?: number;
 }

@@ -1,3 +1,4 @@
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { ToolDefinition } from "./protocol.ts";
@@ -11,7 +12,7 @@ import type { WebSearch } from "./web-search.ts";
 import type { WebRender } from "./web-render.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { callMeta, defaultExposure, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { callMeta, declaredTimeout, defaultExposure, timedOut, TOOL_DEADLINES, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
 import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, type Operation } from "./openapi.ts";
 import { acceptFiles, resolveFiles, savedContent, ToolFiles } from "./tool-files.ts";
@@ -83,7 +84,7 @@ const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
 // Headers the transport sets itself, or that would change how the request is framed or routed.
 const RESERVED_HEADERS = new Set(["host", "content-length", "content-type", "accept", "connection", "transfer-encoding", "upgrade", "te", "trailer", "keep-alive",
   "proxy-authorization", "proxy-connection", "mcp-session-id", "mcp-protocol-version", "last-event-id", "cookie", "user-agent"]);
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = TOOL_DEADLINES.remoteMs;
 const LIST_TIMEOUT_MS = 10_000;
 const MAX_DESCRIPTION = 4_000;
 
@@ -397,7 +398,11 @@ export class ToolSources {
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
         if (needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true) && !approval) return APPROVAL_REQUIRED;
         const resolved = await resolveFiles(args, tool.inputSchema, callFiles) as Record<string, unknown>;
-        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxTotalMs: MAX_TIMEOUT_MS }, { ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}) }, onProgress, { inputResponses, requestState, elicit })) as McpResult;
+        // The tool's own deadline (its listing's _meta), else the server's, else the default; progress restarts it.
+        let timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        try { timeoutMs = declaredTimeout(tool._meta) ?? timeoutMs; } catch { /* a server's invalid deadline is ignored */ }
+        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs, maxTotalMs: MAX_TIMEOUT_MS }, { ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}) }, onProgress, { inputResponses, requestState, elicit }))
+          .catch(error => { throw !signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout ? timedOut(timeoutMs) : error; }) as McpResult;
         return savedContent(result, callFiles);
       },
     };

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { listen, runtime, toolCall, type T } from "./runtime-server.ts";
+import { attach, listen, runtime, sleep, toolCall, toolResults, type T } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
@@ -49,4 +49,29 @@ test("every tool call carries a stable idempotency key: MCP servers in _meta, Op
   await r.prompt(agent, "go");
   assert.deepEqual(server.calls.map(call => call._meta["agent-runtime/idempotencyKey"]), [key(agent, "call_direct"), key(agent, "call_code", "call_code:1")]);
   assert.deepEqual(headers, [key(agent, "call_code", "call_code:2")]);
+});
+
+const slow = { name: "slow", description: "Takes a while", inputSchema: { type: "object", properties: {} }, _meta: { "agent-runtime/exposure": "direct", "agent-runtime/timeoutMs": 1500 } };
+
+test("an attached tool's own timeoutMs bounds its call; progress extends it; a timeout is an unknown outcome, in the run's outcome too", async t => {
+  const r = await runtime(t, (_body, index) => index % 2 === 0 ? toolCall("slow", {}, `call_${index}`) : { role: "assistant", content: "done" });
+  const created = (await r.call("/v1/agents", { body: { mcp: { tools: [slow] } } })).json;
+  let progressing = false;
+  await attach(t, r.base, created.id, created.token, async (_call, { reply, progress }) => {
+    for (let elapsed = 0; elapsed < 3_000; elapsed += 500) {
+      await sleep(500);
+      if (progressing) await progress(elapsed);
+    }
+    await reply({ content: [{ type: "text", text: "finished" }] });
+  });
+
+  const timedOut = await r.prompt(created.id, "go");
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /outcome is unknown/);
+  assert.deepEqual(timedOut.outcome.result.toolErrors, [{ tool: "slow", toolCallId: "call_0", code: "timeout", outcomeUnknown: true, message: timedOut.outcome.result.toolErrors[0].message }]);
+  assert.match(timedOut.outcome.result.toolErrors[0].message, /1500 ms/);
+
+  progressing = true;
+  const extended = await r.prompt(created.id, "again");
+  assert.equal(toolResults(r.model.bodies[3]).at(-1), "finished", "progress kept it alive past 1.5 s");
+  assert.equal(extended.outcome.result.toolErrors, undefined);
 });

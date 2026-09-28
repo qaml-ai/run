@@ -30,7 +30,7 @@ import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
-import { callMeta, compose, toolCallKey, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { callMeta, compose, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
@@ -110,6 +110,8 @@ type Session = {
   started?: Promise<void>;
   /** Whether the run in progress has its webhook events written: its tenant had an endpoint for them as it began. */
   announcing?: boolean;
+  /** The running run's tool calls that did not complete, for its outcome. */
+  toolErrors?: ToolError[];
   /** Prompts sent with `whileRunning: "steer"` that a running turn took, each with that turn's request: they end with it. */
   steered?: Map<string, string>;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
@@ -1158,13 +1160,13 @@ export class ClientSessions {
     } }), flush => { progressed = flush; }) : undefined;
     let result: McpResult;
     try {
-      result = await server.call({
+      result = await this.recordingFailures(session, call, () => server.call({
         ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}),
         ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.toolCallId, call.innerCallId) } : {}),
         ...(plan?.approval ? { approval: { input: plan.approval.input, by: this.approver(plan.approval.by), at: plan.approval.at } } : {}),
         ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),
         ...(this.humanSurface(session) ? { elicit: true } : {}),
-      });
+      }));
     } catch (error) {
       progressed?.();
       // MCP's older form of a URL step (-32042): the user opens each URL, then the call is retried.
@@ -1178,6 +1180,25 @@ export class ClientSessions {
     // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
     if (plan) content.content.push({ type: "text", text: plan.note });
     return content;
+  }
+
+  /**
+   * Run a tool call, recording in the run's outcome (`toolErrors`) why it did not complete, if it did not: so a
+   * caller sees a call that timed out, found no application connected, or could not reach its server, and not only the model.
+   */
+  private async recordingFailures<T>(session: Session, call: ToolCall, work: () => Promise<T>): Promise<T> {
+    try { return await work(); }
+    catch (error) {
+      if (call.signal.aborted || (error instanceof McpError && error.code === -32042)) throw error;
+      const failure = error instanceof ToolFailure ? error
+        : error instanceof McpError && error.code === ErrorCode.RequestTimeout ? new ToolFailure("timeout", `${error.message}. Its outcome is unknown: it may or may not have taken effect.`, true)
+        : error instanceof McpError && error.code === ErrorCode.ConnectionClosed ? new ToolFailure("connection_lost", `${error.message}. Its outcome is unknown: it may or may not have taken effect.`, true)
+        : /^Could not connect to MCP server|MCP server .* (?:failed|refused|answered)/.test(errorText(error)) ? new ToolFailure("source_unavailable", errorText(error))
+        : new ToolFailure("failed", errorText(error));
+      (session.toolErrors ??= []).push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}),
+        code: failure.code, ...(failure.outcomeUnknown ? { outcomeUnknown: true } : {}), message: failure.message });
+      throw failure;
+    }
   }
 
   /**
@@ -2318,6 +2339,7 @@ export class ClientSessions {
       if (RUN_METHODS.includes(record.method)) {
         session.activeSince = Date.now();
         session.outputs = { files: new Map(), presented: [] };
+        session.toolErrors = undefined;
       }
       // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
       if (record.method === "prompt") await this.cancelInputs(session, "superseded");
@@ -2327,6 +2349,8 @@ export class ClientSessions {
       if (RUN_METHODS.includes(record.method) && outputs && (outputs.files.size || outputs.presented.length) && value.result && typeof value.result === "object") {
         value = { result: { ...value.result, ...(outputs.files.size ? { files: [...outputs.files.values()] } : {}), ...(outputs.presented.length ? { presented: outputs.presented } : {}) } };
       }
+      // Tool calls that did not complete, so a caller sees them too (the model saw each as its call's error).
+      if (RUN_METHODS.includes(record.method) && session.toolErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, toolErrors: session.toolErrors } };
       // A suspended turn's outcome lists what it waits on.
       if ((value.result as { stopped?: string } | undefined)?.stopped === "input_required" && this.options.inputs) {
         const inputs = (await this.options.inputs.forRequest(session.header.id, record.id)).filter(row => row.state === "pending").map(inputView);
@@ -2476,8 +2500,9 @@ export class ClientSessions {
 
   private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, idempotencyKey, origin, actor, onProgress, approval, inputResponses, requestState, elicit }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
-    if (!attached) throw new Error("No application is connected to answer this tool call; it did not run");
-    const timeout = this.options.toolTimeoutMs ?? 15_000;
+    if (!attached) throw new ToolFailure("not_connected", "No application is connected to answer this tool call; it did not run");
+    // The tool's own deadline, else the runtime's; each progress notification restarts it, up to TOOL_DEADLINES.maxTotalMs.
+    const timeout = session.header.definitions.find(tool => tool.name === name)?.timeoutMs ?? this.options.toolTimeoutMs ?? TOOL_DEADLINES.attachedMs;
     // Who the call is for, as an identity token would say (the same claims): the connection is the
     // application's own, so it needs no signature, and a tool reads it the same way either way.
     const header = session.header;
@@ -2492,10 +2517,12 @@ export class ClientSessions {
     };
     session.inflight++;
     try {
-      return await attached.client.request({ method: "tools/call", params: callParams(name, args, _meta, { inputResponses, requestState, elicit }) } as never, CallToolResultSchema, { signal, timeout, maxTotalTimeout: timeout, ...(onProgress ? { onprogress: onProgress } : {}) }) as McpResult;
+      return await attached.client.request({ method: "tools/call", params: callParams(name, args, _meta, { inputResponses, requestState, elicit }) } as never, CallToolResultSchema,
+        { signal, timeout, maxTotalTimeout: Math.max(timeout, TOOL_DEADLINES.maxTotalMs), resetTimeoutOnProgress: true, onprogress: progress => onProgress?.(progress) }) as McpResult;
     } catch (error) {
-      if (!signal.aborted && error instanceof McpError && [ErrorCode.ConnectionClosed, ErrorCode.RequestTimeout].includes(error.code)) {
-        throw new Error(`${error.message}, after the call was sent to the application. Its outcome is unknown: it may or may not have taken effect.`);
+      if (!signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout) throw timedOut(timeout);
+      if (!signal.aborted && error instanceof McpError && error.code === ErrorCode.ConnectionClosed) {
+        throw new ToolFailure("connection_lost", `${error.message}, after the call was sent to the application. Its outcome is unknown: it may or may not have taken effect.`, true);
       }
       throw error;
     } finally { session.inflight--; }
