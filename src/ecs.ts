@@ -106,9 +106,15 @@ export class TaskProtection {
 /**
  * `hostedAgents`: agents started on the node (processes, or inline hosts), what
  * AGENT_MAX_AGENTS caps. `sessions`: agents loaded here (journal and stream in
- * memory), hosted or not.
+ * memory), hosted or not. `watchers`: event stream subscribers held here (watchers and
+ * waiting polls). `dbConnections`, `dbIdle`, `dbWaiting`: the database pool's
+ * connections, idle ones, and queries waiting for one.
  */
-export type NodeLoad = { hostedAgents: number; sessions: number; volumes: number; runningTurns: number; rssBytes: number };
+export type NodeLoad = {
+  hostedAgents: number; sessions: number; volumes: number; runningTurns: number; rssBytes: number;
+  watchers?: number; dbConnections?: number; dbIdle?: number; dbWaiting?: number;
+};
+const OPTIONAL_LOAD = ["watchers", "dbConnections", "dbIdle", "dbWaiting"] as const;
 
 /**
  * A `node_load` log line in CloudWatch Embedded Metric Format: CloudWatch Logs
@@ -124,6 +130,7 @@ export function nodeLoadLine(load: NodeLoad, service?: string, extra: Record<str
         Metrics: [
           { Name: "hostedAgents", Unit: "Count" }, { Name: "sessions", Unit: "Count" }, { Name: "agents", Unit: "Count" },
           { Name: "volumes", Unit: "Count" }, { Name: "runningTurns", Unit: "Count" }, { Name: "rssBytes", Unit: "Bytes" },
+          ...OPTIONAL_LOAD.filter(name => load[name] !== undefined).map(name => ({ Name: name, Unit: "Count" })),
         ],
       }],
     },

@@ -170,8 +170,29 @@ Metric Format: namespace `AgentRuntime`, metrics `hostedAgents` (agents started
 on the node, what `AGENT_MAX_AGENTS` caps), `sessions` (agents loaded on the node,
 hosted or not), `agents` (the older name of `hostedAgents`, kept for existing
 dashboards), `volumes` (volumes it serves), `runningTurns` and `rssBytes`, with no dimension
-or `ServiceName` from `AGENT_SERVICE_NAME`. CloudWatch Logs extracts them
+or `ServiceName` from `AGENT_SERVICE_NAME`, plus `watchers` (event stream subscribers)
+and the database pool's `dbConnections`, `dbIdle` and `dbWaiting`. CloudWatch Logs extracts them
 without API calls, so they can drive target-tracking scaling.
+
+Other lines in the same format (`src/metrics.ts`), each metric under `ServiceName` and the
+dimension sets listed:
+
+| line (`type`) | when | metrics | dimensions |
+| --- | --- | --- | --- |
+| `turn_metrics` | a turn (prompt, continue, resume) ends | `Turns`, `TurnDurationMs`, `TimeToFirstTokenMs`, `ModelResponses`, `ModelRetries`, `ToolCalls`, `ToolErrors` | `Outcome` (completed, failed, input_required, spend_limit), `ErrorClass`, `Provider`+`Model` |
+| `model_error` | a model response fails (retried or not) | `ModelErrors` | `Provider`+`Model`, `ErrorClass` |
+| `run_events` | run events are written to the outbox | `RunsStarted`, `RunsResumed`, `RunsCompleted`, `RunsInputRequired`, `RunsSpendLimited`, `RunsFailed`, `RunsUncertain` | `Tenant` |
+| `run_failed` | the same, per failed run | `RunsFailedByClass` | `ErrorClass`, `Tenant`+`ErrorClass` |
+| `model_cost` | usage events are written | `ModelCostUsd`, `ModelUsageEvents` | `Tenant`, `Provider`+`Model` |
+| `webhook_delivered` / `webhook_failed` | a delivery succeeds / fails | `WebhooksDelivered`, `WebhookDeliveryLagMs`, `WebhookAttempts` / `WebhooksFailed` | `Kind` (endpoint, usage) |
+| `webhook_backlog` | every minute, from each node (read with Maximum) | `WebhookBacklog`, `WebhookOldestPendingMs` | |
+
+`ErrorClass` is one of rate_limit, overloaded, context_overflow, auth, billing, timeout,
+provider_5xx, network, runtime_restart, exception, other (none for a success). A failed
+tool call also logs `tool_failed` with the tool's name (not a metric). Run events exist
+only for tenants with an endpoint for them. An agent in its own process
+(`AGENT_HOSTING=process`) writes its lines to stderr. Alarms and the launch dashboard
+on them are in `infra/terraform/observability.tf`.
 
 Schedules and channel work items are claimed with `FOR UPDATE SKIP LOCKED` and a
 claim deadline, so one node delivers each; a crashed node's claims lapse.

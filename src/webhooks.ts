@@ -5,6 +5,7 @@ import type { Db, Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import type { Outbound } from "./outbound.ts";
 import { errorText } from "./protocol.ts";
+import { deliveryLine, recordEventMetrics, writeMetricLine } from "./metrics.ts";
 
 /**
  * Webhooks: a tenant registers endpoints, each a URL and the event types it receives, and each
@@ -72,6 +73,7 @@ export async function enqueueEvents(sql: Sql, events: WebhookEvent[]) {
     insert into usage_webhook_outbox (id, tenant, body, due, created_at)
     select (e->>'id')::uuid, e->>'tenant', e, $2, $2 from jsonb_array_elements($1::jsonb) as e
     where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')`, [JSON.stringify(legacy), Date.now()]);
+  recordEventMetrics(events);
 }
 
 /** A model response's cost: the provider's own report when it made one (OpenRouter's), else the catalog price. */
@@ -311,7 +313,15 @@ export class Webhooks {
     return { url: row.url as string, secrets };
   }
 
-  private async deliver(table: string, row: { id: string; tenant: string; body: { id: string }; attempts: number }, receiver?: Receiver) {
+  /** Deliveries waiting in both outboxes, and how long the oldest has waited (a metric: metrics.ts). */
+  async backlog(now = Date.now()) {
+    const { rows } = await this.db.query(`
+      select count(*)::int as pending, min(created_at) as oldest from (
+        select created_at from webhook_deliveries union all select created_at from usage_webhook_outbox) as waiting`);
+    return { pending: rows[0].pending as number, oldestAgeMs: rows[0].oldest === null ? 0 : Math.max(0, now - Number(rows[0].oldest)) };
+  }
+
+  private async deliver(table: string, row: { id: string; tenant: string; body: { id: string }; attempts: number; created_at: string | number }, receiver?: Receiver) {
     if (!receiver) { await this.db.query(`delete from ${table} where id = $1`, [row.id]); return; }
     const body = JSON.stringify(row.body);
     let failure: string;
@@ -321,11 +331,20 @@ export class Webhooks {
         headers: { "Content-Type": "application/json", ...signedHeaders(row.body.id, body, receiver.secrets) },
       });
       await response.arrayBuffer().catch(() => {});
-      if (response.ok) { await this.db.query(`delete from ${table} where id = $1`, [row.id]); return; }
+      if (response.ok) {
+        await this.db.query(`delete from ${table} where id = $1`, [row.id]);
+        writeMetricLine(deliveryLine({ ...delivery(table, row), lagMs: Math.max(0, Date.now() - Number(row.created_at)) }));
+        return;
+      }
       failure = `HTTP ${response.status}`;
     } catch (error) { failure = errorText(error); }
     const delay = Math.min(60 * 60_000, this.retryBaseMs * 2 ** Math.min(row.attempts - 1, 20));
     await this.db.query(`update ${table} set due = $2, last_error = $3 where id = $1`, [row.id, Date.now() + delay, failure.slice(0, 500)]);
-    console.error(JSON.stringify({ type: "webhook_failed", tenant: row.tenant, event: row.body.id, attempts: row.attempts, error: failure }));
+    writeMetricLine(deliveryLine({ ...delivery(table, row), lagMs: Math.max(0, Date.now() - Number(row.created_at)), error: failure }));
   }
+}
+
+/** Which webhook a delivery is for, and the facts its metric line carries. */
+function delivery(table: string, row: { tenant: string; body: { id: string }; attempts: number }) {
+  return { kind: table === "usage_webhook_outbox" ? "usage" as const : "endpoint" as const, tenant: row.tenant, event: row.body.id, attempts: row.attempts };
 }

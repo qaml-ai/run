@@ -40,6 +40,7 @@ import { errorCode, errorStatus, HttpError, readJson, readText } from "./http.ts
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
+import { webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
@@ -554,9 +555,15 @@ const tenantsTimer = tenants.source === "secret" ? setInterval(() => void reload
 tenantsTimer?.unref();
 
 // Load for autoscaling, as a CloudWatch metric extracted from the log line.
-const loadTimer = setInterval(() => console.log(nodeLoadLine({
-  hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: process.memoryUsage.rss(),
-}, process.env.AGENT_SERVICE_NAME, { node, retiring: retiringSince !== undefined })), 60_000);
+const loadTimer = setInterval(() => {
+  console.log(nodeLoadLine({
+    hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: process.memoryUsage.rss(),
+    watchers: clients.watchers, dbConnections: db.totalCount, dbIdle: db.idleCount, dbWaiting: db.waitingCount,
+  }, process.env.AGENT_SERVICE_NAME, { node, retiring: retiringSince !== undefined }));
+  // Every node reports the shared outboxes' backlog: read it with Maximum.
+  void webhooks.backlog().then(backlog => console.log(webhookBacklogLine(backlog)))
+    .catch(error => console.error(JSON.stringify({ type: "webhook_backlog_failed", error: errorText(error) })));
+}, 60_000);
 loadTimer.unref();
 // Tail rows a dead node left for agents and volumes that are gone since.
 const sweepTimer = setInterval(() => void sweepTails(db).catch(error => console.error(JSON.stringify({ type: "tail_sweep_failed", error: errorText(error) }))), 60 * 60_000);

@@ -712,6 +712,8 @@ export class ClientSessions {
     };
   }
   private watching = 0;
+  /** Event stream subscribers held on this node (a metric: node_load). */
+  get watchers() { return this.watching; }
   private readonly tenantWatching = new Map<string, number>();
   /** Each watcher's agent, and its place (given back when it closes) and token expiry. */
   private readonly watches = new WeakMap<ServerResponse, { agent: string; release: () => void; expiry?: ReturnType<typeof setTimeout> }>();

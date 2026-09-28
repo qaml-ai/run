@@ -1,9 +1,12 @@
 import { parentRpc, type Rpc } from "./rpc.ts";
 import { createAgentHost } from "./agent-host.ts";
+import { setMetricSink } from "./metrics.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { TranscriptRecord } from "./transcript.ts";
 
 // One agent in its own process: the host's I/O goes over IPC to the supervisor.
+// Its stdout is not kept: metric lines (metrics.ts) go to stderr, which the node's log keeps.
+setMetricSink(line => process.stderr.write(`${line}\n`));
 const rpc = parentRpc();
 const host = createAgentHost({
   emit: event => rpc.send({ type: "event", event }),

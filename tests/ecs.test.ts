@@ -134,6 +134,15 @@ test("node load is a CloudWatch Embedded Metric Format line; agents repeats host
   assert.equal(named.ServiceName, "agent-runtime", "every dimension is a field of the line");
 });
 
+test("node load also carries event stream watchers and the database pool, when the node knows them", () => {
+  const load = { hostedAgents: 1, sessions: 1, volumes: 0, runningTurns: 0, rssBytes: 1, watchers: 7, dbConnections: 10, dbIdle: 4, dbWaiting: 2 };
+  const line = JSON.parse(nodeLoadLine(load, "agent-runtime"));
+  const names = line._aws.CloudWatchMetrics[0].Metrics.map((metric: { Name: string }) => metric.Name);
+  assert.deepEqual(names.slice(-4), ["watchers", "dbConnections", "dbIdle", "dbWaiting"]);
+  assert.equal(line.watchers, 7);
+  assert.equal(line.dbWaiting, 2);
+});
+
 test("tenants load from a Secrets Manager secret, and a bad refresh keeps the last good tenants", async t => {
   const arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:agent-runtime/tenants-AbCdEf";
   let secret = JSON.stringify({ tenants: { alice: { tokenSha256: sha("alice-token"), apiKeys: { anthropic: "sk-alice" } } } });

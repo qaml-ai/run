@@ -18,6 +18,7 @@ import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, 
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
+import { observeTurns } from "./metrics.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
 const LAG_READ_MS = 60_000;
@@ -51,9 +52,12 @@ export interface HostIO {
  * One agent: its Pi loop, working-set transcript, compaction and retries. It runs
  * in its own process (agent-child.ts) or inline in a worker hosting many agents.
  */
-export function createAgentHost(io: HostIO) {
+export function createAgentHost(hostIO: HostIO) {
   let agent: Agent | undefined;
   let config: AgentConfig;
+  // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
+  const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id });
+  const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
   let transcript: Transcript;
   let busy = false;
   let active: AbortController | undefined;
@@ -696,5 +700,5 @@ export function createAgentHost(io: HostIO) {
     await transcript?.log.close();
   }
 
-  return { handle, dispose };
+  return { handle: turns.wrap(handle), dispose };
 }

@@ -59,6 +59,8 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
       ...(process.env.AGENT_SANDBOX_SOCKETS ? { AGENT_SANDBOX_SOCKETS: process.env.AGENT_SANDBOX_SOCKETS } : {}),
       // The history backlog's bound (transcript.ts), which tests lower.
       ...(process.env.AGENT_HISTORY_BACKLOG_BYTES ? { AGENT_HISTORY_BACKLOG_BYTES: process.env.AGENT_HISTORY_BACKLOG_BYTES } : {}),
+      // The dimension of the metric lines an agent process writes (metrics.ts).
+      ...(process.env.AGENT_SERVICE_NAME ? { AGENT_SERVICE_NAME: process.env.AGENT_SERVICE_NAME } : {}),
     },
     stdio: ["ignore", "ignore", "inherit", "ipc"],
     serialization: "json",
