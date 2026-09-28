@@ -9,7 +9,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { testDatabase } from "./database.ts";
 
 const token = "failover-operator-token-at-least-24-chars";
@@ -146,7 +146,7 @@ for (const how of ["reset", "stall"] as const) {
   test(`a database outage shorter than the lease (${how}): no fence, a running turn waits it out, requests get 503 and Retry-After, then succeed`, { timeout: 60_000 }, async t => {
     const n = await node(t);
     const { gate, entered, tools } = waiting();
-    const agent = await new AgentRuntime({ url: n.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: `short-${how}` });
+    const agent = await new AgentRuntime({ url: n.url, apiKey: token }).createAgent({ tools, idempotencyKey: `short-${how}` });
     t.after(() => agent.close());
     const before = await n.owner(agent.session.id);
     const running = agent.execute("return await tools.wait({})", { timeoutMs: 30_000 });
@@ -177,7 +177,7 @@ for (const how of ["reset", "stall"] as const) {
 
 test("a database outage longer than the lease: the node fences, then rejoins and takes its agent back under a higher epoch", { timeout: 60_000 }, async t => {
   const n = await node(t);
-  const created = await new AgentRuntime({ url: n.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "long" });
+  const created = await new AgentRuntime({ url: n.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "long" });
   assert.equal((await created.execute('return "before"')).output[0], "before");
   await created.close();
   const before = await n.owner(created.session.id);
@@ -188,7 +188,7 @@ test("a database outage longer than the lease: the node fences, then rejoins and
   n.alive();
   n.link.up();
 
-  const agent = await new AgentRuntime({ url: n.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  const agent = await new AgentRuntime({ url: n.url, apiKey: token }).connectAgent(created.session, { tools: {} });
   t.after(() => agent.close());
   await eventually(async () => (await agent.execute('return "after"', { timeoutMs: 10_000 })).output[0] === "after", 10_000, "the agent is served again");
   const after = await n.owner(created.session.id);

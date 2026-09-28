@@ -89,7 +89,7 @@ try {
   assert.equal((await request(`/api/inspect/${release}/review`, { id: ids[release], verdict: 'good', note: '' }, false)).status, 403);
   // An unrelated SDK client appears with no changes to the dashboard or launcher.
   const secrets = JSON.parse(await readFile(join(root, 'secrets.json'), 'utf8'));
-  const runtime = new AgentRuntime({ url: runtimeUrl, apiKey: secrets.operator, stateDirectory: join(root, 'third-client') });
+  const runtime = new AgentRuntime({ url: runtimeUrl, apiKey: secrets.operator });
   third = await runtime.createAgent({ name: 'Docs launch', type: 'release-reviewer', tools: { echo: tool({ description: 'Echo a number', input: schema.Object({ value: schema.Number() }), execute: ({ value }) => ({ value }) }) } });
   await third.execute('return await tools.echo({value:42});');
   const extra = await (await request(`/api/inspect/${third.session.id}`)).json();

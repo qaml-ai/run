@@ -10,7 +10,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { testDatabase } from "./database.ts";
 
 export const token = "cluster-operator-token-at-least-24-chars";

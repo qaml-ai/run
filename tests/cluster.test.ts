@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { AgentRuntime, memoryJournalStore } from "../clients/typescript.ts";
+import { AgentRuntime } from "../clients/typescript.ts";
 import { watchEvents } from "./runtime-server.ts";
 import { cluster, fakeModel, lookup, sleep, token, until } from "./cluster-helpers.ts";
 
@@ -18,12 +18,12 @@ test("any node serves any agent: requests are forwarded to the owner, and a surv
   const calls: string[] = [];
 
   // Created through A, so A owns it.
-  const viaA = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: lookup(calls), idempotencyKey: "shared-agent" });
+  const viaA = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: lookup(calls), idempotencyKey: "shared-agent" });
   assert.equal((await viaA.execute('return await tools.lookup({ key: "one" })')).output[0], "value-of-one");
   await viaA.close();
 
   // A client attached to B reaches the same agent: its requests and SSE stream are forwarded to A.
-  const viaB = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(viaA.session, { tools: lookup(calls) });
+  const viaB = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(viaA.session, { tools: lookup(calls) });
   t.after(() => viaB.close());
   assert.equal((await viaB.execute('return await tools.lookup({ key: "two" })')).output[0], "value-of-two");
   const state = async () => (await (await fetch(`${b.url}/clients/${viaA.session.id}/state`, { headers: { Authorization: `Bearer ${viaA.session.token}` } })).json()) as any;
@@ -69,7 +69,7 @@ test("watchers on any node share the owner's stream: each gets every event, besi
   const a = await c.start("a");
   const b = await c.start("b");
   const calls: string[] = [];
-  const agent = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: lookup(calls) });
+  const agent = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: lookup(calls) });
   t.after(() => agent.close());
   const auth = { Authorization: `Bearer ${agent.session.token}` };
   const onA = await watchEvents(t, `${a.url}/clients/${agent.session.id}/events`, auth);
@@ -89,7 +89,7 @@ test("watching an idle agent loads it nowhere; when a node loads it, other nodes
   const c = await cluster(t);
   const a = await c.start("a", { AGENT_IDLE_MS: "1000" });
   const b = await c.start("b", { AGENT_IDLE_MS: "1000" });
-  const agent = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: lookup([]) });
+  const agent = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: lookup([]) });
   await agent.execute("return 1");
   await agent.close();
   await until(async () => !(await c.owner(agent.session.id)), "the idle agent to be released", 20_000);
@@ -101,7 +101,7 @@ test("watching an idle agent loads it nowhere; when a node loads it, other nodes
   assert.ok(!await c.owner(agent.session.id), "no node owns it");
   // A loads it for a run: B's watcher ends at once (not at B's 20 s check), and reconnecting through B reaches A.
   const started = Date.now();
-  const running = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(agent.session, { tools: lookup([]) });
+  const running = await new AgentRuntime({ url: a.url, apiKey: token }).connectAgent(agent.session, { tools: lookup([]) });
   t.after(() => running.close());
   await until(() => idle.ended, "B's idle watcher to end", 10_000);
   assert.ok(Date.now() - started < 10_000);
@@ -141,8 +141,8 @@ test("a volume is served by one node: other nodes forward to it, agents anywhere
   const c = await cluster(t);
   const a = await c.start("a");
   const b = await c.start("b");
-  const viaA = new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() });
-  const viaB = new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() });
+  const viaA = new AgentRuntime({ url: a.url, apiKey: token });
+  const viaB = new AgentRuntime({ url: b.url, apiKey: token });
   const { id } = await viaA.createVolume({ name: "shared" });
   const first = await viaA.volume(id).write("plan.md", "draft");
   assert.equal(await c.owner(id), a.url, "the node that first served the volume owns it");
@@ -179,7 +179,7 @@ test("a stale owner cache entry heals: a request to a dead owner drops it, and t
   // A long lease, so only the cache (not heartbeat expiry) can send B to the dead node.
   const a = await c.start("a", { AGENT_LEASE_TTL_MS: "60000" });
   const b = await c.start("b", { AGENT_LEASE_TTL_MS: "60000" });
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "cached-agent" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "cached-agent" });
   await created.close();
   const state = () => fetch(`${b.url}/clients/${created.session.id}/state`, { headers: { Authorization: `Bearer ${created.session.token}` } });
   assert.equal((await state()).status, 200, "served by A through B, which now caches A as the owner");

@@ -11,7 +11,7 @@ function stored(name: string, fallback: any): any {
  catch (e: any) { if (e.code !== 'ENOENT') throw e; return fallback; }
 }
 let client: AgentClient;
-const runtime = new AgentRuntime({ url: base, apiKey: secret.operator, stateDirectory: join(root, 'clients') });
+const runtime = new AgentRuntime({ url: base, apiKey: secret.operator });
 const release = { appState: stored('release.json', { issues: [{ id: 'APP-41', title: 'Checkout retry duplicates receipts', severity: 'high', owner: 'Payments', status: 'open' }, { id: 'APP-42', title: 'Search loses keyboard focus', severity: 'medium', owner: 'Web', status: 'open' }, { id: 'APP-43', title: 'CSV export missing timezone', severity: 'high', owner: 'Data', status: 'resolved' }], note: '' }) };
 function persisted(_name: string, fn: (args: any) => unknown) {
   return async (args: any) => {

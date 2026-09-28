@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AgentError, AgentRuntime, memoryJournalStore } from "../clients/node.ts";
+import { AgentError, AgentRuntime } from "../clients/node.ts";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { CHUNK_BYTES, VolumeService } from "../src/volumes.ts";
@@ -258,7 +258,7 @@ test("context estimates count what file references stand for, not their JSON", (
 
 test("the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached", async t => {
   const server = await runtime(t, () => ({ role: "assistant", content: "seen" }));
-  const client = new AgentRuntime({ url: server.base, apiKey: OPERATOR, journalStore: memoryJournalStore() });
+  const client = new AgentRuntime({ url: server.base, apiKey: OPERATOR });
   const agent = await client.createAgent({ tools: {} });
   t.after(() => agent.close());
   const local = join(server.root, "notes.txt");
@@ -328,7 +328,7 @@ test("a run's outcome lists the files it wrote and presented, and a presented fi
     { role: "assistant", content: "Here is your chart." },
   ][index] ?? { role: "assistant", content: "ok" });
   const events: any[] = [];
-  const client = new AgentRuntime({ url: server.base, apiKey: OPERATOR, journalStore: memoryJournalStore() });
+  const client = new AgentRuntime({ url: server.base, apiKey: OPERATOR });
   const agent = await client.createAgent({ tools: {}, onEvent: event => { if (event.type === "file_presented") events.push(event); } });
   t.after(() => agent.close());
   const result = await agent.prompt("Make me a chart");

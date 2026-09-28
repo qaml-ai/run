@@ -90,8 +90,11 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         # Keep reading the host's log, so it never writes into a closed pipe as it shuts down.
         self.logs = asyncio.create_task(self.host.stdout.read())
         self.url = f"http://127.0.0.1:{ready['address']['port']}"
-        self.runtime = AgentRuntime(url=self.url, api_key=self.token, state_directory=Path(self.directory.name) / "sdk")
+        self.runtime = AgentRuntime(url=self.url, api_key=self.token)
         self.agents = Agents(self.token, url=self.url)
+        # The SDK keeps no cursor store: a restarted client resumes from a snapshot.
+        with self.assertRaises(TypeError):
+            AgentRuntime(url=self.url, api_key=self.token, state_directory="sdk")
 
     async def make(self, tools=(), **options):
         """An agent made over REST (with `tools` declared), held by the simple interface."""

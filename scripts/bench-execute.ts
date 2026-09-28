@@ -15,7 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import pg from "pg";
-import { AgentRuntime, memoryJournalStore, schema, tool, type AgentClient } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool, type AgentClient } from "../clients/typescript.ts";
 
 const { values: args } = parseArgs({ options: {
   agents: { type: "string", default: "32" }, execs: { type: "string", default: "3000" }, warmup: { type: "string", default: "500" },
@@ -81,7 +81,7 @@ const probe = (command = "probe"): Promise<any> => {
 };
 
 const echo = tool({ description: "Echo", input: schema.Object({ value: schema.String() }), execute: ({ value }) => value });
-const runtime = new AgentRuntime({ url: `http://127.0.0.1:${port}`, apiKey: token, journalStore: memoryJournalStore() });
+const runtime = new AgentRuntime({ url: `http://127.0.0.1:${port}`, apiKey: token });
 const clients: AgentClient[] = await Promise.all(Array.from({ length: agents }, (_, index) => runtime.createAgent({ tools: { echo }, idempotencyKey: `bench-${index}` })));
 
 /** `count` executions spread over the agents, each agent running one at a time as its runs are serialized anyway. */

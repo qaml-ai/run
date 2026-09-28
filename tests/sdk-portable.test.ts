@@ -1,28 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AgentRuntime, memoryJournalStore, type JournalStore, type SessionCredentials } from "../clients/typescript.ts";
+import { AgentRuntime, type SessionCredentials } from "../clients/typescript.ts";
 
 const session: SessionCredentials = { id: `client_${"a".repeat(40)}`, token: "scoped-test-token", expiresAt: Date.now() + 60_000 };
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 
-test("portable SDK hands events to consumers apart from the stream, persists the cursor only for control events, and attaches with saved credentials", async () => {
-  const backing = memoryJournalStore();
-  await backing.save(session.id, { version: 1, cursor: 4 });
+test("portable SDK hands events to consumers apart from the stream, and attaches with saved credentials", async () => {
   const gate = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
-  const committed = Promise.withResolvers<void>();
-  let saves = 0;
-  const store: JournalStore = {
-    load: id => backing.load(id),
-    async save(id, journal) { saves++; await backing.save(id, journal); if (journal.cursor === 6) committed.resolve(); },
-  };
   let eventStream: ReadableStreamDefaultController<Uint8Array>;
   const encode = new TextEncoder();
   const requestIds: (string | undefined)[] = [];
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url.endsWith("/events?snapshot=1")) {
-      assert.equal(new Headers(init?.headers).get("Last-Event-ID"), "4");
+      assert.equal(new Headers(init?.headers).get("Last-Event-ID"), "0", "a new client starts from the snapshot");
       const stream = new ReadableStream<Uint8Array>({ start(controller) {
         eventStream = controller;
         controller.enqueue(encode.encode('event: ready\ndata: {}\n\n'));
@@ -33,31 +25,25 @@ test("portable SDK hands events to consumers apart from the stream, persists the
     assert.ok(url.endsWith("/state"));
     return Response.json({ cursor: 4, calls: [], requests: [] });
   };
-  const client = await new AgentRuntime({ fetch: fetcher, journalStore: store }).connectAgent(session, {
+  const client = await new AgentRuntime({ fetch: fetcher }).connectAgent(session, {
     tools: {}, async onEvent(_event, requestId) { requestIds.push(requestId); started.resolve(); await gate.promise; },
   });
   try {
     eventStream!.enqueue(encode.encode('id: 5\ndata: {"type":"event","requestId":"turn-123","event":{"type":"message_end"}}\n\n'));
     await started.promise;
+    // A consumer still busy with a display event never holds up the stream.
+    eventStream!.enqueue(encode.encode('id: 6\ndata: {"type":"tool_cancel","id":"none"}\n\n'));
     await tick();
     gate.resolve(); await tick();
-    // A display event costs no storage write, even after its consumer settles.
-    assert.equal(saves, 0);
-    assert.equal((await backing.load(session.id))?.cursor, 4);
-    eventStream!.enqueue(encode.encode('id: 6\ndata: {"type":"tool_cancel","id":"none"}\n\n'));
-    await committed.promise;
-    assert.equal((await backing.load(session.id))?.cursor, 6);
     assert.deepEqual(requestIds, ["turn-123"]);
   } finally { gate.resolve(); await client.close(); }
 });
 
-test("portable SDK waits for journal loading and propagates storage failures before opening a connection", async () => {
-  let fetched = false;
-  const runtime = new AgentRuntime({ fetch: async () => { fetched = true; throw new Error("unexpected fetch"); },
-    journalStore: { async load() { throw new Error("storage unavailable"); }, async save() {} },
-  });
-  await assert.rejects(runtime.connectAgent(session, { tools: {} }), /storage unavailable/);
-  assert.equal(fetched, false);
+test("the SDK keeps no cursor store: a restarted client resumes from a snapshot", async () => {
+  const sdk = await import("../clients/typescript.ts");
+  const node = await import("../clients/node.ts");
+  assert.equal("memoryJournalStore" in sdk, false);
+  assert.equal("fileJournalStore" in node, false);
 });
 
 test("the SDK is its agent's MCP server: it answers initialize, tools/list and tools/call on the connection it was given, and honours cancellation", async () => {
@@ -180,24 +166,4 @@ test("a file transfer that stalls fails instead of hanging its caller", async t 
   await new Promise(resolve => setImmediate(resolve));
   t.mock.timers.tick(30_000);
   await assert.rejects(read, /File transfer stalled/);
-});
-
-test("the file journal store keeps cursors in memory where its directory cannot be written", async t => {
-  const { fileJournalStore } = await import("../clients/node.ts");
-  const { mkdtemp, chmod, rm } = await import("node:fs/promises");
-  const { join } = await import("node:path");
-  const { tmpdir } = await import("node:os");
-  const root = await mkdtemp(join(tmpdir(), "journal-ro-"));
-  t.after(async () => { await chmod(root, 0o700); await rm(root, { recursive: true, force: true }); });
-  await chmod(root, 0o500);
-  const warnings: string[] = [];
-  const warn = (warning: Error) => warnings.push(warning.message);
-  process.on("warning", warn);
-  t.after(() => { process.off("warning", warn); });
-  const store = fileJournalStore(join(root, "state"));
-  await store.save(session.id, { version: 1, cursor: 7 });
-  await store.save(session.id, { version: 1, cursor: 8 });
-  assert.deepEqual(await store.load(session.id), { version: 1, cursor: 8 });
-  await tick();
-  assert.equal(warnings.filter(message => /keeping it in memory/.test(message)).length, 1, "one warning");
 });

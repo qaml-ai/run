@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { balancer, cluster, sleep, token } from "./cluster-helpers.ts";
 
 test("a draining node finishes the turn in flight, leaves queued runs for the next owner, releases, and exits 0", { timeout: 90_000 }, async t => {
@@ -13,12 +13,12 @@ test("a draining node finishes the turn in flight, leaves queued runs for the ne
   const tools = {
     slow: tool({ description: "Wait for the test", input: schema.Object({}, { additionalProperties: false }), execute: async () => { entered.resolve(); await gate.promise; return "slow-done"; } }),
   };
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: "draining-agent" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools, idempotencyKey: "draining-agent" });
   await created.close();
   assert.equal(await c.owner(created.session.id), a.url);
 
   // The client reaches A through B, as it would through the load balancer.
-  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools });
+  const client = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(created.session, { tools });
   t.after(() => client.close());
   const first = client.execute("return await tools.slow({})", { timeoutMs: 60_000 });
   await entered.promise;
@@ -56,7 +56,7 @@ test("a draining node sends requests for actors it does not hold to a live peer"
   const gate = Promise.withResolvers<void>();
   const entered = Promise.withResolvers<void>();
   const tools = { slow: tool({ description: "Wait", input: schema.Object({}, { additionalProperties: false }), execute: async () => { entered.resolve(); await gate.promise; return "ok"; } }) };
-  const viaA = new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() });
+  const viaA = new AgentRuntime({ url: a.url, apiKey: token });
   const busy = await viaA.createAgent({ tools, idempotencyKey: "keeps-a-draining" });
   t.after(() => busy.close());
   const running = busy.execute("return await tools.slow({})", { timeoutMs: 60_000 });
@@ -82,7 +82,7 @@ test("with no live peer, a draining node answers 503 with Retry-After for anythi
   const gate = Promise.withResolvers<void>();
   const entered = Promise.withResolvers<void>();
   const tools = { slow: tool({ description: "Wait", input: schema.Object({}, { additionalProperties: false }), execute: async () => { entered.resolve(); await gate.promise; return "ok"; } }) };
-  const runtime = new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() });
+  const runtime = new AgentRuntime({ url: a.url, apiKey: token });
   const idle = await runtime.createAgent({ tools: {}, idempotencyKey: "released-early" });
   await idle.close();
   const busy = await runtime.createAgent({ tools, idempotencyKey: "keeps-a-draining" });

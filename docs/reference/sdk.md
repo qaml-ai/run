@@ -12,7 +12,7 @@ pip install camelai-agent-runtime       # Python 3.11+; "camelai-agent-runtime[s
 | TypeScript entry | |
 | --- | --- |
 | `@camelai/agent-runtime` | everything portable: `Agents`, `tool`, `schema`, the lower-level `AgentRuntime` and `AgentClient`, the types |
-| `@camelai/agent-runtime/node` | the same for Node and Bun, plus local file paths as attachments, `stateDirectory`, `nodeListener`, `fileJournalStore` |
+| `@camelai/agent-runtime/node` | the same for Node and Bun, plus local file paths as attachments, `nodeListener` |
 | `@camelai/agent-runtime/server` | `serveTools`, `verifyRuntimeToken`, `runtimeAuth`, `runtimeIdentity`: serving tools over HTTP |
 | `@camelai/agent-runtime/watch` | `watchAgent`: reading an agent from a browser |
 | `@camelai/agent-runtime/mcp` | `fromMcpServer`: attaching an MCP SDK server (needs `@modelcontextprotocol/sdk`) |
@@ -37,8 +37,6 @@ async with Agents(api_key, url=url) as agents: ...
   their runs go on in the runtime.
 - `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
   mounts, `browserToken(agentId)`, `inbox()`, `toolSources(agentId)`.
-- Node: `new Agents({ stateDirectory })` keeps each agent's stream cursor on disk.
-  The default keeps it in memory, which is all a run needs.
 
 ### `agents.upsert(key, config)`
 
@@ -249,9 +247,9 @@ can be cached. `history()` answers the whole transcript.
 ### Portable use
 
 The portable entry (`@camelai/agent-runtime`) imports no Node modules and reads
-environment variables only where the platform has them. On Cloudflare Workers
-and other runtimes without a filesystem, pass `journalStore: { load, save }` to
-keep the stream's cursor in your own storage, or leave the default (memory).
+environment variables only where the platform has them, so it runs on
+Cloudflare Workers and other runtimes without a filesystem. A client keeps its
+stream's cursor in memory; a new one starts from a snapshot of the running turn.
 
 ### The wire
 

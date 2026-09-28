@@ -13,7 +13,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-import errno
 import inspect
 import json
 import os
@@ -22,7 +21,6 @@ from pathlib import Path
 from typing import get_type_hints
 from urllib.parse import quote, urlencode, urlparse
 import uuid
-import warnings
 
 import httpx
 
@@ -296,22 +294,6 @@ def _origin(url):
     return url.rstrip("/")
 
 
-def _save(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_suffix(f".{uuid.uuid4()}.tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as file:
-        json.dump(value, file, allow_nan=False)
-        file.flush()
-        os.fsync(file.fileno())
-    os.replace(temporary, path)
-    fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def _code(value):
     """An error body's stable name: its code, or the prefix of its message ("APPLICATION_CONNECTED: ...")."""
     if isinstance(value.get("code"), str):
@@ -422,13 +404,11 @@ async def _transfer(client, method, url, **options):
 
 class AgentRuntime:
     """The lower-level client: provision agents, definitions, volumes and mounts. `url` defaults to CAMELAI_BASE_URL,
-    else https://agents.camelai.dev; `api_key` to CAMELAI_API_KEY. `state_directory` keeps each agent's event cursor
-    on disk (default .agent-runtime/client-sdk, or memory where that cannot be written; False: memory)."""
+    else https://agents.camelai.dev; `api_key` to CAMELAI_API_KEY."""
 
-    def __init__(self, url=None, api_key=None, state_directory=None):
+    def __init__(self, url=None, api_key=None):
         self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
         self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
-        self.state_directory = state_directory
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
 
@@ -474,7 +454,7 @@ class AgentRuntime:
         answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer().
         `attach=False` follows the agent and runs it without answering its tool calls, as any number of processes may; one
         process at a time answers them, and another fails with APPLICATION_CONNECTED unless `takeover=True` replaces it."""
-        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools)
+        agent = AgentClient(self.base, session, tools, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools)
         self.agents.append(agent)
         try:
             await agent.connect()
@@ -700,7 +680,7 @@ class AgentClient:
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
-    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True):
+    def __init__(self, base, session, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
@@ -719,18 +699,8 @@ class AgentClient:
         self.sync_tools = sync_tools
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.path = f"/clients/{session['id']}"
-        # False: the cursor is kept in memory only.
-        self.journal_path = None if state_directory is False else Path(state_directory or os.environ.get("AGENT_CLIENT_STATE_DIR", ".agent-runtime/client-sdk")) / f"{session['id']}.json"
-        try:
-            self.journal = json.loads(self.journal_path.read_text()) if self.journal_path else {"version": 1, "cursor": 0}
-        except FileNotFoundError:
-            self.journal = {"version": 1, "cursor": 0}
-        except PermissionError:
-            self.journal, self.journal_path = {"version": 1, "cursor": 0}, None
-        if self.journal["version"] != 1:
-            raise AgentError("Unsupported client journal")
-        # The journal keeps only the event cursor.
-        self.journal = {"version": 1, "cursor": self.journal["cursor"]}
+        # The last event taken from the stream: a reconnect resumes after it (a new client starts from a snapshot).
+        self.cursor = 0
         # Tool calls running, by JSON-RPC id, so the runtime can cancel them.
         self.pending, self.active = {}, {}
         # The event stream's connection, named in the MCP messages this client sends back.
@@ -747,19 +717,6 @@ class AgentClient:
 
     def __repr__(self):
         return f"AgentClient(id={self.id!r})"
-
-    def _save(self):
-        if self.journal_path is None:
-            return
-        try:
-            _save(self.journal_path, self.journal)
-        except (PermissionError, OSError) as error:
-            if isinstance(error, PermissionError) or error.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
-                warnings.warn(f"Cannot write the agent SDK's state to {self.journal_path.parent} ({error}); keeping it in memory. "
-                              "Set state_directory to a writable directory to keep it across restarts.", stacklevel=2)
-                self.journal_path = None
-            else:
-                raise
 
     async def _http(self, suffix, method="GET", body=None, retry=True):
         return await _http(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry)
@@ -830,7 +787,7 @@ class AgentClient:
                 # One application serves an agent's tools at a time: a reconnect names the connection it held; takeover replaces another's, once.
                 mode = "&watch=1" if not self.attach else "&takeover=true" if self.takeover and not self.connection else ""
                 async with self.http.stream("GET", self.base + self.path + "/events?snapshot=1" + mode, headers={
-                    "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream", "Last-Event-ID": str(self.journal["cursor"]),
+                    "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream", "Last-Event-ID": str(self.cursor),
                     **({"X-Agent-Connection": self.connection} if self.attach and self.connection else {})}, timeout=20) as response:
                     if response.status_code == 409:
                         try:
@@ -841,8 +798,7 @@ class AgentClient:
                             raise AgentError("Another process serves this agent's tools. One process at a time answers an agent's tool calls: close that one, "
                                              "pass takeover=True to replace it, or attach=False to run the agent without serving its tools", 409, code="APPLICATION_CONNECTED")
                         state = await self._sync()
-                        self.journal["cursor"] = state["cursor"]
-                        self._save()
+                        self.cursor = state["cursor"]
                         self._emit({"type": "replay_gap", "cursor": state["cursor"]})
                         continue
                     if not response.is_success:
@@ -884,19 +840,15 @@ class AgentClient:
                             cursor = int(id_line[3:])
                             event = json.loads(data)
                             # A snapshot of the running turn restarts the stream at its cursor, even one below
-                            # the saved cursor (a restarted host).
+                            # the last (a restarted host).
                             if event.get("type") == "snapshot":
-                                self.journal["cursor"] = cursor
-                                self._save()
+                                self.cursor = cursor
                                 self._emit(event)
                                 continue
-                            if cursor <= self.journal["cursor"]:
+                            if cursor <= self.cursor:
                                 continue
                             self._receive(event)
-                            self.journal["cursor"] = cursor
-                            # Display events replay only from host memory; don't write per token.
-                            if event.get("type") != "event":
-                                self._save()
+                            self.cursor = cursor
                         if len(buffer) > 1_100_000:
                             raise AgentError("SSE frame too large")
             except asyncio.CancelledError:
@@ -1522,11 +1474,10 @@ class Agents:
             agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5", instructions="...")
             print((await agent.run("Hello")).text)
 
-    api_key defaults to CAMELAI_API_KEY; url to CAMELAI_BASE_URL, else https://agents.camelai.dev. `state_directory` keeps
-    each agent's event cursor on disk (default: memory; a run's result never depends on it)."""
+    api_key defaults to CAMELAI_API_KEY; url to CAMELAI_BASE_URL, else https://agents.camelai.dev."""
 
-    def __init__(self, api_key=None, *, url=None, state_directory=False):
-        self.runtime = AgentRuntime(url=url, api_key=api_key, state_directory=state_directory)
+    def __init__(self, api_key=None, *, url=None):
+        self.runtime = AgentRuntime(url=url, api_key=api_key)
         self._open = set()
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,

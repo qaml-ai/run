@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { cluster, fakeModel, freePort, jsExec, lookup, token, toolMessages, until } from "./cluster-helpers.ts";
 
 test("a turn whose node died between model steps resumes on the next owner, calling the model once more", { timeout: 90_000 }, async t => {
@@ -10,9 +10,9 @@ test("a turn whose node died between model steps resumes on the next owner, call
   const a = await c.start("a", model.env);
   const b = await c.start("b", model.env);
   const calls: string[] = [];
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: lookup(calls), idempotencyKey: "resumed-agent" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: lookup(calls), idempotencyKey: "resumed-agent" });
   await created.close();
-  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: lookup(calls) });
+  const client = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(created.session, { tools: lookup(calls) });
   t.after(() => client.close());
   const run = client.prompt("go", { idempotencyKey: "turn-1", timeoutMs: 60_000 });
 
@@ -24,7 +24,7 @@ test("a turn whose node died between model steps resumes on the next owner, call
   assert.equal(result.error, null);
   await client.close();
 
-  const observer = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: lookup([]) });
+  const observer = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(created.session, { tools: lookup([]) });
   t.after(() => observer.close());
   assert.equal((await observer.waitForRequest("turn-1", { timeoutMs: 10_000 })).reply, "all done");
   assert.equal(model.bodies.length, 3, "one more model call, not a new turn");
@@ -47,9 +47,9 @@ test("a turn whose node died during a tool call continues with the outcome unkno
   const gate = Promise.withResolvers<void>();
   t.after(() => gate.resolve());
   const tools = { slow: tool({ description: "A side effect", input: schema.Object({}, { additionalProperties: false }), execute: async () => { executions++; entered.resolve(); await gate.promise; return "effect-done"; } }) };
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: "tool-in-flight" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools, idempotencyKey: "tool-in-flight" });
   await created.close();
-  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools });
+  const client = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(created.session, { tools });
   t.after(() => client.close());
   const run = client.prompt("do it", { idempotencyKey: "turn-2", timeoutMs: 60_000 });
 
@@ -68,9 +68,9 @@ test("a turn that keeps killing its node is resumed at most twice, then fails as
   const model = await fakeModel(t, () => undefined);
   const port = await freePort();
   let node = await c.start("a", model.env, port);
-  const created = await new AgentRuntime({ url: node.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "doomed-agent" });
+  const created = await new AgentRuntime({ url: node.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "doomed-agent" });
   await created.close();
-  const client = await new AgentRuntime({ url: node.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  const client = await new AgentRuntime({ url: node.url, apiKey: token }).connectAgent(created.session, { tools: {} });
   t.after(() => client.close());
   const run = client.prompt("hang", { idempotencyKey: "turn-3", timeoutMs: 100_000 });
   run.catch(() => {});

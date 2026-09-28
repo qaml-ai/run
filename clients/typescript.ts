@@ -230,8 +230,6 @@ export interface RuntimeOptions {
   /** The runtime's origin. Default https://agents.camelai.dev. */
   url?: string;
   apiKey?: string;
-  /** Where the event cursor is kept, so a restarted client resumes its stream where it was. Default: memory only. */
-  journalStore?: JournalStore;
   /** Injectable for tests, observability, or an application's HTTP stack. */
   fetch?: typeof globalThis.fetch;
   /** Opens a local file to attach by its path; set by the Node entry (`@camelai/agent-runtime/node`). */
@@ -693,20 +691,6 @@ export class VolumeHandle {
   }
 }
 
-/** The client's event cursor, saved so a restarted client resumes where it was. */
-export type Journal = { version: 1; cursor: number };
-/** Stores must resolve only once the complete snapshot is committed. Use one active client per agent. */
-export interface JournalStore {
-  load(sessionId: string): Promise<Journal | undefined>;
-  save(sessionId: string, journal: Journal): Promise<void>;
-}
-export function memoryJournalStore(): JournalStore {
-  const entries = new Map<string, Journal>();
-  return {
-    async load(id) { const value = entries.get(id); return value && structuredClone(value); },
-    async save(id, journal) { entries.set(id, structuredClone(journal)); },
-  };
-}
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
 /** Requests one client may wait on at once. */
 const MAX_PENDING = 1000;
@@ -756,10 +740,8 @@ export class AgentClient {
   readonly tools: Tools;
   private server: ToolServer;
   private readonly transport: Transport;
-  private readonly store: JournalStore;
-  private journal: Journal = { version: 1, cursor: 0 };
-  private loaded?: Promise<void>;
-  private saving: Promise<void> = Promise.resolve();
+  /** The last event taken from the stream: a reconnect resumes after it (a new client starts from a snapshot). */
+  private cursor = 0;
   private readonly options: AgentOptions;
   private readonly openFile?: (path: string) => Promise<Blob>;
   private readonly pollMs: number;
@@ -793,31 +775,17 @@ export class AgentClient {
     this.server = options.mcp ?? toolServer(this.tools);
     this.options = options;
     this.transport = new Transport(runtime);
-    this.store = runtime.journalStore ?? memoryJournalStore();
     this.openFile = runtime.openFile;
     this.pollMs = runtime.pollMs ?? 30_000;
     this.files = new AgentFiles(this.transport, this.session.token, this.path());
   }
 
-  private async load() {
-    const journal = await this.store.load(this.session.id);
-    if (!journal) return;
-    if (journal.version !== 1 || !Number.isSafeInteger(journal.cursor) || journal.cursor < 0) throw new AgentError("Unsupported client journal");
-    this.journal = { version: 1, cursor: journal.cursor };
-  }
-  private save() {
-    const snapshot = structuredClone(this.journal);
-    // Serialize commits so an older cursor never overwrites a newer one.
-    this.saving = this.saving.then(() => this.store.save(this.session.id, snapshot));
-    return this.saving;
-  }
   private path(suffix = "") { return `/clients/${this.session.id}${suffix}`; }
   private http(suffix: string, method = "GET", body?: unknown, retry = true) { return this.transport.json(this.path(suffix), this.session.token, method, body, retry); }
   private report(error: unknown) { this.options.onError?.(error instanceof Error ? error : new Error(String(error))); }
 
   async connect() {
     if (this.closed) throw new AgentError("Client closed");
-    await (this.loaded ??= this.load());
     this.loop ??= this.events();
     await Promise.race([this.ready.promise, new Promise<never>((_, reject) => {
       const timer = setTimeout(() => reject(new AgentError("Timed out connecting to agent")), 10_000);
@@ -837,7 +805,7 @@ export class AgentClient {
         const mode = !this.attaching ? "&watch=1" : this.options.takeover && !this.connection ? "&takeover=true" : "";
         const response = await this.transport.fetcher(this.transport.base + this.path(`/events?snapshot=1${mode}`), {
           headers: {
-            Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor),
+            Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.cursor),
             ...(this.attaching && this.connection ? { "X-Agent-Connection": this.connection } : {}),
           },
           signal: this.stream.signal, redirect: "manual",
@@ -849,7 +817,7 @@ export class AgentClient {
             throw Object.assign(new AgentError("Another process serves this agent's tools. One process at a time answers an agent's tool calls: close that one, pass takeover: true to replace it, or connect with attach: false to run the agent without serving its tools", 409), { code: "APPLICATION_CONNECTED" });
           }
           const snapshot = await this.sync();
-          this.journal.cursor = snapshot.cursor; await this.save();
+          this.cursor = snapshot.cursor;
           this.emit({ type: "replay_gap", cursor: snapshot.cursor });
           continue;
         }
@@ -894,18 +862,15 @@ export class AgentClient {
               const id = Number(idLine.slice(3));
               if (!Number.isSafeInteger(id) || id <= 0) throw new AgentError("Invalid SSE cursor");
               const event = JSON.parse(data) as ClientEvent;
-              // A snapshot restarts the stream at its cursor, even one below the saved cursor (a restarted host).
+              // A snapshot restarts the stream at its cursor, even one below the last (a restarted host).
               if (event.type === "snapshot") {
-                this.journal.cursor = id; await this.save();
+                this.cursor = id;
                 this.emit(event as AgentEvent);
                 continue;
               }
-              if (id <= this.journal.cursor) continue;
+              if (id <= this.cursor) continue;
               await this.receive(event);
-              this.journal.cursor = id;
-              // Display events are replayable only from the host's memory; persisting the
-              // cursor for each one would cost a storage write per streamed token.
-              if (event.type !== "event") await this.save();
+              this.cursor = id;
             }
             if (byteLength(buffer) > FRAME_BYTES) throw new AgentError("SSE frame too large");
           }

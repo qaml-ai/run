@@ -25,8 +25,6 @@ export interface AgentsOptions {
   /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://agents.camelai.dev. */
   url?: string;
   fetch?: typeof globalThis.fetch;
-  /** Where each agent's event cursor is kept. Default: memory (nothing is written to disk). */
-  journalStore?: RuntimeOptions["journalStore"];
   /** Opens a local file to attach by its path; the Node entry sets it. */
   openFile?: RuntimeOptions["openFile"];
   pollMs?: number;

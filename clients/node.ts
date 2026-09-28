@@ -1,12 +1,8 @@
 /** Node/Bun convenience entry. The portable SDK itself imports no Node modules. */
 import { once } from "node:events";
 import { openAsBlob } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { writeDurableJson } from "../shared/durable-json.ts";
-import { Agents as PortableAgents, AgentRuntime as PortableAgentRuntime, memoryJournalStore, type AgentsOptions, type RuntimeOptions as PortableRuntimeOptions, type Journal, type JournalStore } from "./typescript.ts";
+import { Agents as PortableAgents, AgentRuntime as PortableAgentRuntime, type AgentsOptions, type RuntimeOptions } from "./typescript.ts";
 export * from "./typescript.ts";
-export interface RuntimeOptions extends PortableRuntimeOptions { stateDirectory?: string }
 
 /** A forwarded header's first value (a proxy chain lists one per hop, the client's first). */
 const forwarded = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value)?.split(",")[0].trim() || undefined;
@@ -53,57 +49,17 @@ export function nodeListener(handler: (request: Request) => Promise<Response>, o
     }
   };
 }
-/** Errors that say the directory cannot be written here (a read-only serverless filesystem, say). */
-const UNWRITABLE = new Set(["EROFS", "EACCES", "EPERM"]);
-/**
- * Keep each agent's event cursor in a file under `directory`, so a restarted process resumes its stream.
- * Where the directory cannot be written (read-only serverless filesystems), it keeps them in memory
- * instead, with one warning: the cursor only spares a restarted client a snapshot.
- */
-export function fileJournalStore(directory: string): JournalStore {
-  const root = resolve(directory);
-  const path = (id: string) => {
-    if (!/^client_[a-f0-9]{40}$/.test(id)) throw new Error("Invalid journal session id");
-    return join(root, `${id}.json`);
-  };
-  let memory: JournalStore | undefined;
-  const unwritable = (error: unknown) => {
-    if (!UNWRITABLE.has((error as NodeJS.ErrnoException).code ?? "")) return false;
-    if (!memory) process.emitWarning(`Cannot write the agent SDK's state to ${root} (${(error as NodeJS.ErrnoException).code}); keeping it in memory. Set stateDirectory to a writable directory to keep it across restarts.`);
-    memory ??= memoryJournalStore();
-    return true;
-  };
-  return {
-    async load(id) {
-      if (memory) return memory.load(id);
-      try { return JSON.parse(await readFile(path(id), "utf8")) as Journal; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" || unwritable(error)) return undefined; throw error; }
-    },
-    async save(id, journal) {
-      if (!memory) {
-        try { writeDurableJson(path(id), journal); return; }
-        catch (error) { if (!unwritable(error)) throw error; }
-      }
-      await memory!.save(id, journal);
-    },
-  };
-}
 export class AgentRuntime extends PortableAgentRuntime {
   constructor(options: RuntimeOptions = {}) {
     super({ ...options, url: options.url ?? process.env.AGENT_URL, openFile: options.openFile ?? (path => openAsBlob(path)),
       apiKey: options.apiKey ?? process.env.AGENT_RUNTIME_TOKEN,
-      journalStore: options.journalStore ?? fileJournalStore(options.stateDirectory ?? process.env.AGENT_CLIENT_STATE_DIR ?? ".agent-runtime/client-sdk"),
     });
   }
 }
 
-/**
- * `Agents` for Node: local file paths attach as files. `stateDirectory` keeps each agent's event
- * cursor on disk (default: memory; a run's result never depends on it).
- */
+/** `Agents` for Node: local file paths attach as files. */
 export class Agents extends PortableAgents {
-  constructor(options: AgentsOptions & { stateDirectory?: string } = {}) {
-    const { stateDirectory, ...rest } = options;
-    super({ ...rest, openFile: rest.openFile ?? (path => openAsBlob(path)), ...(stateDirectory && !rest.journalStore ? { journalStore: fileJournalStore(stateDirectory) } : {}) });
+  constructor(options: AgentsOptions = {}) {
+    super({ ...options, openFile: options.openFile ?? (path => openAsBlob(path)) });
   }
 }

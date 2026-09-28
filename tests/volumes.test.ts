@@ -18,7 +18,7 @@ import { readJson } from "../src/http.ts";
 import { FRAME_BYTES } from "../shared/client-protocol.ts";
 import { CHUNK_BYTES, VolumeService, type Mount } from "../src/volumes.ts";
 import { searchLines } from "../src/volume-tools.ts";
-import { AgentError, AgentRuntime, memoryJournalStore, type AgentClient } from "../clients/node.ts";
+import { AgentError, AgentRuntime, type AgentClient } from "../clients/node.ts";
 import type { Db } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
 import { postgresTail } from "../src/log-tail.ts";
@@ -395,7 +395,7 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   });
   const [line] = await once(child.stdout!, "data");
   const url = `http://127.0.0.1:${JSON.parse(String(line).split("\n")[0]).address.port}`;
-  const as = (token: string) => new AgentRuntime({ url, apiKey: token, journalStore: memoryJournalStore() });
+  const as = (token: string) => new AgentRuntime({ url, apiKey: token });
   const a = as(alice), b = as(bob);
 
   const created = await a.createVolume({ name: "reports" });

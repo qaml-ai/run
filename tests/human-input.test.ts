@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { lastUser, listen, OPERATOR, runtime, toolCall, toolResults, until, watchEvents, type T } from "./runtime-server.ts";
 import { mayAnswer } from "../src/inputs.ts";
 
@@ -242,7 +242,7 @@ test("an attached tool asks with ctx.confirm and ctx.ask: the call runs again wi
       return { deleted: app };
     },
   }) };
-  const agent = await new AgentRuntime({ url: r.base, apiKey: OPERATOR, journalStore: memoryJournalStore() }).createAgent({ tools });
+  const agent = await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).createAgent({ tools });
   t.after(() => agent.close());
   const first = await agent.prompt("Delete the shop app", { timeoutMs: 30_000 });
   assert.equal(first.stopped, "input_required");
@@ -288,7 +288,7 @@ test("an application answers with onInput, from its SDK", async t => {
   const wiped: string[] = [];
   const seen: any[] = [];
   const tools = { wipe: tool({ description: "Wipe a disk", input: schema.Object({ disk: schema.String() }), needsApproval: true, execute: ({ disk }) => { wiped.push(disk); return { wiped: disk }; } }) };
-  const agent = await new AgentRuntime({ url: r.base, apiKey: OPERATOR, journalStore: memoryJournalStore() }).createAgent({ tools, onInput: input => { seen.push(input); return { action: "accept", actor: "ops" }; } });
+  const agent = await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).createAgent({ tools, onInput: input => { seen.push(input); return { action: "accept", actor: "ops" }; } });
   t.after(() => agent.close());
   const suspended = await agent.prompt("Wipe d1", { timeoutMs: 30_000 });
   assert.equal(suspended.stopped, "input_required");

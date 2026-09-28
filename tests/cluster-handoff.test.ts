@@ -10,7 +10,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { testDatabase } from "./database.ts";
 import { balancer, cluster, fakeEcs, fakeModel, freePort, jsExec, lookup, sha, sleep, token, toolMessages, until } from "./cluster-helpers.ts";
 
@@ -23,7 +23,7 @@ test("on ECS a task is protected while turns run, and once superseded it retires
   const gate = Promise.withResolvers<void>();
   const entered = Promise.withResolvers<void>();
   const tools = { slow: tool({ description: "Wait", input: schema.Object({}, { additionalProperties: false }), execute: async () => { entered.resolve(); await gate.promise; return "finished-on-a"; } }) };
-  const viaA = new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() });
+  const viaA = new AgentRuntime({ url: a.url, apiKey: token });
   const busy = await viaA.createAgent({ tools, idempotencyKey: "long-turn" });
   t.after(() => busy.close());
   const running = busy.execute("return await tools.slow({})", { timeoutMs: 60_000 });
@@ -62,9 +62,9 @@ test("a turn still running when the drain times out is handed off and resumed by
   const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "resumed after the drain" });
   const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "500" });
   const b = await c.start("b", model.env);
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "outlives-drain" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "outlives-drain" });
   await created.close();
-  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  const client = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(created.session, { tools: {} });
   t.after(() => client.close());
   const run = client.prompt("think for a long time", { idempotencyKey: "turn-4", timeoutMs: 60_000 });
   await until(() => model.bodies.length === 1, "A called the model");
@@ -84,10 +84,10 @@ test("a prompt through a load balancer gets its result when its turn is handed o
   const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "finished on b" });
   const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "500" });
   const b = await c.start("b", model.env);
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "handoff-new-owner" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "handoff-new-owner" });
   await created.close();
   const lb = balancer([a, b]);
-  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch }).connectAgent(created.session, { tools: {} });
   t.after(() => client.close());
   const run = client.prompt("go", { idempotencyKey: "turn-new-owner", timeoutMs: 60_000 });
   await until(() => model.bodies.length === 1, "A called the model");
@@ -104,10 +104,10 @@ test("a prompt through a load balancer gets its result when its turn finishes on
   const model = await fakeModel(t, (_body, index) => index === 0 ? answer.promise : undefined);
   const a = await c.start("a", model.env);
   const b = await c.start("b", model.env);
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "handoff-old-owner" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "handoff-old-owner" });
   await created.close();
   const lb = balancer([a, b]);
-  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools: {} });
+  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch }).connectAgent(created.session, { tools: {} });
   t.after(() => client.close());
   const run = client.prompt("go", { idempotencyKey: "turn-old-owner", timeoutMs: 60_000 });
   await until(() => model.bodies.length === 1, "A called the model");
@@ -128,11 +128,11 @@ test("a prompt gets its result when the event stream drops mid-turn, and when it
   const model = await fakeModel(t, () => answer.promise);
   const a = await c.start("a", model.env);
   const b = await c.start("b", model.env);
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools: {}, idempotencyKey: "dropped-stream" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "dropped-stream" });
   await created.close();
   let lose = false;
   const lb = balancer([a, b], frame => lose && frame.includes('"type":"response"') ? undefined : frame);
-  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch, journalStore: memoryJournalStore(), pollMs: 500 }).connectAgent(created.session, { tools: {} });
+  const client = await new AgentRuntime({ url: a.url, fetch: lb.fetch, pollMs: 500 }).connectAgent(created.session, { tools: {} });
   t.after(() => client.close());
 
   // The stream drops while the turn runs; the client reconnects (through the other node) and replays.
@@ -156,11 +156,11 @@ test("the agent's files download through another node while their owner drains, 
   const gate = Promise.withResolvers<void>();
   const entered = Promise.withResolvers<void>();
   const tools = { slow: tool({ description: "Wait for the test", input: schema.Object({}, { additionalProperties: false }), execute: async () => { entered.resolve(); await gate.promise; return "done"; } }) };
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: "files-while-draining" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools, idempotencyKey: "files-while-draining" });
   const report = "x".repeat(300_000);
   await created.files.upload("/workspace/out/report.md", report);
   await created.close();
-  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools });
+  const client = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(created.session, { tools });
   t.after(() => client.close());
   const turn = client.execute("return await tools.slow({})", { timeoutMs: 60_000 });
   await entered.promise;
@@ -217,9 +217,9 @@ test("an approved call whose node dies while it runs ends as outcome unknown on 
   const gate = Promise.withResolvers<void>();
   t.after(() => gate.resolve());
   const tools = { wipe: tool({ description: "Wipe the disk", input: schema.Object({}, { additionalProperties: false }), needsApproval: async () => true, execute: async () => { executions++; entered.resolve(); await gate.promise; return "wiped"; } }) };
-  const created = await new AgentRuntime({ url: a.url, apiKey: token, journalStore: memoryJournalStore() }).createAgent({ tools, idempotencyKey: "approved-crash" });
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools, idempotencyKey: "approved-crash" });
   await created.close();
-  const client = await new AgentRuntime({ url: b.url, apiKey: token, journalStore: memoryJournalStore() }).connectAgent(created.session, { tools });
+  const client = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(created.session, { tools });
   t.after(() => client.close());
   const suspended = await client.prompt("wipe it", { timeoutMs: 60_000 });
   assert.equal(suspended.stopped, "input_required");

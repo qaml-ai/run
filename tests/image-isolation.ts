@@ -12,7 +12,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 
 const image = process.env.IMAGE ?? "agent-runtime:ci";
 const database = process.env.DATABASE_URL ?? "postgres://postgres:test@127.0.0.1:5432/postgres";
@@ -90,7 +90,7 @@ try {
 
   // js_exec end to end through the runtime, with a client tool call, and a sandbox process killed mid-execution.
   let kill = false;
-  const runtime = new AgentRuntime({ url, apiKey: token, journalStore: memoryJournalStore() });
+  const runtime = new AgentRuntime({ url, apiKey: token });
   const agent = await runtime.createAgent({
     name: "isolation", type: "isolation-test",
     tools: {

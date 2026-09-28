@@ -325,7 +325,7 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const echo = tool({ description: "Echo", input: schema.Object({ value: schema.String() }, { additionalProperties: false }), execute: ({ value }) => ({ echoed: value }) });
-  const agent = await new AgentRuntime({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, apiKey: "x", stateDirectory: join(root, "sdk") }).createAgent({ tools: { echo } });
+  const agent = await new AgentRuntime({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, apiKey: "x" }).createAgent({ tools: { echo } });
   await agent.status();
 
   const before = storage.puts;

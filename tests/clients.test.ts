@@ -51,7 +51,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
-  const runtimeOptions = { url, apiKey: token, stateDirectory: join(root, "sdk") };
+  const runtimeOptions = { url, apiKey: token };
   async function start(tools: AgentOptions["tools"] = {}, extra: Partial<AgentOptions> = {}, config: Partial<RuntimeOptions> = {}) {
     const runtime = new AgentRuntime({ ...runtimeOptions, ...config });
     const agent = await runtime.createAgent({ tools, ...extra });

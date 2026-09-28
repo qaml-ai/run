@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AgentRuntime, memoryJournalStore } from "../clients/typescript.ts";
+import { AgentRuntime } from "../clients/typescript.ts";
 import { listen, OPERATOR, runtime, sleep, toolCall, until, watchEvents } from "./runtime-server.ts";
 
 /** A model that streams its answer a word at a time, holding the rest back until `release`. */
@@ -95,7 +95,7 @@ test("the SDK's events carry no partial message, and it starts from a snapshot",
   const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url });
   const created = (await r.call("/v1/agents", { body: {} })).json;
   const seen: any[] = [];
-  const agent = await new AgentRuntime({ url: r.base, apiKey: OPERATOR, journalStore: memoryJournalStore() })
+  const agent = await new AgentRuntime({ url: r.base, apiKey: OPERATOR })
     .connectAgent({ id: created.id, token: created.token, expiresAt: created.expiresAt }, { tools: {}, onEvent: event => { seen.push(event); } });
   t.after(() => agent.close());
   assert.equal((await agent.prompt("go")).reply, words.join(""));

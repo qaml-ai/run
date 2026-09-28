@@ -14,7 +14,7 @@ import { fileStorage } from "../shared/storage.ts";
 import { testDatabase } from "./database.ts";
 import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import type { AppendLog } from "../shared/append-log.ts";
-import { AgentRuntime, memoryJournalStore } from "../clients/typescript.ts";
+import { AgentRuntime } from "../clients/typescript.ts";
 import { lastUser, OPERATOR, OTHER_OPERATOR, runtime, sleep, toolCall, until } from "./runtime-server.ts";
 
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 }) as AgentMessage;
@@ -97,7 +97,7 @@ test("history comes in pages of whole turns, newest first, from chunks rather th
   await check();
 
   // The SDK pages the same way, with the agent's own token.
-  const client = await new AgentRuntime({ url: r.base, apiKey: OPERATOR, journalStore: memoryJournalStore() }).connectAgent(session, { tools: {} });
+  const client = await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).connectAgent(session, { tools: {} });
   t.after(() => client.close());
   const newest = await client.historyPage({ limit: 3 });
   assert.deepEqual(newest.entries.map(entry => entry.index), [12, 13, 14, 15]);

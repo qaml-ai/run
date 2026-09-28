@@ -77,6 +77,4 @@ Before you ship an application on the runtime, check each of these.
       dedupe by event `id`, and answer within 10 seconds.
 - [ ] You handle 429 and 503 by waiting `Retry-After` (the SDKs retry them),
       and know the [limits](reference/limits.md) your workload approaches.
-- [ ] Serverless: set `stateDirectory` only to a writable path (the default keeps
-      the stream's cursor in memory, which is all it needs), and prefer served
-      tools.
+- [ ] Serverless: prefer served tools.

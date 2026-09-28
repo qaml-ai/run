@@ -4,7 +4,7 @@
  * Add SMOKE_PROMPT=1 to also run one real model turn (uses the tenant's provider key), and
  * SMOKE_MODEL=provider/model-id to choose the model (default: the runtime's default model).
  */
-import { AgentRuntime, memoryJournalStore, schema, tool } from "../clients/typescript.ts";
+import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 
 const url = process.env.AGENT_URL ?? "http://127.0.0.1:8790";
 const apiKey = process.env.AGENT_RUNTIME_TOKEN;
@@ -14,7 +14,7 @@ const health = await fetch(new URL("/healthz", url));
 if (!health.ok) throw new Error(`Health check failed: HTTP ${health.status}`);
 
 let calls = 0;
-const runtime = new AgentRuntime({ url, apiKey, journalStore: memoryJournalStore() });
+const runtime = new AgentRuntime({ url, apiKey });
 const agent = await runtime.createAgent({
   name: `smoke-${new Date().toISOString()}`, type: "smoke-test",
   ...(process.env.SMOKE_MODEL ? { model: process.env.SMOKE_MODEL } : {}),

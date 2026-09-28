@@ -199,7 +199,7 @@ async function evaluate(label: string, name: string, index: number) {
   const log = `${DIR}/${label}/${name}-${index}.jsonl`;
   mkdirSync(`${DIR}/${label}`, { recursive: true });
   writeFileSync(log, "");
-  const runtime = new AgentRuntime({ url: process.env.AGENT_URL, apiKey: process.env.AGENT_RUNTIME_TOKEN, stateDirectory: `${DIR}/client` });
+  const runtime = new AgentRuntime({ url: process.env.AGENT_URL, apiKey: process.env.AGENT_RUNTIME_TOKEN });
   const started = Date.now();
   const agent = await runtime.createAgent({
     name: `eval ${name}`, model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5", systemPrompt: scenario.systemPrompt, tools, ttlSeconds: 3600,
