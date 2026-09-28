@@ -15,8 +15,9 @@ import { errorText } from "./protocol.ts";
  * by one node at a time, retrying with backoff until acknowledged, so delivery is at least once:
  * receivers dedupe by `id`, which an event keeps when it is written again.
  *
- * The usage webhook (`/v1/usage-webhook`), from before endpoints, is one endpoint of its own per
- * tenant (`legacy`), which receives usage in its original flat body.
+ * The usage webhook (`/v1/usage-webhook`), from before endpoints, keeps its own table, outbox and flat
+ * body, as before: nodes of an earlier release, which send from that outbox during a deploy, never see
+ * an endpoint's deliveries, and a change they make to the usage webhook is the one every node reads.
  */
 export const EVENT_TYPES = ["run.started", "run.completed", "run.failed", "input.requested", "input.resolved", "usage.recorded"] as const;
 export type EventType = typeof EVENT_TYPES[number];
@@ -29,6 +30,7 @@ export type UsageEvent = {
   input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
   cost: { usd: number; source: "provider" | "catalog" }; at: number;
 };
+type Receiver = { url: string; secrets: string[] };
 export type Endpoint = { id: string; url: string; events: EventType[]; description?: string; createdAt: number };
 
 const MAX_ENDPOINTS = 16;
@@ -41,8 +43,8 @@ const MAX_AGE_MS = 3 * 24 * 60 * 60_000;
 /** A replaced secret keeps signing, beside the new one, for this long. */
 const ROTATION_MS = 24 * 60 * 60_000;
 const newSecret = () => `whsec_${randomBytes(24).toString("base64")}`;
-/** What an endpoint's secret is sealed to: the usage webhook's as it always was. */
-const aad = (tenant: string, id: string, legacy: boolean) => legacy ? `usage-webhook:${tenant}` : `webhook:${tenant}:${id}`;
+/** What a secret is sealed to: an endpoint's, or the tenant's usage webhook's (`id` undefined). */
+const aad = (tenant: string, id?: string) => id === undefined ? `usage-webhook:${tenant}` : `webhook:${tenant}:${id}`;
 
 /** An event's id: from `key` (its type and what it is about), the same each time it is written; random without one. */
 export function eventId(key?: string) {
@@ -55,18 +57,21 @@ export function webhookEvent(type: EventType, tenant: string, data: Record<strin
 }
 
 /**
- * Add events to the outbox, one delivery per endpoint that selected their type (none for a tenant
- * without one); a delivery already there is left as it is.
+ * Add events to the outboxes: one delivery per endpoint that selected their type (none for a tenant
+ * without one; one already there is left as it is), and usage to the tenant's usage webhook, if set.
  */
 export async function enqueueEvents(sql: Sql, events: WebhookEvent[]) {
   if (!events.length) return;
   await sql.query(`
-    insert into usage_webhook_outbox (id, tenant, endpoint, body, due, created_at)
-    select md5((e->>'id') || ':' || w.id)::uuid, w.tenant, w.id,
-      case when w.legacy then e->'legacy' else jsonb_build_object('id', e->'id', 'type', e->'type', 'created', e->'created', 'data', e->'data') end, $2, $2
-    from jsonb_array_elements($1::jsonb) as e
-    join webhook_endpoints w on w.tenant = e->>'tenant' and e->>'type' = any(w.events) and (not w.legacy or e ? 'legacy')
+    insert into webhook_deliveries (id, tenant, endpoint, body, due, created_at)
+    select md5((e->>'id') || ':' || w.id)::uuid, w.tenant, w.id, jsonb_build_object('id', e->'id', 'type', e->'type', 'created', e->'created', 'data', e->'data'), $2, $2
+    from jsonb_array_elements($1::jsonb) as e join webhook_endpoints w on w.tenant = e->>'tenant' and e->>'type' = any(w.events)
     on conflict (id) do nothing`, [JSON.stringify(events), Date.now()]);
+  const legacy = events.flatMap(event => event.legacy ? [event.legacy] : []);
+  if (legacy.length) await sql.query(`
+    insert into usage_webhook_outbox (id, tenant, body, due, created_at)
+    select (e->>'id')::uuid, e->>'tenant', e, $2, $2 from jsonb_array_elements($1::jsonb) as e
+    where exists (select 1 from usage_webhooks w where w.tenant = e->>'tenant')`, [JSON.stringify(legacy), Date.now()]);
 }
 
 /** A model response's cost: the provider's own report when it made one (OpenRouter's), else the catalog price. */
@@ -172,11 +177,11 @@ export class Webhooks {
   }
 
   async list(tenant: string): Promise<Endpoint[]> {
-    return (await this.db.query("select * from webhook_endpoints where tenant = $1 and not legacy order by created_at, id", [tenant])).rows.map(endpointView);
+    return (await this.db.query("select * from webhook_endpoints where tenant = $1 order by created_at, id", [tenant])).rows.map(endpointView);
   }
 
   async get(tenant: string, id: string): Promise<Endpoint> {
-    const row = (await this.db.query("select * from webhook_endpoints where tenant = $1 and id = $2 and not legacy", [tenant, id])).rows[0];
+    const row = (await this.db.query("select * from webhook_endpoints where tenant = $1 and id = $2", [tenant, id])).rows[0];
     if (!row) throw new HttpError(404, "Unknown webhook endpoint");
     return endpointView(row);
   }
@@ -189,8 +194,8 @@ export class Webhooks {
     const secret = newSecret();
     const { rows } = await this.db.query(`
       insert into webhook_endpoints (id, tenant, url, events, description, secret, created_at)
-      select $1, $2, $3, $4, $5, $6, $7 where (select count(*) from webhook_endpoints where tenant = $2 and not legacy) < ${MAX_ENDPOINTS}
-      returning *`, [id, tenant, url, events, descriptionInput(input.description), this.accounts.seal(aad(tenant, id, false), secret), Date.now()]);
+      select $1, $2, $3, $4, $5, $6, $7 where (select count(*) from webhook_endpoints where tenant = $2) < ${MAX_ENDPOINTS}
+      returning *`, [id, tenant, url, events, descriptionInput(input.description), this.accounts.seal(aad(tenant, id), secret), Date.now()]);
     if (!rows[0]) throw new HttpError(409, `A tenant has at most ${MAX_ENDPOINTS} webhook endpoints`);
     await this.changed(tenant);
     return { ...endpointView(rows[0]), secret };
@@ -202,7 +207,7 @@ export class Webhooks {
     const events = input.events === undefined ? null : eventsInput(input.events);
     const row = (await this.db.query(`
       update webhook_endpoints set url = coalesce($3, url), events = coalesce($4, events), description = case when $5 then $6 else description end
-      where tenant = $1 and id = $2 and not legacy returning *`, [tenant, id, url, events, input.description !== undefined, descriptionInput(input.description)])).rows[0];
+      where tenant = $1 and id = $2 returning *`, [tenant, id, url, events, input.description !== undefined, descriptionInput(input.description)])).rows[0];
     if (!row) throw new HttpError(404, "Unknown webhook endpoint");
     await this.changed(tenant);
     return endpointView(row);
@@ -210,25 +215,25 @@ export class Webhooks {
 
   /** Remove an endpoint, and the deliveries still waiting for it. */
   async delete(tenant: string, id: string) {
-    const { rowCount } = await this.db.query("delete from webhook_endpoints where tenant = $1 and id = $2 and not legacy", [tenant, id]);
+    const { rowCount } = await this.db.query("delete from webhook_endpoints where tenant = $1 and id = $2", [tenant, id]);
     if (!rowCount) throw new HttpError(404, "Unknown webhook endpoint");
-    await this.db.query("delete from usage_webhook_outbox where endpoint = $1", [id]);
+    await this.db.query("delete from webhook_deliveries where endpoint = $1", [id]);
     await this.changed(tenant);
   }
 
   /** A new signing secret, returned only now; the old one also signs for a day, so receivers can switch. */
   async rotate(tenant: string, id: string) {
     const secret = newSecret();
-    const { rowCount } = await this.db.query("update webhook_endpoints set previous = secret, previous_until = $4, secret = $3 where tenant = $1 and id = $2 and not legacy",
-      [tenant, id, this.accounts.seal(aad(tenant, id, false), secret), Date.now() + ROTATION_MS]);
+    const { rowCount } = await this.db.query("update webhook_endpoints set previous = secret, previous_until = $4, secret = $3 where tenant = $1 and id = $2",
+      [tenant, id, this.accounts.seal(aad(tenant, id), secret), Date.now() + ROTATION_MS]);
     if (!rowCount) throw new HttpError(404, "Unknown webhook endpoint");
     return { secret };
   }
 
-  // The usage webhook: the tenant's legacy endpoint, which receives usage in its original body.
+  // The usage webhook, as before endpoints: in usage_webhooks, which nodes of every release read.
 
   async usageWebhook(tenant: string) {
-    const row = (await this.db.query("select url, created_at from webhook_endpoints where tenant = $1 and legacy", [tenant])).rows[0];
+    const row = (await this.db.query("select url, created_at from usage_webhooks where tenant = $1", [tenant])).rows[0];
     return row && { url: row.url as string, createdAt: Number(row.created_at) };
   }
 
@@ -237,26 +242,24 @@ export class Webhooks {
     this.checkUrl(url);
     const secret = newSecret();
     const { rows } = await this.db.query(`
-      insert into webhook_endpoints (id, tenant, url, events, legacy, secret, created_at) values ($1, $2, $3, '{usage.recorded}', true, $4, $5)
-      on conflict (tenant) where legacy do update set url = excluded.url returning (xmax = 0) as created`,
-      [`we_${randomBytes(12).toString("hex")}`, tenant, url, this.accounts.seal(aad(tenant, "", true), secret), Date.now()]);
+      insert into usage_webhooks (tenant, url, secret, created_at) values ($1, $2, $3, $4)
+      on conflict (tenant) do update set url = excluded.url returning (xmax = 0) as created`, [tenant, url, this.accounts.seal(aad(tenant), secret), Date.now()]);
     return { url: url as string, ...(rows[0].created ? { secret } : {}) };
   }
 
   async rotateUsageWebhook(tenant: string) {
     const secret = newSecret();
-    const { rowCount } = await this.db.query("update webhook_endpoints set previous = secret, previous_until = $3, secret = $2 where tenant = $1 and legacy",
-      [tenant, this.accounts.seal(aad(tenant, "", true), secret), Date.now() + ROTATION_MS]);
+    const { rowCount } = await this.db.query("update usage_webhooks set previous = secret, previous_until = $3, secret = $2 where tenant = $1",
+      [tenant, this.accounts.seal(aad(tenant), secret), Date.now() + ROTATION_MS]);
     if (!rowCount) throw new HttpError(404, "No usage webhook is set");
     return { secret };
   }
 
   /** Remove the usage webhook, and the deliveries still waiting for it. */
   async deleteUsageWebhook(tenant: string) {
-    const { rows } = await this.db.query("delete from webhook_endpoints where tenant = $1 and legacy returning id", [tenant]);
-    if (!rows[0]) return false;
-    await this.db.query("delete from usage_webhook_outbox where endpoint = $1 or (endpoint is null and tenant = $2)", [rows[0].id, tenant]);
-    return true;
+    const { rowCount } = await this.db.query("delete from usage_webhooks where tenant = $1", [tenant]);
+    await this.db.query("delete from usage_webhook_outbox where tenant = $1", [tenant]);
+    return !!rowCount;
   }
 
   start(intervalMs = 5_000) {
@@ -265,41 +268,51 @@ export class Webhooks {
   }
   stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
-  /** Send every due delivery, claiming batches so no two nodes send one at once. */
+  /** Send every due delivery, the usage webhook's and the endpoints', claiming batches so no two nodes send one at once. */
   async send(now = Date.now()) {
     if (this.sending) return;
     this.sending = true;
     try {
-      await this.db.query("delete from usage_webhook_outbox where created_at < $1", [now - MAX_AGE_MS]);
-      for (;;) {
-        const { rows } = await this.db.query(`
-          update usage_webhook_outbox set due = $2, attempts = attempts + 1
-          where id in (select id from usage_webhook_outbox where due <= $1 order by due limit ${CLAIM_BATCH} for update skip locked)
-          returning id, tenant, endpoint, body, attempts`, [Date.now(), Date.now() + LEASE_MS]);
-        const receivers = new Map<string, Promise<{ url: string; secrets: string[] } | undefined>>();
-        await Promise.all(rows.map(async row => {
-          // A delivery written before endpoints names none: it is the tenant's usage webhook's.
-          const key = row.endpoint ?? `legacy:${row.tenant}`;
-          if (!receivers.has(key)) receivers.set(key, this.receiver(row.tenant, row.endpoint));
-          await this.deliver(row, await receivers.get(key));
-        }));
-        if (rows.length < CLAIM_BATCH) break;
-      }
+      await this.sendFrom("usage_webhook_outbox", now, row => this.usageReceiver(row.tenant));
+      await this.sendFrom("webhook_deliveries", now, row => this.endpointReceiver(row.tenant, row.endpoint));
     } finally { this.sending = false; }
   }
 
-  private async receiver(tenant: string, endpoint: string | null) {
-    const row = (await this.db.query(`select id, url, legacy, secret, previous, previous_until from webhook_endpoints where tenant = $1 and ${endpoint ? "id = $2" : "legacy"}`,
-      endpoint ? [tenant, endpoint] : [tenant])).rows[0];
-    if (!row) return undefined;
-    const unseal = (sealed: Sealed) => this.accounts.unseal(aad(tenant, row.id, row.legacy), sealed);
+  private async sendFrom(table: "usage_webhook_outbox" | "webhook_deliveries", now: number, receiver: (row: any) => Promise<Receiver | undefined>) {
+    await this.db.query(`delete from ${table} where created_at < $1`, [now - MAX_AGE_MS]);
+    for (;;) {
+      const { rows } = await this.db.query(`
+        update ${table} set due = $2, attempts = attempts + 1
+        where id in (select id from ${table} where due <= $1 order by due limit ${CLAIM_BATCH} for update skip locked)
+        returning *`, [Date.now(), Date.now() + LEASE_MS]);
+      const receivers = new Map<string, Promise<Receiver | undefined>>();
+      await Promise.all(rows.map(async row => {
+        const key = row.endpoint ?? row.tenant;
+        if (!receivers.has(key)) receivers.set(key, receiver(row));
+        await this.deliver(table, row, await receivers.get(key));
+      }));
+      if (rows.length < CLAIM_BATCH) break;
+    }
+  }
+
+  private async usageReceiver(tenant: string) {
+    const row = (await this.db.query("select url, secret, previous, previous_until from usage_webhooks where tenant = $1", [tenant])).rows[0];
+    return row && this.receiverOf(row, sealed => this.accounts.unseal(aad(tenant), sealed));
+  }
+
+  private async endpointReceiver(tenant: string, id: string) {
+    const row = (await this.db.query("select url, secret, previous, previous_until from webhook_endpoints where tenant = $1 and id = $2", [tenant, id])).rows[0];
+    return row && this.receiverOf(row, sealed => this.accounts.unseal(aad(tenant, id), sealed));
+  }
+
+  private receiverOf(row: any, unseal: (sealed: Sealed) => string): Receiver {
     const secrets = [unseal(row.secret)];
     if (row.previous && Number(row.previous_until) > Date.now()) secrets.push(unseal(row.previous));
     return { url: row.url as string, secrets };
   }
 
-  private async deliver(row: { id: string; tenant: string; body: { id: string }; attempts: number }, receiver?: { url: string; secrets: string[] }) {
-    if (!receiver) { await this.db.query("delete from usage_webhook_outbox where id = $1", [row.id]); return; }
+  private async deliver(table: string, row: { id: string; tenant: string; body: { id: string }; attempts: number }, receiver?: Receiver) {
+    if (!receiver) { await this.db.query(`delete from ${table} where id = $1`, [row.id]); return; }
     const body = JSON.stringify(row.body);
     let failure: string;
     try {
@@ -308,11 +321,11 @@ export class Webhooks {
         headers: { "Content-Type": "application/json", ...signedHeaders(row.body.id, body, receiver.secrets) },
       });
       await response.arrayBuffer().catch(() => {});
-      if (response.ok) { await this.db.query("delete from usage_webhook_outbox where id = $1", [row.id]); return; }
+      if (response.ok) { await this.db.query(`delete from ${table} where id = $1`, [row.id]); return; }
       failure = `HTTP ${response.status}`;
     } catch (error) { failure = errorText(error); }
     const delay = Math.min(60 * 60_000, this.retryBaseMs * 2 ** Math.min(row.attempts - 1, 20));
-    await this.db.query("update usage_webhook_outbox set due = $2, last_error = $3 where id = $1", [row.id, Date.now() + delay, failure.slice(0, 500)]);
+    await this.db.query(`update ${table} set due = $2, last_error = $3 where id = $1`, [row.id, Date.now() + delay, failure.slice(0, 500)]);
     console.error(JSON.stringify({ type: "webhook_failed", tenant: row.tenant, event: row.body.id, attempts: row.attempts, error: failure }));
   }
 }

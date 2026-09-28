@@ -68,7 +68,7 @@ once. The runtime does not start without a database.
 | schedules and their claims | |
 | channels, conversations, the outbox, dedupe markers, rate counters | |
 | volume headers, snapshots, watchers | |
-| agent spend limits, webhook endpoints and their outbox | |
+| agent spend limits, usage webhooks, webhook endpoints and their outboxes | |
 
 Migrations are plain SQL files, applied at startup in one transaction under an
 advisory lock and recorded in `schema_migrations`, so nodes may start together.
@@ -704,11 +704,13 @@ Every event is an envelope, documented per type under `webhooks` in `openapi.jso
   days. An event written again keeps its `id`: receivers dedupe by it, and order
   by `created` (retries reorder deliveries).
 
-**The usage webhook**, from before endpoints, still works: `PUT
-/v1/usage-webhook {"url"}` sets one endpoint of its own (returning its `secret`
-the first time), `GET` shows it, `POST /v1/usage-webhook/secret` rotates it and
-`DELETE` removes it. It is not listed among `/v1/webhooks`, and it receives each
-response's usage in its original body, not an envelope:
+**The usage webhook** (deprecated), from before endpoints, still works: `PUT
+/v1/usage-webhook {"url"}` sets its URL (returning its `secret` the first time),
+`GET` shows it, `POST /v1/usage-webhook/secret` rotates it and `DELETE` removes
+it. It is kept apart from endpoints (its own table and outbox, so nodes of an
+earlier release still serve it during a deploy), is not listed among
+`/v1/webhooks`, and receives each response's usage in its original body, not an
+envelope:
 
 ```json
 {"id": "5d0c…", "agent": "client_…", "requestId": "…", "tenant": "camel",

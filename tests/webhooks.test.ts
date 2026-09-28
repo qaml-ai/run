@@ -10,13 +10,13 @@ import { signedHeaders } from "../src/webhooks.ts";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100" };
 const ASK = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
 
-async function receiver(t: { after(fn: () => void): void }) {
+async function receiver(t: { after(fn: () => void): void }, status = 204) {
   const received: { headers: Record<string, any>; body: string; json: any }[] = [];
   const url = await listen(t, async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     received.push({ headers: req.headers, body, json: JSON.parse(body) });
-    res.writeHead(204).end();
+    res.writeHead(status).end();
   });
   const find = (type: string, requestId?: string) => received.find(entry => entry.json.type === type && (requestId === undefined || entry.json.data?.requestId === requestId))?.json;
   return { url, received, find };
@@ -112,7 +112,7 @@ test("a run that ends with an error is sent as run.failed", async t => {
   assert.equal(hook.find("run.completed", done.id), undefined);
 });
 
-test("the usage webhook still works, as one endpoint of its own that gets usage in its original body", async t => {
+test("the usage webhook still works, apart from endpoints, and gets usage in its original body", async t => {
   const legacy = await receiver(t);
   const r = await runtime(t, () => ({ role: "assistant", content: "hi", usage: { prompt_tokens: 10, completion_tokens: 1 } }), LOCAL);
   const set = await r.call("/v1/usage-webhook", { method: "PUT", body: { url: legacy.url } });
@@ -140,10 +140,10 @@ test("a run whose event could not be written when it ended has it written with t
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const unloaded = () => until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to unload");
 
-  await r.db.query("alter table usage_webhook_outbox rename to usage_webhook_outbox_away");
+  await r.db.query("alter table webhook_deliveries rename to webhook_deliveries_away");
   const lost = await r.prompt(agent, "first");
   await sleep(300);
-  await r.db.query("alter table usage_webhook_outbox_away rename to usage_webhook_outbox");
+  await r.db.query("alter table webhook_deliveries_away rename to webhook_deliveries");
   assert.equal(hook.find("run.completed", lost.id), undefined);
   await unloaded();
 
@@ -181,4 +181,24 @@ test("runs of a tenant with no endpoint for run events write none, and journal n
   await prompt("heard");
   await until(() => hook.find("run.completed", "heard") && hook.find("run.started", "heard"), "the next run's events");
   assert.equal(hook.find("run.completed", "quiet"), undefined);
+});
+
+test("in a rolling deploy, nodes of the previous release see only usage webhook deliveries, and their usage webhook changes take effect", async t => {
+  const hook = await receiver(t, 500);
+  const legacy = await receiver(t, 500);
+  const moved = await receiver(t, 500);
+  // Refused deliveries wait an hour, where the test can read them.
+  const r = await runtime(t, () => ({ role: "assistant", content: "hi", usage: { prompt_tokens: 10, completion_tokens: 1 } }), { ...LOCAL, AGENT_USAGE_WEBHOOK_RETRY_MS: "3600000" });
+  await r.call("/v1/webhooks", { body: { url: hook.url, events: ["run.completed", "usage.recorded"] } });
+  await r.call("/v1/usage-webhook", { method: "PUT", body: { url: legacy.url } });
+  // A node of the previous release moves the usage webhook, as its PUT did: in usage_webhooks alone.
+  await r.db.query("update usage_webhooks set url = $1 where tenant = 'alice'", [moved.url]);
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const done = await r.prompt(agent, "Hi");
+  await r.call("/v1/usage");
+  await until(() => moved.received.length && hook.find("run.completed", done.id) && hook.find("usage.recorded", done.id), "every delivery attempted");
+  assert.equal(legacy.received.length, 0, "sent where the usage webhook now points");
+  // The previous release's outbox, which its nodes send from, holds usage webhook bodies alone.
+  const bodies = (await r.db.query("select body from usage_webhook_outbox")).rows.map(row => row.body);
+  assert.deepEqual(bodies.map(body => [body.type, body.requestId]), [[undefined, done.id]]);
 });
