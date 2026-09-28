@@ -16,7 +16,7 @@ describe("the shadcn registry", () => {
     execFileSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", at("../build.ts"), "--check"]);
     const item = JSON.parse(readFileSync(at("../public/r/agent-chat.json"), "utf8"));
     expect(item.name).toBe("agent-chat");
-    expect(item.dependencies).toContain("@camelai/agent-runtime-react");
+    expect(item.dependencies).toContain(`@camelai/agent-runtime-react@${JSON.parse(readFileSync(at("../../../sdk/package.json"), "utf8")).version}`);
     expect(item.files.map((file: { target: string }) => file.target)).toEqual(["components/agent-chat/agent-chat.tsx", "components/agent-chat/agent-parts.tsx", "components/agent-chat/agent-markdown.tsx"]);
     for (const file of item.files) expect(file.content.length).toBeGreaterThan(100);
   });
