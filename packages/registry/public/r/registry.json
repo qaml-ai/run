@@ -1,0 +1,73 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry.json",
+  "name": "camelai-agents",
+  "homepage": "https://agents.camelai.dev",
+  "items": [
+    {
+      "name": "agent-chat",
+      "type": "registry:block",
+      "title": "Agent chat",
+      "description": "A streaming chat with the user's agent on the camelAI agent runtime: markdown, tool cards and generative UI, questions and approvals, files, stop, and scroll that follows the reply. Talks to a createAgentHandler route.",
+      "dependencies": [
+        "@camelai/agent-runtime",
+        "@camelai/agent-runtime-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "utils"
+      ],
+      "files": [
+        {
+          "path": "src/agent-chat/agent-chat.tsx",
+          "type": "registry:component",
+          "target": "components/agent-chat/agent-chat.tsx"
+        },
+        {
+          "path": "src/agent-chat/agent-parts.tsx",
+          "type": "registry:component",
+          "target": "components/agent-chat/agent-parts.tsx"
+        },
+        {
+          "path": "src/agent-chat/agent-markdown.tsx",
+          "type": "registry:component",
+          "target": "components/agent-chat/agent-markdown.tsx"
+        }
+      ]
+    },
+    {
+      "name": "agent-markdown",
+      "type": "registry:component",
+      "title": "Agent markdown",
+      "description": "Safe, streaming-tolerant markdown for agent replies, rendered with elements (no raw HTML).",
+      "dependencies": [
+        "@camelai/agent-runtime"
+      ],
+      "registryDependencies": [
+        "utils"
+      ],
+      "files": [
+        {
+          "path": "src/agent-chat/agent-markdown.tsx",
+          "type": "registry:component",
+          "target": "components/agent-chat/agent-markdown.tsx"
+        }
+      ]
+    },
+    {
+      "name": "agent-route",
+      "type": "registry:file",
+      "title": "Agent route (Next.js)",
+      "description": "The Next.js App Router route the chat talks to: keeps your API key on the server and lets each user reach only their own agent.",
+      "dependencies": [
+        "@camelai/agent-runtime"
+      ],
+      "files": [
+        {
+          "path": "src/agent-route/route.ts",
+          "type": "registry:file",
+          "target": "app/api/agent/route.ts"
+        }
+      ]
+    }
+  ]
+}

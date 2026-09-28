@@ -170,7 +170,7 @@ export function useMessage(id: string, chat?: AgentChat): ChatMessage | undefine
 /** Send a message: `send(text, { data })`. It shows at once and resolves once the handler took it. */
 export function useSend(chat?: AgentChat): (text: string, options?: SendOptions) => Promise<{ id: string }> {
   const found = useAgent(chat);
-  return useCallback((text: string, options?: SendOptions) => found.send(text, options), [found]);
+  return useCallback((text: string, options?: SendOptions) => options ? found.send(text, options) : found.send(text), [found]);
 }
 
 export interface AgentStatus {
