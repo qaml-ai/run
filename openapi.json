@@ -1610,7 +1610,6 @@
               "execute",
               "status",
               "abort",
-              "history",
               "continue",
               "steer",
               "followUp",

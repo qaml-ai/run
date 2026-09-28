@@ -384,6 +384,12 @@ test("history answers while the agent is starting, whole or in pages", async t =
   assert.deepEqual(statuses, []);
 });
 
+test("history is read with GET /history, never as a request", async t => {
+  const f = await fixture(t);
+  const agent = await f.start();
+  assert.equal((await f.post(agent, "/requests", { id: "whole", method: "history", params: {} })).status, 400);
+});
+
 test("a call with no application connected fails as not run; one the application never answers times out as unknown", async t => {
   const f = await fixture(t, { timeout: 400 });
   const agent = await f.start({ echo: echo(() => "must not execute") });

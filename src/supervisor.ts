@@ -231,7 +231,8 @@ export class AgentSupervisor {
   }
   unreserve(id: string) { this.reserved.delete(id); }
 
-  async request(id: string, method: RequestMethod, params: any = {}, onEvent?: (event: any) => void) {
+  /** A request to the agent's host: a client request's method, or one of the runtime's own reads of its history. */
+  async request(id: string, method: RequestMethod | "history" | "historyTail", params: any = {}, onEvent?: (event: any) => void) {
     const handle = this.agents.get(id);
     if (!handle) throw new Error("Agent not found");
     if (method === "configure" && params.tools !== undefined) validateDefinitions(params.tools);

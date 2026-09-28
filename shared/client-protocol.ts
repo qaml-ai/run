@@ -3,7 +3,7 @@ export const FRAME_BYTES = 1_100_000;
 export type Outcome = { result: unknown; error?: never; uncertain?: never } | { error: string; uncertain?: boolean; result?: never };
 /** `expiresAt` is null for agents that live until deleted. */
 export interface SessionCredentials { id: string; token: string; expiresAt: number | null }
-export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "history" | "continue" | "steer" | "followUp" | "configure" | "resume";
+export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "continue" | "steer" | "followUp" | "configure" | "resume";
 export type RequestRecord = {
   id: string; startedAt?: number; endedAt?: number; prompt?: string; code?: string; fingerprint: string; method: RequestMethod;
   /** "running" covers queued runs too: a run has begun once `began` is set. */

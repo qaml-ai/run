@@ -180,7 +180,7 @@ const MAX_RESUMES = 2;
 const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].includes(request.method) && !!request.began;
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
-const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "history", "steer", "followUp", "configure"];
+const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "followUp", "configure"];
 /** A configuration's fields only an upsert (the tenant making the agent again with its key) sets: see `reconfiguration`. */
 const UPSERT_KEYS = ["provisionHash", "name", "type", "tools", "fileTools", "toolsHash"];
 /** A batch of answers from a request: `{ answers: [{ id, action, content?, from?, actor? }] }`. */
@@ -1782,7 +1782,7 @@ export class ClientSessions {
     const id = session.header.id;
     // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
     if (!("unloaded" in session)) await session.starting?.catch(() => {});
-    let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.supervisor.request(id, "historyTail" as RequestMethod) as HistoryTail | null : undefined;
+    let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.supervisor.request(id, "historyTail") as HistoryTail | null : undefined;
     if (!tail) {
       // The index should have every message the agent's runs reported, or the running agent the rest. An agent
       // without one (made before the index), one behind (a stop that could not write its last chunks), or a running
@@ -2009,8 +2009,8 @@ export class ClientSessions {
       throw new HttpError(409, "APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it (the SDKs' connectAgent), or send allowDisconnected: true to run anyway");
     }
     const queued = QUEUED_METHODS.includes(body.method);
-    // Reads and aborts need no process; queued requests start it (if at all) when their turn comes.
-    if (!queued && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
+    // Status and aborts need no process; queued requests start it (if at all) when their turn comes.
+    if (!queued && !["status", "abort"].includes(body.method)) await this.ensureStarted(session);
     // Concurrent retries may have waited on the same process startup.
     const raced = existing();
     if (raced) return { status: 200, record: visible(raced) };
@@ -2236,7 +2236,6 @@ export class ClientSessions {
   private async execute(session: Session, record: RequestRecord, params: any, method: RequestMethod = record.method) {
     const id = session.header.id;
     const live = this.supervisor.agents.has(id);
-    if (record.method === "history") return this.history(session);
     if (record.method === "status" && !live) return { running: false };
     // Aborting a suspended turn cancels its inputs: the turn is closed without the model.
     if (record.method === "abort") await this.cancelInputs(session, "aborted");
