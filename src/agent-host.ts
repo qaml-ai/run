@@ -346,6 +346,7 @@ export function createAgentHost(io: HostIO) {
         if (overflowHandled) return;
         overflowHandled = true;
         await transcript.retract();
+        const index = transcript.total;
         agent!.state.messages = agent!.state.messages.slice(0, -1);
         if (!await compactNow("overflow", signal)) {
           // Keep the error visible: nothing could be summarized, so a retry would overflow again.
@@ -353,6 +354,8 @@ export function createAgentHost(io: HostIO) {
           agent!.state.messages = [...agent!.state.messages, last];
           return;
         }
+        // Taken back for good: say so on the stream, whose subscribers saw it end.
+        io.emit({ type: "message_retracted", index });
         await agent!.continue();
         attempt--;
         continue;
@@ -365,8 +368,9 @@ export function createAgentHost(io: HostIO) {
       }
       const delayMs = policy.baseDelayMs * 2 ** (attempt - 1);
       io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error" });
-      // The failed attempt is not history: drop it from the log and the live state.
+      // The failed attempt is not history: drop it from the log and the live state, and say so on the stream.
       await transcript.retract();
+      io.emit({ type: "message_retracted", index: transcript.total });
       agent!.state.messages = agent!.state.messages.slice(0, -1);
       try { await sleep(delayMs, undefined, { signal }); }
       catch { return; }

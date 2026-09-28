@@ -94,7 +94,7 @@ type Session = {
   /** The assistant message streaming now, as its latest message_update carried it. */
   partial?: unknown;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
-  turn?: { requestId: string; start?: number; messages: unknown[]; count: number; last?: unknown; bytes: number; truncated?: boolean };
+  turn?: { requestId: string; start?: number; messages: unknown[]; count: number; bytes: number; truncated?: boolean };
   /** The application's attached MCP server, over the connection `response` is. */
   attached?: AttachedServer;
   /** Tool calls to the application in flight: the agent is busy until they settle. */
@@ -585,16 +585,14 @@ export class ClientSessions {
     if (data.type !== "event" || data.requestId !== turn.requestId) return;
     const type = data.event?.type;
     if (type === "turn_opened") turn.start ??= data.event.index;
-    // A failed response taken back before the model is asked again gives up its place, as it does for a subscriber folding the stream.
-    if (type === "auto_retry_start" && (turn.last as { stopReason?: string } | undefined)?.stopReason === "error" && turn.count) {
+    // A response taken back (a retry, or a compaction on overflow) gives up its place, as it does for a subscriber folding the stream.
+    if (type === "message_retracted" && turn.count) {
       turn.count--;
-      turn.last = undefined;
       if (!turn.truncated) turn.messages.pop();
     }
     if (type !== "message_end") return;
     // How many messages the run finished, whether or not the snapshot can carry them.
     turn.count++;
-    turn.last = data.event.message;
     turn.bytes += oversized ? FRAME_BYTES : text.length;
     // A snapshot is one frame: a turn too large for one is read from history instead.
     if (turn.truncated || turn.bytes > TURN_SNAPSHOT_BYTES) { turn.truncated = true; turn.messages = []; }

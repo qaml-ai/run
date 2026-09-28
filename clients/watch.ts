@@ -236,9 +236,10 @@ export function watchAgent(options: WatchOptions): Watcher {
         if (event.message?.role === "assistant") state.partial = null;
         if (next !== undefined) messages.set(next++, event.message);
         break;
-      // A failed response is taken back before the model is asked again: it gives up its place.
-      case "auto_retry_start":
-        if (next !== undefined && (messages.get(next - 1) as any)?.stopReason === "error") messages.delete(--next);
+      // A response taken back (before a retry, or a compaction on overflow) gives up its place.
+      case "message_retracted":
+        messages.delete(event.index);
+        if (next !== undefined) next = event.index;
         break;
       // A message too large for the stream still takes its place; the newest page of history has it.
       case "event_omitted":

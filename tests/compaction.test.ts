@@ -156,6 +156,10 @@ test("a context overflow from the provider compacts and retries the turn once", 
   const history = (await supervisor.request("overflow", "history")).messages;
   assert.equal(history.filter((message: any) => message.stopReason === "error").length, 0, "the rejected attempt is not history");
   assert.equal(history.length, 6);
+  // A subscriber folding the stream counts the same: the rejected attempt ended, and was taken back.
+  const ended = events.filter(event => event.type === "message_end").length;
+  const retracted = events.filter(event => event.type === "message_retracted").length;
+  assert.equal(ended - retracted, history.length);
 });
 
 test("compaction summaries bill their tokens and cost to the tenant, apart from the agent's turns", async t => {

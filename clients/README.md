@@ -409,6 +409,10 @@ when the run's messages are too large for one frame: read them from history.
 `count` is how many messages the run finished, sent or not, so the next one's
 index is `start + count`. (A message too large for any frame arrives as an
 `event_omitted` with `was: "message_end"`: it still takes its index.)
+A response the runtime takes back after it ended (a provider error it retries, or
+a context overflow it compacts and retries) is announced as
+`{ type: "message_retracted", index }`: it gives up that index, which the next
+message takes.
 `start` is the index of the run's first message in the agent's history, which
 each run also announces as a `turn_opened` event (`{ index }`). Without
 `snapshot=1`, a gap is `409 REPLAY_GAP` as before, and a new subscriber (no
