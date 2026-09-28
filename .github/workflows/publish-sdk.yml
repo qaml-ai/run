@@ -44,9 +44,11 @@ jobs:
         run: |
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      # No registry-url: that writes an .npmrc with a token (a placeholder), which npm then warns of as a token that
+      # bypasses 2FA. Trusted publishing needs none; npm publishes to the public registry by default.
       - uses: actions/setup-node@v4
         # Node 24: the npm below needs a newer Node 22 than setup-node may pick.
-        with: { node-version: 24, cache: npm, registry-url: https://registry.npmjs.org }
+        with: { node-version: 24, cache: npm }
       # Trusted publishing needs npm 11.5.1 or later; pinned, so a release never runs an npm it was not tried with.
       - run: npm install -g npm@11.20.0
       - run: npm ci

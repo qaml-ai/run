@@ -15,7 +15,7 @@
     "access": "public"
   },
   "bin": {
-    "create-agent-app": "./index.js"
+    "create-agent-app": "index.js"
   },
   "files": [
     "index.js",
