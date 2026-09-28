@@ -115,8 +115,8 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
     return { status: response.status, json, text };
   };
   /** Prompt an agent over the REST API and wait for the outcome of its turn. */
-  const prompt = async (agent: string, text: string, token?: string) => {
-    const accepted = await call(`/v1/agents/${agent}/prompt`, { body: { text }, token });
+  const prompt = async (agent: string, text: string, token?: string, extra: Record<string, unknown> = {}) => {
+    const accepted = await call(`/v1/agents/${agent}/prompt`, { body: { text, ...extra }, token });
     if (accepted.status !== 202) throw new Error(`prompt: ${accepted.status} ${accepted.text}`);
     return until(async () => {
       const record = (await call(`/v1/agents/${agent}/requests/${accepted.json.id}`, { token })).json;

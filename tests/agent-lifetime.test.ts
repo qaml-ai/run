@@ -46,7 +46,7 @@ test("the same key with a changed configuration reconfigures the agent instead o
   const key = { "Idempotency-Key": "assistant-7" };
   const tool = (description: string) => ({ name: "lookup", description, inputSchema: { type: "object", properties: {} } });
   const made = (await r.call("/v1/agents", { body: { systemPrompt: "Be brief.", name: "v1", mcp: { tools: [tool("Look up v1")] } }, headers: key })).json;
-  await r.prompt(made.id, "one");
+  await r.prompt(made.id, "one", undefined, { allowDisconnected: true });
   assert.match(system(r.model.bodies[0]), /Be brief\./);
 
   const same = await r.call("/v1/agents", { body: { systemPrompt: "Be brief.", name: "v1", mcp: { tools: [tool("Look up v1")] } }, headers: key });
@@ -62,7 +62,7 @@ test("the same key with a changed configuration reconfigures the agent instead o
   await until(async () => (await r.call(`/v1/agents/${made.id}/requests/${edited.json.reconfigured.id}`)).json.state === "completed", "the reconfiguration");
   const detail = (await r.call(`/v1/agents/${made.id}`)).json;
   assert.deepEqual([detail.systemPrompt, detail.name, detail.tools[0].description], ["Be thorough.", "v2", "Look up v2"]);
-  await r.prompt(made.id, "two");
+  await r.prompt(made.id, "two", undefined, { allowDisconnected: true });
   assert.match(system(r.model.bodies.at(-1)), /Be thorough\./);
   assert.equal(lastUser(r.model.bodies.at(-1)), "two");
   assert.equal((await r.call(`/v1/agents/${made.id}/history`)).json.messages.length, 4, "history kept");

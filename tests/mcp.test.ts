@@ -164,7 +164,7 @@ test("an agent shows every tool source and what its model gets, connecting to MC
   assert.deepEqual(refreshed.files.tools.every((tool: any) => tool.parameters), true);
 
   // What the sources say the model gets is what it gets.
-  await r.prompt(agent, "hi");
+  await r.prompt(agent, "hi", undefined, { allowDisconnected: true });
   sources = byName((await r.call(`/v1/agents/${agent}`)).json.toolSources);
   const offered = r.model.bodies[0].tools.map((tool: any) => tool.function.name);
   const direct = Object.values(sources).flatMap((source: any) => source.tools).filter((tool: any) => !tool.excluded && tool.exposure !== "codemode").map((tool: any) => tool.name);
