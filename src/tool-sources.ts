@@ -151,7 +151,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
       ...(approval !== undefined ? { approval: approvalInput(approval, `MCP server ${name}`) } : {}),
     };
     const credentials = sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context);
-    return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`) };
+    return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`, checked) };
   });
 }
 
@@ -201,7 +201,7 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
       ...(approval !== undefined ? { approval: approvalInput(approval, `OpenAPI source ${name}`, true) } : {}),
     };
     const credentials = sealCredentials(headers, auth, kept && { ...kept, url: kept.baseUrl }, checked, sealedAad(definition, name, "openapi"), context);
-    return { ...stored, ...credentials, ...audienceInput(audience, credentials.auth, `OpenAPI source ${name}`) };
+    return { ...stored, ...credentials, ...audienceInput(audience, credentials.auth, `OpenAPI source ${name}`, checked) };
   }));
 }
 
@@ -249,12 +249,21 @@ function sealCredentials(headers: unknown, auth: unknown, previous: { url: strin
 }
 
 /** An identity token audience other than the source's URL: only with auth "runtime". */
-function audienceInput(audience: unknown, auth: SourceAuth | undefined, label: string) {
+/**
+ * The audience a source's identity tokens name, if not its URL: a URL on the source's own origin (a server may check
+ * tokens against its public path). Never another origin: the runtime would mint tokens, with a subject and context the
+ * tenant chose, for a server the source is not, which might trust them.
+ */
+function audienceInput(audience: unknown, auth: SourceAuth | undefined, label: string, url: URL) {
   if (audience === undefined) return {};
   if (typeof audience !== "string" || !audience.trim() || audience.length > 2048) throw bad(`${label}: audience is a string of 1–2048 characters`);
   if (auth?.type !== "runtime") throw bad(`${label}: audience is for auth { type: "runtime" }, whose tokens it names`);
+  if (!sameOrigin(audience, url)) throw bad(`${label}: audience must be a URL on the source's own origin (${url.origin}): its tokens go to that server only`);
   return { audience };
 }
+const sameOrigin = (audience: string, url: URL | string) => { try { return new URL(audience).origin === new URL(url).origin; } catch { return false; } };
+/** The audience to mint a source's tokens for: its own, if on its origin (checked again: definitions saved before the rule), else its URL. */
+const audienceOf = (audience: string | undefined, url: string) => audience && sameOrigin(audience, url) ? audience : url;
 
 /** What callers see of a server: never its credentials. */
 export const mcpServerView = ({ sealed: _sealed, ...server }: McpServerSpec) => server;
@@ -291,7 +300,7 @@ export class ToolSources {
     const headers = this.headers(sealedAad(context.definition, spec.name), spec.sealed);
     if (spec.auth?.type !== "runtime") return { url: spec.url, headers };
     // Each request is signed for the turn it is made in (callScope), and each agent has its own session.
-    return { url: spec.url, headers, token: () => this.identityToken(context, spec.audience ?? spec.url), scope: context.agent };
+    return { url: spec.url, headers, token: () => this.identityToken(context, audienceOf(spec.audience, spec.url)), scope: context.agent };
   }
 
   private offered(spec: McpServerSpec, tool: Tool) {
@@ -403,7 +412,7 @@ export class ToolSources {
           if (apiAsks(api, operation) && !approval) return APPROVAL_REQUIRED;
           const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
           const secrets = this.headers(sealedAad(context.definition, api.name, "openapi"), api.sealed);
-          if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, api.audience ?? api.baseUrl, turn)}`;
+          if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl), turn)}`;
           // The call's key, as APIs that dedupe writes take one (Stripe's convention).
           if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };
           // Text answers are capped lower as they are read (openapi.ts).
