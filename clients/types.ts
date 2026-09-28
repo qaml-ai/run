@@ -44,6 +44,9 @@ export interface ToolResultMessage {
 export interface SystemMessage { role: "system"; content: string | TextContent[]; timestamp: number }
 export type Message = UserMessage | AssistantMessage | ToolResultMessage | SystemMessage;
 
+/** A file in the agent's mounts, as a run presents it; download it with `agent.files.download(path)`. */
+export interface PresentedFile { type: "file"; path: string; volume: string; version: number; size: number; contentType: string; caption?: string; [key: string]: unknown }
+
 /** A delta of the assistant message streaming now (a `message_update`'s `assistantMessageEvent`). */
 export type MessageDelta =
   | { type: "start" }
@@ -65,7 +68,7 @@ export type AgentEvent =
   | { type: "turn_opened"; index: number }
   | { type: "message_start"; message: Message }
   /** A delta alone (`assistantMessageEvent`), without the message it updates: fold it from `message_start`. */
-  | { type: "message_update"; assistantMessageEvent: MessageDelta; message?: Message }
+  | { type: "message_update"; assistantMessageEvent: MessageDelta }
   | { type: "message_end"; message: Message }
   /** A response taken back (before a retry, or a compaction on overflow): the message at `index` is gone. */
   | { type: "message_retracted"; index: number }
@@ -75,17 +78,23 @@ export type AgentEvent =
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
   | { type: "input_required"; input: import("./typescript.ts").AgentInput }
   | { type: "input_resolved"; id: string; state: string; by?: Record<string, unknown> }
-  | { type: "file_presented"; file: Record<string, unknown>; url?: string; expiresAt?: number }
-  | { type: "codemode"; toolCallId: string; event: Record<string, unknown> }
+  /** A file the agent presented (present_file), with a signed link to it where the runtime made one. */
+  | { type: "file_presented"; file: PresentedFile; url?: string; expiresAt?: number }
+  /** What js_exec code logged, as it ran within the model's tool call `toolCallId`. */
+  | { type: "codemode"; toolCallId: string; event: { type: "output"; text: string } | { type: string; [key: string]: unknown } }
+  /** What code run by `execute` logged, as it ran. */
+  | { type: "output"; text: string }
   | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
   | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
   | { type: "compaction_start"; reason: string }
+  /** The model call that summarized the history, and what it used (not sent to browser tokens). */
+  | { type: "compaction_usage"; provider: string; model: string; usage: MessageUsage; timestamp: number }
   | { type: "compaction_end"; reason: string; skipped?: boolean; error?: string; tokensBefore?: number; summarizedMessages?: number; keptMessages?: number }
   | { type: "context_trimmed"; retainedMessages: number; omittedMessages: number }
   | { type: "spend_limit_reached"; message: string }
   | { type: "turn_resumed" | "turn_recovered"; reason: string }
-  /** A message too large for the stream; history has it. */
-  | { type: "event_omitted"; was: string; [key: string]: unknown }
+  /** An event too large for the stream (`was` its type, e.g. message_end); history has the message. */
+  | { type: "event_omitted"; reason: string; was?: string }
   /** The stream could not replay what was missed: recover from state (the SDK does). */
   | { type: "replay_gap"; cursor: number }
   /** Where the stream could not replay: the running turn as of now, to fold from. */

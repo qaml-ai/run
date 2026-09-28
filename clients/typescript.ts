@@ -267,8 +267,8 @@ export interface AgentOptions {
    */
   attach?: boolean;
   /**
-   * Replace the process that serves the agent's tools now (it stops, with an APPLICATION_REPLACED error).
-   * Without it, connecting while another process serves them fails with APPLICATION_CONNECTED.
+   * Replace the process that serves the agent's tools now (it stops serving them, and its onError hears
+   * APPLICATION_REPLACED). Without it, connecting while another process serves them fails with APPLICATION_CONNECTED.
    */
   takeover?: boolean;
 }
@@ -450,6 +450,12 @@ export interface RunResult {
  * taken effect), not_connected (no application was connected to run it: it did not run), source_unavailable, failed.
  */
 export interface ToolError { tool: string; toolCallId?: string; innerCallId?: string; code: "timeout" | "connection_lost" | "not_connected" | "source_unavailable" | "failed"; outcomeUnknown?: true; message: string }
+/** An error body's stable name: its `code`, or the prefix of its message (`APPLICATION_CONNECTED: …`). */
+function codeOf(value: { error?: unknown; code?: unknown }): { code?: string } {
+  if (typeof value.code === "string") return { code: value.code };
+  const prefix = typeof value.error === "string" ? /^([A-Z][A-Z0-9_]+):/.exec(value.error)?.[1] : undefined;
+  return prefix ? { code: prefix } : {};
+}
 /** Retry-After as milliseconds (seconds or an HTTP date), capped so a bad value cannot stall a caller. */
 function retryAfter(response: Response): number | undefined {
   const value = response.headers.get("retry-after");
@@ -493,7 +499,7 @@ class Transport {
         });
         await rejectRedirect(response);
         const value = await (response.ok ? response.json() : response.json().catch(() => ({}))) as any;
-        if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...(typeof value.code === "string" ? { code: value.code } : {}) });
+        if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...codeOf(value) });
         return value;
       } catch (error) {
         const limited = error instanceof AgentError && error.status === 429;
@@ -543,8 +549,9 @@ class Transport {
   }
 }
 
-/** What an agent's key may be. */
+/** What an agent's key, and a request's id (its idempotency key), may be. */
 const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
+const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
   const fields = ["subject", "context", "keyScope", "spendLimit", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt"] as const;
@@ -838,7 +845,7 @@ export class AgentClient {
               if (!data) continue;
               // Another process took over this agent's tools: this one stops, rather than take them back.
               if (lines.includes("event: closed")) {
-                throw Object.assign(new AgentError("Another process took over this agent's tools (takeover); this client stopped", 409), { code: "APPLICATION_REPLACED" });
+                throw Object.assign(new AgentError("Another process took over this agent's tools (takeover): this client no longer serves them, and follows the agent without them", 409), { code: "APPLICATION_REPLACED" });
               }
               if (lines.includes("event: ready")) {
                 this.connection = (JSON.parse(data) as { connection?: string }).connection;
@@ -874,7 +881,14 @@ export class AgentClient {
         } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       } catch (error) {
         if (this.closed) break;
-        if (error instanceof AgentError && ([401, 403, 410].includes(error.status) || (error.status >= 300 && error.status < 400) || error.code === "APPLICATION_CONNECTED" || error.code === "APPLICATION_REPLACED")) {
+        // Another process serves the tools now (it took over, or took them while this one was away): this one
+        // goes on following the agent, and running it, without serving them, so its requests still settle.
+        if (error instanceof AgentError && (error.code === "APPLICATION_REPLACED" || (error.code === "APPLICATION_CONNECTED" && this.connection))) {
+          this.attaching = false;
+          this.report(error);
+          continue;
+        }
+        if (error instanceof AgentError && ([401, 403, 410].includes(error.status) || (error.status >= 300 && error.status < 400) || error.code === "APPLICATION_CONNECTED")) {
           this.fatal = error; this.ready.reject(error);
           for (const waiter of this.pending.values()) waiter.reject(error);
           this.pending.clear(); this.report(error); break;
@@ -984,6 +998,7 @@ export class AgentClient {
     if (this.closed || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     if (this.pending.size >= MAX_PENDING) throw new AgentError("Too many outstanding requests");
     const id = options.idempotencyKey ?? globalThis.crypto.randomUUID();
+    if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     if (this.pending.has(id)) throw new AgentError("Request already pending", 409, id);
     options.signal?.throwIfAborted();
     const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");

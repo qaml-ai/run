@@ -166,7 +166,7 @@ class Tool:
     with_context: bool
     # True, or a function of (arguments, context): the user approves each such call before it runs.
     needs_approval: object = None
-    # Seconds one call may take (default 15, at most 900); each context.progress() restarts it.
+    # Seconds one call may go without an answer (1 to 1200; default 15); each context.progress() restarts it.
     timeout: float | None = None
 
     def definition(self):
@@ -311,6 +311,15 @@ def _save(path, value):
         os.close(fd)
 
 
+def _code(value):
+    """An error body's stable name: its code, or the prefix of its message ("APPLICATION_CONNECTED: ...")."""
+    if isinstance(value.get("code"), str):
+        return value["code"]
+    import re
+    match = re.match(r"([A-Z][A-Z0-9_]+):", value.get("error") or "") if isinstance(value.get("error"), str) else None
+    return match.group(1) if match else None
+
+
 def _arity(function):
     """How many positional arguments a callback takes (1 where Python cannot say)."""
     try:
@@ -363,8 +372,7 @@ async def _http(client, base, path, token, method="GET", body=None, retry=True, 
                     value = response.json()
                 except ValueError:
                     value = {}
-                raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response),
-                                 code=value.get("code") if isinstance(value.get("code"), str) else None)
+                raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value))
             return response.json()
         except Exception as error:
             limited = isinstance(error, AgentError) and error.status == 429
@@ -810,7 +818,8 @@ class AgentClient:
                                 continue
                             # Another process took over this agent's tools: this one stops, rather than take them back.
                             if "event: closed" in lines:
-                                raise AgentError("Another process took over this agent's tools (takeover); this client stopped", 409, code="APPLICATION_REPLACED")
+                                raise AgentError("Another process took over this agent's tools (takeover): this client no longer serves them, and follows the agent without them",
+                                                 409, code="APPLICATION_REPLACED")
                             if "event: ready" in lines:
                                 self.connection = json.loads(data).get("connection")
                                 await self._sync()
@@ -845,7 +854,13 @@ class AgentClient:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                if isinstance(error, AgentError) and (error.status in (401, 403, 410) or error.code in ("APPLICATION_CONNECTED", "APPLICATION_REPLACED")):
+                # Another process serves the tools now (it took over, or took them while this one was away): this one goes on
+                # following the agent, and running it, without serving them, so its requests still settle.
+                if isinstance(error, AgentError) and (error.code == "APPLICATION_REPLACED" or (error.code == "APPLICATION_CONNECTED" and self.connection)):
+                    self.attach = False
+                    self._report(error)
+                    continue
+                if isinstance(error, AgentError) and (error.status in (401, 403, 410) or error.code == "APPLICATION_CONNECTED"):
                     self.fatal = error
                     self.ready.set()
                     for future in self.pending.values():
@@ -958,6 +973,9 @@ class AgentClient:
         if self.closed or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
+            raise AgentError(f"An idempotency key is 1 to 80 letters, digits, _ and -: {request_id!r} is not", 400)
         if request_id in self.pending or len(self.pending) >= _MAX_PENDING:
             raise AgentError("Request already pending or too many outstanding requests", request_id=request_id)
         future = asyncio.get_running_loop().create_future()
