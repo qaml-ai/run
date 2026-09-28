@@ -1790,7 +1790,7 @@ credentials of (`{id, token}`) without changing it.
 | `agent.stream(text, options)` | `agent.stream(text, …)` | the run as it happens: `for await` / `async for` over parts |
 | `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
 | `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history, or a page of whole turns |
-| `agent.steer(text)`, `followUp(text)` | `steer()`, `follow_up()` | `run` with `whileRunning: "steer"` (joins the running turn, else starts one) or `"queue"` (after it): the run that took the message |
+| `agent.steer(text)` | `steer()` | `run` with `whileRunning: "steer"` (joins the running turn, else starts one): the run that took the message |
 | `agent.configure({ model, instructions, thinkingLevel, tools })` | `configure(…)` | change it between runs |
 | `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
@@ -1897,7 +1897,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `client.requestStatus(id)`, `outcomes()` | `request_status(id)`, `outcomes()` | a request's record; every request's state |
 | `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
 | `client.execute(code)` | `execute(code)` | run code in the sandbox with the agent's tools, outside its history |
-| `client.steer(text)`, `followUp(text)` | `steer()`, `follow_up()` | the legacy `steer` and `followUp` requests, which hold the message for the running (or next) turn; new code uses `prompt` with `whileRunning` |
+| `client.steer(text)` | `steer()` | the legacy `steer` request, which holds the message for the running (or next) turn; new code uses `prompt` with `whileRunning: "steer"` |
 | `client.setMetadata({ name, type })` | `set_metadata(name=, type=)` | rename or regroup |
 | `client.destroy()`, `close()` | same | delete the agent; close the connection |
 

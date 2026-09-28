@@ -180,7 +180,7 @@ const MAX_RESUMES = 2;
 const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].includes(request.method) && !!request.began;
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
-const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "followUp", "configure"];
+const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
 /** A configuration's fields only an upsert (the tenant making the agent again with its key) sets: see `reconfiguration`. */
 const UPSERT_KEYS = ["provisionHash", "name", "type", "tools", "fileTools", "toolsHash"];
 /** A batch of answers from a request: `{ answers: [{ id, action, content?, from?, actor? }] }`. */
@@ -1961,7 +1961,7 @@ export class ClientSessions {
     try {
       if (body.method === "configure" && !applying) { const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, ...update } = body.params; configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant)); }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
-      if (["prompt", "steer", "followUp"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
+      if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
     // Whether a run may go ahead with no application connected is the caller's choice now, not part of what it asks.
     const { allowDisconnected, ...asked } = body.params;
@@ -1985,9 +1985,9 @@ export class ClientSessions {
     let { actor: rawActor, ...params } = body.params;
     if (spendLimit !== undefined) delete params.spendLimit;
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
-    const isMessage = ["prompt", "steer", "followUp"].includes(body.method);
-    if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer, followUp)");
-    if (params.metadata !== undefined && !isMessage) throw new HttpError(400, "metadata is only for messages (prompt, steer, followUp)");
+    const isMessage = ["prompt", "steer"].includes(body.method);
+    if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer)");
+    if (params.metadata !== undefined && !isMessage) throw new HttpError(400, "metadata is only for messages (prompt, steer)");
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     if (params.whileRunning === "queue") delete params.whileRunning;
     // A message records the request that sent it, so an application can match it to its own.
@@ -2015,7 +2015,7 @@ export class ClientSessions {
     const raced = existing();
     if (raced) return { status: 200, record: visible(raced) };
     // Attached files are saved and referenced before the request is: its params keep references, never bytes.
-    if (["prompt", "steer", "followUp"].includes(body.method) && (params.files !== undefined || params.images !== undefined)) {
+    if (["prompt", "steer"].includes(body.method) && (params.files !== undefined || params.images !== undefined)) {
       const { files, images, ...rest } = params;
       params = { ...rest, files: await this.attach(session, body.id, files, images) };
       const again = existing();

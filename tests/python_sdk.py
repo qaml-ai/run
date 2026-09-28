@@ -197,7 +197,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         resumed = await run.inputs[0].answer(True)
         self.assertEqual((resumed.status, resumed.text, done), ("completed", "seen", ["d1"]))
 
-    async def test_parity_history_configure_tools_steer_follow_up_and_wait_for_request(self):
+    async def test_parity_history_configure_tools_and_wait_for_request(self):
         agent = await self.make()
         first = await agent.run("one", idempotency_key="py-first")
         page = await agent.history_page(limit=1)
@@ -211,7 +211,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
         await agent.configure(tools=[added], instructions="Be brief.")
         self.assertEqual((await agent.client.execute('return await tools.added({value:"x"})'))["output"], ["added x"])
-        self.assertEqual((await agent.follow_up("later")).text, "seen")
+        self.assertEqual((await agent.run("later")).text, "seen")
+        self.assertFalse(hasattr(agent, "follow_up") or hasattr(agent.client, "follow_up"))
         minted = await self.agents.runtime.browser_token(agent.id, ttl_seconds=60)
         self.assertEqual(minted["agentId"], agent.id)
         self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{agent.id}/state", headers={"Authorization": f"Bearer {minted['token']}"})).status_code, 200)

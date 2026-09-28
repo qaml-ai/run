@@ -211,12 +211,13 @@ test("a process that connects with other tools than the agent has declares them;
   }, "the new tools to be declared");
 });
 
-test("steer and followUp are runs: with no turn running, each starts one and resolves with it", async t => {
+test("steer is a run: with no turn running, it starts one and resolves with it; run itself queues", async t => {
   const { make, r } = await setup(t, () => ({ role: "assistant", content: "noted" }));
   const agent = await make();
   assert.equal((await agent.steer("Also check the logs")).text, "noted");
-  assert.equal((await agent.followUp("And then summarize")).text, "noted");
-  assert.equal(r.model.bodies.length, 2);
+  assert.equal(r.model.bodies.length, 1);
+  assert.equal("followUp" in agent, false);
+  assert.equal("followUp" in agent.client, false);
 });
 
 test("the lower-level createAgent makes a scratch agent (a day's lifetime) unless the caller gives it a key", async t => {

@@ -1076,10 +1076,6 @@ class AgentClient:
         """The legacy steer request: a message held for the running turn. New code: prompt(text, while_running="steer")."""
         return await self._message("steer", text, from_=from_, files=files, metadata=metadata)
 
-    async def follow_up(self, text, *, from_=None, files=None, metadata=None):
-        """The legacy followUp request: a message held for after the running turn. New code: prompt(text)."""
-        return await self._message("followUp", text, from_=from_, files=files, metadata=metadata)
-
     async def _message(self, method, text, *, from_=None, files=None, metadata=None, idempotency_key=None, extra=None, **options):
         request_id = idempotency_key or str(uuid.uuid4())
         attached = await self._attach(request_id, files) if files else None
@@ -1475,10 +1471,6 @@ class Agent:
         """A message for the running turn, which reads it after its current step; with no turn running, it starts one.
         Returns the run that took it: run(text, while_running="steer")."""
         return await self.run(text, **options, while_running="steer")
-
-    async def follow_up(self, text, **options):
-        """A message that runs once the running turn ends (at once, if none runs): run(text), which queues."""
-        return await self.run(text, **options, while_running="queue")
 
     async def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None):
         """Change its model, instructions, thinking level or tools between runs."""

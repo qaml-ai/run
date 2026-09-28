@@ -1085,7 +1085,7 @@ export class AgentClient {
    * Send a message with its files: each is uploaded to the agent's workspace under the request's
    * id first, then attached by path. `images` (base64 blocks) are sent inline and saved as files.
    */
-  private async message(method: "prompt" | "steer" | "followUp", text: string, options: (RequestOptions & { files?: Attachment[]; images?: ImageContent[]; from?: Sender; metadata?: Record<string, string> }) | undefined, extra: Record<string, unknown> = {}) {
+  private async message(method: "prompt" | "steer", text: string, options: (RequestOptions & { files?: Attachment[]; images?: ImageContent[]; from?: Sender; metadata?: Record<string, string> }) | undefined, extra: Record<string, unknown> = {}) {
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
     return this.request(method, { text, ...(files ? { files } : {}), ...(options?.images ? { images: options.images } : {}), ...extra, ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}) }, { ...options, idempotencyKey: id });
@@ -1133,8 +1133,6 @@ export class AgentClient {
   continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }
   /** The legacy steer request: a message held for the running turn. New code: `prompt(text, { whileRunning: "steer" })`. */
   steer(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("steer", text, options); }
-  /** The legacy followUp request: a message held for after the running turn. New code: `prompt(text)`, which queues. */
-  followUp(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("followUp", text, options); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string }) {
     const { tools, mcp, ...rest } = options;

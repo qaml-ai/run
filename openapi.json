@@ -1612,7 +1612,6 @@
               "abort",
               "continue",
               "steer",
-              "followUp",
               "configure",
               "resume"
             ],

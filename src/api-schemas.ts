@@ -199,7 +199,7 @@ const Outcome = z.object({ result: z.unknown().optional(), error: z.string().opt
 
 export const RequestRecord = z.object({
   id: z.string(),
-  method: z.enum(["prompt", "execute", "status", "abort", "continue", "steer", "followUp", "configure", "resume"]).openapi({ description: "resume: the runtime continuing a turn that waited on human input, once its inputs settled" }),
+  method: z.enum(["prompt", "execute", "status", "abort", "continue", "steer", "configure", "resume"]).openapi({ description: "resume: the runtime continuing a turn that waited on human input, once its inputs settled" }),
   state: z.enum(["running", "completed"]),
   fingerprint: z.string(),
   startedAt: z.number().optional(),

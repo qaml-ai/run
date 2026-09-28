@@ -356,8 +356,6 @@ export class Agent {
    * no turn running, it starts one. Resolves with the run that took it: `run(text, { whileRunning: "steer" })`.
    */
   steer(text: string, options: Omit<RunOptions, "whileRunning"> = {}) { return this.run(text, { ...options, whileRunning: "steer" }); }
-  /** A message that runs once the running turn ends (at once, if none runs): `run(text)`, which queues. */
-  followUp(text: string, options: Omit<RunOptions, "whileRunning"> = {}) { return this.run(text, { ...options, whileRunning: "queue" }); }
   /** Change its model, instructions, thinking level or tools between runs. */
   configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp">) {
     const { instructions, ...rest } = config;

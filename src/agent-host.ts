@@ -565,14 +565,14 @@ export function createAgentHost(hostIO: HostIO) {
       // Part of it left to the log: the page reads the log instead.
       return backlog && backlog.kept === backlog.from ? { from: backlog.from, messages: backlog.messages, turns: backlog.turns } : null;
     }
-    if (method === "steer" || method === "followUp") {
+    if (method === "steer") {
       const messages = userMessages(params);
       // A prompt sent `whileRunning: "steer"`: only for the running turn, and only while it can still take it.
       if (params.whileRunning === "steer" && !steerable) return { steered: false };
       // Pi queues the rest whether or not a run is active; an idle queue drains into the next run.
       for (const message of messages) {
-        agent[method](message);
-        if (method === "steer") steers.push({ message, whileRunning: params.whileRunning === "steer" });
+        agent.steer(message);
+        steers.push({ message, whileRunning: params.whileRunning === "steer" });
       }
       return params.whileRunning === "steer" ? { steered: true } : { queued: true, running: busy };
     }

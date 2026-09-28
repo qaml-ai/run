@@ -3,7 +3,7 @@ export const FRAME_BYTES = 1_100_000;
 export type Outcome = { result: unknown; error?: never; uncertain?: never } | { error: string; uncertain?: boolean; result?: never };
 /** `expiresAt` is null for agents that live until deleted. */
 export interface SessionCredentials { id: string; token: string; expiresAt: number | null }
-export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "continue" | "steer" | "followUp" | "configure" | "resume";
+export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "continue" | "steer" | "configure" | "resume";
 export type RequestRecord = {
   id: string; startedAt?: number; endedAt?: number; prompt?: string; code?: string; fingerprint: string; method: RequestMethod;
   /** "running" covers queued runs too: a run has begun once `began` is set. */
@@ -18,7 +18,7 @@ export type RequestRecord = {
   actor?: string;
   /** A `resume` run's suspension: the run whose turn waited on human input, which this one continues. */
   suspension?: string;
-  /** The application's key-value data sent with a message (prompt, steer, followUp), also kept on the message. */
+  /** The application's key-value data sent with a message (prompt, steer), also kept on the message. */
   metadata?: Record<string, string>;
   /** A prompt sent with `whileRunning: "steer"` that a running turn took: that turn's request, whose outcome it shares. */
   steeredInto?: string;
