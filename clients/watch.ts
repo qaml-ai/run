@@ -84,32 +84,71 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>(resolve =>
  */
 export function parsePartialJson(text: string): any {
   try { return JSON.parse(text); } catch { /* cut off */ }
-  for (let end = text.length; end > 0; end--) {
-    const closed = close(text.slice(0, end));
-    if (closed === undefined) continue;
-    try { return JSON.parse(closed); } catch { /* shorter */ }
+  // One pass to find what is open, one repair, one parse: linear in the text, however it is cut.
+  const repaired = repair(text);
+  if (repaired !== undefined) {
+    try { return JSON.parse(repaired.text); } catch { /* something in it is not JSON */ }
+    // Leave out the member being written (an escape JSON does not allow, say), once.
+    if (repaired.retry !== undefined) try { return JSON.parse(repaired.retry); } catch { /* give up */ }
   }
   return {};
 }
-function close(text: string): string | undefined {
-  const stack: string[] = [];
-  let string = false, escaped = false;
-  for (const char of text) {
+
+type Frame = { close: "}" | "]"; state: "key" | "colon" | "value" | "after"; member: number };
+/** `text` closed where it was cut, and (for a retry) closed before the member it was writing. */
+function repair(text: string): { text: string; retry?: string } | undefined {
+  const stack: Frame[] = [];
+  let string: { start: number; key: boolean } | null = null, escaped = false;
+  let token: number | null = null;
+  const settle = () => { const frame = stack.at(-1); if (frame) frame.state = frame.state === "key" ? "colon" : "after"; };
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at];
     if (string) {
       if (escaped) escaped = false;
       else if (char === "\\") escaped = true;
-      else if (char === "\"") string = false;
-    } else if (char === "\"") string = true;
-    else if (char === "{" || char === "[") stack.push(char === "{" ? "}" : "]");
-    else if (char === "}" || char === "]") stack.pop();
+      else if (char === "\"") { string = null; settle(); }
+      continue;
+    }
+    if (token !== null) {
+      if (/[\w.+-]/.test(char)) continue;
+      token = null;
+      settle();
+    }
+    if (char === " " || char === "\n" || char === "\r" || char === "\t") continue;
+    const frame = stack.at(-1);
+    if (char === "{" || char === "[") stack.push({ close: char === "{" ? "}" : "]", state: char === "{" ? "key" : "value", member: at + 1 });
+    else if (char === "}" || char === "]") { stack.pop(); settle(); }
+    else if (char === ":") { if (frame) frame.state = "value"; }
+    else if (char === ",") { if (frame) { frame.state = frame.close === "}" ? "key" : "value"; frame.member = at; } }
+    else if (char === "\"") string = { start: at, key: frame?.close === "}" && frame.state === "key" };
+    else token = at;
   }
-  if (escaped) return undefined;
-  let out = string ? `${text}"` : text;
-  out = out.replace(/\s+$/, "");
-  if (/[,:]$/.test(out)) out = out.endsWith(":") ? `${out}null` : out.slice(0, -1);
-  // A key with no value yet ({"a": 1, "b"}): leave it out.
-  if (stack.at(-1) === "}" && /[{,]\s*"(?:[^"\\]|\\.)*"$/.test(out)) out = out.replace(/,?\s*"(?:[^"\\]|\\.)*"$/, "");
-  return out + stack.reverse().join("");
+  const frame = stack.at(-1);
+  const closers = () => stack.map(open => open.close).reverse().join("");
+  const before = (at: number) => text.slice(0, at).replace(/\s+$/, "");
+  let out: string;
+  if (string) {
+    if (!frame) return undefined;
+    // A key being written is left out; a value being written is closed (without a dangling escape).
+    if (string.key) out = before(frame.member);
+    else out = `${escaped ? text.slice(0, -1) : text}"`;
+  } else if (token !== null) {
+    const word = text.slice(token);
+    // A number is kept as far as it is one (-2. is -2); a literal only whole.
+    const number = /^-?\d+(\.\d+)?([eE][+-]?\d+)?/.exec(word)?.[0];
+    if (/^(true|false|null)$/.test(word)) out = text;
+    else if (number) out = text.slice(0, token) + number;
+    else if (frame?.close === "}") out = `${before(token)}null`;
+    else if (frame) out = before(frame.member);
+    else return undefined;
+  } else if (frame) {
+    const trimmed = before(text.length);
+    if (frame.state === "colon") out = before(frame.member);
+    else if (frame.state === "value" && frame.close === "}") out = `${trimmed}null`;
+    else if (trimmed.endsWith(",")) out = trimmed.slice(0, -1);
+    else out = trimmed;
+  } else return undefined;
+  return { text: out + closers(), ...(frame ? { retry: before(frame.member) + closers() } : {}) };
 }
 
 /** Fold one delta into the message it updates (a copy); `json` keeps each tool call's argument text. */

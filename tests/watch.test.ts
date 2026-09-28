@@ -16,6 +16,61 @@ test("partial JSON parses as far as it goes", () => {
   assert.deepEqual(parsePartialJson('{"a": 1}'), { a: 1 });
 });
 
+/** The quadratic parsePartialJson this repository had, as the reference for what every prefix parses to. */
+function referencePartialJson(text: string): any {
+  try { return JSON.parse(text); } catch { /* cut off */ }
+  for (let end = text.length; end > 0; end--) {
+    const closed = referenceClose(text.slice(0, end));
+    if (closed === undefined) continue;
+    try { return JSON.parse(closed); } catch { /* shorter */ }
+  }
+  return {};
+}
+function referenceClose(text: string): string | undefined {
+  const stack: string[] = [];
+  let string = false, escaped = false;
+  for (const char of text) {
+    if (string) { if (escaped) escaped = false; else if (char === "\\") escaped = true; else if (char === "\"") string = false; }
+    else if (char === "\"") string = true;
+    else if (char === "{" || char === "[") stack.push(char === "{" ? "}" : "]");
+    else if (char === "}" || char === "]") stack.pop();
+  }
+  if (escaped) return undefined;
+  let out = string ? `${text}"` : text;
+  out = out.replace(/\s+$/, "");
+  if (/[,:]$/.test(out)) out = out.endsWith(":") ? `${out}null` : out.slice(0, -1);
+  if (stack.at(-1) === "}" && /[{,]\s*"(?:[^"\\]|\\.)*"$/.test(out)) out = out.replace(/,?\s*"(?:[^"\\]|\\.)*"$/, "");
+  return out + stack.reverse().join("");
+}
+
+test("partial JSON: every prefix of real tool arguments parses as the previous implementation did", () => {
+  const samples = [
+    { code: "const rows = await tools.sales({ week: 38 });\nreturn rows.map(r => r.amount);", timeoutMs: 30000 },
+    { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU", description: "Frankfurt \"eu-1\"" }, { label: "US" }], multiSelect: false }] },
+    { a: [1, -2.5, 3e4, true, false, null, "x\\y\u00e9", { b: [] , c: {} }], d: "" },
+  ];
+  for (const sample of samples) {
+    for (const spaced of [JSON.stringify(sample), JSON.stringify(sample, null, 2)]) {
+      for (let end = 0; end <= spaced.length; end++) {
+        const prefix = spaced.slice(0, end);
+        assert.deepEqual(parsePartialJson(prefix), referencePartialJson(prefix), JSON.stringify(prefix));
+      }
+    }
+  }
+});
+
+test("partial JSON is linear: long arguments, or a bad escape early in them, parse at once", () => {
+  const long = `{"code": "${"x = 1;\\n".repeat(40_000)}`;
+  let started = performance.now();
+  assert.equal(parsePartialJson(long).code.length, 40_000 * 7);
+  assert.ok(performance.now() - started < 200, `long: ${Math.round(performance.now() - started)} ms`);
+  // An escape JSON does not allow, early in a long string: the old way tried every shorter prefix.
+  const bad = `{"n": 1, "code": "\\x${"a".repeat(50_000)}`;
+  started = performance.now();
+  assert.deepEqual(parsePartialJson(bad), { n: 1 });
+  assert.ok(performance.now() - started < 200, `bad escape: ${Math.round(performance.now() - started)} ms`);
+});
+
 test("the watcher is browser code: it bundles for a browser with nothing from Node", async () => {
   const result = await build({ entryPoints: [fileURLToPath(new URL("../clients/watch.ts", import.meta.url))], bundle: true, platform: "browser", format: "esm", write: false, logLevel: "silent" });
   assert.equal(result.errors.length, 0);
