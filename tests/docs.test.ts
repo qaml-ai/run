@@ -19,6 +19,8 @@ test("the docs are served without credentials: llms.txt, llms-full.txt and every
   assert.match(page.headers.get("content-type")!, /^text\/markdown/);
   assert.ok((await page.text()).length > 100);
   assert.equal((await get("/llms-full.txt")).status, 200);
+  // Every link in llms.txt to this runtime is served.
+  for (const [, url] of text.matchAll(/\((https:\/\/agents\.example\.test\/[^)]+)\)/g)) assert.equal((await get(new URL(url).pathname)).status, 200, url);
 
   // Sent as written (fetch would fold dot segments first): nothing outside docs/, nor the operators' pages, is served.
   const raw = (path: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {

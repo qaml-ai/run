@@ -34,4 +34,4 @@ error). Install `@camelai/agent-runtime` (npm) or `camelai-agent-runtime` (PyPI)
 
 ## Optional
 
-- [Full documentation](https://agents.camelai.dev/docs/llms-full.txt): every page above in one file
+- [Full documentation](https://agents.camelai.dev/llms-full.txt): every page above in one file

@@ -50,7 +50,7 @@ export function llmsTxt() {
       "",
     ]),
     "## Optional", "",
-    `- [Full documentation](${DOCS_URL}/llms-full.txt): every page above in one file`,
+    `- [Full documentation](${new URL("/llms-full.txt", DOCS_URL)}): every page above in one file`,
     "",
   ].join("\n");
 }
