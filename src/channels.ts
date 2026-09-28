@@ -48,12 +48,18 @@ export interface Inbound {
   command?: "start";
   /** Only handled when the conversation already has an agent: a reply in a thread that does not mention the bot. */
   continuation?: boolean;
+  /** What to call the conversation's agent when it is made (a pull request's title), instead of the sender. */
+  title?: string;
 }
 /** An attachment: `id` is the provider's reference to fetch it by; `size` and `contentType` as the service declares them. */
 export interface InboundFile { id: string; name: string; size?: number; contentType?: string }
 /** A file going out, read from its volume (a chunk at a time) when it is sent: at most the service's `maxFileBytes`. */
 export interface OutboundFile { name: string; contentType: string; size: number; blob(): Promise<Blob> }
 type Credentials = Record<string, string>;
+/** Non-secret, provider-specific configuration of a channel (which events start a turn, templates), as the provider validated it. */
+export type ChannelSettings = Record<string, unknown>;
+/** What a provider knows about the channel a delivery is for, besides the delivery itself. */
+export interface ParseContext { headers: Headers; account: Record<string, string>; settings: ChannelSettings }
 /**
  * What the core needs from a messaging service; everything provider-specific lives behind it.
  * A service delivers messages either to a webhook (`verify` and `parse`) or over a socket (`connect`).
@@ -65,11 +71,15 @@ export interface ChannelProvider {
   setup(credentials: Credentials, webhook: { url: string; secret: string }): Promise<{ account: Record<string, string>; masked: Record<string, string> }>;
   teardown(credentials: Credentials): Promise<void>;
   /** Whether a webhook delivery is genuine, proven with the channel's random secret or a credential the service signs with. */
-  verify?(headers: Headers, body: string, secret: string, credentials: Credentials): boolean;
+  verify?(headers: Headers, body: string, secret: string, credentials: Credentials): boolean | Promise<boolean>;
   /** What to answer a verified delivery that is a handshake (a URL-verification challenge) rather than a message. */
   handshake?(body: unknown): object | undefined;
   /** An inbound message, or undefined for updates the channel ignores. */
-  parse?(body: unknown): Inbound | undefined;
+  parse?(body: unknown, context: ParseContext): Inbound | undefined;
+  /** The largest webhook body the service sends (default 1 MB). */
+  readonly maxBodyBytes?: number;
+  /** Validate a channel's settings (`current` on an update, merged over by `input`); a provider without it takes none. */
+  settings?(input: ChannelSettings | undefined, current?: ChannelSettings): ChannelSettings;
   /** Hold a connection that delivers the channel's messages, reconnecting on its own, until closed. */
   connect?(credentials: Credentials, handlers: GatewayHandlers): Gateway;
   /** An attachment's bytes, from the service's own file host only. */
@@ -109,12 +119,14 @@ export interface Channel {
   access: { public: boolean; allow: string[] };
   limits: { perSenderPerMinute: number; turnsPerDay: number };
   greeting?: string;
+  /** Provider-specific configuration (see ChannelProvider.settings). */
+  settings?: ChannelSettings;
   account: Record<string, string>;
   masked: Record<string, string>;
   sealed: Sealed;
   createdAt: number; updatedAt: number;
 }
-export type ChannelInput = Partial<Pick<Channel, "name" | "definition" | "greeting">> & {
+export type ChannelInput = Partial<Pick<Channel, "name" | "definition" | "greeting" | "settings">> & {
   type?: string; credentials?: Credentials;
   access?: Partial<Channel["access"]>; limits?: Partial<Channel["limits"]>;
 };
@@ -290,14 +302,14 @@ export class Channels {
     const id = `ch_${randomBytes(10).toString("hex")}`;
     const secret = randomBytes(32).toString("hex");
     const webhookUrl = `${this.options.publicUrl}/channels/${type}/${id}`;
-    const settings = this.settings(input);
+    const settings = this.settings(provider, input);
     const { account, masked } = await provider.setup(input.credentials, { url: webhookUrl, secret });
     const now = Date.now();
     const name = input.name ?? `${provider.label} ${account.username ? `@${account.username}` : id}`;
     const channel: Channel = {
       id, tenant, type, name, ...(provider.verify ? { webhookUrl } : {}),
       definition: await this.definition(tenant, id, name, input), access: { public: false, allow: [], ...settings.access }, limits: { ...DEFAULT_LIMITS, ...settings.limits },
-      ...(settings.greeting ? { greeting: settings.greeting } : {}), account, masked,
+      ...(settings.greeting ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), account, masked,
       sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials: input.credentials, secret })), createdAt: now, updatedAt: now,
     };
     await this.db.query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]);
@@ -307,12 +319,12 @@ export class Channels {
   async update(tenant: string, id: string, input: ChannelInput) {
     const channel = await this.owned(tenant, id);
     if (input.type !== undefined && input.type !== channel.type) throw new HttpError(400, "A channel's type cannot change");
-    const settings = this.settings(input);
+    const settings = this.settings(this.provider(channel.type), input, channel.settings);
     const next: Channel = {
       ...channel, ...(input.name !== undefined ? { name: input.name } : {}),
       definition: await this.definition(tenant, id, input.name ?? channel.name, input, channel.definition),
       access: { ...channel.access, ...settings.access }, limits: { ...channel.limits, ...settings.limits },
-      ...(settings.greeting !== undefined ? { greeting: settings.greeting } : {}), updatedAt: Date.now(),
+      ...(settings.greeting !== undefined ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), updatedAt: Date.now(),
     };
     if (input.credentials) {
       const provider = this.provider(channel.type);
@@ -338,8 +350,10 @@ export class Channels {
     }
   }
 
-  private settings(input: ChannelInput) {
-    return { access: input.access, limits: input.limits, greeting: input.greeting };
+  private settings(provider: ChannelProvider, input: ChannelInput, current?: ChannelSettings) {
+    if (input.settings !== undefined && !provider.settings) throw new HttpError(400, `${provider.label} channels take no settings`);
+    const settings = provider.settings && (input.settings !== undefined || !current) ? provider.settings(input.settings, current) : undefined;
+    return { access: input.access, limits: input.limits, greeting: input.greeting, settings };
   }
 
   /**
@@ -357,20 +371,38 @@ export class Channels {
   readonly app = new Hono().post("/channels/:type/:id", async c => {
     const channel = await this.read(c.req.param("id"));
     if (!channel || channel.type !== c.req.param("type")) return c.body(null, 404);
-    let body: string;
-    try { body = await readText(c.req.raw.body, 1_000_000); } catch { return c.body(null, 413); }
     const provider = this.provider(channel.type);
     if (!provider.verify || !provider.parse) return c.body(null, 404);
+    let body: string;
+    try { body = await readText(c.req.raw.body, provider.maxBodyBytes ?? 1_000_000); } catch { return c.body(null, 413); }
     const { credentials, secret } = this.secrets(channel);
-    if (!provider.verify(c.req.raw.headers, body, secret, credentials)) return c.body(null, 401);
+    if (!await provider.verify(c.req.raw.headers, body, secret, credentials)) return c.body(null, 401);
     let payload: unknown, inbound: Inbound | undefined;
     try { payload = JSON.parse(body); } catch { return c.body(null, 400); }
     const handshake = provider.handshake?.(payload);
     if (handshake) return c.json(handshake);
-    try { inbound = provider.parse(payload); } catch { return c.body(null, 400); }
+    try { inbound = provider.parse(payload, { headers: c.req.raw.headers, account: channel.account, settings: channel.settings ?? {} }); } catch { return c.body(null, 400); }
     if (inbound) await this.accept(channel, inbound);
     return c.body(null, 200);
   });
+
+  /**
+   * A message that reached the runtime some other way than the channel's own webhook or
+   * gateway (a shared inbound address that serves many channels), already verified by
+   * whoever received it. False when there is no such channel.
+   */
+  async inbound(id: string, inbound: Inbound): Promise<boolean> {
+    const channel = await this.read(id);
+    if (!channel) return false;
+    await this.accept(channel, inbound);
+    return true;
+  }
+
+  /** A channel as stored, with its credentials, for a receiver outside this class (see `inbound`). */
+  async lookup(id: string): Promise<{ channel: Channel; credentials: Credentials } | undefined> {
+    const channel = await this.read(id);
+    return channel && { channel, credentials: this.secrets(channel).credentials };
+  }
 
   /** Record a message and start on it. Anything the channel does not handle, or from someone not allowed, is dropped. */
   private async accept(channel: Channel, inbound: Inbound) {
@@ -567,7 +599,7 @@ export class Channels {
     if (today > channel.limits.turnsPerDay) return today === channel.limits.turnsPerDay + 1 ? reply("This assistant has reached its limit for today. Please try again tomorrow.") : this.finish(current);
     const { credentials } = this.secrets(channel);
     void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
-    const agent = await this.agentFor(channel, item.conversationId, inbound.sender);
+    const agent = await this.agentFor(channel, item.conversationId, inbound.sender, inbound.title);
     // A reply to the question the agent waits on answers it; anything else is a new message, which supersedes it.
     if (await this.answerInput(channel, agent, inbound)) return this.finish(current);
     const prompt = this.prompt(channel, inbound, await this.attach(channel, credentials, agent, item.id, inbound.files ?? []));
@@ -732,11 +764,11 @@ export class Channels {
   }
 
   /** The conversation's agent, created on first contact (and again if it expired or was deleted). */
-  private async agentFor(channel: Channel, conversationId: string, sender: Sender) {
+  private async agentFor(channel: Channel, conversationId: string, sender: Sender, title?: string) {
     const stored = (await this.db.query("select agent, generation from channel_conversations where channel = $1 and conversation = $2", [channel.id, conversationId])).rows[0] as { agent: string; generation: number } | undefined;
     if (stored && await this.options.live(stored.agent, channel.tenant)) return stored.agent;
     const generation = stored ? stored.generation + 1 : 0;
-    const label = sender.username ? `@${sender.username}` : sender.name ?? sender.id;
+    const label = title ?? (sender.username ? `@${sender.username}` : sender.name ?? sender.id);
     const params = {
       definition: channel.definition,
       name: `${this.provider(channel.type).label}: ${label}`.slice(0, 120), type: "channel",

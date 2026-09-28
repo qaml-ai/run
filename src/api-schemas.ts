@@ -529,6 +529,7 @@ const channelFields = {
   access: ChannelAccess.optional(),
   limits: ChannelLimits.optional(),
   greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start (Telegram)" }),
+  settings: z.record(z.string(), z.unknown()).optional().openapi({ description: "Configuration particular to the channel's type; types without any reject it" }),
 };
 export const ChannelInput = z.object({ type: z.enum(["telegram", "slack", "discord"]), ...channelFields, credentials: channelFields.credentials.unwrap() }).openapi("ChannelInput");
 export const ChannelUpdate = z.object(channelFields).openapi("ChannelUpdate");
@@ -542,6 +543,7 @@ export const Channel = z.object({
   access: z.object({ public: z.boolean(), allow: z.array(z.string()) }),
   limits: z.object({ perSenderPerMinute: z.number(), turnsPerDay: z.number() }),
   greeting: z.string().optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
   account: z.record(z.string(), z.string()).openapi({ description: "The bot's identity at the provider" }),
   credentials: z.record(z.string(), z.string()).openapi({ description: "Masked credentials" }),
   createdAt: z.number(),
