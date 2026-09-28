@@ -173,6 +173,46 @@ test("a run a drain left queued runs on another node's sweep, with no one readin
   assert.match(JSON.stringify(model.bodies[1].messages), /second/);
 });
 
+test("a full node's sweep leaves an orphaned turn for a node with room, and never fails it for capacity", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  // The orphan's first call hangs on A (which dies); B's own agent holds B's one slot until the gate opens.
+  const model = await fakeModel(t, async (body, index) => {
+    const asked = JSON.stringify(body.messages);
+    if (asked.includes("orphan-turn") && index === 0) return undefined;
+    if (asked.includes("occupy")) await gate.promise;
+    return { role: "assistant", content: "done" };
+  });
+  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: "300", AGENT_IDLE_MS: "1000" };
+  const a = await c.start("a", env);
+  const b = await c.start("b", { ...env, AGENT_MAX_AGENTS: "1", AGENT_MAX_AGENTS_PER_TENANT: "1" });
+  const call = (base: string, path: string, body?: unknown) => fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
+  const orphan = (await call(a.url, "/v1/agents", {})).id as string;
+  await call(a.url, `/v1/agents/${orphan}/prompt`, { text: "orphan-turn", requestId: "turn-1" });
+  await until(() => model.bodies.length === 1, "A to call the model");
+  const busy = (await call(b.url, "/v1/agents", {})).id as string;
+  await call(b.url, `/v1/agents/${busy}/prompt`, { text: "occupy", requestId: "occupy" });
+  await until(() => model.bodies.length === 2, "B's own turn to take its slot");
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  // B sweeps several times while full: the orphan's turn must not end.
+  await sleep(1500 + 3_000);
+  // A read loads it on B all the same: its run finds no room, and B hands it back, still pending.
+  const read = await call(b.url, `/v1/agents/${orphan}/state`);
+  assert.equal(read.requests.find((request: any) => request.id === "turn-1").state, "running");
+  await until(async () => (await c.db.query("select pending_runs from agents where id = $1", [orphan])).rows[0].pending_runs && !await c.owner(orphan), "B to hand it back, pending");
+  const handed = (await c.db.query("select header from agents where id = $1", [orphan])).rows[0];
+  assert.ok(handed);
+  gate.resolve();
+  await until(async () => (await call(b.url, `/v1/agents/${orphan}/state`)).requests?.find((request: any) => request.id === "turn-1")?.state === "completed", "the orphan's turn to resume once B has room", 30_000);
+  const outcome = (await call(b.url, `/v1/agents/${orphan}/state`)).requests.find((request: any) => request.id === "turn-1").outcome;
+  assert.equal(outcome.error, undefined, JSON.stringify(outcome));
+  const resumed = (await call(b.url, `/v1/agents/${orphan}/state`)).requests.find((request: any) => request.id === "turn-1");
+  assert.equal(resumed.resumes, 1, "handing it back spent no resume");
+  assert.equal((await c.db.query("select pending_runs from agents where id = $1", [orphan])).rows[0].pending_runs, false, "loaded, it is no longer pending");
+});
+
 test("a volume is served by one node: other nodes forward to it, agents anywhere reach it, and a survivor takes over", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const a = await c.start("a");

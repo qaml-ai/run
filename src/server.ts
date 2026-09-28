@@ -306,7 +306,7 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 // Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
 const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
-  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, watcherLimitFor: tenant => tenants.maxWatchers(tenant), agentLimitFor: async tenant => {
+  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), agentLimitFor: async tenant => {
     // An admin's limit for the tenant, else, on free credit, the free limit (never above the default).
     const free = tenants.maxAgents(tenant) === undefined ? await accounts.billing.agentLimit(tenant) : undefined;
     return tenants.maxAgents(tenant) ?? (free === undefined ? undefined : Math.min(free, maxAgentsPerTenant));

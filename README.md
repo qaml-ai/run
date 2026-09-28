@@ -117,8 +117,13 @@ hourly sweep drops any a dead node left.
 owner died mid-turn, or a drain left runs queued for the next owner) resumes when
 a node loads it: any request for it, a read of it included, or a sweep every node
 runs (`AGENT_ORPHAN_SWEEP_MS`, default 30 s, 0 for none) that loads up to 10 such
-agents at a time. So a turn finishes even when no application or tab is there to
-reconnect.
+agents at a time, and no more than the node has free agent slots. So a turn
+finishes even when no application or tab is there to reconnect. A node that took
+such runs over but has no room to run them (every slot busy, or the tenant's)
+gives the agent back, still pending, for a node with room, rather than failing
+them. An agent that fails to load is tried again after a backoff (the sweep's
+interval, doubling), and after 5 failures no more: an `agent_resume_abandoned`
+error is logged once, and reads of it answer from storage.
 
 **Deleting agents.** `DELETE /v1/agents/:id` (or `/clients/:id`) revokes the
 agent, stops it and unloads it at once. A sweep every node runs

@@ -91,6 +91,10 @@ type Session = {
   watchers: Set<ServerResponse>;
   /** Long polls waiting for the next event. */
   polls: Set<() => void>;
+  /** Runs this node took over at load (queued by a drain, or a turn a dead node left): handed back, not failed, if it has no room (`handBack`). */
+  inherited?: Set<string>;
+  /** Given back for a node with room to take: nothing more runs here. */
+  handedBack?: true;
   /** The assistant message streaming now, as its latest message_update carried it. */
   partial?: unknown;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
@@ -170,6 +174,8 @@ const MAX_BUFFERED_EVENTS = 512;
 const MAX_WATCHERS = 32;
 const MAX_TENANT_WATCHERS = 1024;
 const MAX_NODE_WATCHERS = 4096;
+/** Failed loads of an agent with work left before sweeps and reads stop trying (see `resumeFailed`). */
+const MAX_RESUME_FAILURES = 5;
 /** How often an idle watcher's agent is checked for an owner elsewhere, should its load's notice be missed. */
 const IDLE_CHECK_MS = 20_000;
 /** A long poll waits at most this long for an event. */
@@ -247,6 +253,8 @@ export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
   /** Read-only subscribers (watchers and waiting polls) one agent's event stream may have at once (default 32), a tenant's agents on this node (1024), and this node (4096). */
   maxWatchers?: number; maxTenantWatchers?: number; maxNodeWatchers?: number;
+  /** How often nodes sweep for agents with work left (`resumeOrphans`): the unit of a failed load's backoff. */
+  orphanSweepMs?: number;
   /** A tenant's own bound on its read-only subscribers on this node, instead of `maxTenantWatchers`; read at each subscribe. */
   watcherLimitFor?: (tenant: string) => number | undefined;
   /** Headers and the tenant index. */
@@ -484,6 +492,7 @@ export class ClientSessions {
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
     this.sessions.set(id, session);
     this.loaded(session);
+    session.inherited = new Set([...resumed, ...queued].map(record => record.id));
     for (const record of resumed) { session.resuming.add(record.id); this.enqueue(session, record, undefined); }
     for (const record of queued.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) this.enqueue(session, record, record.params);
     return session;
@@ -689,6 +698,9 @@ export class ClientSessions {
   /** A session loaded here: it takes up its idle watchers and polls, and other nodes end theirs (they reconnect here). */
   private loaded(session: Session) {
     const id = session.header.id;
+    // Its runs are this node's now, so no sweep need look at it (a crash of this node is its dead owner, which sweeps catch),
+    // and a load that had failed before has succeeded.
+    void underClaim(this.db, session.claim, sql => sql.query("update agents set pending_runs = false, resume_failures = 0, resume_after = null where id = $1", [id])).catch(() => {});
     const entry = this.idle.get(id);
     if (entry) {
       this.idle.delete(id);
@@ -1422,12 +1434,16 @@ export class ClientSessions {
   async stateFor(id: string, tenant: string) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
     // One with work left is loaded (resuming it), and answers from its session.
-    if (this.unloaded(id) && !await this.orphaned(id)) {
+    const orphaned = this.unloaded(id) && await this.orphaned(id);
+    if (this.unloaded(id) && !orphaned) {
       // Its cursor is where a stream of it picks up (see `idleCursor`); undefined: a node has just taken it.
       const cursor = await this.idleCursor(id);
       if (cursor !== undefined && this.unloaded(id)) return { cursor, requests: await this.storedRequests(id) };
     }
-    const session = await this.load(id);
+    const session = await this.load(id).catch(error => {
+      if (orphaned && !(error instanceof NotOwner)) void this.resumeFailed(id, error);
+      throw error;
+    });
     if (!session) throw new HttpError(404, "Unknown agent");
     return { cursor: session.cursor, requests: [...session.requests.values()].map(visible) };
   }
@@ -1457,15 +1473,48 @@ export class ClientSessions {
    */
   private async orphaned(id: string) {
     const { rows } = await this.db.query(`
-      select a.pending_runs or (o.session is not null and not exists (
-        select from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())) as orphaned
-      from agents a left join actor_owners o on o.actor = a.id where a.id = $1`, [id]);
+      select (a.pending_runs or (o.session is not null and not exists (
+        select from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())))
+        and a.resume_failures < $2 and (a.resume_after is null or a.resume_after <= $3) as orphaned
+      from agents a left join actor_owners o on o.actor = a.id where a.id = $1`, [id, MAX_RESUME_FAILURES, Date.now()]);
     return !!rows[0]?.orphaned;
   }
 
-  /** Load an agent with work left, in the background; a failed load is tried again by the next read or sweep. */
+  /** Load an agent with work left, in the background; a failed load is tried again later (see `resumeFailed`). */
   private resumeSoon(id: string) {
-    void this.load(id).catch(error => console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, error: errorText(error) })));
+    void this.load(id).catch(error => { if (!(error instanceof NotOwner)) void this.resumeFailed(id, error); });
+  }
+
+  /**
+   * A load of an agent with work left failed: it is tried again no sooner than a backoff (the sweep's
+   * interval, doubling), and after MAX_RESUME_FAILURES not at all, by sweeps or by reads, which then read
+   * storage. A successful load starts the count over.
+   */
+  private async resumeFailed(id: string, error: unknown) {
+    const base = this.options.orphanSweepMs || 30_000;
+    const { rows } = await this.db.query(`update agents set resume_failures = resume_failures + 1, resume_after = $2 + $3 * power(2, resume_failures)::bigint
+      where id = $1 returning resume_failures`, [id, Date.now(), base]).catch(() => ({ rows: [] as { resume_failures: number }[] }));
+    const failures = rows[0]?.resume_failures;
+    if (failures === MAX_RESUME_FAILURES) console.error(JSON.stringify({ type: "agent_resume_abandoned", level: "error", agent: id, failures, error: errorText(error) }));
+    else console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, failures, error: errorText(error) }));
+  }
+
+  /**
+   * Give an agent back that this node took over but has no room to run (every slot busy, or its tenant's):
+   * its taken-over runs stay open, its resumes are not spent, and it is marked for a node with room.
+   */
+  private async handBack(session: Session) {
+    if (session.handedBack) return;
+    session.handedBack = true;
+    for (const id of session.resuming) {
+      const record = session.requests.get(id);
+      if (record?.resumes) this.upsertRequest(session, { ...record, resumes: record.resumes - 1 });
+    }
+    await this.commit(session, true).catch(() => {});
+    this.idleWatchers(session);
+    session.response?.end();
+    console.log(JSON.stringify({ type: "agent_handed_back", agent: session.header.id, runs: session.running.size }));
+    await this.unload(session);
   }
 
   /**
@@ -1474,20 +1523,26 @@ export class ClientSessions {
    */
   async resumeOrphans(limit = 10) {
     if (this.closed || this.draining) return 0;
+    // Only as many as this node has room to run: a node with none leaves them to one that has.
+    const supervisor = this.supervisor;
+    const free = (supervisor.options.maxAgents ?? 8) - supervisor.agents.size - supervisor.starting.size - supervisor.reserved.size;
+    if (free <= 0) return 0;
+    limit = Math.min(limit, free);
     const { rows } = await this.db.query(`
       select a.id from agents a
       where not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $1)
+        and a.resume_failures < $3 and (a.resume_after is null or a.resume_after <= $1)
         and a.id in (
           select id from agents where pending_runs
           union
           select o.actor from actor_owners o where o.session is not null and o.actor like 'client\\_%'
             and not exists (select from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now()))
-      order by random() limit $2`, [Date.now(), limit]);
+      order by random() limit $2`, [Date.now(), limit, MAX_RESUME_FAILURES]);
     let loaded = 0;
     for (const { id } of rows) {
       if (this.sessions.has(id) || this.loading.has(id)) continue;
       try { if (await this.load(id)) loaded++; }
-      catch (error) { if (!(error instanceof NotOwner)) console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, error: errorText(error) })); }
+      catch (error) { if (!(error instanceof NotOwner)) await this.resumeFailed(id, error); }
     }
     if (loaded) console.log(JSON.stringify({ type: "agents_resumed", count: loaded }));
     return loaded;
@@ -2083,7 +2138,7 @@ export class ClientSessions {
   private async run(session: Session, record: RequestRecord, params: unknown) {
     let value: Outcome;
     try {
-      if (QUEUED_METHODS.includes(record.method) && (this.closed || this.draining || session.fault || session.requests.get(record.id)?.state !== "running")) return;
+      if (QUEUED_METHODS.includes(record.method) && (this.closed || this.draining || session.fault || session.handedBack || session.requests.get(record.id)?.state !== "running")) return;
       // Configuration keeps its params when it begins: the next owner replays one that was interrupted.
       if (record.method === "configure") record = this.upsertRequest(session, { ...record, began: Date.now() });
       if (RUN_METHODS.includes(record.method)) {
@@ -2092,8 +2147,13 @@ export class ClientSessions {
           const limited = await this.runLimit(session, record.method);
           if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
         }
-        await this.ensureStarted(session);
-        if (this.draining) return;
+        try { await this.ensureStarted(session); }
+        catch (error) {
+          // No room here for a run this node took over: another node with room takes it (see `handBack`).
+          if (this.options.ownership && session.inherited?.has(record.id) && [429, 503].includes((error as { status?: number }).status ?? 0)) { await this.handBack(session); return; }
+          throw error;
+        }
+        if (this.draining || session.handedBack) return;
         // Durable before any side effect: after a crash this run is "began", never repeated.
         const { params: _params, ...rest } = session.requests.get(record.id)!;
         record = this.upsertRequest(session, { ...rest, began: Date.now() });

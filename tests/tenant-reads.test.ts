@@ -97,3 +97,22 @@ test("an idle agent's history, state and inputs are read without loading it", { 
   const poll = await fetch(`${r.base}/v1/agents/${agent}/events?poll=1`, { headers: { Authorization: `Bearer ${OPERATOR}`, "Last-Event-ID": String(cursor) } });
   assert.equal(poll.status, 200);
 });
+
+test("an agent with work left that cannot be loaded is retried with backoff, then no more, and reads of it do not retry", { timeout: 60_000 }, async t => {
+  const r = await runtime(t, () => ({ content: "hello" }), { AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "200" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(agent, "hi");
+  await until(async () => !(await r.db.query("select node from actor_owners where actor = $1", [agent])).rows[0]?.node, "the idle agent to be released", 20_000);
+  // Work left, and a header no node can load.
+  await r.db.query("update agents set pending_runs = true, header = jsonb_set(header::jsonb, '{version}', '99')::json where id = $1", [agent]);
+  const failures = async () => (await r.db.query("select resume_failures from agents where id = $1", [agent])).rows[0].resume_failures as number;
+  await until(async () => await failures() === 5, "the sweeps to give up", 30_000);
+  await sleep(2_000);
+  assert.equal(await failures(), 5, "no more tries");
+  // Reads answer from storage at once instead of trying to load it again.
+  const started = Date.now();
+  assert.equal((await r.call(`/v1/agents/${agent}/history`)).status, 200);
+  assert.equal((await r.call(`/v1/agents/${agent}/state`)).status, 200);
+  assert.ok(Date.now() - started < 2_000);
+  assert.equal(await failures(), 5);
+});
