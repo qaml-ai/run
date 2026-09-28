@@ -3081,7 +3081,7 @@
           },
           "webhookUrl": {
             "type": "string",
-            "description": "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Discord channels have none: they connect to Discord's gateway"
+            "description": "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Discord channels have none: they connect to Discord's gateway. Paste GitHub's into the app's Webhook URL"
           },
           "definition": {
             "type": "string",
@@ -3122,6 +3122,10 @@
           },
           "greeting": {
             "type": "string"
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": {}
           },
           "account": {
             "type": "object",
@@ -3165,7 +3169,8 @@
             "enum": [
               "telegram",
               "slack",
-              "discord"
+              "discord",
+              "github"
             ]
           },
           "name": {
@@ -3225,6 +3230,11 @@
             "minLength": 1,
             "maxLength": 4096,
             "description": "Reply to /start (Telegram)"
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }"
           }
         },
         "required": [
@@ -3246,7 +3256,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. Stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -3293,6 +3303,11 @@
             "minLength": 1,
             "maxLength": 4096,
             "description": "Reply to /start (Telegram)"
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }"
           }
         }
       },

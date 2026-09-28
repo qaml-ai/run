@@ -58,11 +58,8 @@ export interface Inbound {
    */
   coalesce?: { key: string; debounceMs: number };
 }
-/**
- * An attachment: `id` is the provider's reference to fetch it by; `size` and `contentType` as the service declares them.
- * A file that came inside the delivery itself carries its bytes as `content` (base64) and is saved without a download.
- */
-export interface InboundFile { id: string; name: string; size?: number; contentType?: string; content?: string }
+/** An attachment: `id` is the provider's reference to fetch it by; `size` and `contentType` as the service declares them. */
+export interface InboundFile { id: string; name: string; size?: number; contentType?: string }
 /** A file going out, read from its volume (a chunk at a time) when it is sent: at most the service's `maxFileBytes`. */
 export interface OutboundFile { name: string; contentType: string; size: number; blob(): Promise<Blob> }
 type Credentials = Record<string, string>;
@@ -81,7 +78,7 @@ export interface ChannelProvider {
   setup(credentials: Credentials, webhook: { url: string; secret: string }): Promise<{ account: Record<string, string>; masked: Record<string, string> }>;
   teardown(credentials: Credentials): Promise<void>;
   /** Whether a webhook delivery is genuine, proven with the channel's random secret or a credential the service signs with. */
-  verify?(headers: Headers, body: string, secret: string, credentials: Credentials, settings: ChannelSettings): boolean | Promise<boolean>;
+  verify?(headers: Headers, body: string, secret: string, credentials: Credentials): boolean | Promise<boolean>;
   /** What to answer a verified delivery that is a handshake (a URL-verification challenge) rather than a message. */
   handshake?(body: unknown): object | undefined;
   /** An inbound message, or undefined for updates the channel ignores. */
@@ -90,8 +87,6 @@ export interface ChannelProvider {
   readonly maxBodyBytes?: number;
   /** Validate a channel's settings (`current` on an update, merged over by `input`); a provider without it takes none. */
   settings?(input: ChannelSettings | undefined, current?: ChannelSettings): ChannelSettings;
-  /** Access and limits a new channel of this type starts with, before the ones it is created with. */
-  readonly defaults?: { access?: Partial<Channel["access"]>; limits?: Partial<Channel["limits"]> };
   /** Hold a connection that delivers the channel's messages, reconnecting on its own, until closed. */
   connect?(credentials: Credentials, handlers: GatewayHandlers): Gateway;
   /** An attachment's bytes, from the service's own file host only. */
@@ -322,7 +317,7 @@ export class Channels {
     const name = input.name ?? `${provider.label} ${account.username ? `@${account.username}` : id}`;
     const channel: Channel = {
       id, tenant, type, name, ...(provider.verify ? { webhookUrl } : {}),
-      definition: await this.definition(tenant, id, name, input), access: { public: false, allow: [], ...provider.defaults?.access, ...settings.access }, limits: { ...DEFAULT_LIMITS, ...provider.defaults?.limits, ...settings.limits },
+      definition: await this.definition(tenant, id, name, input), access: { public: false, allow: [], ...settings.access }, limits: { ...DEFAULT_LIMITS, ...settings.limits },
       ...(settings.greeting ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), account, masked,
       sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials: input.credentials, secret })), createdAt: now, updatedAt: now,
     };
@@ -390,7 +385,7 @@ export class Channels {
     let body: string;
     try { body = await readText(c.req.raw.body, provider.maxBodyBytes ?? 1_000_000); } catch { return c.body(null, 413); }
     const { credentials, secret } = this.secrets(channel);
-    if (!await provider.verify(c.req.raw.headers, body, secret, credentials, channel.settings ?? {})) return c.body(null, 401);
+    if (!await provider.verify(c.req.raw.headers, body, secret, credentials)) return c.body(null, 401);
     let payload: unknown, inbound: Inbound | undefined;
     try { payload = JSON.parse(body); } catch { return c.body(null, 400); }
     const handshake = provider.handshake?.(payload);
@@ -658,7 +653,7 @@ export class Channels {
       names.add(name);
       let size = 0;
       try {
-        const { body, contentType } = file.content !== undefined ? { body: [Buffer.from(file.content, "base64")], contentType: undefined } : await provider.download(credentials, file);
+        const { body, contentType } = await provider.download(credentials, file);
         const counted = async function* () {
           for await (const chunk of body) {
             if ((size += chunk.length) > limit) throw new Error("too large");

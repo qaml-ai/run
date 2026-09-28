@@ -1,7 +1,7 @@
 # Channels
 
-A channel lets people talk to agents from a messaging service: Telegram, Slack or
-Discord. Tenants manage channels with `/v1/channels` or the console's Channels page:
+A channel lets people talk to agents from a messaging service (Telegram, Slack or
+Discord), or has agents answer activity on GitHub. Tenants manage channels with `/v1/channels` or the console's Channels page:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -19,6 +19,7 @@ the channel.
 | `telegram` | `botToken` | webhook, registered for you | a chat |
 | `slack` | `botToken` (`xoxb-…`), `signingSecret` | webhook, pasted into the app | a thread started by an @mention, or a DM |
 | `discord` | `botToken` | the Gateway (a WebSocket) | a DM, or a channel or thread where the bot is @mentioned |
+| `github` | `appId`, `privateKey`, `webhookSecret` | webhook, pasted into the GitHub App | a pull request or issue |
 
 Creating a channel checks its credentials with the service. Credentials and a
 random webhook secret are stored encrypted; the API returns only masked values.
@@ -51,7 +52,37 @@ random webhook secret are stored encrypted; the API returns only masked values.
   logged with its id. Once the token is saved, the console shows an invite link
   and a test mention to paste into Discord.
 
-What all three share:
+- **GitHub.** Create a GitHub App with the repository permissions Pull requests
+  (read and write), Issues (read and write), Contents (read) and Metadata (read),
+  subscribe it to Pull request, Issue comment, Pull request review comment (and
+  Issues, if you choose `issues.opened`), generate a private key, set a webhook
+  secret, and install it on the repositories it should see. Create the channel
+  with the App ID, the private key (PEM) and the secret, which the runtime checks
+  by calling `GET /app` with a JWT the key signs; then paste the channel's
+  `webhookUrl` into the app's Webhook URL. Deliveries must carry a valid
+  `X-Hub-Signature-256` and are deduplicated by `X-GitHub-Delivery`; pings are
+  answered. Each pull request or issue gets its own agent. The prompt describes
+  the event (marked `[From GitHub]`) and a pull request's current diff is
+  attached as `pr-<n>.diff`. The reply is a comment on the pull request or issue,
+  posted with an installation token scoped to the app's installation; files are
+  sent as links. Nothing the app does itself (its comments, pushes by its token)
+  starts a turn. The channel's `settings` choose what does:
+
+  | Setting | Default | Meaning |
+  | --- | --- | --- |
+  | `events` | all but `issues.opened` | Some of `pull_request.opened`, `pull_request.reopened`, `pull_request.ready_for_review`, `pull_request.synchronize` (new commits), `issue_comment` and `pull_request_review_comment` (comments that @mention the app), `issues.opened` |
+  | `repos` | every repository the app is installed on | `owner/repo` or `owner/*` |
+  | `ignoreDrafts` | `true` | Draft pull requests start nothing until marked ready |
+  | `reply` | `comment` | `none`: replies and `send_message` are not posted; the agent acts through its tools (a GitHub MCP server in its definition, say) |
+  | `authors` | `allowlist` | `members`: repository owners, members and collaborators need no allowlist entry |
+  | `debounceSeconds` | `30` | New commits wait this long for more; a burst of pushes starts one turn, on the latest |
+
+  The allowlist takes GitHub logins. Pull requests, issues and comments are
+  written by whoever can open them, which on a public repository is anyone: treat
+  them as untrusted input (prompt injection), keep `access.public` off, and give
+  the agent's tools no more than the conversation needs.
+
+What they all share:
 
 - Each external conversation gets its own agent, made on first contact from
   the channel's definition, at its revision then.
