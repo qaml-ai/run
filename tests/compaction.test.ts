@@ -95,6 +95,26 @@ test("long conversations compact into a summary; history stays complete and the 
   assert.match(text(fake.chat().at(-1)!), /SUMMARY-MARKER/);
 });
 
+test("a message whose request the history already holds is not taken again, even once compaction folded it away and the agent restarted", async t => {
+  // A prompt sent with whileRunning: "steer" that a running turn took stays queued until that turn ends; if the node
+  // stops first, the next owner runs the prompt, which must find its message in the history, not only in the working set.
+  const fake = await provider(t);
+  const supervisor = await fixture(t);
+  const model = fake.model(8000);
+  await supervisor.start("steered", { model, apiKey: "fixture" }, bridge);
+  await supervisor.request("steered", "prompt", { text: turn(0), requestId: "steer-1" });
+  for (let index = 1; index < 5; index++) await supervisor.request("steered", "prompt", { text: turn(index) });
+  assert.doesNotMatch(text(fake.chat().at(-1)!), /TURN-0 /, "compaction folded the message out of the working set");
+  await supervisor.stop("steered");
+  await supervisor.start("steered", { model, apiKey: "fixture" }, bridge);
+  const calls = fake.chat().length;
+  const again = await supervisor.request("steered", "prompt", { text: turn(0), requestId: "steer-1" });
+  assert.equal(again.taken, true);
+  assert.equal(fake.chat().length, calls, "no model call");
+  const history = (await supervisor.request("steered", "history")).messages;
+  assert.equal(history.filter((message: any) => message.requestId === "steer-1").length, 1, "recorded once");
+});
+
 test("a transcript written by pi 0.80.6 loads, replays its tool history and summary, and keeps compacting", async t => {
   const fake = await provider(t);
   const root = await mkdtemp(join(tmpdir(), "compaction-legacy-"));

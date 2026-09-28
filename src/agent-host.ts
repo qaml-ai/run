@@ -547,8 +547,8 @@ export function createAgentHost(io: HostIO) {
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
     if (persistenceError) throw new Error(`Session persistence failed: ${String(persistenceError)}`);
-    // A prompt a turn took as a steer before the node running it stopped: it is in the history already.
-    if (method === "prompt" && params.requestId && transcript.context.some(message => message.role === "user" && (message as { requestId?: string }).requestId === params.requestId)) {
+    // A prompt a turn took as a steer before the node running it stopped: it is in the history already, compacted or not.
+    if (method === "prompt" && params.requestId && transcript.requests.has(params.requestId)) {
       return { messages: transcript.total, error: null, taken: true };
     }
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;

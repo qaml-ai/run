@@ -79,6 +79,9 @@ function userTurns(from: number, messages: AgentMessage[]) {
  * its cut. Earlier messages stay in the log (for history) but not in memory, so an
  * agent's memory and load time stop growing with its age.
  */
+/** The request a user message was sent by, if it names one. */
+const requestOf = (message: AgentMessage) => message.role === "user" ? (message as { requestId?: string }).requestId : undefined;
+
 export class Transcript {
   /** Messages at absolute indexes `offset` .. `total - 1`. */
   context: AgentMessage[] = [];
@@ -95,6 +98,8 @@ export class Transcript {
   turnStart = 0;
   /** Tool calls waiting on a person's input, in the order they were suspended. */
   awaiting: string[] = [];
+  /** The requests whose user messages the whole log holds (compacted ones included): a request's message is taken once. */
+  requests = new Set<string>();
   /** What the history index lacks, kept while this transcript is written; undefined when nothing indexes it. */
   backlog?: Backlog;
   readonly log: AppendLog<TranscriptRecord>;
@@ -157,10 +162,15 @@ export class Transcript {
       }
       this.context.push(record.message);
       this.total++;
+      const request = requestOf(record.message);
+      if (request) this.requests.add(request);
       if (record.message.role === "toolResult") this.awaiting = this.awaiting.filter(id => id !== (record.message as { toolCallId: string }).toolCallId);
     }
     else if (record.t === "retract") {
-      if (this.context.pop()) {
+      const popped = this.context.pop();
+      if (popped) {
+        const request = requestOf(popped);
+        if (request) this.requests.delete(request);
         this.total--;
         if (backlog && this.total >= backlog.kept && this.total === backlog.kept + backlog.messages.length - 1) {
           backlog.messages.pop();
@@ -187,6 +197,7 @@ export class Transcript {
         if (backlog.bytes > this.bound) this.spill(backlog);
       }
       this.total = record.messages.length;
+      this.requests = new Set(record.messages.map(requestOf).filter((request): request is string => !!request));
       this.compaction = record.compaction;
       this.context = record.messages.slice(record.compaction?.cut ?? 0);
       this.system = undefined;
