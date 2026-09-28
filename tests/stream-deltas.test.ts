@@ -34,12 +34,12 @@ test("message_update carries its delta alone; a subscriber that asks gets a snap
   const events = `${r.base}/v1/agents/${agent}/events`;
   const auth = { Authorization: `Bearer ${OPERATOR}` };
 
-  const plain = await watchEvents(t, events, auth, { query: "" });
+  const plain = await watchEvents(t, events, auth, { query: "snapshot=0" });
   const asking = await watchEvents(t, events, auth, { query: "snapshot=1" });
   // With nothing to replay from, a subscriber that asks starts from a snapshot: no turn runs yet.
   const idle = await until(() => asking.frames.find(frame => frame.data.type === "snapshot"), "the first snapshot");
   assert.equal(idle.data.turn, null);
-  assert.equal(plain.frames.some(frame => frame.data.type === "snapshot"), false, "one that does not ask gets none");
+  assert.equal(plain.frames.some(frame => frame.data.type === "snapshot"), false, "one that opts out gets none");
 
   const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go" } });
   const requestId = accepted.json.id;
@@ -49,7 +49,11 @@ test("message_update carries its delta alone; a subscriber that asks gets a snap
   const late = await watchEvents(t, events, auth, { query: "snapshot=1" });
   const behind = await watchEvents(t, events, auth, { query: "snapshot=1", cursor: 1 });
   const polled = await (await fetch(`${events}?poll=1&snapshot=1`, { headers: auth })).json() as any;
-  assert.equal((await watchEvents(t, events, auth, { query: "", cursor: 1 })).status, 409, "without asking, a gap is a 409, as it always was");
+  assert.equal((await watchEvents(t, events, auth, { query: "snapshot=0", cursor: 1 })).status, 409, "opting out, a gap is a 409, as it always was");
+  const defaulted = await watchEvents(t, events, auth, { query: "", cursor: 1 });
+  assert.equal((await until(() => defaulted.frames.find(frame => frame.data.type === "snapshot"), "a snapshot by default")).data.requestId, requestId);
+  const defaultPoll = await (await fetch(`${events}?poll=1`, { headers: { ...auth, "Last-Event-ID": "1" } })).json() as any;
+  assert.equal(defaultPoll.events[0].data.type, "snapshot", "a poll too");
   for (const watcher of [late, behind]) {
     const snapshot = (await until(() => watcher.frames.find(frame => frame.data.type === "snapshot"), "a snapshot")).data;
     assert.equal(snapshot.requestId, requestId);

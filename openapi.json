@@ -5438,12 +5438,13 @@
             "schema": {
               "type": "string",
               "enum": [
+                "0",
                 "1"
               ],
-              "description": "Where the stream cannot replay (no Last-Event-ID, or one behind the buffer), start with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot"
+              "description": "By default, where the stream cannot replay (no Last-Event-ID, or one behind the buffer), it starts with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot. 0: no snapshot; behind the buffer is a 409"
             },
             "required": false,
-            "description": "Where the stream cannot replay (no Last-Event-ID, or one behind the buffer), start with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot",
+            "description": "By default, where the stream cannot replay (no Last-Event-ID, or one behind the buffer), it starts with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot. 0: no snapshot; behind the buffer is a 409",
             "name": "snapshot",
             "in": "query"
           },

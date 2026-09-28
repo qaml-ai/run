@@ -890,7 +890,10 @@ export class ClientSessions {
     if (held && c.req.query("takeover") !== "true" && c.req.header("x-agent-connection") !== held.id) {
       throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools; reconnect with ?takeover=true to replace it");
     }
-    const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), c.req.query("snapshot") === "1");
+    // A watcher gets a snapshot where it cannot replay, unless it opts out (snapshot=0). The application's connection
+    // asks for one (the SDKs do): relays that read its events as they come, and not snapshots, rely on the 409.
+    const asked = mode === "watch" ? c.req.query("snapshot") !== "0" : c.req.query("snapshot") === "1";
+    const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), asked);
     const release = mode === "watch" ? this.hold(session.header.tenant, session.watchers.size + session.polls.size) : undefined;
     const res = c.env.outgoing;
     let ready: Record<string, unknown> = { version: 5, agentId: session.header.id };
@@ -936,7 +939,8 @@ export class ClientSessions {
   private async poll(c: Context<ClientEnv>, session: Session, reader?: StreamReader) {
     if (gone(c)) return RESPONSE_ALREADY_SENT;
     const raw = c.req.header("last-event-id");
-    const asked = c.req.query("snapshot") === "1";
+    // As a watcher: a snapshot by default, where there is nothing to replay from; snapshot=0 opts out.
+    const asked = c.req.query("snapshot") !== "0";
     const wait = Number(c.req.query("wait") ?? 0);
     if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
     let read = this.replay(session, raw, asked);
