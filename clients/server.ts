@@ -196,3 +196,6 @@ export function serveTools(tools: Tools | ToolServer, options: ServeOptions): (r
     return json(200, Array.isArray(body) ? replies : replies[0]);
   };
 }
+
+export { createAgentHandler, agentKeyFor } from "./handler.ts";
+export type { AgentAuth, AgentHandler, AgentHandlerOptions, AgentSetup, HandlerAction, SendEvent } from "./handler.ts";
