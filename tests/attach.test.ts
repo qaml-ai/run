@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { attach, runtime } from "./runtime-server.ts";
+import { createHash } from "node:crypto";
+import { attach, runtime, until } from "./runtime-server.ts";
 
 test("one application serves an agent's tools at a time: another connection is refused unless it takes over, and the replaced one is told why", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
@@ -59,4 +60,24 @@ test("a run for an agent whose tools need its application is refused while none 
   // An agent with no tools of its application's runs without one.
   const plain = (await r.call("/v1/agents", { body: {} })).json;
   assert.equal((await r.call(`/v1/agents/${plain.id}/prompt`, { body: { text: "hi" } })).status, 202);
+});
+
+test("the application's ready event carries the hash of the tools it last declared, so an SDK reconfigures only on a change; a run's outcome carries its usage", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok", usage: { prompt_tokens: 12, completion_tokens: 3 } }));
+  const tools = [{ name: "lookup", description: "Look up", inputSchema: { type: "object", properties: {} } }];
+  const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  const created = (await r.call("/v1/agents", { body: { mcp: { tools } } })).json;
+  const ready = (app: { frames: string[] }) => JSON.parse(app.frames.find(frame => frame.includes("event: ready"))!.split("data:")[1]);
+  const first = await attach(t, r.base, created.id, created.token);
+  assert.equal(ready(first).toolsHash, sha(tools));
+
+  const changed = [...tools, { name: "save", description: "Save", inputSchema: { type: "object", properties: {} } }];
+  const configure = await fetch(`${r.base}/clients/${created.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: "tools-2", method: "configure", params: { mcp: { tools: changed } } }) });
+  assert.equal(configure.status, 202);
+  await until(async () => (await r.call(`/v1/agents/${created.id}/requests/tools-2`)).json.state === "completed", "the configuration");
+  const second = await attach(t, r.base, created.id, created.token, undefined, "?takeover=true");
+  assert.equal(ready(second).toolsHash, sha(changed));
+
+  const done = await r.prompt(created.id, "hi");
+  assert.deepEqual([done.outcome.result.usage.responses, done.outcome.result.usage.input, done.outcome.result.usage.output], [1, 12, 3]);
 });

@@ -172,6 +172,8 @@ setInterval(() => void expireIdempotencyKeys(db).catch(error => console.error(JS
 async function createAgent(tenant: string, params: any, key?: string) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
   const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, ...rest } = params ?? {};
+  // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
+  const mcpTools = params?.mcp?.tools;
   // Who the agent acts for, and context for its tool servers' identity tokens.
   const identity = identityInput(params ?? {});
   if (keyScope !== undefined) checkScope(keyScope);
@@ -190,7 +192,8 @@ async function createAgent(tenant: string, params: any, key?: string) {
   // One made without is a scratch agent nothing can find again once its id is lost: it lives a day, unless it says.
   const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
-    made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity, { keyScope, spendLimit });
+    made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
+    { keyScope, spendLimit, ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) });
   if (!reconfigure) return made_;
   // The key's agent exists: bring it to this configuration between its turns. Every upsert queues its own request, so
   // the last one sent wins; one whose configuration the agent has already changes nothing when it runs.
