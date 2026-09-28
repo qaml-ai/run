@@ -110,3 +110,82 @@ resource "aws_cloudwatch_metric_alarm" "ecs_control_errors" {
   alarm_actions       = local.alarm_topics
   ok_actions          = local.alarm_topics
 }
+
+# A tenant or a node at its agent cap: starts are refused (429 agentsPerTenant,
+# 503 agentsPerNode) because every agent there is busy. A tenant's maxAgents is
+# per node, so this is the signal to raise it or add tasks.
+resource "aws_cloudwatch_log_metric_filter" "quota_rejected" {
+  name           = "${var.name}-quota-rejected"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ $.type = \"quota_rejected\" }"
+
+  metric_transformation {
+    namespace     = "AgentRuntime/Logs"
+    name          = "QuotaRejected"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "quota_rejected" {
+  alarm_name          = "${var.name}-quota-rejected"
+  alarm_description   = "Agent starts refused at a tenant's or node's agent cap (quota_rejected in /ecs/${var.name})"
+  namespace           = "AgentRuntime/Logs"
+  metric_name         = "QuotaRejected"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
+# Webhook deliveries that failed and will be retried (usage events bill
+# chiridion's orgs, run events settle its threads).
+resource "aws_cloudwatch_log_metric_filter" "webhook_failed" {
+  name           = "${var.name}-webhook-failed"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ ($.type = \"webhook_failed\") || ($.type = \"webhook_scan_failed\") }"
+
+  metric_transformation {
+    namespace     = "AgentRuntime/Logs"
+    name          = "WebhookFailed"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "webhook_failed" {
+  alarm_name          = "${var.name}-webhook-failed"
+  alarm_description   = "Webhook deliveries are failing (webhook_failed, webhook_scan_failed in /ecs/${var.name}); they retry for 3 days"
+  namespace           = "AgentRuntime/Logs"
+  metric_name         = "WebhookFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 2
+  threshold           = 10
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
+# The control database is a burstable instance: when its CPU credits run out it
+# is held to its baseline, and every durable write slows with it.
+resource "aws_cloudwatch_metric_alarm" "database_cpu_credits" {
+  alarm_name          = "${var.name}-database-cpu-credits"
+  alarm_description   = "The control database is running out of CPU credits; move to a larger class"
+  namespace           = "AWS/RDS"
+  metric_name         = "CPUCreditBalance"
+  dimensions          = { DBInstanceIdentifier = aws_db_instance.control.identifier }
+  statistic           = "Minimum"
+  period              = 300
+  evaluation_periods  = 3
+  threshold           = 30
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}

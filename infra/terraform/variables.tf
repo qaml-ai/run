@@ -96,9 +96,9 @@ variable "task_memory" {
 }
 
 variable "service_min_count" {
-  description = "Minimum (and initial) number of runtime tasks."
+  description = "Minimum (and initial) number of runtime tasks. Three from chiridion's production launch, so losing a task or an AZ leaves two to take its agents."
   type        = number
-  default     = 2
+  default     = 3
 }
 
 variable "service_max_count" {
