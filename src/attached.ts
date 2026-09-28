@@ -35,6 +35,12 @@ export class AttachedServer implements Transport {
 
   get open() { return !this.closed && !this.res.destroyed; }
 
+  /** Whether the application still answers on this connection: an MCP ping, within `ms`. */
+  async answers(ms = 2_000) {
+    try { await this.client.ping({ timeout: ms }); return true; }
+    catch { return false; }
+  }
+
   async start() {}
 
   async send(message: JSONRPCMessage) {

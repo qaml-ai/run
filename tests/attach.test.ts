@@ -81,3 +81,14 @@ test("the application's ready event carries the hash of the tools it last declar
   const done = await r.prompt(created.id, "hi");
   assert.deepEqual([done.outcome.result.usage.responses, done.outcome.result.usage.input, done.outcome.result.usage.output], [1, 12, 3]);
 });
+
+test("a connection that holds an agent but no longer answers (half-open) is replaced without a takeover", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const tool = { name: "lookup", description: "Look up", inputSchema: { type: "object", properties: {} } };
+  const created = (await r.call("/v1/agents", { body: { mcp: { tools: [tool] } } })).json;
+  const first = await attach(t, r.base, created.id, created.token);
+  assert.equal((await attach(t, r.base, created.id, created.token)).status, 409, "a live holder keeps its place");
+  first.stall();
+  const second = await attach(t, r.base, created.id, created.token);
+  assert.equal(second.status, 200, "one that does not answer a ping holds nothing");
+});

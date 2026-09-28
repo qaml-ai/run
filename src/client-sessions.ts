@@ -882,16 +882,17 @@ export class ClientSessions {
    * replaces the connection before it, or a read-only watcher, which never replaces another and is
    * never replaced. Every stream gets every event from its own cursor on (see `replay`).
    */
-  private subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch", reader?: StreamReader) {
+  private async subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch", reader?: StreamReader) {
+    // One application serves an agent's tools at a time: another is refused, unless it takes over (or names the connection
+    // it held, reconnecting). A connection that serves no tools (it never answered MCP's initialize) holds nothing, nor
+    // does one that no longer answers a ping (a half-open socket the server has not seen close).
+    const held = mode === "attach" && session.attached?.open && session.attached.initialized ? session.attached : undefined;
+    if (held && c.req.query("takeover") !== "true" && c.req.header("x-agent-connection") !== held.id && await held.answers()) {
+      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools; reconnect with ?takeover=true to replace it");
+    }
     // Gone while the request was authorized and its agent loaded: its close has fired already, so nothing
     // registered from here would ever be released. (No await follows, so it cannot close unseen after this.)
     if (gone(c)) return RESPONSE_ALREADY_SENT;
-    // One application serves an agent's tools at a time: another is refused, unless it takes over (or names the connection
-    // it held, reconnecting). A connection that serves no tools (it never answered MCP's initialize) holds nothing.
-    const held = mode === "attach" && session.attached?.open && session.attached.initialized ? session.attached : undefined;
-    if (held && c.req.query("takeover") !== "true" && c.req.header("x-agent-connection") !== held.id) {
-      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools; reconnect with ?takeover=true to replace it");
-    }
     // A watcher gets a snapshot where it cannot replay, unless it opts out (snapshot=0). The application's connection
     // asks for one (the SDKs do): relays that read its events as they come, and not snapshots, rely on the 409.
     const asked = mode === "watch" ? c.req.query("snapshot") !== "0" : c.req.query("snapshot") === "1";

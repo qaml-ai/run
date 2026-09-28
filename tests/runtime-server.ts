@@ -146,7 +146,9 @@ export async function attach(t: T, base: string, agent: string, token: string,
   const response = await fetch(`${base}/clients/${agent}/events${query}`, { headers: { ...headers, Accept: "text/event-stream" }, signal: stream.signal });
   const frames: string[] = [];
   const ended = Promise.withResolvers<void>();
-  if (!response.ok) return { calls: [] as any[], status: response.status, body: await response.text(), frames, ended: ended.promise, close: () => stream.abort() };
+  // A stalled application (a half-open connection, say) stops answering the runtime's pings.
+  let stalled = false;
+  if (!response.ok) return { calls: [] as any[], status: response.status, body: await response.text(), frames, ended: ended.promise, close: () => stream.abort(), stall: () => {} };
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let connection = "";
@@ -170,6 +172,8 @@ export async function attach(t: T, base: string, agent: string, token: string,
           else if (event.type === "mcp" && event.message.method === "initialize") {
             await post({ jsonrpc: "2.0", id: event.message.id, result: { protocolVersion: event.message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "silent", version: "1" } } });
             initialized.resolve();
+          } else if (event.type === "mcp" && event.message.method === "ping") {
+            if (!stalled) await post({ jsonrpc: "2.0", id: event.message.id, result: {} });
           } else if (event.type === "mcp" && event.message.method === "tools/call") {
             const message = event.message;
             calls.push(message);
@@ -184,7 +188,7 @@ export async function attach(t: T, base: string, agent: string, token: string,
     ended.resolve();
   })();
   await initialized.promise;
-  return { calls, status: response.status, body: "", frames, ended: ended.promise, close: () => stream.abort() };
+  return { calls, status: response.status, body: "", frames, ended: ended.promise, close: () => stream.abort(), stall: () => { stalled = true; } };
 }
 
 /**
