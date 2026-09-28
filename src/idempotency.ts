@@ -27,9 +27,9 @@ export function idempotency(database: () => Db, tenantOf: (c: Context) => string
     const taken = await db.query("insert into idempotency_keys (tenant, key, fingerprint, created_at) values ($1, $2, $3, $4) on conflict do nothing", [tenant, key, fingerprint, now]);
     if (!taken.rowCount) {
       const row = (await db.query("select fingerprint, status, body, content_type from idempotency_keys where tenant = $1 and key = $2", [tenant, key])).rows[0];
-      if (!row) throw new HttpError(409, "A request with this Idempotency-Key just finished; retry");
-      if (row.fingerprint !== fingerprint) throw new HttpError(409, "This Idempotency-Key was sent with another request: a key is for one method, path and body");
-      if (row.status === null) throw new HttpError(409, "A request with this Idempotency-Key is still running; retry");
+      if (!row) throw new HttpError(409, "A request with this Idempotency-Key just finished; retry", "IDEMPOTENCY_IN_PROGRESS");
+      if (row.fingerprint !== fingerprint) throw new HttpError(409, "This Idempotency-Key was sent with another request: a key is for one method, path and body", "IDEMPOTENCY_CONFLICT");
+      if (row.status === null) throw new HttpError(409, "A request with this Idempotency-Key is still running; retry", "IDEMPOTENCY_IN_PROGRESS");
       return new Response(row.body, { status: row.status, headers: { "Content-Type": row.content_type ?? "application/json", "Idempotent-Replayed": "true" } });
     }
     let kept = false;

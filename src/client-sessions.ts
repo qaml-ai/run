@@ -18,7 +18,7 @@ import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { errorStatus, HttpError, readJson } from "./http.ts";
+import { errorCode, errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
 import { databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
@@ -1932,7 +1932,10 @@ export class ClientSessions {
     });
     app.all(`${agent}/*`, () => { throw new HttpError(404, "Unknown client route"); });
     app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
-    app.onError((error, c) => json(c, errorStatus(error, 500), { error: errorText(error), ...((error as { input?: unknown }).input ? { input: (error as { input?: unknown }).input } : {}) }));
+    app.onError((error, c) => {
+      const status = errorStatus(error, 500);
+      return json(c, status, { error: errorText(error), code: errorCode(error, status), ...((error as { input?: unknown }).input ? { input: (error as { input?: unknown }).input } : {}) });
+    });
     return app;
   }
 
@@ -1972,7 +1975,7 @@ export class ClientSessions {
     }
     const existing = () => {
       const record = session.requests.get(body.id);
-      if (record && record.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments");
+      if (record && record.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
       return record;
     };
     // A retried ID returns the committed record, including its outcome after a lost ack.
@@ -2003,7 +2006,7 @@ export class ClientSessions {
       if (body.method === "resume") actor = session.requests.get(params.suspension)?.actor;
     } catch (error) { throw new HttpError(400, errorText(error)); }
     const limited = body.method === "resume" ? undefined : await this.runLimit(session, body.method);
-    if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
+    if (limited) throw limited;
     // A run of an agent whose tools its application answers needs that application connected: refused now, rather
     // than a turn whose calls cannot run. An application reconnecting (a process restarting) has a moment to arrive.
     if (["prompt", "continue", "execute"].includes(body.method) && !allowDisconnected && session.header.definitions.length && !await this.applicationConnected(session)) {
@@ -2357,7 +2360,7 @@ export class ClientSessions {
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
         if (!session.resuming.has(record.id)) {
           const limited = await this.runLimit(session, record.method);
-          if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
+          if (limited) throw limited;
         }
         try { await this.ensureStarted(session); }
         catch (error) {
@@ -2497,10 +2500,11 @@ export class ClientSessions {
   }
 
   /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
-  private async runLimit(session: Session, method: string) {
+  private async runLimit(session: Session, method: string): Promise<HttpError | undefined> {
     const tenant = session.header.tenant;
-    if (MODEL_RUNS.includes(method)) return await this.agentSpendLimit(session) ?? this.options.spendLimit?.(tenant);
-    if (RUN_METHODS.includes(method)) return this.options.creditLimit?.(tenant);
+    const refused = (refusal: Refusal | undefined, code: string) => typeof refusal === "string" ? new HttpError(402, refusal, code) : refusal;
+    if (MODEL_RUNS.includes(method)) return refused(await this.agentSpendLimit(session) ?? await this.options.spendLimit?.(tenant), "SPEND_LIMIT");
+    if (RUN_METHODS.includes(method)) return refused(await this.options.creditLimit?.(tenant), "INSUFFICIENT_CREDIT");
     return undefined;
   }
 

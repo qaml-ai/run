@@ -34,7 +34,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorStatus, HttpError, readJson, readText } from "./http.ts";
+import { errorCode, errorStatus, HttpError, readJson, readText } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
@@ -508,7 +508,10 @@ app.post("/client-sessions", async c => {
 app.notFound(c => c.body(null, 404));
 // Errors keep their own status (429 quota, 409 conflict, 410 revoked, 503 retry...); an unreachable database is 503, and
 // anything else is a request the runtime could not accept (invalid configuration or tools): 400.
-app.onError((error, c) => c.body(JSON.stringify({ type: "error", error: errorText(error) }) + "\n", errorStatus(error, 400) as ContentfulStatusCode, { "Content-Type": "application/json" }));
+app.onError((error, c) => {
+  const status = errorStatus(error, 400);
+  return c.body(JSON.stringify({ type: "error", error: errorText(error), code: errorCode(error, status) }) + "\n", status as ContentfulStatusCode, { "Content-Type": "application/json" });
+});
 
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 // A request has 30 s to arrive whole, except an upload, which streams to storage a chunk at a time

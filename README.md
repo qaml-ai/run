@@ -392,6 +392,32 @@ Tool RPCs are correlated by unique IDs, so reverse completion order is safe.
 External side effects cannot be rolled back by a worker termination or AbortSignal.
 Adapters must honor cancellation and must implement idempotency for writes.
 
+### Errors
+
+An error answers `{"error": "<what went wrong, for people>", "code": "<for code>"}`
+(`type: "error"` too on some routes). The message may change; the code does not.
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
+| 401 | `UNAUTHORIZED` | No valid token |
+| 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the tenant's monthly cap |
+| 402 | `INSUFFICIENT_CREDIT` | The tenant's prepaid credit is spent |
+| 403 | `FORBIDDEN` | The token may not do this |
+| 404 | `NOT_FOUND` | No such agent, request, input or other resource for this tenant |
+| 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
+| 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
+| 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
+| 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
+| 409 | `REPLAY_GAP` | The Last-Event-ID is behind the buffer; read `/state` (or ask for a snapshot) and continue from its cursor |
+| 409 | `CONFLICT` | Another conflict, named in the message |
+| 410 | `GONE` | The agent was deleted or has expired |
+| 413 | `TOO_LARGE` | The request body is too large |
+| 429 | `RATE_LIMITED` | Too many agents, requests or subscribers at once; retry after `Retry-After` |
+| 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
+
+Codes may be added; treat an unknown one by its status.
+
 ## Persistence
 
 Nothing is serialized per streamed delta. Each agent has two append-only logs:

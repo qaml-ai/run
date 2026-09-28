@@ -4,7 +4,19 @@ import { EVENT_TYPES } from "./webhooks.ts";
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
 const SEND_TEXT = "Send {\"text\": \"...\"}";
 
-export const ApiError = z.object({ error: z.string() }).openapi("Error");
+export const ERROR_CODES = {
+  INVALID_REQUEST: "400: the request is malformed or invalid", UNAUTHORIZED: "401: no valid token", PAYMENT_REQUIRED: "402", FORBIDDEN: "403: the token may not do this",
+  NOT_FOUND: "404", CONFLICT: "409", GONE: "410", TOO_LARGE: "413", RATE_LIMITED: "429: retry after Retry-After", UNAVAILABLE: "503: retry after Retry-After", INTERNAL: "500",
+  SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent",
+  IDEMPOTENCY_CONFLICT: "409: the Idempotency-Key or request id was used for another request", IDEMPOTENCY_IN_PROGRESS: "409: the first request with this Idempotency-Key is still running; retry",
+  APPLICATION_CONNECTED: "409: another connection serves this agent's tools; connect with ?takeover=true to replace it",
+  APPLICATION_NOT_CONNECTED: "409: this agent's tools need its application, and none is connected; connect it, or send allowDisconnected: true",
+  REPLAY_GAP: "409: the Last-Event-ID is behind the buffer; read state (or ask for a snapshot) and continue from its cursor",
+} as const;
+export const ApiError = z.object({
+  error: z.string().openapi({ description: "What went wrong, for people" }),
+  code: z.string().openapi({ description: `What went wrong, for code: ${Object.entries(ERROR_CODES).map(([code, meaning]) => `${code} (${meaning})`).join("; ")}. Others may be added` }),
+}).openapi("Error");
 export const Deleted = z.object({ deleted: z.literal(true) });
 
 export const Me = z.object({
