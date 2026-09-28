@@ -535,7 +535,7 @@ export class ClientSessions {
     };
   }
 
-  /** Write finished runs' `run.finished` events, then journal that they are written; a failure leaves them for the next load. */
+  /** Write finished runs' `run.finished` events, then journal that they are written; a failure leaves them for the agent's next run or load. */
   private async announce(session: Session, records: RequestRecord[], usage?: Map<string, RunUsage>) {
     try {
       await session.started;
