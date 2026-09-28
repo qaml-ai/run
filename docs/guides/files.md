@@ -117,3 +117,10 @@ expiresAt}`: a URL that downloads (`GET`) or uploads (`PUT`, with `maxBytes` and
 `contentType`) that one file without a token, so a browser, a tool server or a
 channel moves the bytes directly. Links last 15 minutes by default, at most 24
 hours, and cannot be revoked sooner. Downloads take `Range`.
+
+From your server, with your API key, `POST /v1/agents/:id/links {path, method?,
+expiresIn?, maxBytes?, contentType?}` signs a link to a file of an agent by the
+path the agent sees (`/workspace/report.pdf`), without the agent's token; `POST
+/v1/volumes/:id/links` does the same by a volume's own path. Both answer `{url,
+method, path, expiresAt}`, and a retry with the same `Idempotency-Key` never
+returns the link again.

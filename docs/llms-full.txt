@@ -909,6 +909,21 @@ return Response.json({ reply: run.text });
 The watcher shows the run as it happens; `metadata.clientId` lets the page match
 the stored user message to the bubble it showed optimistically.
 
+## Ready-made components
+
+The runtime serves a [shadcn](https://ui.shadcn.com) registry of React components: a streaming
+chat with the user's agent, with tool cards, questions and approvals, and files (`agent-chat`); its
+safe, streaming-tolerant Markdown (`agent-markdown`); and the Next.js App Router route the chat
+talks to, which keeps your API key on the server and lets each user reach only their own agent
+(`agent-route`). Add one to your app with its URL:
+
+```bash
+npx shadcn@latest add https://agents.camelai.dev/r/agent-chat.json
+```
+
+`/r/registry.json` lists them. The registry is public and cacheable; a self-hosted runtime serves
+its own at `<its URL>/r/`.
+
 ## Without the watcher
 
 The same reads work from any code: `GET /v1/agents/:id/events` (SSE; `?poll=1&wait=25`
@@ -1039,6 +1054,13 @@ expiresAt}`: a URL that downloads (`GET`) or uploads (`PUT`, with `maxBytes` and
 `contentType`) that one file without a token, so a browser, a tool server or a
 channel moves the bytes directly. Links last 15 minutes by default, at most 24
 hours, and cannot be revoked sooner. Downloads take `Range`.
+
+From your server, with your API key, `POST /v1/agents/:id/links {path, method?,
+expiresIn?, maxBytes?, contentType?}` signs a link to a file of an agent by the
+path the agent sees (`/workspace/report.pdf`), without the agent's token; `POST
+/v1/volumes/:id/links` does the same by a volume's own path. Both answer `{url,
+method, path, expiresAt}`, and a retry with the same `Idempotency-Key` never
+returns the link again.
 
 ---
 
@@ -2212,7 +2234,7 @@ Messages (`message` fields, and history) are one of:
 | --- | --- | --- |
 | `tool_execution_start` | `toolCallId`, `toolName`, `args` | a tool call starts |
 | `tool_execution_update` | `toolCallId`, `toolName`, `args`, `partialResult` | progress. A tool's own progress (MCP `notifications/progress`, `context.progress()`) arrives as `partialResult: {content: [{type: "text", text}], details: {type: "progress", tool, innerCallId?, progress, total?, message?}}`, at most every 250 ms per call. A call from js_exec code reports on js_exec's `toolCallId`, with `innerCallId` |
-| `tool_execution_end` | `toolCallId`, `toolName`, `result` (`{content, details}`), `isError` | a tool call finished |
+| `tool_execution_end` | `toolCallId`, `toolName`, `result` (`{content, details}`), `isError` | a tool call finished. A call that waits on a person ends first with a placeholder (`result.details.inputRequired`); when its turn resumes (the input answered, declined or closed) it gets its own `tool_execution_start` and `tool_execution_end` again, in the resume's run, before its `toolResult` message |
 | `codemode` *internal* | `toolCallId`, `event: {type: "output", text}` | js_exec's code printed `text` (`console.log`, `text()`), as it runs |
 | `output` | `text` | an `execute` request's code printed `text` (not a model run: no `codemode` wrapper) |
 | `file_presented` | `file` (`{type: "file", path, volume, version, size, contentType, caption?, …}`), `url?`, `expiresAt?` | the agent presented a file to the user (`present_file`): `url` is a signed download link |

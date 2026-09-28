@@ -1,6 +1,7 @@
 {
   "process": {
     "agent-lifetime.test.ts": 6.9,
+    "agent-links.test.ts": 1.2,
     "api.test.ts": 12.4,
     "append-log.test.ts": 0.3,
     "attach.test.ts": 14.5,
@@ -36,6 +37,7 @@
     "ownership.test.ts": 3.6,
     "prompt-options.test.ts": 9.4,
     "purge.test.ts": 5.3,
+    "registry.test.ts": 0.8,
     "runtime.test.ts": 8.6,
     "sandbox-processes.test.ts": 3.9,
     "sandbox.test.ts": 11.8,
@@ -52,6 +54,7 @@
   },
   "inline": {
     "agent-lifetime.test.ts": 4.0,
+    "agent-links.test.ts": 0.9,
     "api.test.ts": 12.1,
     "append-log.test.ts": 0.3,
     "attach.test.ts": 12.7,
@@ -87,6 +90,7 @@
     "ownership.test.ts": 3.5,
     "prompt-options.test.ts": 8.5,
     "purge.test.ts": 2.4,
+    "registry.test.ts": 0.8,
     "runtime.test.ts": 4.1,
     "sandbox-processes.test.ts": 3.9,
     "sandbox.test.ts": 11.8,

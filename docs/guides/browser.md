@@ -87,6 +87,21 @@ return Response.json({ reply: run.text });
 The watcher shows the run as it happens; `metadata.clientId` lets the page match
 the stored user message to the bubble it showed optimistically.
 
+## Ready-made components
+
+The runtime serves a [shadcn](https://ui.shadcn.com) registry of React components: a streaming
+chat with the user's agent, with tool cards, questions and approvals, and files (`agent-chat`); its
+safe, streaming-tolerant Markdown (`agent-markdown`); and the Next.js App Router route the chat
+talks to, which keeps your API key on the server and lets each user reach only their own agent
+(`agent-route`). Add one to your app with its URL:
+
+```bash
+npx shadcn@latest add https://agents.camelai.dev/r/agent-chat.json
+```
+
+`/r/registry.json` lists them. The registry is public and cacheable; a self-hosted runtime serves
+its own at `<its URL>/r/`.
+
 ## Without the watcher
 
 The same reads work from any code: `GET /v1/agents/:id/events` (SSE; `?poll=1&wait=25`
