@@ -28,3 +28,20 @@ export function loadDocs(directory: string, publicUrl: string): Map<string, { bo
   }
   return served;
 }
+
+/**
+ * The UI registry (shadcn's format), read once at startup from `directory`: each `<name>.json` at
+ * `/r/<name>.json`, with the docs' origin rewritten as theirs is, so a registry's links to its own
+ * items point at this runtime.
+ */
+export function loadRegistry(directory: string, publicUrl: string): Map<string, { body: string; type: string }> {
+  const served = new Map<string, { body: string; type: string }>();
+  let entries;
+  try { entries = readdirSync(directory, { withFileTypes: true }); } catch { return served; }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const text = readFileSync(join(directory, entry.name), "utf8");
+    served.set(`/r/${entry.name}`, { body: publicUrl === DOCS_ORIGIN ? text : text.replaceAll(DOCS_ORIGIN, publicUrl), type: "application/json; charset=utf-8" });
+  }
+  return served;
+}

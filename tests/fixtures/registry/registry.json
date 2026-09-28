@@ -1,0 +1,6 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry.json",
+  "name": "agent-runtime",
+  "homepage": "https://agents.camelai.dev",
+  "items": [{ "name": "agent-chat", "type": "registry:block" }]
+}

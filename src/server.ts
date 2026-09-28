@@ -8,7 +8,7 @@ import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
-import { loadDocs } from "./docs.ts";
+import { loadDocs, loadRegistry } from "./docs.ts";
 import { modelHeadersInput, sessionConfig } from "./session-config.ts";
 import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -425,11 +425,14 @@ app.get("/.well-known/oauth-authorization-server", c => c.json({
 }, 200, { "Cache-Control": "public, max-age=300" }));
 // The public docs (docs/ in the image), for people and for models: cacheable, and readable from any page.
 const docs = loadDocs(resolve(process.env.AGENT_DOCS_DIR ?? fileURLToPath(new URL("../docs", import.meta.url))), publicUrl);
+// The UI registry's JSON (packages/registry/public/r/ in the image), for `npx shadcn add <runtime>/r/<name>.json`.
+const registry = loadRegistry(resolve(process.env.AGENT_REGISTRY_DIR ?? fileURLToPath(new URL("../packages/registry/public/r", import.meta.url))), publicUrl);
 // Matched on the request's path as sent, before any decoding or dot-segment folding: only exact document paths answer.
 app.use(async (c, next) => {
   const path = (c.env.incoming.url ?? "").split("?")[0];
-  if (path !== "/llms.txt" && path !== "/llms-full.txt" && path !== "/docs" && !path.startsWith("/docs/")) return next();
-  const doc = c.req.method === "GET" || c.req.method === "HEAD" ? docs.get(path) : undefined;
+  const served = path === "/llms.txt" || path === "/llms-full.txt" || path === "/docs" || path.startsWith("/docs/") ? docs : path === "/r" || path.startsWith("/r/") ? registry : undefined;
+  if (!served) return next();
+  const doc = c.req.method === "GET" || c.req.method === "HEAD" ? served.get(path) : undefined;
   if (!doc) return c.json({ type: "error", error: "Unknown document", code: "NOT_FOUND" }, 404, { "Access-Control-Allow-Origin": "*" });
   return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" });
 });
