@@ -24,6 +24,7 @@ export const Me = z.object({
   via: z.enum(["operator", "token", "console"]),
   login: z.string().optional().openapi({ description: "GitHub login, for console sessions" }),
   canStoreKeys: z.boolean(),
+  defaultModel: z.string().openapi({ description: "The model an agent gets when it names none, as provider/model-id", example: "anthropic/claude-sonnet-5" }),
 }).openapi("Me");
 
 const KeyStatus = z.object({

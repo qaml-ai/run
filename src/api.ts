@@ -35,6 +35,8 @@ export interface ApiContext {
   consoleAuth: ConsoleAuth;
   keyScopes?: KeyScopes;
   webhooks?: Webhooks;
+  /** The model an agent gets when it names none, as provider/model-id. */
+  defaultModel: string;
   /** Provision an agent for a tenant. */
   createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
   verifyKeys?: boolean;
@@ -167,7 +169,7 @@ export function api(context: ApiContext) {
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), c => {
     const principal = c.var.principal;
-    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys });
+    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: context.defaultModel });
   });
 
   route(createRoute({ method: "get", path: "/v1/providers", responses: { 200: reply("Key status per provider", z.array(schema.Provider)) } }), async c => {

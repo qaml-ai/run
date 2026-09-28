@@ -670,7 +670,8 @@ export class AgentRuntime {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/browser-tokens`, this.operator(), "POST", options, false);
   }
   /** Who the API key is: `tenant` is your tenant's id, which serveTools and verifyRuntimeToken take. */
-  me(): Promise<{ tenant: string; via: string; login?: string }> { return this.transport.json("/v1/me", this.operator()); }
+  /** Who the API key is (`tenant`), and `defaultModel`, the model an agent gets when it names none. */
+  me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.transport.json("/v1/me", this.operator()); }
   /** Inputs waiting on someone across all the tenant's agents (`pending` ones, say), newest first. */
   inbox(state?: AgentInput["state"]): Promise<AgentInput[]> { return this.transport.json(`/v1/inputs${state ? `?state=${state}` : ""}`, this.operator()); }
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {

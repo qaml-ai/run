@@ -647,12 +647,18 @@
           },
           "canStoreKeys": {
             "type": "boolean"
+          },
+          "defaultModel": {
+            "type": "string",
+            "description": "The model an agent gets when it names none, as provider/model-id",
+            "example": "anthropic/claude-sonnet-5"
           }
         },
         "required": [
           "tenant",
           "via",
-          "canStoreKeys"
+          "canStoreKeys",
+          "defaultModel"
         ]
       },
       "Provider": {

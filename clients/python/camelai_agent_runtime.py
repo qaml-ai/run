@@ -516,7 +516,8 @@ class AgentRuntime:
         return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator(), "PUT", {"mounts": mounts}, retry=False)
 
     async def me(self):
-        """Who the API key is: {"tenant", "via", ...}; tenant is your tenant's id, which serve_tools and verify_runtime_token take."""
+        """Who the API key is: {"tenant", "via", "defaultModel", ...}; tenant is your tenant's id, which serve_tools and verify_runtime_token take;
+        defaultModel is the model an agent gets when it names none."""
         return await _http(self.http, self.base, "/v1/me", self._operator())
 
     async def browser_token(self, agent_id, *, ttl_seconds=None, scopes=None, events=None, redact=None, subject=None):

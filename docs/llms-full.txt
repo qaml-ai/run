@@ -1271,6 +1271,10 @@ Agents name a model as `provider/model-id` from the catalog: `GET /v1/models`
 between runs with `upsert` (a changed `model`) or `agent.configure({ model })`;
 its history carries over.
 
+An agent that names no model (and whose definition names none) gets the
+runtime's default: `anthropic/claude-sonnet-5` on agents.camelai.dev. `GET
+/v1/me` says which (`defaultModel`; `runtime.me()` in the SDKs).
+
 A model call uses, in order: the key of the agent's [key scope](#key-scopes) for
 the model's provider, else your account's own key for the provider
 (`PUT /v1/providers/:provider/key`, or the console), else, for prepaid accounts,

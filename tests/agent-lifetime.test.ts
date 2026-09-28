@@ -31,6 +31,11 @@ test("agents are listed with the key they were made with, and their name", async
   assert.equal((await sdk.listAgents()).find(agent => agent.id === keyed.id)?.key, "support-7");
 });
 
+test("the caller learns the model an agent gets when it names none", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  assert.equal((await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).me()).defaultModel, "openrouter/openai/gpt-4o-mini");
+});
+
 test("a key whose agent was deleted or expired makes a fresh agent, with a new token; the old one stays gone", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const first = (await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "thread-a" } })).json;
