@@ -115,9 +115,10 @@ test("a snapshot too large for one frame drops the turn's finished messages firs
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const events = `${r.base}/v1/agents/${agent}/events`;
   const auth = { Authorization: `Bearer ${OPERATOR}` };
+  // Watching from before the prompt: one that connected once the answer had begun would get it as a snapshot, not deltas.
+  const watching = await watchEvents(t, events, auth, { query: "watch=1" });
   const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "z".repeat(12_000) } });
   assert.equal(accepted.status, 202);
-  const watching = await watchEvents(t, events, auth, { query: "watch=1" });
   await until(() => deltaText(watching.frames).length >= 15_000, "half the answer to stream");
   const snapshot = (await (await fetch(`${events}?poll=1&snapshot=1`, { headers: auth })).json() as any).events[0].data;
   assert.equal(snapshot.turn.truncated, true);
