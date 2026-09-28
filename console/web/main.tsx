@@ -131,7 +131,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
     <AuthLayout>
       <div className="flex flex-col gap-6">
         <div className="flex flex-col items-center gap-2 text-center">
-          <h1 className="text-xl font-semibold tracking-tight">Agent Runtime</h1>
+          <h1 className="text-xl font-semibold tracking-tight">camelRun</h1>
           <p className="text-muted-foreground text-sm text-balance">Sign in to manage your agents, model keys and API tokens.</p>
         </div>
         <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />

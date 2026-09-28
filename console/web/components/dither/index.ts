@@ -2,8 +2,8 @@
  * Dither design system — public API, as the console uses it.
  *
  * The library comes from camelStream's console (itself from the sales site's
- * `app/components/dither/`), which retired and left its motif family to the
- * runtime:
+ * `app/components/dither/`), which retired and left its motif family to
+ * camelRun:
  *
  *   <DitherLiquid variant="current|swell" />   sign-in art, first-agent moment
  *   <DitherAurora variant="silk|curtain" />    first-token moment, error pages

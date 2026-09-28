@@ -1,6 +1,6 @@
 # Console design
 
-The console wears camelStream's design system, which the runtime inherited when
+The console wears camelStream's design system, which camelRun inherited when
 Stream retired: a quiet, square, monochrome tool, with the dithered brand only at
 the edges of a first session. Stream's spec was its plan 004 (the sales site's
 dither design key is its parent); this is the part the console uses.
