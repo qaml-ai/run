@@ -12,6 +12,8 @@
 | `AGENT_STORAGE` | `file` (default; one node only), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
+| `AGENT_GC_ENABLED`, `AGENT_GC_DRY_RUN` | storage garbage collection: `true` to run it (default off), and `true` to only log what it would delete (see [Storage garbage collection](persistence.md#storage-garbage-collection)) |
+| `AGENT_GC_GRACE_MS`, `AGENT_GC_INTERVAL_MS`, `AGENT_GC_POLL_MS` | how long a chunk must stay unreferenced before it is deleted (default 86400000, a day), how often each tenant is collected (default 21600000, 6 h), and how often a node looks for a tenant due (default 60000) |
 | `AGENT_DRAIN_TIMEOUT_MS` | how long SIGTERM waits for running turns before handing them off (default 100000; see [Draining](architecture.md#draining)) |
 | `AGENT_ECS_SERVICE`, `AGENT_ECS_CLUSTER` | the ECS service this task belongs to, for retirement (see [Deploys](architecture.md#deploys)); the cluster defaults to the task's own; without the service, tasks never retire |
 | `AGENT_RETIRE_MAX_MS` | how long a retiring task keeps protection for running turns (default 21600000, 6 h) |

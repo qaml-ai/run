@@ -1046,6 +1046,9 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
 - Every file has a content type: the upload's, else sniffed from its bytes and
   name. Downloads are served so a file can never run as the runtime's origin.
 - Uploads may take 15 minutes; a volume suits up to about 100,000 files.
+- Deleted files, volumes and snapshots stop being stored and billed about a day
+  after nothing refers to them any more. A file an agent was sent or shown stays,
+  as the agent's history refers to it, until the agent is deleted.
 
 ## Signed links
 

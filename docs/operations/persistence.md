@@ -104,12 +104,44 @@ its source share chunks and diverge independently. `GET /v1/volumes/:id/changes`
 lists recent changes; a mount with `notify` prompts the agent (about a second
 after changes, coalesced) when others change files under it.
 
-Not yet built: garbage collection of unreferenced chunks and snapshot file maps
-(deleting a file, volume or snapshot leaves them), quotas per tenant, restoring a snapshot in
+Not yet built: quotas per tenant, restoring a snapshot in
 place, empty directories, renames, and durable change notifications (a crash
 during the one-second window drops that notification). Listings and snapshots
 hold a volume's file map in memory and in one blob, which suits volumes of
 up to about 100,000 files.
+
+## Storage garbage collection
+
+Deleting a file, volume or snapshot leaves its chunks, which other files, forks,
+snapshots and transcripts may share. `src/storage-gc.ts` collects the ones nothing
+refers to any more, so they stop being stored and billed:
+
+- **References.** A chunk is kept while a live volume's files or snapshots refer to
+  it, or an agent holds a FileRef to it. Each FileRef pins its chunks to its agent
+  (`chunk_pins`) as it is made: attachments, files a tool saved or read natively,
+  presented files, and FileRefs in a new agent's `initialMessages`. Purging an
+  agent drops its pins.
+- **Only chunks written since.** A chunk is collectable only if a write created it
+  (`chunk_touches`); bytes stored before collection began, or written again as a
+  no-op, never are, because FileRefs from before have no pins.
+- **Two passes.** A pass marks what is referred to; a chunk it finds unreferenced
+  becomes a candidate, and a later pass at least `AGENT_GC_GRACE_MS` (a day) on
+  deletes it if it is still unreferenced and nothing touched it since. Writes, pins,
+  commits that refer to existing chunks (copies and moves between volumes), forks and
+  snapshots all touch the chunks they refer to, so a reference made while a pass
+  runs (which a mark read piecemeal may miss) makes the collection stand down.
+- **Racing writers.** A writer touches a chunk before writing it. The collector
+  reads the chunk, deletes it, then checks for a touch again and puts it back if
+  one came, so a write that found the chunk still there never loses it.
+- **Scheduling.** Each tenant is collected every `AGENT_GC_INTERVAL_MS` (6 h) by
+  whichever node claims it; a node looks for due tenants every `AGENT_GC_POLL_MS`
+  (60 s). Two collections of one tenant at once each claim a chunk by its candidate
+  row, so it is deleted, and taken off the storage meter, once.
+- **Volumes.** A deleted volume's tree and snapshot maps are removed after the grace
+  period; a deleted snapshot's map at once.
+- **Switches.** Off unless `AGENT_GC_ENABLED=true`; `AGENT_GC_DRY_RUN=true` marks and
+  logs what it would delete (`storage_gc_dry_run`) without deleting. Pins and which
+  chunks writes created are recorded either way.
 
 ## File references in the transcript
 
@@ -126,8 +158,8 @@ type FileRef = {
 ```
 
 The chunk list pins the content, so a file deleted or overwritten after it was
-attached still reads as it was (chunks are never garbage-collected yet; see
-[Volume storage](#volume-storage)). The agent host hydrates references into native blocks
+attached still reads as it was, for as long as the agent exists (see
+[Storage garbage collection](#storage-garbage-collection)). The agent host hydrates references into native blocks
 each time it builds a model request, fetching the bytes through its supervisor
 (an agent process has no storage access) and keeping up to 32 MiB of them
 between requests. The same references always produce the same request, so the
