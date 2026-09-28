@@ -116,7 +116,7 @@ test("tool lists refresh when the server says they changed, and edits keep seale
   assert.deepEqual(tools(2), ["kb__echo", "kb__fail", "kb__hidden_tool", "kb__later", "kb__picture"]);
 
   // Moving the server to another origin drops its credentials: they belong to the old one.
-  const other = await listen(t, (_req, res) => res.writeHead(401).end());
+  const other = await listen(t, (_req, res) => res.writeHead(503).end());
   const moved = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { mcpServers: [{ name: "kb", url: `${other}/mcp`, exposure: "direct" }] } });
   assert.equal(moved.json.mcpServers[0].headerNames, undefined);
   assert.deepEqual([...mcp.seen.authorizations], ["Bearer s3cret"]);

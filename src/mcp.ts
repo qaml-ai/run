@@ -143,7 +143,12 @@ export class McpConnections {
    */
   private async retrying<T>(connection: Connection, work: (client: Client) => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
-      const client = await this.client(connection).catch(error => { this.drop(connection); throw new Error(`Could not connect to MCP server ${new URL(connection.server.url).host}: ${errorText(error)}`); });
+      const client = await this.client(connection).catch(error => {
+        this.drop(connection);
+        // The server's HTTP status, when it answered with one: a 401 or 403 is credentials it refused.
+        const status = error instanceof StreamableHTTPError ? error.code : (error as Error)?.name === "UnauthorizedError" ? 401 : undefined;
+        throw Object.assign(new Error(`Could not connect to MCP server ${new URL(connection.server.url).host}${status ? ` (HTTP ${status})` : ""}: ${errorText(error)}`), status ? { status } : {});
+      });
       try { return await work(client); }
       catch (error) {
         if (attempt === 0 && error instanceof StreamableHTTPError && error.code === 404) { this.reset(connection, client); continue; }

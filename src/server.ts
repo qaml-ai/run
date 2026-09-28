@@ -157,6 +157,8 @@ const render = new WebRender({
 });
 const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; }, get volumes() { return volumes; }, get links() { return links; } });
 const definitions = new Definitions({ db, accounts, outbound });
+// Saving a definition lists its MCP servers, as its agents would.
+definitions.listMcp = (tenant, id, servers) => toolSources.listed(tenant, id, servers);
 const keyScopes = new KeyScopes({ db, accounts });
 // Each model response's usage, POSTed to the tenant's receiver from a durable outbox any node sends from.
 // Which tenants have endpoints for run events: runs of the others write none.

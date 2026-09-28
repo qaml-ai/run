@@ -312,6 +312,25 @@ export class ToolSources {
    * The tool server for an agent's sources: its built-ins, and its remote MCP servers' tools as
    * `<server>__<tool>`. A server that cannot be reached contributes no tools this time.
    */
+  /**
+   * List a definition's MCP servers as it is saved, as an agent made from it would: what each offers, or why it could
+   * not be listed. A server that refuses the definition's credentials (401, 403) is a mistake in them: a 400 now.
+   */
+  async listed(tenant: string, definition: string, servers: McpServerSpec[]): Promise<ToolSourceView[]> {
+    const context: SourceContext = { tenant, agent: definition, definition, mounts: [] };
+    return Promise.all(servers.map(async (spec): Promise<ToolSourceView> => {
+      const source = { kind: "mcp" as const, name: spec.name, url: spec.url, ...(spec.exposure ? { exposure: spec.exposure } : {}) };
+      try {
+        const tools = this.definitions(spec, await withTimeout(this.mcp.tools(tenant, this.endpoint(context, spec)), LIST_TIMEOUT_MS));
+        return { ...source, status: "listed", listedAt: Date.now(), tools };
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status === 401 || status === 403) throw new HttpError(400, `MCP server ${spec.name} refused the definition's credentials (HTTP ${status}): check its headers or auth${spec.auth?.type === "runtime" ? ", and the audience its tokens are checked against" : ""}. ${errorText(error)}`);
+        return { ...source, status: "error", error: errorText(error), listedAt: Date.now(), tools: [] };
+      }
+    }));
+  }
+
   server(context: SourceContext, sources: Sources | undefined): ToolServer {
     const builtins = builtinNames(sources?.builtins);
     const mcpServer = (name: string) => sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));

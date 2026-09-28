@@ -90,3 +90,27 @@ test("a tool source that cannot be listed is named in every run's outcome", asyn
   assert.deepEqual([done.outcome.result.sourceErrors[0].kind, done.outcome.result.sourceErrors[0].source], ["mcp", "crm"]);
   assert.match(done.outcome.result.sourceErrors[0].message, /down for maintenance/);
 });
+
+test("an MCP server is listed when its definition is saved: refused credentials are a 400 then, and what it lists or why it could not is in the answer", async t => {
+  const refusing = await listen(t, async (req, res) => {
+    for await (const _chunk of req) { /* the body */ }
+    res.writeHead(401, { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" }).end(JSON.stringify({ error: "invalid token" }));
+  });
+  const down = await listen(t, async (req, res) => {
+    for await (const _chunk of req) { /* the body */ }
+    res.writeHead(503).end("down");
+  });
+  const good = await mcpServer(t, { echo: () => ({ content: [] }), ping: () => ({ content: [] }) });
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), LOCAL);
+  const refused = await r.call("/v1/definitions", { body: { name: "Crm", mcpServers: [{ name: "crm", url: `${refusing}/mcp`, auth: { type: "bearer", token: "wrong" } }] } });
+  assert.equal(refused.status, 400, refused.text);
+  assert.match(refused.json.error, /crm[\s\S]*(401|credentials)/);
+
+  const saved = await r.call("/v1/definitions", { body: { name: "Mixed", mcpServers: [{ name: "tools", url: good.url }, { name: "later", url: `${down}/mcp` }] } });
+  assert.equal(saved.status, 201, saved.text);
+  const status = Object.fromEntries(saved.json.toolSources.map((source: any) => [source.name, source]));
+  assert.deepEqual([status.tools.status, status.tools.tools.map((tool: any) => tool.name)], ["listed", ["tools__echo", "tools__ping"]]);
+  assert.equal(status.later.status, "error", "a server that is down is saved, and says so");
+  const patched = await r.call(`/v1/definitions/${saved.json.id}`, { method: "PATCH", body: { mcpServers: [{ name: "tools", url: `${refusing}/mcp` }] } });
+  assert.equal(patched.status, 400, "an edit is checked too");
+});

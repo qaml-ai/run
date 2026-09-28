@@ -12,6 +12,7 @@ import { BUILTINS } from "./builtins.ts";
 import { searchOrder } from "./web-search.ts";
 import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
 import { mcpServersInput, mcpServerView, openApiInput, openApiView, type McpServerSpec, type OpenApiSpec, type Sources } from "./tool-sources.ts";
+import type { ToolSourceView } from "./tool-servers.ts";
 
 /**
  * Agent definitions: reusable, tenant-level agent configurations (`definitions`).
@@ -40,7 +41,9 @@ export interface DefinitionSpec {
   /** Made for this channel, and deleted with it. */
   channel?: string;
 }
-export interface Definition { id: string; tenant: string; name: string; revision: number; spec: DefinitionSpec; createdAt: number; updatedAt: number }
+export interface Definition { id: string; tenant: string; name: string; revision: number; spec: DefinitionSpec; createdAt: number; updatedAt: number;
+  /** When it was saved with MCP servers: what each listed, or why it could not be. */
+  toolSources?: ToolSourceView[] }
 /** Top-level fields replace the stored ones; null removes one. Secrets go in as plain values and are sealed. */
 export type DefinitionInput = { name?: string; revision?: number } & { [K in keyof DefinitionSpec]?: unknown };
 /** What an agent records about the definition it was made from. */
@@ -73,6 +76,8 @@ export class Definitions {
   readonly db: Db;
   private readonly accounts?: Accounts;
   private readonly outbound?: Outbound;
+  /** Lists MCP servers as a definition is saved (ToolSources.listed). */
+  listMcp?: (tenant: string, definition: string, servers: McpServerSpec[]) => Promise<ToolSourceView[]>;
   constructor(options: { db: Db; accounts?: Accounts; outbound?: Outbound }) {
     this.db = options.db;
     this.accounts = options.accounts;
@@ -107,11 +112,17 @@ export class Definitions {
     if ((await this.db.query("select count(*) as count from definitions where tenant = $1", [tenant])).rows[0].count >= MAX_DEFINITIONS) throw new HttpError(400, `A tenant can have at most ${MAX_DEFINITIONS} definitions`);
     const id = `def_${randomBytes(10).toString("hex")}`;
     const spec: DefinitionSpec = { ...await this.merge(tenant, id, {}, input), ...internal };
+    const toolSources = await this.listing(tenant, id, spec, input);
     const now = Date.now();
     const definition: Definition = { id, tenant, name, revision: 1, spec, createdAt: now, updatedAt: now };
     await this.db.query("insert into definitions (id, tenant, name, revision, spec, created_at, updated_at) values ($1, $2, $3, $4, $5, $6, $7)",
       [definition.id, tenant, name, 1, JSON.stringify(spec), now, now]);
-    return definition;
+    return { ...definition, ...(toolSources ? { toolSources } : {}) };
+  }
+
+  /** The MCP servers a save sent, listed now (see `listMcp`). */
+  private async listing(tenant: string, id: string, spec: DefinitionSpec, input: DefinitionInput) {
+    return input.mcpServers !== undefined && spec.mcpServers?.length && this.listMcp ? this.listMcp(tenant, id, spec.mcpServers) : undefined;
   }
 
   /** Replace the given fields; with `revision`, only if the definition is still at that revision. */
@@ -120,7 +131,8 @@ export class Definitions {
     if (input.revision !== undefined && input.revision !== current.revision) throw new HttpError(409, `The definition is at revision ${current.revision}, not ${input.revision}`);
     if (input.name === undefined && FIELDS.every(key => input[key] === undefined)) return current;
     const spec = await this.merge(tenant, id, current.spec, input);
-    return this.write(current, this.name(input.name) ?? current.name, spec);
+    const toolSources = await this.listing(tenant, id, spec, input);
+    return { ...await this.write(current, this.name(input.name) ?? current.name, spec), ...(toolSources ? { toolSources } : {}) };
   }
 
   private async write(current: Definition, name: string, spec: DefinitionSpec) {
