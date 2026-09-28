@@ -3,11 +3,14 @@ import { KeyRound, Loader2, Plus } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Eyebrow } from "@/components/ui/eyebrow";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PixelButton } from "@/components/ui/pixel-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CodeBlock, ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
+import { FirstRunPanel } from "@/components/brand";
+import { ConfirmButton, CopyButton, ErrorAlert, PageHeader } from "@/components/common";
 import { api, formatTime, useApi, type ApiToken } from "@/lib/api";
 
 function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
@@ -31,7 +34,10 @@ function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCrea
               <DialogTitle>Copy your token now</DialogTitle>
               <DialogDescription>It won't be shown again. Anyone with it can create and control every agent in your tenant.</DialogDescription>
             </DialogHeader>
-            <CodeBlock code={created} />
+            <div className="bg-card border-foreground/40 border p-3">
+              <div className="flex items-center justify-between gap-2"><Eyebrow>SHOWN ONCE</Eyebrow><CopyButton value={created} label="Copy token" /></div>
+              <code className="mt-1 block font-mono text-xs leading-relaxed break-all">{created}</code>
+            </div>
             <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
           </div>
         ) : (
@@ -71,9 +77,12 @@ export function TokensPage() {
         <AlertDescription>Never ship a token to a browser or mobile app. Your backend creates agents and hands clients only an agent's scoped session.</AlertDescription>
       </Alert>
       {!tokens.data ? <Skeleton className="h-32 w-full" /> : tokens.data.length === 0 ? (
-        <EmptyState icon={<KeyRound />} title="No API tokens">Create one to connect your application.</EmptyState>
+        <FirstRunPanel art="aurora" eyebrow="FIRST TOKEN" title="No API tokens"
+          action={<PixelButton onClick={() => setCreating(true)}>New token</PixelButton>}>
+          Create one to connect your application.
+        </FirstRunPanel>
       ) : (
-        <div className="rounded-lg border">
+        <div className="bg-card border">
           <Table>
             <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Token</TableHead><TableHead>Created</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>

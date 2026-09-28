@@ -145,7 +145,7 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClo
 const DISCORD_PERMISSIONS = (1n << 10n | 1n << 11n | 1n << 15n | 1n << 16n | 1n << 38n).toString();
 
 function DiscordHelp({ channel }: { channel: Channel }) {
-  return <div className="rounded border p-3 text-sm space-y-2">
+  return <div className="border p-3 text-sm space-y-2">
     <a className="underline" href={`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(channel.account.id)}&scope=bot&permissions=${DISCORD_PERMISSIONS}`} target="_blank" rel="noreferrer">Invite {channel.account.username ?? "bot"} to your server</a>
     <p>To test it, send this in a channel the bot can see. In autocomplete, pick the bot with the App badge: mentioning a role of the same name does not reach it.</p>
     <Input aria-label="Discord test message" readOnly value={`<@${channel.account.id}> status`} onFocus={event => event.target.select()} />
@@ -167,7 +167,7 @@ export function ChannelsPage() {
       {!channels.data ? <Skeleton className="h-32 w-full" /> : channels.data.length === 0 ? (
         <EmptyState icon={<MessageCircle />} title="No channels">Connect a Telegram, Slack or Discord bot to talk to your agents from there.</EmptyState>
       ) : (
-        <div className="rounded-lg border">
+        <div className="bg-card border">
           <Table>
             <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Bot</TableHead><TableHead>Access</TableHead><TableHead className="hidden lg:table-cell">Created</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>

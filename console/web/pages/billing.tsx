@@ -3,13 +3,14 @@ import { CheckCircle2, Loader2, Plus, Receipt } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PixelButton } from "@/components/ui/pixel-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, ErrorAlert, PageHeader } from "@/components/common";
+import { EmptyState, ErrorAlert, PageHeader, Stats } from "@/components/common";
 import { api, formatMicros, formatNumber, formatTime, useApi, type Billing, type LedgerEntry, type LedgerKind } from "@/lib/api";
 
 const KIND_LABELS: Record<LedgerKind, string> = {
@@ -46,7 +47,7 @@ function LedgerTable({ entries }: { entries: LedgerEntry[] }) {
             <TableCell className="whitespace-nowrap tabular-nums">{formatTime(entry.createdAt)}</TableCell>
             <TableCell><Badge variant={entry.amount > 0 ? "default" : "secondary"}>{KIND_LABELS[entry.kind]}</Badge></TableCell>
             <TableCell className="text-muted-foreground text-xs">{detail(entry)}</TableCell>
-            <TableCell className={`text-right tabular-nums ${entry.amount > 0 ? "text-emerald-600 dark:text-emerald-400" : ""}`}>{entry.amount > 0 ? "+" : ""}{formatMicros(entry.amount)}</TableCell>
+            <TableCell className={`text-right font-mono tabular-nums ${entry.amount > 0 ? "font-medium" : ""}`}>{entry.amount > 0 ? "+" : ""}{formatMicros(entry.amount)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -91,15 +92,15 @@ function AddCreditDialog({ rates, onClose }: { rates: Billing["rates"]; onClose:
             <p className="text-muted-foreground text-xs">Between {formatMicros(rates.minPurchase)} and {formatMicros(rates.maxPurchase)}.</p>
           </div>
           {valid && (
-            <div className="bg-muted/40 grid grid-cols-[1fr_auto] gap-1 rounded-md border p-3 text-sm tabular-nums">
-              <span>Credit</span><span className="text-right">{formatMicros(amount)}</span>
-              <span className="text-muted-foreground">Processing fee ({rates.purchaseFeeBps / 100}%)</span><span className="text-muted-foreground text-right">{formatMicros(fee)}</span>
-              <span className="font-medium">Total</span><span className="text-right font-medium">{formatMicros(amount + fee)}</span>
+            <div className="bg-muted grid grid-cols-[1fr_auto] gap-1 border p-3 text-sm tabular-nums">
+              <span>Credit</span><span className="text-right font-mono">{formatMicros(amount)}</span>
+              <span className="text-muted-foreground">Processing fee ({rates.purchaseFeeBps / 100}%)</span><span className="text-muted-foreground text-right font-mono">{formatMicros(fee)}</span>
+              <span className="font-medium">Total</span><span className="text-right font-mono font-medium">{formatMicros(amount + fee)}</span>
             </div>
           )}
-          <DialogFooter>
+          <DialogFooter className="sm:items-center">
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={!valid || busy}>{busy && <Loader2 className="animate-spin" />}Continue to payment</Button>
+            <PixelButton type="submit" loading={busy} disabled={!valid || busy}>Continue to payment</PixelButton>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -164,7 +165,7 @@ export function BillingPage() {
       <ErrorAlert error={billing.error ?? error} />
       {returned === "success" && data?.billing !== "none" && (
         <Alert className="mb-4">
-          {arrived ? <CheckCircle2 /> : gaveUp ? <Receipt /> : <Loader2 className="animate-spin" />}
+          {arrived ? <CheckCircle2 className="text-[#5aa7ff]!" /> : gaveUp ? <Receipt /> : <Loader2 className="animate-spin" />}
           <AlertTitle>{arrived ? "Credit added" : "Payment received"}</AlertTitle>
           <AlertDescription>
             {arrived ? "Thank you. Your new balance is below."
@@ -191,24 +192,12 @@ export function BillingPage() {
               <AlertDescription>New turns are refused until you add credit.</AlertDescription>
             </Alert>
           )}
-          <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Card size="sm">
-              <CardHeader>
-                <CardDescription>Balance</CardDescription>
-                <CardTitle className="text-2xl tabular-nums">{formatMicros(data.balance)}</CardTitle>
-                {data.freeCredit && <Badge variant="outline" className="mt-1 w-fit">Free credit</Badge>}
-              </CardHeader>
-            </Card>
-            {([
-              ["Agent usage this month", -data.month.usage],
-              ["Storage this month", -data.month.storage],
-              ["Added this month", data.month.purchase + data.month.grant + data.month.adjustment + data.month.refund],
-            ] as const).map(([label, value]) => (
-              <Card key={label} size="sm">
-                <CardHeader><CardDescription>{label}</CardDescription><CardTitle className="text-2xl tabular-nums">{formatMicros(value)}</CardTitle></CardHeader>
-              </Card>
-            ))}
-          </div>
+          <Stats items={[
+            { label: "Balance", value: formatMicros(data.balance), extra: data.freeCredit && <Badge variant="outline" className="mt-2">Free credit</Badge> },
+            { label: "Agent usage this month", value: formatMicros(-data.month.usage) },
+            { label: "Storage this month", value: formatMicros(-data.month.storage) },
+            { label: "Added this month", value: formatMicros(data.month.purchase + data.month.grant + data.month.adjustment + data.month.refund) },
+          ]} />
           <Card className="mb-6" size="sm">
             <CardHeader>
               <CardTitle className="text-sm">Rates</CardTitle>
@@ -225,9 +214,7 @@ export function BillingPage() {
           </Card>
           <h2 className="mb-3 text-sm font-medium">Ledger</h2>
           {entries.length === 0 ? <EmptyState icon={<Receipt />} title="No credit movements yet" /> : (
-            <Card>
-              <CardContent className="p-0"><LedgerTable entries={entries} /></CardContent>
-            </Card>
+            <div className="bg-card border"><LedgerTable entries={entries} /></div>
           )}
           {cursor != null && entries.length >= 10 && (
             <div className="mt-3 flex justify-center">

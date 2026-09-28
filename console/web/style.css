@@ -2,6 +2,34 @@
 @import "tw-animate-css";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Fonts are self-hosted: the console's CSP allows fonts from 'self' only. Figtree and
+   Geist Mono come from @fontsource (main.tsx). CamelCool is the display face, for the
+   few brand moments listed in console/DESIGN.md; Silkscreen is the pixel label face. */
+@font-face {
+	font-family: "CamelCool";
+	src: url("./fonts/camelCoolFont-Regular.woff2") format("woff2");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+/* TODO(font-apostrophe): remove once camelCoolFont ships U+0027/U+2019 */
+@font-face {
+	font-family: "CamelCool";
+	src: url("./fonts/silkscreen-latin-400-normal.woff2") format("woff2");
+	unicode-range: U+0027, U+2019;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Silkscreen";
+	src: url("./fonts/silkscreen-latin-400-normal.woff2") format("woff2");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 @custom-variant data-open {
   &:where([data-state="open"]),
   &:where([data-open]:not([data-open="false"])) {
@@ -74,9 +102,8 @@
 @theme inline {
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);
-	--font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
-	--font-mono: var(--font-geist-mono);
-	--font-display: "Source Serif 4", ui-serif, Georgia, "Times New Roman", serif;
+	--font-sans: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
+	--font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -119,75 +146,78 @@
 	--animate-turn-trace-up: collapsible-up 0.32s ease-in forwards;
 }
 
+/* camelStream's token sheet: two 5-step monochrome ramps (paper and ink) and two
+   accents, signal blue #5aa7ff and alert red #ff4d3d, which appear only in status
+   indicators, destructive actions and charts. Everything is square. */
 :root {
-	--radius: 0.625rem;
-	--font-geist-mono: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono",
-		Menlo, Consolas, monospace;
-	--background: oklch(1 0 0);
-	--foreground: oklch(0.141 0.005 285.823);
-	--card: oklch(1 0 0);
-	--card-foreground: oklch(0.141 0.005 285.823);
-	--popover: oklch(1 0 0);
-	--popover-foreground: oklch(0.141 0.005 285.823);
-	--primary: oklch(0.21 0.006 285.885);
-	--primary-foreground: oklch(0.985 0 0);
-	--secondary: oklch(0.967 0.001 286.375);
-	--secondary-foreground: oklch(0.21 0.006 285.885);
-	--muted: oklch(0.967 0.001 286.375);
-	--muted-foreground: oklch(0.552 0.016 285.938);
-	--accent: oklch(0.967 0.001 286.375);
-	--accent-foreground: oklch(0.21 0.006 285.885);
-	--destructive: oklch(0.577 0.245 27.325);
-	--border: oklch(0.92 0.004 286.32);
-	--input: oklch(0.92 0.004 286.32);
-	--ring: oklch(0.705 0.015 286.067);
-	--chart-1: oklch(0.646 0.222 41.116);
-	--chart-2: oklch(0.6 0.118 184.704);
-	--chart-3: oklch(0.398 0.07 227.392);
-	--chart-4: oklch(0.828 0.189 84.429);
-	--chart-5: oklch(0.769 0.188 70.08);
-	--sidebar: oklch(0.985 0 0);
-	--sidebar-foreground: oklch(0.141 0.005 285.823);
-	--sidebar-primary: oklch(0.21 0.006 285.885);
-	--sidebar-primary-foreground: oklch(0.985 0 0);
-	--sidebar-accent: oklch(0.967 0.001 286.375);
-	--sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-	--sidebar-border: oklch(0.92 0.004 286.32);
-	--sidebar-ring: oklch(0.705 0.015 286.067);
+	--radius: 0rem;
+	color-scheme: light;
+	--background: #f6f4ee;
+	--foreground: #111113;
+	--card: #efede6;
+	--card-foreground: #111113;
+	--popover: #efede6;
+	--popover-foreground: #111113;
+	--primary: #111113;
+	--primary-foreground: #f6f4ee;
+	--secondary: #eceae2;
+	--secondary-foreground: #111113;
+	--muted: #eceae2;
+	--muted-foreground: #3f3f45;
+	--accent: #e7e4db;
+	--accent-foreground: #111113;
+	--destructive: #ff4d3d;
+	--border: #d5d2c9;
+	--input: #d5d2c9;
+	--ring: #8a888f;
+	--chart-1: #5aa7ff;
+	--chart-2: #8a888f;
+	--chart-3: #3f3f45;
+	--chart-4: #c6c3ba;
+	--chart-5: #111113;
+	--sidebar: #f6f4ee;
+	--sidebar-foreground: #111113;
+	--sidebar-primary: #111113;
+	--sidebar-primary-foreground: #f6f4ee;
+	--sidebar-accent: #efede6;
+	--sidebar-accent-foreground: #111113;
+	--sidebar-border: #d5d2c9;
+	--sidebar-ring: #8a888f;
 }
-   
+
 .dark {
-	--background: oklch(0.141 0.005 285.823);
-	--foreground: oklch(0.985 0 0);
-	--card: oklch(0.21 0.006 285.885);
-	--card-foreground: oklch(0.985 0 0);
-	--popover: oklch(0.21 0.006 285.885);
-	--popover-foreground: oklch(0.985 0 0);
-	--primary: oklch(0.92 0.004 286.32);
-	--primary-foreground: oklch(0.21 0.006 285.885);
-	--secondary: oklch(0.274 0.006 286.033);
-	--secondary-foreground: oklch(0.985 0 0);
-	--muted: oklch(0.274 0.006 286.033);
-	--muted-foreground: oklch(0.705 0.015 286.067);
-	--accent: oklch(0.274 0.006 286.033);
-	--accent-foreground: oklch(0.985 0 0);
-	--destructive: oklch(0.704 0.191 22.216);
-	--border: oklch(1 0 0 / 10%);
-	--input: oklch(1 0 0 / 15%);
-	--ring: oklch(0.552 0.016 285.938);
-	--chart-1: oklch(0.488 0.243 264.376);
-	--chart-2: oklch(0.696 0.17 162.48);
-	--chart-3: oklch(0.769 0.188 70.08);
-	--chart-4: oklch(0.627 0.265 303.9);
-	--chart-5: oklch(0.645 0.246 16.439);
-	--sidebar: oklch(0.21 0.006 285.885);
-	--sidebar-foreground: oklch(0.985 0 0);
-	--sidebar-primary: oklch(0.488 0.243 264.376);
-	--sidebar-primary-foreground: oklch(0.985 0 0);
-	--sidebar-accent: oklch(0.274 0.006 286.033);
-	--sidebar-accent-foreground: oklch(0.985 0 0);
-	--sidebar-border: oklch(1 0 0 / 10%);
-	--sidebar-ring: oklch(0.552 0.016 285.938);
+	color-scheme: dark;
+	--background: #0b0b0c;
+	--foreground: #f4f2ea;
+	--card: #101013;
+	--card-foreground: #f4f2ea;
+	--popover: #101013;
+	--popover-foreground: #f4f2ea;
+	--primary: #f4f2ea;
+	--primary-foreground: #0b0b0c;
+	--secondary: #18181d;
+	--secondary-foreground: #f4f2ea;
+	--muted: #18181d;
+	--muted-foreground: #b3b1aa;
+	--accent: #1c1c21;
+	--accent-foreground: #f4f2ea;
+	--destructive: #ff4d3d;
+	--border: #232329;
+	--input: #232329;
+	--ring: #6e6e77;
+	--chart-1: #5aa7ff;
+	--chart-2: #6e6e77;
+	--chart-3: #b3b1aa;
+	--chart-4: #2c2c31;
+	--chart-5: #f4f2ea;
+	--sidebar: #0b0b0c;
+	--sidebar-foreground: #f4f2ea;
+	--sidebar-primary: #f4f2ea;
+	--sidebar-primary-foreground: #0b0b0c;
+	--sidebar-accent: #101013;
+	--sidebar-accent-foreground: #f4f2ea;
+	--sidebar-border: #232329;
+	--sidebar-ring: #6e6e77;
 }
 
 @keyframes collapsible-down {
@@ -217,4 +247,36 @@
 @layer base {
   * { @apply border-border outline-ring/50; }
   body { @apply bg-background text-foreground font-sans antialiased; }
+
+  /* Square, monochrome checkboxes; the native control is the OS's rounded blue one. */
+  input[type="checkbox"] {
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    flex-shrink: 0;
+    width: 0.875rem;
+    height: 0.875rem;
+    margin: 0;
+    border: 1px solid var(--input);
+    background-color: var(--background);
+    cursor: pointer;
+  }
+  input[type="checkbox"]::before {
+    content: "";
+    width: 0.5rem;
+    height: 0.5rem;
+    background-color: var(--background);
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+    transform: scale(0);
+  }
+  input[type="checkbox"]:checked { border-color: var(--foreground); background-color: var(--foreground); }
+  input[type="checkbox"]:checked::before { transform: scale(1); }
+  input[type="checkbox"]:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.5; }
+}
+
+/* main.tsx sets the dark class once its script runs; until then, paint the dark ground
+   so a dark-mode visitor never sees a flash of paper. */
+@media (prefers-color-scheme: dark) {
+  html { background-color: #0b0b0c; }
 }
