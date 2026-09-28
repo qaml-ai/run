@@ -168,8 +168,7 @@ start becomes durable before its first tool call is sent anywhere).
 **Load.** Every minute each node logs a `node_load` line in CloudWatch Embedded
 Metric Format: namespace `AgentRuntime`, metrics `hostedAgents` (agents started
 on the node, what `AGENT_MAX_AGENTS` caps), `sessions` (agents loaded on the node,
-hosted or not), `agents` (the older name of `hostedAgents`, kept for existing
-dashboards), `volumes` (volumes it serves), `runningTurns` and `rssBytes`, with no dimension
+hosted or not), `volumes` (volumes it serves), `runningTurns` and `rssBytes`, with no dimension
 or `ServiceName` from `AGENT_SERVICE_NAME`, plus `watchers` (event stream subscribers)
 and the database pool's `dbConnections`, `dbIdle` and `dbWaiting`. CloudWatch Logs extracts them
 without API calls, so they can drive target-tracking scaling.

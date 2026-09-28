@@ -118,8 +118,7 @@ const OPTIONAL_LOAD = ["watchers", "dbConnections", "dbIdle", "dbWaiting"] as co
 
 /**
  * A `node_load` log line in CloudWatch Embedded Metric Format: CloudWatch Logs
- * extracts the metrics itself, so publishing needs no API calls or IAM. `agents`
- * repeats `hostedAgents` for dashboards and alarms made before it had a name.
+ * extracts the metrics itself, so publishing needs no API calls or IAM.
  */
 export function nodeLoadLine(load: NodeLoad, service?: string, extra: Record<string, unknown> = {}, now = Date.now()) {
   return JSON.stringify({
@@ -128,12 +127,12 @@ export function nodeLoadLine(load: NodeLoad, service?: string, extra: Record<str
       CloudWatchMetrics: [{
         Namespace: "AgentRuntime", Dimensions: [service ? ["ServiceName"] : []],
         Metrics: [
-          { Name: "hostedAgents", Unit: "Count" }, { Name: "sessions", Unit: "Count" }, { Name: "agents", Unit: "Count" },
+          { Name: "hostedAgents", Unit: "Count" }, { Name: "sessions", Unit: "Count" },
           { Name: "volumes", Unit: "Count" }, { Name: "runningTurns", Unit: "Count" }, { Name: "rssBytes", Unit: "Bytes" },
           ...OPTIONAL_LOAD.filter(name => load[name] !== undefined).map(name => ({ Name: name, Unit: "Count" })),
         ],
       }],
     },
-    type: "node_load", ...extra, ...(service ? { ServiceName: service } : {}), ...load, agents: load.hostedAgents,
+    type: "node_load", ...extra, ...(service ? { ServiceName: service } : {}), ...load,
   });
 }

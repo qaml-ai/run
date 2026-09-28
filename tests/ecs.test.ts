@@ -113,7 +113,7 @@ test("task protection turns on with work, renews before it expires, and turns of
   assert.equal(off.enabled, false, "a no-op off ECS");
 });
 
-test("node load is a CloudWatch Embedded Metric Format line; agents repeats hostedAgents for older dashboards", () => {
+test("node load is a CloudWatch Embedded Metric Format line", () => {
   const load = { hostedAgents: 3, sessions: 5, volumes: 2, runningTurns: 1, rssBytes: 123_456_789 };
   const line = JSON.parse(nodeLoadLine(load, undefined, { node: "http://10.0.2.106:8790" }, 1_700_000_000_000));
   assert.deepEqual(line, {
@@ -122,12 +122,12 @@ test("node load is a CloudWatch Embedded Metric Format line; agents repeats host
       CloudWatchMetrics: [{
         Namespace: "AgentRuntime", Dimensions: [[]],
         Metrics: [
-          { Name: "hostedAgents", Unit: "Count" }, { Name: "sessions", Unit: "Count" }, { Name: "agents", Unit: "Count" },
+          { Name: "hostedAgents", Unit: "Count" }, { Name: "sessions", Unit: "Count" },
           { Name: "volumes", Unit: "Count" }, { Name: "runningTurns", Unit: "Count" }, { Name: "rssBytes", Unit: "Bytes" },
         ],
       }],
     },
-    type: "node_load", node: "http://10.0.2.106:8790", ...load, agents: 3,
+    type: "node_load", node: "http://10.0.2.106:8790", ...load,
   });
   const named = JSON.parse(nodeLoadLine(load, "agent-runtime"));
   assert.deepEqual(named._aws.CloudWatchMetrics[0].Dimensions, [["ServiceName"]]);
