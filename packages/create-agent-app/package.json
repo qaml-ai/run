@@ -1,0 +1,29 @@
+{
+  "name": "@camelai/create-agent-app",
+  "version": "0.8.0",
+  "description": "Create a Next.js app with a streaming chat to an agent on the camelAI agent runtime: npm create @camelai/agent-app",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qaml-ai/agent-runtime.git",
+    "directory": "packages/create-agent-app"
+  },
+  "homepage": "https://agents.camelai.dev",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "bin": {
+    "create-agent-app": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "template",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
