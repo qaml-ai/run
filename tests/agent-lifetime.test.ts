@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -31,9 +32,14 @@ test("agents are listed with the key they were made with, and their name", async
   assert.equal((await sdk.listAgents()).find(agent => agent.id === keyed.id)?.key, "support-7");
 });
 
-test("the caller learns the model an agent gets when it names none", async t => {
-  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+test("the caller learns the model an agent gets when it names none, and an agent it cannot call says why", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), {}, { tenants: { keyless: { tokenSha256: createHash("sha256").update(OPERATOR).digest("hex") } } });
   assert.equal((await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).me()).defaultModel, "openrouter/openai/gpt-4o-mini");
+  const unnamed = await r.call("/v1/agents", { body: {} });
+  assert.equal(unnamed.status, 400);
+  assert.match(unnamed.json.error, /openrouter\/openai\/gpt-4o-mini, the runtime's default model \(this agent names none\).*GET \/v1\/models\?available=true/);
+  const named = await r.call("/v1/agents", { body: { model: "anthropic/claude-sonnet-5" } });
+  assert.match(named.json.error, /No anthropic API key.*anthropic\/claude-sonnet-5;.*GET \/v1\/models\?available=true/);
 });
 
 test("a key whose agent was deleted or expired makes a fresh agent, with a new token; the old one stays gone", async t => {

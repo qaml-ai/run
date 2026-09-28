@@ -191,7 +191,9 @@ async function createAgent(tenant: string, params: any, key?: string) {
   if (made) params = made.params;
   const config = { ...sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant)), ...(modelHeaders ? { modelHeaders } : {}) };
   if (!(keyScope && await keyScopes.entry(tenant, keyScope, config.model.provider)) && !await accounts.hasKey(tenant, config.model.provider)) {
-    throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}; set one with PUT /v1/providers/${config.model.provider}/key`);
+    // Said plainly when the model is the runtime's default: the caller may not know one was chosen for it.
+    const which = `${config.model.provider}/${config.model.id}${params.model === undefined ? ", the runtime's default model (this agent names none)" : ""}`;
+    throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}, for ${which}; name a model you can use (GET /v1/models?available=true), or set a key with PUT /v1/providers/${config.model.provider}/key`);
   }
   const ttl = params.ttlSeconds;
   validTtl(ttl);
