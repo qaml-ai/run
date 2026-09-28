@@ -1,0 +1,13 @@
+# For local harnesses (evals, end-to-end tests), never production: lets agents call servers on this machine
+# and its private networks over plain http, such as a fake LLM or MCP server.
+#   docker compose -f docker-compose.yml -f compose.dev.yml up -d
+# Inside the container, this machine is host.docker.internal. See docs/operations/self-host.md.
+services:
+  runtime:
+    environment:
+      AGENT_OUTBOUND_ALLOW_HTTP: "true"
+      # Loopback and the private ranges Docker hands out, IPv6 too (host.docker.internal is in one of them).
+      AGENT_OUTBOUND_ALLOW_CIDRS: ${AGENT_DEV_ALLOW_CIDRS:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7}
+    extra_hosts:
+      # Docker Desktop has it already; on Linux Docker Engine this adds it.
+      - host.docker.internal:host-gateway

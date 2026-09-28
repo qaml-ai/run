@@ -109,6 +109,55 @@ A model server or gateway on your network is allowed by naming its range,
 too, so keep it narrow. Tool servers your application runs on the same Docker
 network are such an address too.
 
+## Local harnesses (evals, end-to-end tests)
+
+For a harness on your machine, `compose.dev.yml` lets agents call servers on it
+and on Docker's private networks over plain `http`: a fake LLM, an MCP server,
+a page for `web_fetch`. Never use it in production.
+
+```sh
+docker compose -f docker-compose.yml -f compose.dev.yml up -d
+```
+
+It sets `AGENT_OUTBOUND_ALLOW_HTTP=true` and allows loopback and the private
+ranges (`AGENT_DEV_ALLOW_CIDRS` narrows them), and makes `host.docker.internal`
+this machine on Linux too. From inside the container, a server on your machine at
+port 9999 is `http://host.docker.internal:9999`; one in another Compose service is
+`http://<service>:<port>`.
+
+A fake LLM is a [custom provider](../guides/custom-models.md): any server that
+answers OpenAI Chat Completions, streaming. This one replies with the last user
+message, reversed:
+
+```js
+// fake-llm.mjs: node fake-llm.mjs
+import { createServer } from "node:http";
+createServer(async (req, res) => {
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  const { messages } = JSON.parse(body);
+  const last = messages.findLast(m => m.role === "user")?.content ?? "";
+  const said = typeof last === "string" ? last : last.map(part => part.text ?? "").join("");
+  const text = [...said].reverse().join("");
+  const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: "fake", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+  res.writeHead(200, { "Content-Type": "text/event-stream" });
+  chunk({ role: "assistant", content: text });
+  chunk({}, "stop");
+  res.end("data: [DONE]\n\n");
+}).listen(9999);
+```
+
+```sh
+curl -X PUT localhost:8790/v1/providers/fake -H "Authorization: Bearer $AGENT_OPERATOR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "openai-completions", "baseUrl": "http://host.docker.internal:9999/v1", "apiKey": null,
+       "models": [{"id": "echo", "contextWindow": 32768}]}'
+```
+
+Agents that name `fake/echo` then call it, at no cost. To script tool calls,
+answer with `tool_calls` deltas as OpenAI does; the runtime's own tests
+(`tests/runtime-server.ts`, `fakeModel`) have a fuller fake.
+
 ## More than one node
 
 One node is the default and needs nothing more. Several nodes share Postgres

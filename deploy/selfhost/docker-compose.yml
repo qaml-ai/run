@@ -2,7 +2,7 @@
 #   cp .env.example .env   # then fill it in
 #   docker compose up -d
 # With `--profile s3`, an S3-compatible service (SeaweedFS) holds the data instead (set the AGENT_S3_* lines in .env).
-# See docs/operations/self-host.md.
+# For local harnesses (evals, end-to-end tests): add -f compose.dev.yml. See docs/operations/self-host.md.
 name: agent-runtime
 
 services:
