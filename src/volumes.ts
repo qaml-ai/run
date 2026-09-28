@@ -648,7 +648,7 @@ export class VolumeService {
         .map(mount => `${mount.path}${change.path.slice(mount.subpath === "/" ? 0 : mount.subpath.length)} (${change.kind === "write" ? "written" : "deleted"})`));
       if (!seen.length) continue;
       const text = `Files changed in a mounted volume:\n${seen.slice(0, 50).join("\n")}${seen.length > 50 ? `\n...and ${seen.length - 50} more` : ""}`;
-      try { await this.options.deliver!(watcher.agent, watcher.tenant, { id: `volume-${id}-${changes[0].seq}-${changes.at(-1)!.seq}`, method: "prompt", params: { text } }); }
+      try { await this.options.deliver!(watcher.agent, watcher.tenant, { id: `volume-${id}-${changes[0].seq}-${changes.at(-1)!.seq}`, method: "prompt", params: { text, allowDisconnected: true } }); }
       catch (error) {
         const status = (error as { status?: number }).status;
         if (status === 404 || status === 410) await this.db.query("delete from volume_watchers where volume = $1 and agent = $2", [id, watcher.agent]);

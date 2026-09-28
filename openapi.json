@@ -1906,6 +1906,10 @@
             "type": "string",
             "description": "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble"
           },
+          "allowDisconnected": {
+            "type": "boolean",
+            "description": "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected"
+          },
           "whileRunning": {
             "type": "string",
             "enum": [

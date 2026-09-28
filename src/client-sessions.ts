@@ -1957,6 +1957,10 @@ export class ClientSessions {
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer", "followUp"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
+    // Whether a run may go ahead with no application connected is the caller's choice now, not part of what it asks.
+    const { allowDisconnected, ...asked } = body.params;
+    if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean") throw new HttpError(400, "allowDisconnected is true or false");
+    body = { ...body, params: asked };
     const fingerprint = hash(canonical({ method: body.method, params: body.params }));
     // A message sent while no turn runs starts one, as a prompt: steer as a prompt that steers a running turn,
     // followUp as one that waits for it. Neither waits unseen in memory for whatever turn comes next.
@@ -1997,6 +2001,12 @@ export class ClientSessions {
     } catch (error) { throw new HttpError(400, errorText(error)); }
     const limited = body.method === "resume" ? undefined : await this.runLimit(session, body.method);
     if (limited) throw typeof limited === "string" ? new HttpError(402, limited) : limited;
+    // A run of an agent whose tools its application answers needs that application connected: refused now, rather
+    // than a turn whose calls cannot run. An application reconnecting (a process restarting) has a moment to arrive.
+    if (["prompt", "continue", "execute"].includes(body.method) && !allowDisconnected && session.header.definitions.length && !await this.applicationConnected(session)) {
+      if (existing()) return { status: 200, record: visible(existing()!) };
+      throw new HttpError(409, "APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it (the SDKs' connectAgent), or send allowDisconnected: true to run anyway");
+    }
     const queued = QUEUED_METHODS.includes(body.method);
     // Reads and aborts need no process; queued requests start it (if at all) when their turn comes.
     if (!queued && !["history", "status", "abort"].includes(body.method)) await this.ensureStarted(session);
@@ -2559,6 +2569,15 @@ export class ClientSessions {
       }
       throw error;
     } finally { session.inflight--; }
+  }
+
+  /** Whether an application serves the agent's tools, waiting briefly for one that is reconnecting. */
+  private async applicationConnected(session: Session) {
+    for (const until = Date.now() + RECONNECT_GRACE_MS; ;) {
+      if (session.attached?.open && session.attached.initialized) return true;
+      if (Date.now() >= until || this.closed || session.fault) return false;
+      await sleep(50);
+    }
   }
 
   /** The attached server once its MCP session is up, waiting briefly for an application that is reconnecting. */

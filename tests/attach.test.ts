@@ -38,3 +38,25 @@ test("the application's own connection still answers a replay gap with 409 unles
   assert.equal(asked.status, 200);
   await asked.body?.cancel();
 });
+
+test("a run for an agent whose tools need its application is refused while none is connected, after a short wait for one reconnecting", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const tool = { name: "lookup", description: "Look up", inputSchema: { type: "object", properties: {} } };
+  const created = (await r.call("/v1/agents", { body: { mcp: { tools: [tool] } } })).json;
+  const refused = await r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "hi" } });
+  assert.equal(refused.status, 409);
+  assert.match(refused.json.error, /^APPLICATION_NOT_CONNECTED/);
+  const viaClient = await fetch(`${r.base}/clients/${created.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: "c-1", method: "execute", params: { code: "return 1" } }) });
+  assert.equal(viaClient.status, 409);
+  assert.equal((await r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "anyway", allowDisconnected: true } })).status, 202, "unless the caller says it may run without");
+
+  // An application that connects while the request waits takes it.
+  const waiting = r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "soon" } });
+  await new Promise(resolve => setTimeout(resolve, 500));
+  await attach(t, r.base, created.id, created.token);
+  assert.equal((await waiting).status, 202);
+
+  // An agent with no tools of its application's runs without one.
+  const plain = (await r.call("/v1/agents", { body: {} })).json;
+  assert.equal((await r.call(`/v1/agents/${plain.id}/prompt`, { body: { text: "hi" } })).status, 202);
+});

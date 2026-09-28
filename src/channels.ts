@@ -573,7 +573,8 @@ export class Channels {
     const prompt = this.prompt(channel, inbound, await this.attach(channel, credentials, agent, item.id, inbound.files ?? []));
     // Submitted before submitting: the turn may end (and its reply be settled) before submit returns.
     const next = await this.save(current, { state: "submitted", agent, prompt, due: Date.now() + RECHECK_MS }, false);
-    try { await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: prompt }); }
+    // Channels run unattended: a turn goes ahead without the application, whose calls fail as not connected.
+    try { await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: { ...prompt, allowDisconnected: true } }); }
     catch (error) {
       console.error(JSON.stringify({ type: "channel_submit_failed", item: item.id, error: errorText(error) }));
       await this.save(next, { due: Date.now() + this.retryDelay(0) }).catch(() => {});
@@ -651,7 +652,7 @@ export class Channels {
   private async recheck(channel: Channel, current: Held) {
     const item = current.item;
     let record: RequestRecord;
-    try { record = await this.options.submit(item.agent!, channel.tenant, { id: item.id, method: "prompt", params: item.prompt! }); }
+    try { record = await this.options.submit(item.agent!, channel.tenant, { id: item.id, method: "prompt", params: { ...item.prompt!, allowDisconnected: true } }); }
     catch (error) {
       const status = (error as { status?: number }).status;
       if (status === 404 || status === 410) return this.finish(current);
