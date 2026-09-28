@@ -108,6 +108,8 @@ type Session = {
   usage?: Map<string, RunUsage>;
   /** Writing the latest run's `run.started` event, which the event of its end waits for. */
   started?: Promise<void>;
+  /** Whether the run in progress has its webhook events written: its tenant had an endpoint for them as it began. */
+  announcing?: boolean;
   /** Prompts sent with `whileRunning: "steer"` that a running turn took, each with that turn's request: they end with it. */
   steered?: Map<string, string>;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
@@ -308,6 +310,8 @@ export interface ClientSessionOptions {
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
   /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
   onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
+  /** Whether the tenant has a webhook endpoint for run events; without it, runs write none. */
+  runEvents?: (tenant: string) => Promise<boolean>;
   /** Called with time an agent spent in runs (model calls and tool execution), at least every minute while one runs. */
   onActive?: (tenant: string, agentId: string, ms: number) => void;
   hooks?: SessionHooks;
@@ -2226,6 +2230,8 @@ export class ClientSessions {
     let value: Outcome;
     try {
       if (QUEUED_METHODS.includes(record.method) && (this.closed || this.draining || session.fault || session.handedBack || session.requests.get(record.id)?.state !== "running")) return;
+      // Decided once per run, so it has both its events or neither: an endpoint made meanwhile gets the next run's.
+      if (RUN_METHODS.includes(record.method)) session.announcing = await (this.options.runEvents?.(session.header.tenant) ?? false);
       // Configuration keeps its params when it begins: the next owner replays one that was interrupted.
       if (record.method === "configure") record = this.upsertRequest(session, { ...record, began: Date.now() });
       if (RUN_METHODS.includes(record.method)) {
@@ -2253,8 +2259,10 @@ export class ClientSessions {
         if (record.method === "execute") session.beginning = {};
         else await this.commit(session, true);
         this.hook("runStarted", session, record);
-        session.started = enqueueEvents(this.db, [this.runEvent(session, record)])
-          .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: errorText(error) })));
+        if (session.announcing) {
+          session.started = enqueueEvents(this.db, [this.runEvent(session, record)])
+            .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: errorText(error) })));
+        }
         if (record.method !== "execute") session.turn = { requestId: record.id, messages: [], count: 0, bytes: 0 };
       }
       if (RUN_METHODS.includes(record.method)) {
@@ -2285,8 +2293,9 @@ export class ClientSessions {
     session.settling++;
     try {
       const run = RUN_METHODS.includes(record.method);
-      const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now(), ...(run ? { announce: true as const } : {}) });
-      const steered = this.endSteered(session, record.id, value);
+      const announcing = run && !!session.announcing;
+      const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now(), ...(announcing ? { announce: true as const } : {}) });
+      const steered = this.endSteered(session, record.id, value, announcing);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
       if (run) {
@@ -2294,7 +2303,8 @@ export class ClientSessions {
         const usage = session.usage;
         session.usage = undefined;
         // With this run's event (and those of prompts steered into it), any an earlier failure left.
-        void this.announce(session, [...session.requests.values()].filter(request => request.announce), usage);
+        const unannounced = [...session.requests.values()].filter(request => request.announce);
+        if (unannounced.length) void this.announce(session, unannounced, usage);
       }
       session.lastActive = Date.now();
       this.publish(session, { type: "response", id: record.id, outcome: value });
@@ -2313,7 +2323,7 @@ export class ClientSessions {
   }
 
   /** Complete the prompts steered into the turn `turn` with its outcome; their queued runs then do nothing. */
-  private endSteered(session: Session, turn: string, outcome: Outcome) {
+  private endSteered(session: Session, turn: string, outcome: Outcome, announcing: boolean) {
     const ended: string[] = [];
     for (const [id, into] of session.steered ?? []) {
       if (into !== turn) continue;
@@ -2321,7 +2331,7 @@ export class ClientSessions {
       const queued = session.running.get(id);
       if (!queued) continue;
       const { params: _params, ...rest } = queued;
-      this.upsertRequest(session, { ...rest, state: "completed", outcome, endedAt: Date.now(), steeredInto: turn, announce: true });
+      this.upsertRequest(session, { ...rest, state: "completed", outcome, endedAt: Date.now(), steeredInto: turn, ...(announcing ? { announce: true as const } : {}) });
       ended.push(id);
     }
     return ended;

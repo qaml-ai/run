@@ -42,7 +42,7 @@
     "tenant-reads.test.ts": 3.3,
     "volumes.test.ts": 6.7,
     "watch.test.ts": 20.3,
-    "webhooks.test.ts": 8.5
+    "webhooks.test.ts": 12.0
   },
   "inline": {
     "api.test.ts": 12.1,
@@ -87,6 +87,6 @@
     "tenant-reads.test.ts": 2.7,
     "volumes.test.ts": 5.3,
     "watch.test.ts": 18.4,
-    "webhooks.test.ts": 6.9
+    "webhooks.test.ts": 10.7
   }
 }

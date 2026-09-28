@@ -684,6 +684,11 @@ Every event is an envelope, documented per type under `webhooks` in `openapi.jso
   responses on the node that ended it, or is null.
 - `created` is in Unix seconds. An event's `data` only gains fields; a change a
   receiver could not ignore comes as a new type.
+- A run has both its events or neither: whether its tenant has an endpoint for run
+  events is decided as it begins, so an endpoint receives runs that begin after it
+  is made (every node hears of a change at once, over `LISTEN`, and reads it again
+  within a minute regardless). Runs of a tenant with no such endpoint write no event
+  and cost nothing extra.
 - Requests are signed per Standard Webhooks: `webhook-id` (the event's `id`),
   `webhook-timestamp` (Unix seconds) and `webhook-signature`, `v1,<base64
   HMAC-SHA256 of "<id>.<timestamp>.<body>">` keyed with the secret's base64 part,

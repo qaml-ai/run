@@ -75,14 +75,15 @@ export async function databaseFromEnvironment(env = process.env): Promise<Db> {
 }
 
 /**
- * Listen for notifications on `channel` over a connection of its own, reconnecting (with backoff)
- * whenever it drops; `onPayload` gets each payload. Configured as the pool is, except that
+ * Listen for notifications on each channel of `handlers` over one connection of its own, reconnecting
+ * (with backoff) whenever it drops; each channel's handler gets its payloads. Configured as the pool is, except that
  * AGENT_DATABASE_LISTEN_HOST, when set, names another host: RDS Proxy does not carry notifications
  * reliably (a LISTEN pins a proxied session, and delivery to it is not assured), so production
  * listens on the database instance itself. Notifications are a fast path: callers keep a slower
  * check for what one missed while the connection was down.
  */
-export async function listenFromEnvironment(channel: string, onPayload: (payload: string) => void, env = process.env) {
+export async function listenFromEnvironment(handlers: Record<string, (payload: string) => void>, env = process.env) {
+  const channels = Object.keys(handlers);
   const ssl = env.AGENT_DATABASE_CA ? { ca: readFileSync(env.AGENT_DATABASE_CA, "utf8"), rejectUnauthorized: true } : undefined;
   const secret = !env.AGENT_DATABASE_URL && env.AGENT_DATABASE_SECRET_ARN ? await secretReader(env.AGENT_DATABASE_SECRET_ARN, env) : undefined;
   const config = async (): Promise<pg.ClientConfig> => {
@@ -104,7 +105,7 @@ export async function listenFromEnvironment(channel: string, onPayload: (payload
       client = undefined;
       void next.end().catch(() => {});
       if (closed) return;
-      if (error) console.error(JSON.stringify({ type: "database_listen_failed", channel, error: error.message }));
+      if (error) console.error(JSON.stringify({ type: "database_listen_failed", channels, error: error.message }));
       timer = setTimeout(() => void connect().catch(retry), backoff);
       timer.unref();
       backoff = Math.min(backoff * 2, 30_000);
@@ -112,10 +113,10 @@ export async function listenFromEnvironment(channel: string, onPayload: (payload
     client = next;
     next.on("error", retry);
     next.on("end", () => retry(new Error("connection ended")));
-    next.on("notification", message => { if (message.channel === channel && message.payload !== undefined) onPayload(message.payload); });
+    next.on("notification", message => { if (message.payload !== undefined) handlers[message.channel]?.(message.payload); });
     try {
       await next.connect();
-      await next.query(`listen "${channel.replaceAll("\"", "")}"`);
+      for (const channel of channels) await next.query(`listen "${channel.replaceAll("\"", "")}"`);
       backoff = 1_000;
     } catch (error) { retry(error as Error); }
   };

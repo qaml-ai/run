@@ -6,7 +6,7 @@ import { AgentSupervisor, type Hosting } from "./supervisor.ts";
 import { configuredModel } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
-import { Webhooks } from "./webhooks.ts";
+import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { modelHeadersInput, sessionConfig } from "./session-config.ts";
 import { ClientSessions, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -158,7 +158,9 @@ const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, r
 const definitions = new Definitions({ db, accounts, outbound });
 const keyScopes = new KeyScopes({ db, accounts });
 // Each model response's usage, POSTed to the tenant's receiver from a durable outbox any node sends from.
-const webhooks = new Webhooks({ db, accounts, outbound, ...(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS) } : {}) });
+// Which tenants have endpoints for run events: runs of the others write none.
+const subscribers = new Subscribers(db);
+const webhooks = new Webhooks({ db, accounts, outbound, subscribers, ...(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS) } : {}) });
 webhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 
 /** Provision an agent for `tenant`: the shared path behind POST /client-sessions and POST /v1/agents. */
@@ -305,6 +307,7 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 // Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
 const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
+  runEvents: tenant => subscribers.runs(tenant),
   secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), agentLimitFor: async tenant => {
     // An admin's limit for the tenant, else, on free credit, the free limit (never above the default).
     const free = tenants.maxAgents(tenant) === undefined ? await accounts.billing.agentLimit(tenant) : undefined;
@@ -344,9 +347,13 @@ const clients = new ClientSessions(supervisor, {
   submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
 });
 // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
-const loads = await listenFromEnvironment("agent_runtime_loaded", payload => {
-  const [from, agent] = payload.split(" ");
-  if (from !== node && agent) clients.loadedElsewhere(agent);
+// A tenant's webhook endpoints changed on some node: read them again at its next run.
+const loads = await listenFromEnvironment({
+  agent_runtime_loaded: payload => {
+    const [from, agent] = payload.split(" ");
+    if (from !== node && agent) clients.loadedElsewhere(agent);
+  },
+  [ENDPOINTS_CHANNEL]: tenant => subscribers.forget(tenant),
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({

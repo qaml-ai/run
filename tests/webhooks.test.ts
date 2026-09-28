@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { listen, runtime, sleep, toolCall, until } from "./runtime-server.ts";
+import { cluster, fakeModel, token } from "./cluster-helpers.ts";
 import { signedHeaders } from "../src/webhooks.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100" };
@@ -123,6 +127,10 @@ test("the usage webhook still works, as one endpoint of its own that gets usage 
   assert.deepEqual([event.json.agent, event.json.requestId, event.json.input], [agent, done.id, 10]);
   const expected = signedHeaders(event.headers["webhook-id"], event.body, [set.json.secret], Number(event.headers["webhook-timestamp"]) * 1000);
   assert.equal(event.headers["webhook-signature"], expected["webhook-signature"]);
+  // With no endpoint for run events, its runs journal no mark for one.
+  const journal = (await readFile(join(r.root, "client-sessions", `${agent}.journal.jsonl`), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual([...new Set(journal.map(record => record.t))], ["request"]);
+  assert.equal(journal.some(record => record.record?.announce), false);
 });
 
 test("a run whose event could not be written when it ended has it written with the agent's next load or run, once", async t => {
@@ -147,4 +155,30 @@ test("a run whose event could not be written when it ended has it written with t
   await until(() => hook.find("run.completed", third.id), "the third run's event");
   await sleep(500);
   assert.equal(hook.received.filter(entry => entry.json.data.requestId === lost.id).length, 1, "written once, not at every load");
+});
+
+test("runs of a tenant with no endpoint for run events write none, and journal no mark; an endpoint made on another node gets the next run's", async t => {
+  const hook = await receiver(t);
+  const c = await cluster(t);
+  const model = await fakeModel(t, () => ({ role: "assistant", content: "ok" }));
+  const env = { ...model.env, ...LOCAL, AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
+  const a = await c.start("a", env);
+  const b = await c.start("b", env);
+  const call = (base: string, path: string, body?: unknown) => fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
+  const agent = (await call(b.url, "/v1/agents", {})).id as string;
+  const prompt = async (id: string) => {
+    await call(b.url, `/v1/agents/${agent}/prompt`, { text: "hi", requestId: id });
+    await until(async () => (await call(b.url, `/v1/agents/${agent}/requests/${id}`)).state === "completed", `request ${id}`);
+  };
+  // A usage-only endpoint is not one for run events.
+  await call(a.url, "/v1/webhooks", { url: hook.url, events: ["usage.recorded"] });
+  await prompt("quiet");
+  assert.equal(Number((await c.db.query("select count(*) from usage_webhook_outbox where body->>'type' like 'run.%'")).rows[0].count), 0);
+
+  // Made on A, while B had read that the tenant has none: B hears of it, and its next run is sent.
+  await call(a.url, "/v1/webhooks", { url: hook.url, events: ["run.started", "run.completed"] });
+  await sleep(300);
+  await prompt("heard");
+  await until(() => hook.find("run.completed", "heard") && hook.find("run.started", "heard"), "the next run's events");
+  assert.equal(hook.find("run.completed", "quiet"), undefined);
 });

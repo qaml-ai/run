@@ -112,6 +112,34 @@ function descriptionInput(value: unknown): string | null {
   return value;
 }
 
+/** Where nodes hear that a tenant's endpoints changed (payload: the tenant), so their `Subscribers` read them again. */
+export const ENDPOINTS_CHANNEL = "agent_runtime_webhooks";
+
+/**
+ * Which tenants have an endpoint for run events, as this node last read it, so a run of a tenant with none writes
+ * no event (and journals no mark that it did). A change on any node is heard at once (`ENDPOINTS_CHANNEL`); the
+ * TTL only covers notifications the listening connection missed. A failed read counts as yes.
+ */
+export class Subscribers {
+  private readonly db: Db;
+  private readonly ttlMs: number;
+  private readonly tenants = new Map<string, { runs: Promise<boolean>; until: number }>();
+  constructor(db: Db, ttlMs = 60_000) { this.db = db; this.ttlMs = ttlMs; }
+
+  runs(tenant: string): Promise<boolean> {
+    const cached = this.tenants.get(tenant);
+    if (cached && cached.until > Date.now()) return cached.runs;
+    if (this.tenants.size >= 10_000) for (const [key, entry] of this.tenants) if (entry.until <= Date.now()) this.tenants.delete(key);
+    const runs = this.db.query("select exists (select 1 from webhook_endpoints where tenant = $1 and events && $2::text[]) as runs", [tenant, RUN_EVENTS])
+      .then(({ rows }) => rows[0].runs as boolean, () => { this.tenants.delete(tenant); return true; });
+    this.tenants.set(tenant, { runs, until: Date.now() + this.ttlMs });
+    return runs;
+  }
+
+  forget(tenant: string) { this.tenants.delete(tenant); }
+}
+const RUN_EVENTS = EVENT_TYPES.filter(type => type.startsWith("run."));
+
 const endpointView = (row: any): Endpoint => ({ id: row.id, url: row.url, events: row.events, ...(row.description ? { description: row.description } : {}), createdAt: Number(row.created_at) });
 
 export class Webhooks {
@@ -119,14 +147,22 @@ export class Webhooks {
   private readonly accounts: Accounts;
   private readonly outbound: Outbound;
   private readonly retryBaseMs: number;
+  private readonly subscribers?: Subscribers;
   private timer?: ReturnType<typeof setInterval>;
   private sending = false;
 
-  constructor(options: { db: Db; accounts: Accounts; outbound: Outbound; retryBaseMs?: number }) {
+  constructor(options: { db: Db; accounts: Accounts; outbound: Outbound; retryBaseMs?: number; subscribers?: Subscribers }) {
     this.db = options.db;
     this.accounts = options.accounts;
     this.outbound = options.outbound;
     this.retryBaseMs = options.retryBaseMs ?? 5_000;
+    this.subscribers = options.subscribers;
+  }
+
+  /** Tell every node the tenant's endpoints changed; this one forgets at once. */
+  private async changed(tenant: string) {
+    this.subscribers?.forget(tenant);
+    await this.db.query("select pg_notify($1, $2)", [ENDPOINTS_CHANNEL, tenant]).catch(() => {});
   }
 
   private checkUrl(url: unknown): string {
@@ -156,6 +192,7 @@ export class Webhooks {
       select $1, $2, $3, $4, $5, $6, $7 where (select count(*) from webhook_endpoints where tenant = $2 and not legacy) < ${MAX_ENDPOINTS}
       returning *`, [id, tenant, url, events, descriptionInput(input.description), this.accounts.seal(aad(tenant, id, false), secret), Date.now()]);
     if (!rows[0]) throw new HttpError(409, `A tenant has at most ${MAX_ENDPOINTS} webhook endpoints`);
+    await this.changed(tenant);
     return { ...endpointView(rows[0]), secret };
   }
 
@@ -167,6 +204,7 @@ export class Webhooks {
       update webhook_endpoints set url = coalesce($3, url), events = coalesce($4, events), description = case when $5 then $6 else description end
       where tenant = $1 and id = $2 and not legacy returning *`, [tenant, id, url, events, input.description !== undefined, descriptionInput(input.description)])).rows[0];
     if (!row) throw new HttpError(404, "Unknown webhook endpoint");
+    await this.changed(tenant);
     return endpointView(row);
   }
 
@@ -175,6 +213,7 @@ export class Webhooks {
     const { rowCount } = await this.db.query("delete from webhook_endpoints where tenant = $1 and id = $2 and not legacy", [tenant, id]);
     if (!rowCount) throw new HttpError(404, "Unknown webhook endpoint");
     await this.db.query("delete from usage_webhook_outbox where endpoint = $1", [id]);
+    await this.changed(tenant);
   }
 
   /** A new signing secret, returned only now; the old one also signs for a day, so receivers can switch. */
