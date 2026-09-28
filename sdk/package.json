@@ -37,6 +37,10 @@
       "types": "./dist/clients/watch.d.ts",
       "default": "./dist/clients/watch.js"
     },
+    "./chat": {
+      "types": "./dist/clients/chat.d.ts",
+      "default": "./dist/clients/chat.js"
+    },
     "./testing": {
       "types": "./dist/clients/testing.d.ts",
       "default": "./dist/clients/testing.js"
