@@ -150,7 +150,7 @@ test("an upload streams to storage a chunk at a time: the source is never more t
   const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   let produced = 0, stored = 0, ahead = 0;
   const writeBlob = storage.writeBlob.bind(storage);
-  storage.writeBlob = async (key, data) => { await new Promise(resolve => setImmediate(resolve)); await writeBlob(key, data); stored += data.length; };
+  storage.writeBlob = async (key, data) => { await new Promise(resolve => setImmediate(resolve)); const created = await writeBlob(key, data); stored += data.length; return created; };
   const volumes = new VolumeService({ db, storage });
   t.after(() => volumes.close());
   const { id } = await volumes.create("acme");

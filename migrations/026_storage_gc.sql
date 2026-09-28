@@ -1,12 +1,12 @@
 -- Storage garbage collection (src/storage-gc.ts). A chunk is collected once nothing refers to it: no
--- live volume's files or snapshots, and no FileRef an agent holds (chunk_pins). Only chunks written
--- since collection began are ever collected: each write or pin records one in chunk_touches, and a
--- chunk that has no row there (stored before) is left alone, as FileRefs from before refer to chunks
--- without pins.
+-- live volume's files or snapshots, and no FileRef an agent holds (chunk_pins). Only chunks a write
+-- created since collection began are ever collected: such a write records one in chunk_touches, and a
+-- chunk with no row there (stored before, however often written or pinned again) is left alone, as
+-- FileRefs from before refer to chunks without pins.
 create table chunk_touches (
   tenant text not null,
   hash text not null,
-  -- When it was last written or pinned: a collection of it that began before stands down.
+  -- When it was last written or referred to: a collection of it that began before stands down.
   at bigint not null,
   primary key (tenant, hash)
 );

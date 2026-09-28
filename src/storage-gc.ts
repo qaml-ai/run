@@ -23,15 +23,18 @@ export class StorageGc {
   private readonly volumes: VolumeService;
   private readonly graceMs: number;
   private readonly intervalMs: number;
+  /** Mark and find what is due, and log it, but delete nothing (AGENT_GC_DRY_RUN). */
+  private readonly dryRun: boolean;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
 
-  constructor(options: { db: Db; storage: Storage; volumes: VolumeService; graceMs?: number; intervalMs?: number }) {
+  constructor(options: { db: Db; storage: Storage; volumes: VolumeService; graceMs?: number; intervalMs?: number; dryRun?: boolean }) {
     this.db = options.db;
     this.storage = options.storage;
     this.volumes = options.volumes;
     this.graceMs = options.graceMs ?? 24 * 60 * 60_000;
     this.intervalMs = options.intervalMs ?? 6 * 60 * 60_000;
+    this.dryRun = options.dryRun ?? false;
   }
 
   /** Collect one tenant's storage now. */
@@ -39,7 +42,7 @@ export class StorageGc {
     const marked = await this.mark(tenant);
     // Deleted volumes' own objects: their chunks are unreferenced now, and collected below as any.
     const { rows: deleted } = await this.db.query("select id from volumes where tenant = $1 and deleted_at is not null and deleted_at <= $2 and purged_at is null", [tenant, now - this.graceMs]);
-    for (const { id } of deleted) await this.volumes.purge(id);
+    if (!this.dryRun) for (const { id } of deleted) await this.volumes.purge(id);
     const touched = (await this.db.query("select hash, at from chunk_touches where tenant = $1", [tenant])).rows as { hash: string; at: string }[];
     const unreferenced = touched.filter(row => !marked.has(row.hash)).map(row => row.hash);
     // Candidates referred to again, or touched since they were found, start over.
@@ -50,8 +53,15 @@ export class StorageGc {
     // What this pass finds, a later one collects.
     await this.db.query("insert into gc_candidates (tenant, hash, first_seen) select $1, hash, $3 from unnest($2::text[]) as hash on conflict do nothing", [tenant, unreferenced, now]);
     let removed = 0, restored = 0;
+    if (this.dryRun) {
+      const would = (due as { hash: string }[]).filter(row => !marked.has(row.hash)).map(row => row.hash);
+      console.log(JSON.stringify({ type: "storage_gc_dry_run", tenant, wouldRemove: would.length, volumes: deleted.map(row => row.id), chunks: would.slice(0, 100) }));
+      return { marked: marked.size, candidates: unreferenced.length, removed: 0, restored: 0, purgedVolumes: 0, wouldRemove: would.length };
+    }
     for (const { hash, first_seen: seen } of due as { hash: string; first_seen: string }[]) {
       if (marked.has(hash)) continue;
+      // Claimed by taking its candidate row: of two collections at once (a lease that ran over), one deletes it.
+      if (!(await this.db.query("delete from gc_candidates where tenant = $1 and hash = $2 and first_seen = $3", [tenant, hash, seen])).rowCount) continue;
       const key = chunkKey(tenant, hash);
       const data = await this.storage.readBlob(key);
       if (data) await this.storage.removeBlob(key);
@@ -63,9 +73,8 @@ export class StorageGc {
         await this.db.query("delete from chunk_touches where tenant = $1 and hash = $2 and at <= $3", [tenant, hash, seen]);
         if (data) removed++;
       }
-      await this.db.query("delete from gc_candidates where tenant = $1 and hash = $2", [tenant, hash]);
     }
-    return { marked: marked.size, candidates: unreferenced.length, removed, restored, purgedVolumes: deleted.length };
+    return { marked: marked.size, candidates: unreferenced.length, removed, restored, purgedVolumes: deleted.length, wouldRemove: 0 };
   }
 
   /** Every chunk something refers to: live volumes' files and snapshots, and agents' pins. */

@@ -21,7 +21,8 @@ export interface Storage {
   removeLog(key: string): Promise<void>;
   /** Immutable binary objects, e.g. content-addressed chunks: writing a key that exists is a no-op. */
   readBlob(key: string): Promise<Uint8Array | undefined>;
-  writeBlob(key: string, data: Uint8Array): Promise<void>;
+  /** Whether this write created the object: false when it existed already (or a concurrent writer created it). */
+  writeBlob(key: string, data: Uint8Array): Promise<boolean>;
   /** Delete every blob under `prefix` (a directory, ending in "/"), for an actor that is gone. */
   removeBlobs(prefix: string): Promise<void>;
   /** Delete one blob (a chunk nothing refers to any more); a key that is gone already is a no-op. */
@@ -73,7 +74,7 @@ export function fileStorage(root: string, options: { tail?: LogTail; meter?: Sto
     },
     async writeBlob(key, data) {
       const file = path(key, ".bin");
-      if (await stat(file).then(() => true, () => false)) return;
+      if (await stat(file).then(() => true, () => false)) return false;
       await mkdir(join(file, ".."), { recursive: true, mode: 0o700 });
       const temporary = `${file}.${randomUUID()}.tmp`;
       const handle = await open(temporary, "wx", 0o600);
@@ -81,8 +82,9 @@ export function fileStorage(root: string, options: { tail?: LogTail; meter?: Sto
         try { await handle.writeFile(data); await handle.datasync(); } finally { await handle.close(); }
         // A link fails if the file exists, so of concurrent writers of a key (same key, same bytes) exactly one creates it.
         try { await link(temporary, file); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return; throw error; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return false; throw error; }
         meter?.(key, data.byteLength);
+        return true;
       } finally { await rm(temporary, { force: true }); }
     },
     async removeBlobs(prefix) {
@@ -150,10 +152,11 @@ export function memoryStorage(tail: LogTail, meter?: StorageMeter): Storage & { 
     async removeLog(key: string) { if (meter) await removeSegments(segments(key)); logs.delete(validKey(key)); },
     async readBlob(key: string) { const data = blobs.get(validKey(key)); return data && Uint8Array.from(data); },
     async writeBlob(key: string, data: Uint8Array) {
-      if (blobs.has(validKey(key))) return;
+      if (blobs.has(validKey(key))) return false;
       storage.puts++;
       blobs.set(key, Uint8Array.from(data));
       meter?.(key, data.byteLength);
+      return true;
     },
     async removeBlobs(prefix: string) {
       for (const [key, data] of blobs) if (key.startsWith(prefix)) { blobs.delete(key); meter?.(key, -data.byteLength); }

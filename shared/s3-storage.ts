@@ -79,11 +79,12 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
     },
     async writeBlob(key, data) {
       // A HEAD is cheaper than re-uploading a chunk that is already stored.
-      try { await client.send(new HeadObjectCommand({ Bucket: bucket, Key: at(key) })); return; }
+      try { await client.send(new HeadObjectCommand({ Bucket: bucket, Key: at(key) })); return false; }
       catch (error) { if (!missing(error)) throw error; }
       try { await client.send(new PutObjectCommand({ Bucket: bucket, Key: at(key), Body: data, ContentType: "application/octet-stream", IfNoneMatch: "*" })); }
-      catch (error) { if (!conditionFailed(error)) throw error; return; }
+      catch (error) { if (!conditionFailed(error)) throw error; return false; }
       options.meter?.(key, data.byteLength);
+      return true;
     },
     async removeBlobs(prefix) {
       const objects = await list(validKey(prefix.replace(/\/$/, "")) + "/");

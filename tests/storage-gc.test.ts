@@ -104,7 +104,7 @@ test("a chunk written again between two collections stays; one written as it is 
 });
 
 test("on a runtime, an attachment's chunks are pinned to its agent, and collected once the agent and its workspace are deleted", async t => {
-  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "read this", files: [{ name: "note.txt", data: Buffer.from("attached words").toString("base64") }] } });
   assert.equal(accepted.status, 202, accepted.text);
@@ -115,4 +115,85 @@ test("on a runtime, an attachment's chunks are pinned to its agent, and collecte
   assert.equal((await r.call(`/v1/agents/${agent}`, { method: "DELETE" })).status, 200);
   await until(async () => (await r.db.query("select count(*)::int as count from chunk_touches where hash = $1", [hash("attached words")])).rows[0].count === 0, "the chunk to be collected", 30_000);
   assert.equal((await r.db.query("select count(*)::int as count from chunk_pins where agent = $1", [agent])).rows[0].count, 0);
+});
+
+test("only chunks a write created are ever collected: bytes stored before collection began stay, even when written or pinned again", async t => {
+  const { db, storage, volumes, write, collect } = await setup(t);
+  // Stored before collection began, with no record: a FileRef from then may hold it with no pin.
+  await storage.writeBlob(key("old bytes"), Buffer.from("old bytes"));
+  const { id } = await volumes.create("acme", { name: "v" });
+  const entry = await write(id, "/again.txt", "old bytes");
+  await volumes.pin("acme", "client_new", entry.chunks);
+  await volumes.call(id, "acme", "remove", { path: "/again.txt" });
+  await db.query("delete from chunk_pins where agent = 'client_new'");
+  await collect();
+  assert.equal(storage.blobs.has(key("old bytes")), true, "written again (a no-op) or pinned, it is still not collectable");
+});
+
+test("a reference made while a collection is under way (a move between volumes, a fork) keeps its chunk, even when the mark missed it", async t => {
+  const { storage, volumes, gc, write } = await setup(t);
+  const from = await volumes.create("acme", { name: "from" });
+  const to = await volumes.create("acme", { name: "to" });
+  const entry = await write(from.id, "/moving.txt", "theta");
+  await volumes.call(from.id, "acme", "remove", { path: "/moving.txt" });
+  await gc.run("acme");
+  // Moved into another volume by its chunks (as a cross-volume mv commits them), after the chunk was found unreferenced...
+  await volumes.call(to.id, "acme", "commit", { path: "/moved.txt", chunks: entry.chunks, size: entry.size });
+  // ...and a torn mark that read the other volume before the move.
+  const read = volumes.referencedChunks.bind(volumes);
+  volumes.referencedChunks = async id => id === to.id ? new Set() : read(id);
+  await gc.run("acme");
+  volumes.referencedChunks = read;
+  assert.equal(storage.blobs.has(key("theta")), true, "the move touched it");
+
+  const forked = await volumes.create("acme", { name: "forked" });
+  await write(forked.id, "/f.txt", "iota");
+  const clone = await volumes.call(forked.id, "acme", "fork", {});
+  await volumes.call(forked.id, "acme", "delete");
+  await gc.run("acme");
+  volumes.referencedChunks = async id => id === clone.id ? new Set() : read(id);
+  await gc.run("acme");
+  volumes.referencedChunks = read;
+  assert.equal(storage.blobs.has(key("iota")), true, "the fork touched it");
+});
+
+test("two collections of one tenant at once delete a chunk once, and take it off the meter once", async t => {
+  const { db, storage, volumes, write, metered } = await setup(t);
+  const other = new StorageGc({ db, storage, volumes, graceMs: 0 });
+  const first = new StorageGc({ db, storage, volumes, graceMs: 0 });
+  const { id } = await volumes.create("acme", { name: "v" });
+  await write(id, "/k.txt", "kappa");
+  await volumes.call(id, "acme", "remove", { path: "/k.txt" });
+  await first.run("acme");
+  const [a, b] = await Promise.all([first.run("acme"), other.run("acme")]);
+  assert.equal(a.removed + b.removed, 1);
+  assert.equal(metered.get(key("kappa")), 0);
+});
+
+test("a dry run reports what it would delete, and deletes nothing", async t => {
+  const { db, storage, volumes, write } = await setup(t);
+  const dry = new StorageGc({ db, storage, volumes, graceMs: 0, dryRun: true });
+  const { id } = await volumes.create("acme", { name: "v" });
+  await write(id, "/l.txt", "lambda");
+  await volumes.call(id, "acme", "remove", { path: "/l.txt" });
+  await volumes.call(id, "acme", "delete");
+  await dry.run("acme");
+  const result = await dry.run("acme");
+  assert.deepEqual([result.removed, result.wouldRemove, result.purgedVolumes], [0, 1, 0]);
+  assert.equal(storage.blobs.has(key("lambda")), true);
+  assert.equal([...storage.logs.keys()].some(name => name.startsWith(`volumes/${id}/`)), true, "nor a deleted volume's objects");
+});
+
+test("a new agent's initial messages pin the FileRefs they carry: a clone keeps its files after its source is gone", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
+  const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const accepted = await r.call(`/v1/agents/${source}/prompt`, { body: { text: "keep this", files: [{ name: "kept.txt", data: Buffer.from("cloned words").toString("base64") }] } });
+  await until(async () => (await r.call(`/v1/agents/${source}/requests/${accepted.json.id}`)).json.state === "completed", "the turn");
+  const history = (await r.call(`/v1/agents/${source}/history`)).json.messages;
+  const clone = (await r.call("/v1/agents", { body: { initialMessages: history } })).json.id as string;
+  assert.deepEqual((await r.db.query("select hash from chunk_pins where agent = $1", [clone])).rows.map(row => row.hash), [hash("cloned words")]);
+  assert.equal((await r.call(`/v1/agents/${source}`, { method: "DELETE" })).status, 200);
+  await until(async () => (await r.db.query("select count(*)::int as count from chunk_pins where agent = $1", [source])).rows[0].count === 0, "the source's purge", 20_000);
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  assert.equal((await r.db.query("select count(*)::int as count from chunk_touches where hash = $1", [hash("cloned words")])).rows[0].count, 1, "still stored: the clone holds it");
 });

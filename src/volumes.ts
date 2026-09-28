@@ -417,6 +417,8 @@ export class VolumeService {
       if (!Number.isSafeInteger(args.size) || args.size < 0 || args.size > VOLUME_LIMITS.fileBytes || !Array.isArray(chunks) || chunks.length !== Math.ceil(args.size / CHUNK_BYTES) || !chunks.every(hash => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash))) throw new HttpError(400, "Invalid file content");
       if (args.contentType !== undefined && !validContentType(args.contentType)) throw new HttpError(400, "Invalid content type");
       this.check(volume, path, args.ifMatch);
+      // Referred to now (a copy or move commits another file's chunks): a collection under way stands down.
+      await this.touch(volume.header.tenant, chunks as string[]);
       const conflict = volume.tree.conflict(path);
       if (conflict) throw new HttpError(409, conflict);
       if (!volume.tree.files.has(path) && volume.tree.files.size >= VOLUME_LIMITS.files) throw new HttpError(507, `A volume holds at most ${VOLUME_LIMITS.files} files`);
@@ -437,6 +439,8 @@ export class VolumeService {
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
       // Metadata only: the snapshot shares every chunk with the volume.
       const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: volume.tree.files.size, bytes: volume.tree.bytes };
+      // It refers to every chunk the volume's files do: a collection under way stands down.
+      await this.touch(volume.header.tenant, [...volume.tree.files.values()].flatMap(entry => entry.chunks));
       // The file map can hold 100,000 entries, so it is a blob; the summary is a row.
       await this.storage.writeBlob(snapshotFilesKey(id, snapshot.id), Buffer.from(JSON.stringify(Object.fromEntries(volume.tree.files))));
       await this.fenced(volume, async sql => {
@@ -466,6 +470,8 @@ export class VolumeService {
       }
       const name = args.name === undefined ? `${volume.header.name} (fork)` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
+      // The fork refers to every chunk it copies (a snapshot's included): a collection under way stands down.
+      await this.touch(volume.header.tenant, files.flatMap(([, entry]) => entry.chunks));
       const header: VolumeHeader = { version: 1, id: newId("vol", 12), tenant: volume.header.tenant, name: name.trim(), createdAt: Date.now(), origin: { volume: id, ...(args.snapshot ? { snapshot: args.snapshot } : {}), seq } };
       // The fork's tree starts as a folded copy of the source's metadata; chunks are shared. Written under
       // the new volume's own claim, which nothing else can hold yet.
@@ -512,8 +518,9 @@ export class VolumeService {
     const emit = async (piece: Buffer) => {
       const hash = sha256(piece);
       chunks.push(hash);
-      // Touched before it is written (see storage-gc.ts): a collection deleting it meanwhile puts it back.
-      writes.push(this.touch(tenant, [hash]).then(() => this.storage.writeBlob(chunkKey(tenant, hash), piece)));
+      // Touched before it is written (see storage-gc.ts): a collection deleting it meanwhile puts it back. Only a write
+      // that creates it makes it collectable: bytes stored before collection began may be held by FileRefs with no pins.
+      writes.push(this.touch(tenant, [hash]).then(() => this.storage.writeBlob(chunkKey(tenant, hash), piece)).then(created => created ? this.collectable(tenant, hash) : undefined));
       if (writes.length >= 4) { await Promise.all(writes); writes = []; }
     };
     for await (const data of source instanceof Uint8Array ? [source] : source) {
@@ -552,16 +559,19 @@ export class VolumeService {
   }
 
   /**
-   * Record that `hashes` were just written or referred to (storage-gc.ts): they become collectable once nothing refers
-   * to them, and a collection of them that began before stands down.
+   * Record that `hashes` were just written or referred to (storage-gc.ts): a collection of them that began before stands
+   * down. Only chunks already collectable have a row to touch.
    */
   async touch(tenant: string, hashes: string[]) {
     if (!hashes.length) return;
+    await this.db.query("update chunk_touches set at = $3 where tenant = $1 and hash = any($2::text[])", [tenant, [...new Set(hashes)], Date.now()]);
+  }
+
+  /** A chunk a write just created: collectable once nothing refers to it (storage-gc.ts). */
+  private async collectable(tenant: string, hash: string) {
     await this.db.query(`
-      with touched as (
-        insert into chunk_touches (tenant, hash, at) select $1, hash, $3 from unnest($2::text[]) as hash
-        on conflict (tenant, hash) do update set at = excluded.at returning 1)
-      insert into storage_gc (tenant) select $1 where exists (select from touched) on conflict do nothing`, [tenant, [...new Set(hashes)], Date.now()]);
+      with added as (insert into chunk_touches (tenant, hash, at) values ($1, $2, $3) on conflict (tenant, hash) do update set at = excluded.at returning 1)
+      insert into storage_gc (tenant) select $1 where exists (select from added) on conflict do nothing`, [tenant, hash, Date.now()]);
   }
 
   /** Keep `hashes` stored while `agent` exists: a FileRef it holds refers to them, whatever becomes of the file. */

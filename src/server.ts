@@ -567,8 +567,10 @@ if (!Number.isInteger(purgeMs) || purgeMs < 1000) throw new Error("AGENT_PURGE_I
 const purgeTimer = setInterval(() => void clients.sweep(), purgeMs);
 purgeTimer.unref();
 // Chunks nothing refers to any more, and deleted volumes' objects, collected a tenant at a time by whichever node is free.
-const storageGc = new StorageGc({ db, storage, volumes, graceMs: Number(process.env.AGENT_GC_GRACE_MS ?? 24 * 60 * 60_000), intervalMs: Number(process.env.AGENT_GC_INTERVAL_MS ?? 6 * 60 * 60_000) });
-storageGc.start(Number(process.env.AGENT_GC_POLL_MS ?? 60_000));
+// Off unless AGENT_GC_ENABLED; with AGENT_GC_DRY_RUN it only logs what it would delete. What it needs (pins, which chunks
+// writes created) is recorded either way, so turning it on later loses nothing.
+const storageGc = new StorageGc({ db, storage, volumes, graceMs: Number(process.env.AGENT_GC_GRACE_MS ?? 24 * 60 * 60_000), intervalMs: Number(process.env.AGENT_GC_INTERVAL_MS ?? 6 * 60 * 60_000), dryRun: process.env.AGENT_GC_DRY_RUN === "true" });
+if (process.env.AGENT_GC_ENABLED === "true") storageGc.start(Number(process.env.AGENT_GC_POLL_MS ?? 60_000));
 // Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
 // so their runs resume even when no one reads them.
 const orphanMs = Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000);
