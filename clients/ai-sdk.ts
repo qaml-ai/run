@@ -110,12 +110,18 @@ export class AgentRuntimeChatTransport {
   }
 
   /** A watcher of the user's agent, once it is following the live stream. */
-  private async watch(thread: string | null, onEvent: (event: AgentEvent) => void, onChange: (watcher: Watcher) => void): Promise<Watcher> {
+  private async watch(thread: string | null, onEvent: (event: AgentEvent) => void, onChange: (watcher: Watcher) => void): Promise<{ watcher: Watcher; read: Read }> {
     const minted = await this.call("token", thread);
     const ready = Promise.withResolvers<void>();
+    const reads = readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials);
+    const read: Read = async path => {
+      const response = await reads.fetch!(`${reads.url.replace(/\/+$/, "")}/v1/agents/${encodeURIComponent(minted.agentId)}${path}`, { headers: { Authorization: `Bearer ${minted.token}` } });
+      if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+      return response.json();
+    };
     let watcher!: Watcher;
     watcher = watchAgent({
-      ...readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials),
+      ...reads,
       agentId: minted.agentId, token: minted.token, expiresAt: minted.expiresAt,
       getToken: async () => { const renewed = await this.call("token", thread); return { token: renewed.token, expiresAt: renewed.expiresAt }; },
       onEvent,
@@ -123,7 +129,7 @@ export class AgentRuntimeChatTransport {
       onError: error => { if (!watcher?.state.connected) ready.reject(error); },
     });
     await ready.promise;
-    return watcher;
+    return { watcher, read };
   }
 
   async sendMessages(options: SendOptions): Promise<ReadableStream<AgentUIMessageChunk>> {
@@ -161,7 +167,14 @@ export class AgentRuntimeChatTransport {
     this.resuming.delete(thread);
     // Whether there is anything to follow is known once the watcher is connected.
     const following = Promise.withResolvers<boolean>();
-    const stream = await this.follow(thread, { abortSignal: undefined, headers: options.headers }, async watcher => {
+    const stream = await this.follow(thread, { abortSignal: undefined, headers: options.headers }, async (watcher, read) => {
+      if (resumed) {
+        // The run the answer resumed may have finished before this watcher connected: then its outcome
+        // never comes on the stream, and what it said is in the history.
+        const state = await read("/state") as { requests?: { id: string; state: string; startedAt?: number; outcome?: { error?: string } }[] };
+        const record = state.requests?.find(request => request.id === resumed);
+        if (record?.state === "completed") return { requestId: resumed, gate: false, replay: await replay(read, record.startedAt ?? 0, record.outcome?.error) };
+      }
       const running = !!resumed || watcher.state.running;
       return running ? { requestId: resumed, gate: false, resume: true } : null;
     }, following.resolve);
@@ -200,7 +213,7 @@ export class AgentRuntimeChatTransport {
    * nothing is streamed before the user message the run answers arrives (an earlier run may be finishing).
    */
   private async follow(thread: string | null, options: Pick<SendOptions, "abortSignal" | "headers">,
-    begin: (watcher: Watcher) => Promise<{ requestId: string | undefined; gate: boolean; clientId?: string; resume?: boolean } | null>,
+    begin: (watcher: Watcher, read: Read) => Promise<{ requestId: string | undefined; gate: boolean; clientId?: string; resume?: boolean; replay?: AgentUIMessageChunk[] } | null>,
     started: (following: boolean) => void = () => {}): Promise<ReadableStream<AgentUIMessageChunk>> {
     let controller!: ReadableStreamDefaultController<AgentUIMessageChunk>;
     let run: { requestId: string | undefined; gate: boolean; clientId?: string } | null = null;
@@ -272,10 +285,17 @@ export class AgentRuntimeChatTransport {
             if (!open) { open = true; push({ type: "start" }); }
             end(outcome.error ? { type: "error", errorText: outcome.error } : undefined);
           };
-          watcher = await this.watch(thread, handle, settled);
-          const run0 = await begin(watcher);
+          const watching = await this.watch(thread, handle, settled);
+          watcher = watching.watcher;
+          const run0 = await begin(watcher, watching.read);
           started(!!run0);
           if (!run0) { end(); return; }
+          if (run0.replay) {
+            // A run that already ended: what it said, then the end.
+            for (const chunk of run0.replay) push(chunk);
+            end();
+            return;
+          }
           if (run0.resume && watcher.state.partial) {
             // Joining a run mid-answer: what it has written so far, then the rest live.
             open = true;
@@ -341,6 +361,33 @@ export class AgentRuntimeChatTransport {
         break;
     }
   }
+}
+
+type Read = (path: string) => Promise<any>;
+
+/** What a finished run said (the messages from `since` on, from the newest page of history), as chunks. */
+async function replay(read: Read, since: number, error?: string): Promise<AgentUIMessageChunk[]> {
+  const page = await read("/history?limit=50") as { entries: { index: number; message: any }[] };
+  const chunks: AgentUIMessageChunk[] = [{ type: "start" }];
+  for (const { index, message } of page.entries) {
+    if ((message.timestamp ?? 0) < since) continue;
+    if (message.role === "assistant") {
+      chunks.push({ type: "start-step" });
+      (message.content ?? []).forEach((block: any, at: number) => {
+        const id = `r${index}:${at}`;
+        if (block?.type === "text" && block.text) chunks.push({ type: "text-start", id }, { type: "text-delta", id, delta: block.text }, { type: "text-end", id });
+        else if (block?.type === "thinking" && block.thinking) chunks.push({ type: "reasoning-start", id }, { type: "reasoning-delta", id, delta: block.thinking }, { type: "reasoning-end", id });
+        else if (block?.type === "toolCall") chunks.push({ type: "tool-input-available", toolCallId: block.id, toolName: block.name, input: block.arguments, dynamic: true });
+      });
+      chunks.push({ type: "finish-step" });
+    } else if (message.role === "toolResult" && !message.details?.inputRequired) {
+      chunks.push(message.isError
+        ? { type: "tool-output-error", toolCallId: message.toolCallId, errorText: String(resultOf(message)), dynamic: true }
+        : { type: "tool-output-available", toolCallId: message.toolCallId, output: resultOf(message), dynamic: true });
+    }
+  }
+  if (error) chunks.push({ type: "error", errorText: error });
+  return chunks;
 }
 
 /** Chat messages (from `@camelai/agent-runtime/chat`) as the AI SDK's UIMessages. */

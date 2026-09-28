@@ -118,3 +118,23 @@ test("a question the agent asks arrives as a data part; answering it for the cha
   const fresh = new AgentRuntimeChatTransport({ endpoint: "/api/agent" });
   await assert.rejects(fresh.answer(asked.data, "EU"), /which chat/);
 });
+
+test("resumeStream() after the resumed run already finished still ends, with what the run said", async t => {
+  const ASK = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
+  const { transport } = await setup(t, (index, body) => {
+    if (index === 0) return callDeltas("call_ask", "ask_user", ASK);
+    const answer = JSON.parse(body.messages.filter((message: any) => message.role === "tool").at(-1).content).answers["Which region?"];
+    return words(`Deploying to ${answer}.`);
+  }, async r => ({ definition: (await r.call("/v1/definitions", { body: { name: "Asker", builtins: ["ask_user"] } })).json.id }));
+  const first = await reply(await transport.sendMessages({ trigger: "submit-message", chatId: "late", messageId: undefined, messages: [userMessage("msg_00000004", "Deploy it")], abortSignal: undefined }));
+  const asked = first.parts.find(part => part.type === "data-agent-input") as any;
+  await transport.answer(asked.data, "US", { chatId: "late" });
+  // The run resumes, answers and ends before the page gets round to resuming its stream.
+  await sleep(3000);
+  const rest = await transport.reconnectToStream({ chatId: "late" });
+  assert.ok(rest, "a stream to finish the message with");
+  const resumed = await Promise.race([reply(rest!, first), sleep(10_000).then(() => { throw new Error("the stream never ended"); })]);
+  assert.deepEqual(resumed.parts.filter(part => part.type === "text").map(part => (part as any).text), ["Deploying to US."]);
+  const call = resumed.parts.find(part => part.type === "dynamic-tool") as any;
+  assert.equal(call?.state, "output-available", JSON.stringify(resumed.parts));
+});
