@@ -74,7 +74,7 @@ credentials of (`{id, token}`) without changing it.
 | `agent.run(text, options)` | `await agent.run(text, …)` | send a message, wait for the run: a `Run` |
 | `agent.stream(text, options)` | `agent.stream(text, …)` | the run as it happens: `for await` / `async for` over parts |
 | `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
-| `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history, or a page of whole turns |
+| `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
 | `agent.steer(text)` | `steer()` | `run` with `whileRunning: "steer"` (joins the running turn, else starts one): the run that took the message |
 | `agent.configure({ model, instructions, thinkingLevel, tools })` | `configure(…)` | change it between runs |
 | `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |

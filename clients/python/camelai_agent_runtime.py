@@ -652,6 +652,14 @@ def _error(response):
         return f"HTTP {response.status_code}"
 
 
+@dataclass
+class Download:
+    """A downloaded file: its bytes, content type and version."""
+    data: bytes
+    content_type: str
+    version: int
+
+
 class AgentFiles:
     """An agent's files with its own token: what it wrote in a run (an outcome lists `files`), and links to hand them on."""
 
@@ -673,9 +681,9 @@ class AgentFiles:
         return await self.agent._http(f"/files{'?' + query if query else ''}")
 
     async def download(self, path):
-        """{"data": bytes, "content_type", "version"}"""
+        """The file: .data (bytes), .content_type and .version."""
         response = await self._raw("GET", path)
-        return {"data": response.content, "content_type": response.headers.get("content-type", "application/octet-stream").split(";")[0].strip(), "version": int(response.headers["x-file-version"])}
+        return Download(response.content, response.headers.get("content-type", "application/octet-stream").split(";")[0].strip(), int(response.headers["x-file-version"]))
 
     async def upload(self, path, data, *, content_type=None):
         """Write a file into a writable mount; without content_type the runtime sniffs it."""
@@ -1452,7 +1460,8 @@ class Agent:
         return [RunInput(self, input) for input in await self.client.inputs(state="pending")]
 
     async def history(self):
-        return await self.client.history()
+        """Its whole history: every message, oldest first (history_page reads a page at a time)."""
+        return (await self.client.history())["messages"]
 
     async def history_page(self, *, before=None, limit=50):
         return await self.client.history_page(before=before, limit=limit)

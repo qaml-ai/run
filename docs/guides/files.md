@@ -81,7 +81,7 @@ const listing = await agent.files.list({ path: "/workspace/out" });
 const link = await agent.files.link("/workspace/out/report.pdf", { expiresIn: 3600 }); // for a browser or another service
 await agent.files.upload("/workspace/in/config.json", JSON.stringify(config));
 ```
-
+Python has the same: `agent.files.download(path)` (`.data`, `.content_type`, `.version`), `list(path=...)`,
 Python has the same: `agent.files.download(path)`, `list(path=...)`,
 `link(path, expires_in=...)`, `upload(path, data)`.
 

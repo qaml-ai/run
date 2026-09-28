@@ -213,7 +213,9 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         joined = await asyncio.gather(agent.client.request("status", idempotency_key="py-status"), agent.client.request("status", idempotency_key="py-status"))
         self.assertEqual(joined[0], joined[1])
         page = await agent.history_page(limit=1)
-        self.assertEqual(page["total"], len((await agent.history())["messages"]))
+        whole = await agent.history()
+        self.assertIsInstance(whole, list, "the simple API's history is the list of messages")
+        self.assertEqual(page["total"], len(whole))
         self.assertEqual((await agent.client.wait_for_request("py-first"))["reply"], first.text)
 
         @tool
@@ -464,7 +466,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         history = await agent._http("/history")
         self.assertNotIn(__import__("base64").b64encode(PNG).decode(), json.dumps(history), "the transcript keeps references, not bytes")
         downloaded = await agent.files.download("/workspace/uploads/py-files/report.txt")
-        self.assertEqual((downloaded["data"], downloaded["content_type"]), (b"quarterly numbers", "text/plain"))
+        self.assertEqual((downloaded.data, downloaded.content_type, downloaded.version > 0), (b"quarterly numbers", "text/plain", True))
         link = await agent.files.link("/workspace/uploads/py-files/report.txt")
         self.assertEqual((await self.runtime.http.get(link["url"])).content, b"quarterly numbers")
         await agent.destroy()

@@ -11,7 +11,7 @@
  */
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
-  type AgentFiles, type Builtin, type AgentInput, type AgentHistory, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
+  type AgentFiles, type Builtin, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type ToolServer, type Tools, type AgentFile,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
@@ -348,7 +348,8 @@ export class Agent {
   /** Inputs waiting on people, across the agent's runs. */
   async pendingInputs(): Promise<RunInput[]> { return (await this.client.inputs("pending")).map(input => this.input(input)); }
   /** The agent's whole history (`historyPage` reads a page at a time). */
-  history(): Promise<AgentHistory> { return this.client.history(); }
+  /** Its whole history: every message, oldest first (`historyPage` reads a page at a time). */
+  async history(): Promise<RecordedMessage[]> { return (await this.client.history()).messages; }
   historyPage(options: { before?: number; limit?: number } = {}): Promise<HistoryPage> { return this.client.historyPage(options); }
   /**
    * A message for the running turn, which reads it after its current step and answers with it in mind; with

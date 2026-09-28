@@ -251,3 +251,12 @@ test("upsert gives an agent builtins without a definition", async t => {
   const agent = await agents.upsert("researcher", { builtins: ["web_fetch", "ask_user"] });
   assert.deepEqual((await r.call(`/v1/agents/${agent.id}`)).json.builtins, ["web_fetch", "ask_user"]);
 });
+
+test("an agent's history is the list of its messages", async t => {
+  const { make } = await setup(t, () => ({ role: "assistant", content: "ok" }));
+  const agent = await make();
+  await agent.run("hello");
+  const history = await agent.history();
+  assert.ok(Array.isArray(history));
+  assert.deepEqual(history.map(message => message.role), ["user", "assistant"]);
+});
