@@ -75,3 +75,18 @@ test("an attached tool's own timeoutMs bounds its call; progress extends it; a t
   assert.equal(toolResults(r.model.bodies[3]).at(-1), "finished", "progress kept it alive past 1.5 s");
   assert.equal(extended.outcome.result.toolErrors, undefined);
 });
+
+test("a tool source that cannot be listed is named in every run's outcome", async t => {
+  const guarded = await listen(t, async (req, res) => {
+    for await (const _chunk of req) { /* the body */ }
+    res.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "down for maintenance" }));
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "done" }), LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Tools", mcpServers: [{ name: "crm", url: `${guarded}/mcp` }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id as string;
+  const done = await r.prompt(agent, "go");
+  assert.equal(done.outcome.result.reply, "done", "the run goes on without its tools");
+  assert.equal(done.outcome.result.sourceErrors.length, 1);
+  assert.deepEqual([done.outcome.result.sourceErrors[0].kind, done.outcome.result.sourceErrors[0].source], ["mcp", "crm"]);
+  assert.match(done.outcome.result.sourceErrors[0].message, /down for maintenance/);
+});

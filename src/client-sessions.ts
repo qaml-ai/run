@@ -110,6 +110,8 @@ type Session = {
   started?: Promise<void>;
   /** Whether the run in progress has its webhook events written: its tenant had an endpoint for them as it began. */
   announcing?: boolean;
+  /** Tool sources that could not be listed when the agent's tools were built, for each run's outcome. */
+  sourceErrors?: { kind: string; source: string; message: string }[];
   /** The running run's tool calls that did not complete, for its outcome. */
   toolErrors?: ToolError[];
   /** Prompts sent with `whileRunning: "steer"` that a running turn took, each with that turn's request: they end with it. */
@@ -1117,6 +1119,9 @@ export class ClientSessions {
     const { tools: definitions, route } = await compose(servers);
     session.route = route;
     session.servers = servers;
+    // Sources that could not be listed (down, or refusing their credentials): the model has none of their tools, so each run's outcome says so.
+    const views = (await Promise.all(servers.map(server => server.sources?.({ refresh: false }).catch(() => []) ?? []))).flat();
+    session.sourceErrors = views.flatMap(view => view.status === "error" ? [{ kind: view.kind, source: view.name, message: view.error ?? "Could not be listed" }] : []);
     session.searchable = definitions.filter(tool => tool.exposure !== "direct");
     // Rerankers that index the catalog (embeddings) start now, so the first search need not wait; the agent's tenant pays for it at cost.
     for (const stage of this.options.rerankers ?? []) stage.warm?.(session.searchable, usd => this.toolSearchUsage(session, usd, 0));
@@ -2351,6 +2356,7 @@ export class ClientSessions {
       }
       // Tool calls that did not complete, so a caller sees them too (the model saw each as its call's error).
       if (RUN_METHODS.includes(record.method) && session.toolErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, toolErrors: session.toolErrors } };
+      if (RUN_METHODS.includes(record.method) && session.sourceErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, sourceErrors: session.sourceErrors } };
       // A suspended turn's outcome lists what it waits on.
       if ((value.result as { stopped?: string } | undefined)?.stopped === "input_required" && this.options.inputs) {
         const inputs = (await this.options.inputs.forRequest(session.header.id, record.id)).filter(row => row.state === "pending").map(inputView);
