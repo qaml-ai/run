@@ -3123,6 +3123,10 @@
           "greeting": {
             "type": "string"
           },
+          "settings": {
+            "type": "object",
+            "additionalProperties": {}
+          },
           "account": {
             "type": "object",
             "additionalProperties": {
@@ -3165,7 +3169,8 @@
             "enum": [
               "telegram",
               "slack",
-              "discord"
+              "discord",
+              "webhook"
             ]
           },
           "name": {
@@ -3225,6 +3230,11 @@
             "minLength": 1,
             "maxLength": 4096,
             "description": "Reply to /start (Telegram)"
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Configuration particular to the channel's type; types without any reject it"
           }
         },
         "required": [
@@ -3246,7 +3256,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. Stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. Webhook: { secret, replyUrl? }. Stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -3293,6 +3303,11 @@
             "minLength": 1,
             "maxLength": 4096,
             "description": "Reply to /start (Telegram)"
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Configuration particular to the channel's type; types without any reject it"
           }
         }
       },

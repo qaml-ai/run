@@ -1,7 +1,8 @@
 # Channels
 
 A channel lets people talk to agents from a messaging service: Telegram, Slack or
-Discord. Tenants manage channels with `/v1/channels` or the console's Channels page:
+Discord. A `webhook` channel lets any service that sends webhooks (Sentry,
+Linear, Stripe, your own) start agents; see [Generic webhooks](#generic-webhooks). Tenants manage channels with `/v1/channels` or the console's Channels page:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -93,3 +94,63 @@ What all three share:
   (the bot was removed from the chat) is not retried. Each part of the text and
   each file is a step recorded as it is sent, so a retry resumes after the last
   one sent rather than sending the reply again.
+
+## Generic webhooks
+
+A `webhook` channel turns each delivery from any service into a prompt. Give it
+the secret the service signs with (or make one up and give it to the service),
+then point the service at the channel's `webhookUrl`:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"type":"webhook","credentials":{"secret":"<the signing secret>"},"definition":"def_…",
+       "settings":{"signature":{"type":"hmac-sha256","header":"Sentry-Hook-Signature"},
+                   "key":"sentry-{{data.issue.id}}",
+                   "filter":[{"path":"action","in":["created"]}],
+                   "prompt":"Sentry issue {{data.issue.title}} ({{data.issue.web_url}}) was created. Triage it."}}' \
+  https://agents.camelai.dev/v1/channels
+```
+
+- **`signature`** is how a delivery proves itself; unsigned or wrongly signed
+  ones get 401:
+  - `{"type":"standard"}` (the default): [Standard Webhooks](https://www.standardwebhooks.com/)
+    `webhook-id`, `webhook-timestamp` (at most five minutes old) and
+    `webhook-signature` (any of several). A `whsec_` secret is base64 after the
+    prefix, as the spec says; any other secret is used as it is.
+  - `{"type":"hmac-sha256","header":"X-Hub-Signature-256","prefix":"sha256="}`: the
+    header holds the HMAC-SHA256 of the raw body, in hex (or `"encoding":"base64"`),
+    after the optional prefix. This covers GitHub, Sentry, Linear
+    (`Linear-Signature`), Shopify (`X-Shopify-Hmac-Sha256`, base64) and most others.
+  - `{"type":"token","header":"X-Gitlab-Token"}`: the header must equal the secret.
+- **`key`** picks the conversation, and so the agent: deliveries that render to the
+  same key go to the same agent, which keeps its history. Without a key the
+  channel has one agent. A key that has characters other than letters, digits,
+  `_`, `.` and `-`, or is longer than 64, is cleaned up and given a hash suffix.
+- **`prompt`** is what the agent is told. By default it is the payload itself,
+  pretty-printed (cut off past 8,000 characters). Either way the whole payload is
+  attached as `payload.json` in the agent's workspace.
+- **`sender`** names who a delivery is from, for the message's `from` and the
+  per-sender rate limit (default `webhook`); for example `{{actor.email}}`.
+- **`filter`** is a list of conditions that must all hold, or the delivery is
+  acknowledged and ignored. Each has a `path` and one or more of `in` (a list of
+  values), `equals` (a value) and `exists` (`true` or `false`). Values are compared as text.
+- **`idPath`** or **`idHeader`** names where a delivery's id is, so a retry is
+  dropped. Without either, the id is the first of the headers `webhook-id`,
+  `X-Request-Id`, `X-Delivery-Id`, `X-GitHub-Delivery`, `Linear-Delivery` and
+  `Idempotency-Key`, else a hash of the body.
+
+Templates are `{{path}}`: a dotted path into the JSON payload (`data.items.0.id`
+reaches into arrays), `{{headers.<name>}}` for a request header, and
+`{{body.<path>}}` for a payload field named `headers`. A missing value renders as
+nothing; an object renders as JSON. Bodies must be JSON, up to 1 MiB.
+
+A webhook channel is public (`access.public: true`) and allows 60 deliveries a
+minute per sender: the signature is what keeps others out. It still has the daily
+turn cap, and `access` and `limits` can be set as for any channel.
+
+There is no conversation to answer, so the agent acts through its tools, and the
+turn's end reaches you as a [`run.completed`](webhooks.md) event. To have the
+reply too, give `credentials.replyUrl`: each reply (and each `send_message`) is
+POSTed there as `{"type":"message","conversationId","text"}`, signed per Standard
+Webhooks with the channel's secret, and retried like any channel's messages.
+Files are sent there as a link.

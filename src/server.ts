@@ -33,6 +33,7 @@ import { applicationTools } from "./mcp-results.ts";
 import { telegram } from "./channels-telegram.ts";
 import { slack } from "./channels-slack.ts";
 import { discord } from "./channels-discord.ts";
+import { webhook } from "./channels-webhook.ts";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -412,6 +413,7 @@ const channels = new Channels({
     telegram: telegram({ apiUrl: process.env.AGENT_TELEGRAM_API_URL }),
     slack: slack({ apiUrl: process.env.AGENT_SLACK_API_URL }),
     discord: discord({ apiUrl: process.env.AGENT_DISCORD_API_URL }),
+    webhook: webhook({ outbound }),
   },
   createAgent: (tenant, params, key) => createAgent(tenant, params, key) as Promise<{ id: string }>,
   agentId: (tenant, key) => clients.agentId(tenant, key),
