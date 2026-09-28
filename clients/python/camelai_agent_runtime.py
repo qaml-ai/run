@@ -611,7 +611,7 @@ class Volume:
         """Returns (bytes, version); `range` is (start, end) in bytes, end exclusive."""
         headers = {"Range": f"bytes={range[0]}-{'' if len(range) < 2 or range[1] is None else range[1] - 1}"} if range else None
         response = await self._raw("GET", path, headers=headers)
-        return response.content, int(response.headers["etag"].strip('"'))
+        return response.content, int(response.headers["x-file-version"])
 
     async def read_text(self, path):
         return (await self.read(path))[0].decode()
@@ -663,7 +663,7 @@ class AgentFiles:
     async def download(self, path):
         """{"data": bytes, "content_type", "version"}"""
         response = await self._raw("GET", path)
-        return {"data": response.content, "content_type": response.headers.get("content-type", "application/octet-stream").split(";")[0].strip(), "version": int(response.headers["etag"].strip('"'))}
+        return {"data": response.content, "content_type": response.headers.get("content-type", "application/octet-stream").split(";")[0].strip(), "version": int(response.headers["x-file-version"])}
 
     async def upload(self, path, data, *, content_type=None):
         """Write a file into a writable mount; without content_type the runtime sniffs it."""

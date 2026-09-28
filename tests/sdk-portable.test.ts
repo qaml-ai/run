@@ -167,3 +167,8 @@ test("a file transfer that stalls fails instead of hanging its caller", async t 
   t.mock.timers.tick(30_000);
   await assert.rejects(read, /File transfer stalled/);
 });
+
+test("a file's version comes from X-File-Version, whatever a proxy made of its ETag", async () => {
+  const runtime = new AgentRuntime({ apiKey: "operator", fetch: async () => new Response("bytes", { headers: { ETag: 'W/"2"', "X-File-Version": "2" } }) });
+  assert.equal((await runtime.volume(`vol_${"c".repeat(24)}`).read("report.md")).version, 2);
+});

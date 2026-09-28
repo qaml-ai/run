@@ -86,6 +86,8 @@ test("the REST API stores the upload's type and serves downloads with safe heade
   assert.equal(html.headers.get("x-content-type-options"), "nosniff");
   assert.equal(html.headers.get("content-security-policy"), "sandbox; default-src 'none'");
   assert.match(html.headers.get("content-disposition")!, /^attachment/);
+  // Proxies may weaken or drop the ETag (Cloudflare's gzip makes it W/"n"); the version has a header of its own.
+  assert.equal(html.headers.get("x-file-version"), html.headers.get("etag")!.replaceAll('"', ""));
   const pic = await fetch(`${server.base}/v1/volumes/${volume}/files/pic`, { headers: { ...auth, Range: "bytes=0-7" } });
   assert.equal(pic.status, 206);
   assert.equal(pic.headers.get("content-type"), "image/png");

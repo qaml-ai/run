@@ -409,6 +409,15 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale.exception.status, 412)
         self.assertEqual(await volume.read_text("docs/readme.md"), "hello volumes")
         self.assertEqual((await volume.read("docs/readme.md", range=(6, 13)))[0], b"volumes")
+        # A proxy that gzips weakens the ETag (W/"n"): the version comes from X-File-Version.
+        raw = volume._raw
+        async def weakened(method, path, content=None, headers=None):
+            response = await raw(method, path, content, headers)
+            response.headers["etag"] = f'W/{response.headers["etag"]}'
+            return response
+        volume._raw = weakened
+        self.assertEqual((await volume.read("docs/readme.md"))[1], written["version"])
+        volume._raw = raw
         self.assertEqual([entry["path"] for entry in (await volume.list(prefix="/docs"))["files"]], ["/docs/readme.md"])
         snapshot = await volume.snapshot(name="first")
         await volume.write("docs/readme.md", "changed", version=written["version"])

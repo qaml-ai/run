@@ -482,6 +482,8 @@ const byteLength = (value: string) => new TextEncoder().encode(value).byteLength
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 /** A download's content type, without parameters (text is always UTF-8). */
 const contentTypeOf = (response: Response) => (response.headers.get("content-type") ?? "application/octet-stream").split(";")[0].trim();
+/** A downloaded file's version, from X-File-Version: proxies may rewrite the ETag (W/"n" once gzipped). */
+const fileVersion = (response: Response) => Number(response.headers.get("x-file-version"));
 
 async function rejectRedirect(response: Response) {
   if (response.status >= 300 && response.status < 400) {
@@ -681,7 +683,7 @@ export class VolumeHandle {
   async read(path: string, options: { range?: [number, number?] } = {}): Promise<{ data: Uint8Array; version: number; contentType: string }> {
     const [start, end] = options.range ?? [];
     const response = await this.transport.raw(this.file(path), this.token, start !== undefined ? { headers: { Range: `bytes=${start}-${end !== undefined ? end - 1 : ""}` } } : {});
-    return { data: new Uint8Array(await response.arrayBuffer()), version: Number(response.headers.get("etag")?.replaceAll('"', "")), contentType: contentTypeOf(response) };
+    return { data: new Uint8Array(await response.arrayBuffer()), version: fileVersion(response), contentType: contentTypeOf(response) };
   }
   async readText(path: string) { return new TextDecoder().decode((await this.read(path)).data); }
   /** A signed URL to download (GET) or upload (PUT) one file without a token. */
@@ -721,7 +723,7 @@ export class AgentFiles {
   }
   async download(path: string): Promise<{ data: Uint8Array; contentType: string; version: number }> {
     const response = await this.transport.raw(`${this.base}/files/${encodePath(path)}`, this.token);
-    return { data: new Uint8Array(await response.arrayBuffer()), contentType: contentTypeOf(response), version: Number(response.headers.get("etag")?.replaceAll('"', "")) };
+    return { data: new Uint8Array(await response.arrayBuffer()), contentType: contentTypeOf(response), version: fileVersion(response) };
   }
   /** Write a file into a writable mount; without `contentType` the runtime sniffs it. */
   async upload(path: string, data: Uint8Array | Blob | string, options: { contentType?: string } = {}): Promise<AgentFile> {

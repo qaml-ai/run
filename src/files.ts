@@ -103,7 +103,9 @@ export async function fileResponse(volumes: VolumeService, tenant: string, entry
     async cancel() { await chunks.return(undefined); },
   });
   return new Response(body, { status: range ? 206 : 200, headers: {
-    ...downloadHeaders(contentType, entry.path.slice(entry.path.lastIndexOf("/") + 1)), "Content-Length": String(end - start), ETag: `"${entry.version}"`, "Cache-Control": "no-store",
+    ...downloadHeaders(contentType, entry.path.slice(entry.path.lastIndexOf("/") + 1)), "Content-Length": String(end - start), ETag: `"${entry.version}"`,
+    // The version again, where no proxy rewrites it (a compressing one makes the ETag weak, W/"n").
+    "X-File-Version": String(entry.version), "Cache-Control": "no-store",
     ...(range ? { "Content-Range": `bytes ${start}-${end - 1}/${entry.size}` } : {}),
   } });
 }

@@ -580,7 +580,7 @@ export function api(context: ApiContext) {
   }, files);
   route(createRoute({
     method: "get", path: "/v1/volumes/{id}/files/{path}", request: { ...file, headers: z.object({ range: z.string().optional().openapi({ description: "bytes=start-end" }) }) },
-    responses: { 200: binary("The file, streamed a chunk at a time; ETag is its version"), 206: binary("The requested range") },
+    responses: { 200: binary("The file, streamed a chunk at a time; its version is X-File-Version (and the ETag, which a proxy may rewrite)"), 206: binary("The requested range") },
   }), async c => {
     const target = await volume(c);
     const entry = await target.call("stat", { path: filePath(c) });

@@ -7938,7 +7938,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The file, streamed a chunk at a time; ETag is its version",
+            "description": "The file, streamed a chunk at a time; its version is X-File-Version (and the ETag, which a proxy may rewrite)",
             "content": {
               "application/octet-stream": {
                 "schema": {
