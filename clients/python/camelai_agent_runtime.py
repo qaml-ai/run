@@ -427,18 +427,23 @@ class AgentRuntime:
 
     async def upsert_agent(self, key, *, tools=(), **fields):
         """The agent for `key`: made if there is none, set to `fields` (create_agent's) if they differ. Returns its
-        credentials ({"id", "token", "expiresAt", "created"}); connect with connect_agent. Keyed agents live until deleted."""
+        credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted."""
         if not self.api_key:
             raise AgentError("Set api_key (or the CAMELAI_API_KEY environment variable): create a key in the console at https://agents.camelai.dev")
-        return await _http(self.http, self.base, f"/v1/agents/by-key/{quote(key, safe='')}", self.api_key, "PUT", _provisioning(tools, **fields))
+        import re
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
+            raise AgentError(f"An agent's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
+        # The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
+        return await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", _provisioning(tools, **fields), headers={"Idempotency-Key": key})
 
-    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True):
+    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False):
         """`on_event(event, request_id)` hears every event, for display (a run's result is the truth): a plain or async
         function, called in order apart from the connection, so a slow one never holds up tool calls; what it raises goes
         to on_error. `on_input(input)` hears each question, approval or setup step the agent's turn now waits on: return an
         answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer().
-        `attach=False` follows the agent and runs it without answering its tool calls, as any number of processes may."""
-        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error, on_input, attach=attach)
+        `attach=False` follows the agent and runs it without answering its tool calls, as any number of processes may; one
+        process at a time answers them, and another fails with APPLICATION_CONNECTED unless `takeover=True` replaces it."""
+        agent = AgentClient(self.base, session, tools, self.state_directory, on_event, on_error, on_input, attach=attach, takeover=takeover)
         self.agents.append(agent)
         try:
             await agent.connect()
@@ -652,7 +657,7 @@ class AgentClient:
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
-    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None, on_input=None, attach=True):
+    def __init__(self, base, session, tools, state_directory=None, on_event=None, on_error=None, on_input=None, attach=True, takeover=False):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
@@ -665,6 +670,8 @@ class AgentClient:
         self.on_event, self.on_error, self.on_input = on_event, on_error, on_input
         # Whether this client answers the agent's tool calls: one process at a time. False follows it only.
         self.attach = attach
+        # Replace the process that serves the agent's tools now, instead of failing with APPLICATION_CONNECTED.
+        self.takeover = takeover
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.path = f"/clients/{session['id']}"
         # False: the cursor is kept in memory only.
@@ -768,10 +775,19 @@ class AgentClient:
         backoff = 0.25
         while not self.closed:
             try:
-                async with self.http.stream("GET", self.base + self.path + "/events?snapshot=1" + ("" if self.attach else "&watch=1"), headers={
-                    "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream",
-                    "Last-Event-ID": str(self.journal["cursor"])}, timeout=20) as response:
+                # One application serves an agent's tools at a time: a reconnect names the connection it held; takeover replaces another's, once.
+                mode = "&watch=1" if not self.attach else "&takeover=true" if self.takeover and not self.connection else ""
+                async with self.http.stream("GET", self.base + self.path + "/events?snapshot=1" + mode, headers={
+                    "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream", "Last-Event-ID": str(self.journal["cursor"]),
+                    **({"X-Agent-Connection": self.connection} if self.attach and self.connection else {})}, timeout=20) as response:
                     if response.status_code == 409:
+                        try:
+                            refusal = json.loads(await response.aread()).get("error") or ""
+                        except ValueError:
+                            refusal = ""
+                        if refusal.startswith("APPLICATION_CONNECTED"):
+                            raise AgentError("Another process serves this agent's tools. One process at a time answers an agent's tool calls: close that one, "
+                                             "pass takeover=True to replace it, or attach=False to run the agent without serving its tools", 409, code="APPLICATION_CONNECTED")
                         state = await self._sync()
                         self.journal["cursor"] = state["cursor"]
                         self._save()
@@ -792,6 +808,9 @@ class AgentClient:
                             data = "\n".join(line[5:].lstrip() for line in lines if line.startswith("data:"))
                             if not data:
                                 continue
+                            # Another process took over this agent's tools: this one stops, rather than take them back.
+                            if "event: closed" in lines:
+                                raise AgentError("Another process took over this agent's tools (takeover); this client stopped", 409, code="APPLICATION_REPLACED")
                             if "event: ready" in lines:
                                 self.connection = json.loads(data).get("connection")
                                 await self._sync()
@@ -826,7 +845,7 @@ class AgentClient:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                if isinstance(error, AgentError) and error.status in (401, 403, 410):
+                if isinstance(error, AgentError) and (error.status in (401, 403, 410) or error.code in ("APPLICATION_CONNECTED", "APPLICATION_REPLACED")):
                     self.fatal = error
                     self.ready.set()
                     for future in self.pending.values():
@@ -1172,6 +1191,11 @@ class Run:
     usage: dict | None = None
     # Files it wrote (download them with agent.files).
     files: list = field(default_factory=list)
+    # Tool calls that did not complete (the model was told, and carried on): {"tool", "code", "message", "outcomeUnknown"?}.
+    # code "not_connected": no process served the agent's tools, so the call did not run.
+    tool_errors: list = field(default_factory=list)
+    # Tool sources (MCP servers, OpenAPI specs) that could not be reached: {"kind", "source", "message"}.
+    source_errors: list = field(default_factory=list)
     # The runtime's result as sent.
     raw: dict | None = field(default=None, repr=False)
 
@@ -1352,7 +1376,8 @@ class Agent:
                  else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit" else None)
         status = "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
         return Run(request_id, status, text=result.get("reply") or "", inputs=[RunInput(self, input) for input in result.get("inputs") or []], error=error,
-                   usage=result.get("usage"), files=result.get("files") or [], raw=result)
+                   usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],
+                   source_errors=result.get("sourceErrors") or [], raw=result)
 
     async def _respond(self, input, answer, from_, throw_on_error, timeout):
         audience = (input.get("responders") or {}).get("audience")
@@ -1432,22 +1457,25 @@ class Agents:
         self._open = set()
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
-                     key_scope=None, spend_limit=None, model_headers=None, mounts=None, name=None, on_event=None, on_input=None, on_error=None):
+                     key_scope=None, spend_limit=None, model_headers=None, mounts=None, name=None, on_event=None, on_input=None, on_error=None,
+                     attach=None, takeover=False):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
         then answers the agent's tool calls, one process at a time: serverless or several processes, serve tools over
-        HTTP (serve_tools) and name them in a definition instead."""
+        HTTP (serve_tools) and name them in a definition instead. attach=False declares the tools without serving them
+        (another process does); takeover=True replaces the process serving them now."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers,
                                                   mounts=mounts, name=name)
-        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error)
+        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
 
-    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None):
+    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
         """An agent you hold the credentials of ({"id", "token"}, from another process say)."""
         tools = list(tools or [])
-        client = await self.runtime.connect_agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=bool(tools))
+        client = await self.runtime.connect_agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error,
+                                                  attach=bool(tools) if attach is None else attach, takeover=takeover)
         agent = Agent(client, self._open.discard)
         self._open.add(agent)
         return agent

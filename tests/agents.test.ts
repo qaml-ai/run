@@ -83,7 +83,7 @@ test("a tool that returns nothing succeeds with null; its context has a stable i
   assert.equal(run.text, "Saved.");
   assert.equal(toolResults(r.model.bodies[1]).at(-1), "null", "the model hears null, not a failure");
   assert.equal(keys.length, 1);
-  assert.ok(keys[0].includes("call_save"), keys[0]);
+  assert.match(keys[0], /^[0-9a-f]{32}$/, "the runtime's key for this call");
   await until(() => events.some(event => event.type === "tool_execution_update" && JSON.stringify(event.partialResult).includes("halfway")), "the progress event");
 });
 
@@ -147,4 +147,39 @@ test("Agents defaults to the hosted runtime, and needs an API key to make agents
   delete process.env.CAMELAI_API_KEY;
   try { await assert.rejects(new Agents({ url: "http://127.0.0.1:1" }).upsert("demo"), /CAMELAI_API_KEY/); }
   finally { if (saved !== undefined) process.env.CAMELAI_API_KEY = saved; }
+});
+
+test("upsert: the same key is the same agent, and a changed configuration reconfigures it", async t => {
+  const { agents, r } = await setup(t, () => ({ role: "assistant", content: "ok" }));
+  const first = await agents.upsert("support-triage", { instructions: "You are terse." });
+  assert.equal((await first.run("hi")).text, "ok");
+  await first.close();
+  const again = await agents.upsert("support-triage", { instructions: "You are terse." });
+  assert.equal(again.id, first.id);
+  const added = echo(({ value }) => `added ${value}`);
+  const changed = await agents.upsert("support-triage", { instructions: "You are verbose.", tools: { added } });
+  assert.equal(changed.id, first.id, "a new configuration is the same agent");
+  await changed.run("again");
+  const system = r.model.bodies.at(-1).messages.find((message: any) => message.role === "system" || message.role === "developer").content;
+  assert.match(JSON.stringify(system), /You are verbose/);
+  assert.deepEqual((await changed.client.execute('return await tools.added({value:"x"})')).output, ["added x"]);
+  await assert.rejects(agents.upsert("not a key!"), /letters, digits/);
+});
+
+test("one process serves an agent's tools at a time; others may still run it, and takeover replaces the one serving", async t => {
+  const { r } = await setup(t, () => ({ role: "assistant", content: "ok" }));
+  const one = new Agents({ url: r.base, apiKey: OPERATOR }), two = new Agents({ url: r.base, apiKey: OPERATOR }), three = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(async () => { await one.close(); await two.close(); await three.close(); });
+  const tools = { echo: echo(({ value }) => value) };
+  const errors: Error[] = [];
+  const serving = await one.upsert("shared", { tools, onError: error => errors.push(error) });
+  await assert.rejects(two.upsert("shared", { tools }), (error: any) => error.code === "APPLICATION_CONNECTED" && /takeover/.test(error.message));
+  // A process that declares the tools without serving them runs the agent, however many there are.
+  const follower = await three.upsert("shared", { tools, attach: false });
+  assert.equal((await follower.run("hi")).text, "ok");
+  // Taking over: the process that served them stops, rather than take them back.
+  const taken = await two.upsert("shared", { tools, takeover: true });
+  assert.equal(taken.id, serving.id);
+  await until(() => errors.some((error: any) => error.code === "APPLICATION_REPLACED"), "the replaced process to hear it");
+  assert.deepEqual((await taken.client.execute('return await tools.echo({value:"mine"})')).output, ["mine"]);
 });

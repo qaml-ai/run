@@ -18,7 +18,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_agent_runtime import AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
+from camelai_agent_runtime import AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -140,7 +140,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((parts[0].name, parts[0].arguments), ("lookup", {"sku": "A1"}))
         result = json.loads(parts[1].output)
         self.assertEqual(result["sku"], "A1")
-        self.assertIn("call_lookup", result["key"])
+        self.assertRegex(result["key"], r"^[0-9a-f]{32}$", "the runtime's key for this call")
         self.assertEqual(parts[2].text, "seen")
         self.assertEqual(parts[3].run.text, "seen")
         self.assertEqual((await stream.result()).id, stream.id)
@@ -205,6 +205,37 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         await agent.configure(tools=[added], instructions="Be brief.")
         self.assertEqual((await agent.client.execute('return await tools.added({value:"x"})'))["output"], ["added x"])
         await agent.follow_up("later")
+
+    async def test_upsert_is_the_same_agent_for_a_key_and_one_process_serves_its_tools(self):
+        @tool
+        async def echo(value: str) -> str:
+            """Echo"""
+            return value
+
+        first = await self.agents.upsert("py-shared", instructions="You are terse.", tools=[echo])
+        self.assertEqual((await first.run("hi")).text, "seen")
+        self.assertEqual((await self.agents.upsert("py-shared", instructions="You are terse.", tools=[echo], attach=False)).id, first.id)
+        async with Agents(self.token, url=self.url) as other:
+            with self.assertRaises(AgentError) as refused:
+                await other.upsert("py-shared", instructions="You are terse.", tools=[echo])
+        self.assertEqual(refused.exception.code, "APPLICATION_CONNECTED")
+        errors = []
+        first.client.on_error = errors.append
+        second = Agents(self.token, url=self.url)
+        try:
+            taken = await second.upsert("py-shared", instructions="You are verbose.", tools=[echo], takeover=True)
+            for _ in range(100):
+                if any(getattr(error, "code", None) == "APPLICATION_REPLACED" for error in errors):
+                    break
+                await asyncio.sleep(0.05)
+            self.assertTrue(any(getattr(error, "code", None) == "APPLICATION_REPLACED" for error in errors))
+            await taken.run("again")
+            self.assertIn("You are verbose.", json.dumps(self.bodies[-1]["messages"][0]))
+            self.assertEqual((await taken.client.execute('return await tools.echo({value:"mine"})'))["output"], ["mine"])
+        finally:
+            await second.close()
+        with self.assertRaises(AgentError):
+            await self.agents.upsert("not a key!")
 
     async def asyncTearDown(self):
         await self.agents.close()

@@ -12,7 +12,7 @@
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type AgentInput, type AgentHistory, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
-  type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolServer, type Tools, type AgentFile,
+  type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type ToolServer, type Tools, type AgentFile,
 } from "./typescript.ts";
 import type { AgentEvent, ImageContent, ThinkingLevel } from "./types.ts";
 
@@ -65,6 +65,13 @@ export interface AgentConfig {
   onInput?: AgentOptions["onInput"];
   onError?: (error: Error) => void;
   onConnection?: (connected: boolean) => void;
+  /** Replace the process that serves this agent's tools now, instead of failing with APPLICATION_CONNECTED. */
+  takeover?: boolean;
+  /**
+   * Serve `tools` from this process (default: true when there are any). false declares them, as the agent's
+   * configuration, but leaves serving them to another process: to run the agent from a second process.
+   */
+  attach?: boolean;
 }
 
 /** A failure, as a run reports it. `code` is stable; `message` is for people. */
@@ -93,6 +100,13 @@ export interface Run {
   usage: RunUsage | null;
   /** Files it wrote (download them with `agent.files`). */
   files: AgentFile[];
+  /**
+   * Tool calls that did not complete (the model was told, and carried on): check these where a tool's side
+   * effect matters. `not_connected`: no process served the agent's tools, so the call did not run.
+   */
+  toolErrors: ToolError[];
+  /** Tool sources (MCP servers, OpenAPI specs) that could not be reached, so the model went without their tools. */
+  sourceErrors: { kind: string; source: string; message: string }[];
   /** The runtime's result as sent. */
   raw: RunResult | null;
 }
@@ -177,12 +191,12 @@ export class Agents {
   }
 
   /** An agent you hold the credentials of (`agent.session` from another process, say). */
-  async agent(session: SessionCredentials, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection"> = {}): Promise<Agent> {
+  async agent(session: SessionCredentials, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
     return this.connect(session, config, createOptions(config));
   }
 
   private async connect(session: SessionCredentials, config: AgentConfig, options: AgentOptions) {
-    const attach = !!config.mcp || Object.keys(config.tools ?? {}).length > 0;
+    const attach = config.attach ?? (!!config.mcp || Object.keys(config.tools ?? {}).length > 0);
     const client = await this.runtime.connectAgent(session, { ...options, attach });
     const agent = new Agent(client, () => this.open.delete(agent));
     this.open.add(agent);
@@ -288,7 +302,7 @@ export class Agent {
     catch (error) {
       // A run that ended in an error settles with it; anything else (a refused request, a closed client) is not a run.
       if (!(error instanceof AgentError) || error.status !== 0 || error.requestId !== id || /^Client closed/.test(error.message)) throw error;
-      run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}) } };
+      run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], toolErrors: [], sourceErrors: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}) } };
     }
     if (run.error && throwOnError) throw new RunError(run);
     return run;
@@ -301,7 +315,7 @@ export class Agent {
     return {
       id, status: error ? "failed" : raw?.stopped === "input_required" ? "input_required" : "completed",
       text: raw?.reply ?? "", inputs: (raw?.inputs ?? []).map(input => this.input(input)), error,
-      usage: raw?.usage ?? null, files: raw?.files ?? [], raw,
+      usage: raw?.usage ?? null, files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], sourceErrors: raw?.sourceErrors ?? [], raw,
     };
   }
 
@@ -313,7 +327,7 @@ export class Agent {
       if (request) return this.settle(request.id, this.client.waitForRequest(request.id, { ...(options.signal ? { signal: options.signal } : {}) }), options.throwOnError);
       // Other inputs of the run still wait: it resumes once they are answered too.
       const pending = (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId);
-      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input(other)), error: null, usage: null, files: [], raw: null };
+      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input(other)), error: null, usage: null, files: [], toolErrors: [], sourceErrors: [], raw: null };
     };
     return {
       ...input,

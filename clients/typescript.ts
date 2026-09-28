@@ -89,7 +89,8 @@ export class InputRequired extends Error {
 export interface Tool<T = any> {
   description: string;
   /**
-   * How long one call may take before the runtime gives up on it (default 15 s, at most 15 minutes).
+   * How long one call may go without an answer before the runtime gives up on it (1 s to 20 minutes;
+   * default 15 s).
    * Each `context.progress()` restarts it. A call cut off is an error the model sees; it may still finish here.
    */
   timeoutMs?: number;
@@ -265,6 +266,11 @@ export interface AgentOptions {
    * as any number of processes may (serverless functions, a second service), and answers no tool calls.
    */
   attach?: boolean;
+  /**
+   * Replace the process that serves the agent's tools now (it stops, with an APPLICATION_REPLACED error).
+   * Without it, connecting while another process serves them fails with APPLICATION_CONNECTED.
+   */
+  takeover?: boolean;
 }
 /**
  * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
@@ -434,7 +440,16 @@ export interface RunResult {
   usage?: RunUsage | null;
   /** A stable name for `error`, where the runtime gives one. */
   code?: string;
+  /** Tool calls that did not complete (the model was told): timed out, lost, with no application connected, and so on. */
+  toolErrors?: ToolError[];
+  /** Tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools. */
+  sourceErrors?: { kind: string; source: string; message: string }[];
 }
+/**
+ * A tool call that did not complete. `code`: timeout or connection_lost (with `outcomeUnknown`: it may have
+ * taken effect), not_connected (no application was connected to run it: it did not run), source_unavailable, failed.
+ */
+export interface ToolError { tool: string; toolCallId?: string; innerCallId?: string; code: "timeout" | "connection_lost" | "not_connected" | "source_unavailable" | "failed"; outcomeUnknown?: true; message: string }
 /** Retry-After as milliseconds (seconds or an HTTP date), capped so a bad value cannot stall a caller. */
 function retryAfter(response: Response): number | undefined {
   const value = response.headers.get("retry-after");
@@ -528,6 +543,8 @@ class Transport {
   }
 }
 
+/** What an agent's key may be. */
+const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
   const fields = ["subject", "context", "keyScope", "spendLimit", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt"] as const;
@@ -543,12 +560,14 @@ export class AgentRuntime {
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;
    * connect with `connectAgent`. Keyed agents live until they are deleted.
    */
-  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; created: boolean }> {
+  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; reconfigured?: { id: string } }> {
     const apiKey = this.options.apiKey;
     if (!apiKey) throw new AgentError("Set apiKey to provision an agent");
+    if (!AGENT_KEY.test(key)) throw new AgentError(`An agent's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
     const server = options.mcp ?? toolServer(options.tools ?? {});
-    const answer = await this.transport.json(`/v1/agents/by-key/${encodeURIComponent(key)}`, apiKey, "PUT", { mcp: { tools: await server.listTools() }, ...provisioning(options) });
-    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, created: answer.created === true };
+    // The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
+    const answer = await this.transport.json("/v1/agents", apiKey, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options) }, true, { "Idempotency-Key": key });
+    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, ...(answer.reconfigured ? { reconfigured: answer.reconfigured } : {}) };
   }
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
     const key = this.options.apiKey;
@@ -779,13 +798,21 @@ export class AgentClient {
       const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => this.stream?.abort(), 20_000); };
       touch();
       try {
-        const response = await this.transport.fetcher(this.transport.base + this.path(`/events?snapshot=1${this.attaching ? "" : "&watch=1"}`), {
-          headers: { Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor) },
+        // One application serves an agent's tools at a time: a reconnect names the connection it held; `takeover` replaces another's, once.
+        const mode = !this.attaching ? "&watch=1" : this.options.takeover && !this.connection ? "&takeover=true" : "";
+        const response = await this.transport.fetcher(this.transport.base + this.path(`/events?snapshot=1${mode}`), {
+          headers: {
+            Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.journal.cursor),
+            ...(this.attaching && this.connection ? { "X-Agent-Connection": this.connection } : {}),
+          },
           signal: this.stream.signal, redirect: "manual",
         });
         await rejectRedirect(response);
         if (response.status === 409) {
-          await response.body?.cancel();
+          const refusal = await response.json().catch(() => ({})) as { error?: string };
+          if (refusal.error?.startsWith("APPLICATION_CONNECTED")) {
+            throw Object.assign(new AgentError("Another process serves this agent's tools. One process at a time answers an agent's tool calls: close that one, pass takeover: true to replace it, or connect with attach: false to run the agent without serving its tools", 409), { code: "APPLICATION_CONNECTED" });
+          }
           const snapshot = await this.sync();
           this.journal.cursor = snapshot.cursor; await this.save();
           this.emit({ type: "replay_gap", cursor: snapshot.cursor });
@@ -809,6 +836,10 @@ export class AgentClient {
               const lines = frame.split("\n");
               const data = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
               if (!data) continue;
+              // Another process took over this agent's tools: this one stops, rather than take them back.
+              if (lines.includes("event: closed")) {
+                throw Object.assign(new AgentError("Another process took over this agent's tools (takeover); this client stopped", 409), { code: "APPLICATION_REPLACED" });
+              }
               if (lines.includes("event: ready")) {
                 this.connection = (JSON.parse(data) as { connection?: string }).connection;
                 await this.sync();
@@ -843,7 +874,7 @@ export class AgentClient {
         } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       } catch (error) {
         if (this.closed) break;
-        if (error instanceof AgentError && ([401, 403, 410].includes(error.status) || (error.status >= 300 && error.status < 400))) {
+        if (error instanceof AgentError && ([401, 403, 410].includes(error.status) || (error.status >= 300 && error.status < 400) || error.code === "APPLICATION_CONNECTED" || error.code === "APPLICATION_REPLACED")) {
           this.fatal = error; this.ready.reject(error);
           for (const waiter of this.pending.values()) waiter.reject(error);
           this.pending.clear(); this.report(error); break;
