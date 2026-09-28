@@ -26,6 +26,11 @@ test("create-agent-app writes the starter, its key (readable only by its owner),
   assert.equal((await stat(join(app, ".env.local"))).mode & 0o777, 0o600);
   // The key never reaches the browser: only the route (server code) reads it.
   assert.doesNotMatch(await readFile(join(app, "app/components/chat.tsx"), "utf8"), /CAMELAI_API_KEY|NEXT_PUBLIC/);
+  // Deployed, the demo sign-in lets nobody in unless the app opts in.
+  const route = await readFile(join(app, "app/api/agent/route.ts"), "utf8");
+  assert.match(route, /NODE_ENV === "production" && process\.env\.DEMO_AUTH !== "1"/);
+  assert.match(await readFile(join(app, "proxy.ts"), "utf8"), /DEMO_AUTH !== "1"/);
+  assert.match(await readFile(join(app, "README.md"), "utf8"), /Add your own sign-in before you deploy/);
   // A directory with something in it is left alone.
   assert.throws(() => execFileSync(process.execPath, [cli, "My App", "--no-install"], { cwd: root, stdio: "pipe" }), /not empty/);
 });

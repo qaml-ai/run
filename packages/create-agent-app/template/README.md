@@ -1,5 +1,11 @@
 # Agent app
 
+> **⚠ Add your own sign-in before you deploy.** This starter's sign-in is a demo: every browser gets
+> an anonymous user id, so anyone who can reach the app can use your agents (and your API key's
+> credit). In production (`next build && next start`, or any host) the route refuses everyone until
+> you replace `authorize` in `app/api/agent/route.ts` (and `proxy.ts`) with your auth, or opt in to
+> anonymous demo users with `DEMO_AUTH=1`.
+
 A Next.js app with a streaming chat to an agent on the [camelAI agent runtime](https://agents.camelai.dev).
 
 ```sh

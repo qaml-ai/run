@@ -92,6 +92,10 @@ test("proxy: a fetch-style route (Next.js route handlers, Workers) streams the u
   assert.equal((await call(`/api/agent/v1/agents/${bobs}/prompt`, { headers: { cookie: "cookie-bob" } })).status, 404);
   assert.equal((await call(`/api/agent/v1/agents/${bobs}/state`, { headers: { cookie: "cookie-bob", Authorization: `Bearer ${OPERATOR}` } })).status, 200);
   assert.equal((await call(`/api/agent/v1/agents/${bobs}/events?poll=1&wait=0`, { headers: { cookie: "cookie-bob" } })).status, 200, "the long-poll fallback");
+  // A malformed path is the request's fault; a read from another site is refused.
+  assert.equal((await call(`/api/agent/v1/agents/%E0%A4%A/history`, { headers: { cookie: "cookie-bob" } })).status, 400);
+  assert.equal((await call(`/api/agent/threads/%zz/v1/agents/${bobs}/history`, { headers: { cookie: "cookie-bob" } })).status, 400);
+  assert.equal((await call(`/api/agent/v1/agents/${bobs}/history`, { headers: { cookie: "cookie-bob", "Sec-Fetch-Site": "cross-site", Origin: "https://evil.example" } })).status, 403);
 });
 
 test("proxy: a browser that goes away aborts the upstream stream", async t => {

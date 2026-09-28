@@ -117,6 +117,11 @@ export async function agentKeyFor(userId: string, thread?: string | null): Promi
   return `u_${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
 }
 
+/** A path segment, decoded; a malformed one is the request's fault. */
+function decodeSegment(value: string): string {
+  try { return decodeURIComponent(value); } catch { return fail(400, "invalid_request", "The path is not valid"); }
+}
+
 /** An error the handler answers with: `{ error: { code, message } }`. */
 class HandlerError extends Error {
   readonly status: number;
@@ -263,13 +268,13 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
    * `authorize` says), with a browser token added here, and cancelled when the browser goes away.
    */
   async function read(request: Request, match: RegExpExecArray): Promise<Response> {
-    const thread = match[1] === undefined ? null : decodeURIComponent(match[1]);
+    const thread = match[1] === undefined ? null : decodeSegment(match[1]);
     if (thread !== null && (!thread || thread.length > 200)) fail(400, "invalid_request", "thread is a string of 1 to 200 characters");
-    const auth = await options.authorize(request, { thread, action: "read" });
-    if (!auth) fail(401, "unauthorized", "Sign in first");
-    const agent = await agentFor(auth!, thread);
+    const requested = decodeSegment(match[2]);
+    const auth = checked(await options.authorize(request, { thread, action: "read" }));
+    const agent = await agentFor(auth, thread);
     // The path names an agent; only the user's own is readable (another is not found, as on the runtime).
-    if (decodeURIComponent(match[2]) !== agent.id) fail(404, "not_found", "No such agent");
+    if (requested !== agent.id) fail(404, "not_found", "No such agent");
     const target = `${url}/v1/agents/${encodeURIComponent(agent.id)}/${match[3]}${new URL(request.url).search}`;
     const forward = async (fresh: boolean) => {
       const headers: Record<string, string> = { Authorization: `Bearer ${await readToken(agent, auth!, fresh)}` };
@@ -338,6 +343,28 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     }
   }
 
+  /** What authorize returned, if it is a user: null is a 401, and a malformed one the app's own bug. */
+  function checked(auth: A | null): A {
+    if (!auth) return fail(401, "unauthorized", "Sign in first");
+    if (typeof auth.userId !== "string" || !auth.userId || auth.userId.length > 200) fail(500, "invalid_auth", "authorize returned no userId, or one longer than 200 characters");
+    if (auth.name !== undefined && (typeof auth.name !== "string" || auth.name.length > 200)) fail(500, "invalid_auth", "authorize returned a name longer than 200 characters");
+    return auth;
+  }
+  /**
+   * Requests only from this site (or an allowed origin): by Sec-Fetch-Site where the browser sends it,
+   * else by Origin against Host (hosts only: a proxy that ends TLS changes the scheme, not the host).
+   */
+  function sameSite(request: Request, origin: string | null) {
+    if (origin && allowed.has(origin)) return;
+    const site = request.headers.get("sec-fetch-site");
+    if (site === "cross-site" || site === "same-site") fail(403, "forbidden_origin", "This route takes requests from its own site; list other origins in allowedOrigins");
+    if (site === null && origin && origin !== "null") {
+      let from: string;
+      try { from = new URL(origin).host; } catch { return fail(403, "forbidden_origin", "The request's Origin is not valid"); }
+      const host = request.headers.get("host") ?? new URL(request.url).host;
+      if (from !== host) fail(403, "forbidden_origin", "This route takes requests from its own site; list other origins in allowedOrigins");
+    }
+  }
   const allowed = new Set(options.allowedOrigins ?? []);
   const cors = (origin: string | null): Record<string, string> => origin && allowed.has(origin)
     ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true", Vary: "Origin" } : {};
@@ -353,8 +380,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
       if (request.method === "GET" && options.proxy) {
         const match = READ.exec(new URL(request.url).pathname);
         if (!match) fail(404, "not_found", "No such route");
-        const site = request.headers.get("sec-fetch-site");
-        if ((site === "cross-site" || site === "same-site") && !(origin && allowed.has(origin))) fail(403, "forbidden_origin", "This route takes requests from its own site; list other origins in allowedOrigins");
+        sameSite(request, origin);
         const response = await read(request, match!);
         for (const [name, value] of Object.entries(cors(origin))) response.headers.set(name, value);
         return response;
@@ -362,8 +388,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
       if (request.method !== "POST") fail(405, "method_not_allowed", "POST a JSON body");
       // Only JSON (a form on another site cannot post it), and only from this site unless allowed.
       if (!/^application\/json\s*(;|$)/i.test(request.headers.get("content-type") ?? "")) fail(415, "unsupported_media_type", "Send Content-Type: application/json");
-      const site = request.headers.get("sec-fetch-site");
-      if ((site === "cross-site" || site === "same-site") && !(origin && allowed.has(origin))) fail(403, "forbidden_origin", "This route takes requests from its own site; list other origins in allowedOrigins");
+      sameSite(request, origin);
       const text = await request.text();
       if (text.length > MAX_BODY) fail(413, "too_large", "The request body is too large");
       let body: Record<string, unknown>;
@@ -373,10 +398,8 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
       if (!ACTIONS.has(action)) fail(400, "invalid_request", `action is one of ${[...ACTIONS].join(", ")}`);
       const thread = body.thread ?? null;
       if (thread !== null && (typeof thread !== "string" || !thread || thread.length > 200)) fail(400, "invalid_request", "thread is a string of 1 to 200 characters");
-      const auth = await options.authorize(request, { thread: thread as string | null, action });
-      if (!auth) fail(401, "unauthorized", "Sign in first");
-      if (typeof auth!.userId !== "string" || !auth!.userId) fail(500, "invalid_auth", "authorize returned no userId");
-      return respond(200, await handle(request, body, auth!, action, thread as string | null), origin);
+      const auth = checked(await options.authorize(request, { thread: thread as string | null, action }));
+      return respond(200, await handle(request, body, auth, action, thread as string | null), origin);
     } catch (error) {
       if (error instanceof Response) {
         const headers = new Headers(error.headers);

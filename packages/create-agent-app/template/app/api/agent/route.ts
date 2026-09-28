@@ -9,9 +9,14 @@ import { schema, tool } from "@camelai/agent-runtime";
  */
 export const POST = createAgentHandler({
   authorize: async () => {
-    // Your sign-in goes here: return { userId, name } for a signed-in user, or null (401).
+    // ⚠ A DEMO SIGN-IN: anyone with a browser is a user. Replace this with your own (Clerk, Auth.js,
+    // your session) and return { userId, name } for a signed-in user, or null.
+    // Deployed (production), it refuses everyone unless you opt in with DEMO_AUTH=1.
+    if (process.env.NODE_ENV === "production" && process.env.DEMO_AUTH !== "1") {
+      throw Response.json({ error: { code: "unauthorized", message: "This app has no sign-in yet: add your own in app/api/agent/route.ts (or set DEMO_AUTH=1 to allow anonymous demo users)." } }, { status: 401 });
+    }
     const userId = (await cookies()).get("demo_user")?.value;
-    return userId ? { userId } : null;
+    return userId && /^[0-9a-f-]{36}$/.test(userId) ? { userId } : null;
   },
   agent: {
     instructions: "You are a friendly assistant in a demo app. Keep answers short. Use get_weather when asked about the weather.",
@@ -20,7 +25,7 @@ export const POST = createAgentHandler({
     tools: {
       get_weather: tool({
         description: "The current weather in a city",
-        input: schema.Object({ city: schema.String() }),
+        input: schema.Object({ city: schema.String({ maxLength: 100 }) }),
         execute: async ({ city }) => {
           // Swap in a real weather API. This one is made up, so the demo needs no other key.
           const seed = [...city].reduce((sum, char) => sum + char.charCodeAt(0), 0);

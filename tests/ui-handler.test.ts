@@ -172,6 +172,20 @@ test("the handler refuses what is not a JSON POST from the same site", async t =
   assert.equal(await status({ body: JSON.stringify({ action: "token" }), headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site", Origin: "https://evil.example" } }), 403);
   assert.equal(await status({ body: JSON.stringify({ action: "token" }), headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site", Origin: "https://partner.example" } }), 200);
   assert.equal(await status({ body: JSON.stringify({ action: "token" }), headers: { "Content-Type": "application/json; charset=utf-8", "Sec-Fetch-Site": "same-origin" } }), 200);
+  // A browser that sends no Sec-Fetch-Site: its Origin must be this host (whatever the scheme a proxy changed).
+  assert.equal(await status({ body: JSON.stringify({ action: "token" }), headers: { "Content-Type": "application/json", Origin: "https://evil.example" } }), 403);
+  assert.equal(await status({ body: JSON.stringify({ action: "token" }), headers: { "Content-Type": "application/json", Origin: "http://app.example" } }), 200);
+  assert.equal(await status({ body: JSON.stringify({ action: "token" }), headers: { "Content-Type": "application/json", Origin: "https://partner.example" } }), 200);
+});
+
+test("what authorize returns is checked: a user id or name over 200 characters is the app's bug, not a user", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const long = handlerFor(t, r, { authorize: () => ({ userId: "u".repeat(201) }) });
+  const response = await post(long, { action: "token" });
+  assert.equal(response.status, 500);
+  assert.equal(response.json.error.code, "invalid_auth");
+  const named = handlerFor(t, r, { authorize: () => ({ userId: "alice", name: "n".repeat(201) }) });
+  assert.equal((await post(named, { action: "token" })).status, 500);
 });
 
 test("an agent's own tools run in the handler's process, for the user it acts for", async t => {
