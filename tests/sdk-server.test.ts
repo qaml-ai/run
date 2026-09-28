@@ -170,3 +170,28 @@ test("nodeListener trusts X-Forwarded-Proto and -Host only when told to", async 
   assert.equal(await call(await listen({ trustProxy: true }), "https://tools.example.com/mcp", forwarded), 200);
   assert.equal(await call(await listen({ origin: "https://tools.example.com" }), "https://tools.example.com/mcp", {}), 200);
 });
+
+test("nodeListener streams a response: an SSE body's chunks arrive as they are written", async t => {
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const handler = async () => new Response(new ReadableStream<Uint8Array>({
+    async start(controller) {
+      controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+      await release.promise;
+      controller.enqueue(new TextEncoder().encode("data: second\n\n"));
+      controller.close();
+    },
+  }), { headers: { "Content-Type": "text/event-stream" } });
+  const server = createServer(nodeListener(handler));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); return new Promise<void>(resolve => server.close(() => resolve())); });
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/events`;
+  const reader = await Promise.race([fetch(url).then(response => response.body!.getReader()), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the headers were held back")), 2000))]);
+  const first = await Promise.race([reader.read(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the first chunk was held back")), 2000))]);
+  assert.equal(new TextDecoder().decode(first.value), "data: first\n\n");
+  release.resolve();
+  let rest = "";
+  for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) rest += new TextDecoder().decode(chunk.value);
+  assert.equal(rest, "data: second\n\n");
+});

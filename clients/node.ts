@@ -1,4 +1,5 @@
 /** Node/Bun convenience entry. The portable SDK itself imports no Node modules. */
+import { once } from "node:events";
 import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -33,9 +34,21 @@ export function nodeListener(handler: (request: Request) => Promise<Response>, o
       const body = chunks.length ? new Uint8Array(Buffer.concat(chunks)) : undefined;
       const response = await handler(new Request(new URL(req.url ?? "/", origin), { method: req.method, headers, body, signal: controller.signal }));
       res.writeHead(response.status, Object.fromEntries(response.headers));
-      res.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
+      if (!response.body) { res.end(); return; }
+      // Streamed as it comes, so an event stream reaches its client as it is written.
+      res.flushHeaders();
+      const reader = response.body.getReader();
+      res.on("close", () => { void reader.cancel().catch(() => {}); });
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!res.write(value)) await once(res, "drain");
+      }
+      res.end();
     } catch (error) {
-      if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
+      // A body that fails partway cannot become an error answer: the connection is cut, so the client sees it failed.
+      if (res.headersSent) { res.destroy(); return; }
+      res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: String(error).slice(0, 500) }));
     }
   };
