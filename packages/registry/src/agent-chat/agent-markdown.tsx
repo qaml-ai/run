@@ -10,7 +10,11 @@ import { cn } from "@/lib/utils";
  * that is still streaming. Unchanged blocks are not rendered again.
  */
 export const AgentMarkdown = memo(function AgentMarkdown({ text, streaming = false, className }: { text: string; streaming?: boolean; className?: string }) {
-  const blocks = useMemo(() => parseMarkdown(text, { streaming }), [text, streaming]);
+  // Should parsing ever fail, the text shows as it is: a reply always renders.
+  const blocks = useMemo<Block[]>(() => {
+    try { return parseMarkdown(text, { streaming }); }
+    catch { return [{ type: "paragraph", children: [{ type: "text", text }], raw: text }]; }
+  }, [text, streaming]);
   return (
     <div className={cn("space-y-3 break-words text-sm leading-relaxed", className)}>
       {blocks.map((block, at) => <MarkdownBlock key={at} block={block} open={streaming && at === blocks.length - 1} />)}

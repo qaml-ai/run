@@ -46,11 +46,20 @@ export function safeUrl(url: string): string | null {
   return /^(https?:\/\/|mailto:)/i.test(trimmed) && !/[\s<>"]/.test(trimmed) ? trimmed : null;
 }
 
+/**
+ * How deep quotes, lists and emphasis nest before the rest is plain text, and how far a link's label or
+ * URL may reach: text a model streams (or a user pastes) cannot make parsing deep or quadratic.
+ */
+const MAX_DEPTH = 16;
+const MAX_LABEL = 1000;
+const MAX_URL = 2048;
+
 export function parseMarkdown(text: string, options: MarkdownOptions = {}): Block[] {
-  return parseBlocks(text.replace(/\r\n?/g, "\n").split("\n"), options.streaming ?? false);
+  return parseBlocks(text.replace(/\r\n?/g, "\n").split("\n"), options.streaming ?? false, 0);
 }
 
-function parseBlocks(lines: string[], streaming: boolean): Block[] {
+function parseBlocks(lines: string[], streaming: boolean, depth: number): Block[] {
+  if (depth > MAX_DEPTH) return [{ type: "paragraph", children: [{ type: "text", text: lines.join("\n") }], raw: lines.join("\n") }];
   const blocks: Block[] = [];
   let at = 0;
   while (at < lines.length) {
@@ -87,12 +96,12 @@ function parseBlocks(lines: string[], streaming: boolean): Block[] {
         inner.push(lines[at].replace(QUOTE, ""));
         at++;
       }
-      blocks.push({ type: "blockquote", children: parseBlocks(inner, streaming && at >= lines.length), raw: lines.slice(start, at).join("\n") });
+      blocks.push({ type: "blockquote", children: parseBlocks(inner, streaming && at >= lines.length, depth + 1), raw: lines.slice(start, at).join("\n") });
       continue;
     }
     const item = ITEM.exec(line);
     if (item) {
-      const list = parseList(lines, at, streaming);
+      const list = parseList(lines, at, streaming, depth);
       at = list.end;
       blocks.push({ ...list.block, raw: lines.slice(start, at).join("\n") });
       continue;
@@ -142,7 +151,7 @@ function cells(line: string): string[] {
   return out;
 }
 
-function parseList(lines: string[], from: number, streaming: boolean): { block: Omit<Extract<Block, { type: "list" }>, "raw">; end: number } {
+function parseList(lines: string[], from: number, streaming: boolean, depth: number): { block: Omit<Extract<Block, { type: "list" }>, "raw">; end: number } {
   const first = ITEM.exec(lines[from])!;
   const ordered = /\d/.test(first[2]);
   const indent = first[1].length;
@@ -169,7 +178,7 @@ function parseList(lines: string[], from: number, streaming: boolean): { block: 
       body.push(nextIndent >= contentIndent ? next.slice(contentIndent) : next.trimStart());
       at++;
     }
-    items.push(parseBlocks(body, streaming && at >= lines.length));
+    items.push(parseBlocks(body, streaming && at >= lines.length, depth + 1));
   }
   return { block: { type: "list", ordered, start: ordered ? parseInt(first[2], 10) : 1, items }, end: at };
 }
@@ -177,8 +186,11 @@ function parseList(lines: string[], from: number, streaming: boolean): { block: 
 const PUNCTUATION = /[!-/:-@[-`{-~\s]/;
 
 /** Inline markdown. `open`: close emphasis and code left open at the end (the text is still streaming). */
-export function parseInline(text: string, open = false): Inline[] {
+export function parseInline(text: string, open = false, depth = 0): Inline[] {
+  if (depth > MAX_DEPTH) return text ? [{ type: "text", text }] : [];
   const out: Inline[] = [];
+  /** Where each marker has no closer from, once a search found none: a later search cannot find one either. */
+  const unclosed = new Map<string, number>();
   let buffer = "";
   const flush = () => { if (buffer) { out.push({ type: "text", text: buffer }); buffer = ""; } };
   let at = 0;
@@ -193,7 +205,8 @@ export function parseInline(text: string, open = false): Inline[] {
     }
     if (char === "`") {
       const ticks = /^`+/.exec(text.slice(at))![0];
-      const close = text.indexOf(ticks, at + ticks.length);
+      const close = at >= (unclosed.get(ticks) ?? Infinity) ? -1 : text.indexOf(ticks, at + ticks.length);
+      if (close === -1 && !unclosed.has(ticks)) unclosed.set(ticks, at);
       if (close !== -1 && text[close + ticks.length] !== "`") {
         flush();
         let code = text.slice(at + ticks.length, close).replace(/\n/g, " ");
@@ -214,7 +227,7 @@ export function parseInline(text: string, open = false): Inline[] {
       if (link) {
         flush();
         const href = safeUrl(link.url);
-        const children = parseInline(link.label, false);
+        const children = parseInline(link.label, false, depth + 1);
         if (href) out.push({ type: "link", href, children }); else out.push(...children);
         at = link.end;
         continue;
@@ -237,17 +250,18 @@ export function parseInline(text: string, open = false): Inline[] {
       const canOpen = size > 0 && !/\s/.test(after) && !(char === "_" && /[\p{L}\p{N}]/u.test(before));
       if (canOpen) {
         const marker = char.repeat(size);
-        const close = findCloser(text, at + size, marker);
+        const close = at + size >= (unclosed.get(marker) ?? Infinity) ? -1 : findCloser(text, at + size, marker);
+        if (close === -1 && !unclosed.has(marker)) unclosed.set(marker, at + size);
         const type = char === "~" ? "del" as const : size === 2 ? "strong" as const : "em" as const;
         if (close !== -1) {
           flush();
-          out.push({ type, children: parseInline(text.slice(at + size, close), false) });
+          out.push({ type, children: parseInline(text.slice(at + size, close), false, depth + 1) });
           at = close + size;
           continue;
         }
         if (open && at + size < text.length) {
           flush();
-          out.push({ type, children: parseInline(text.slice(at + size), true) });
+          out.push({ type, children: parseInline(text.slice(at + size), true, depth + 1) });
           at = text.length;
           continue;
         }
@@ -283,14 +297,14 @@ function findCloser(text: string, from: number, marker: string): number {
 
 function linkAt(text: string, at: number): { label: string; url: string; end: number } | null {
   let depth = 0;
-  for (let close = at; close < text.length; close++) {
+  for (let close = at; close < Math.min(text.length, at + MAX_LABEL); close++) {
     if (text[close] === "\\") { close++; continue; }
     if (text[close] === "[") depth++;
     else if (text[close] === "]" && --depth === 0) {
       if (text[close + 1] !== "(") return null;
       // The URL, with balanced parentheses (as in a Wikipedia link), then an optional "title".
       let end = close + 2, parens = 0;
-      while (end < text.length && !/\s/.test(text[end])) {
+      while (end < text.length && end < close + 2 + MAX_URL && !/\s/.test(text[end])) {
         if (text[end] === "(") parens++;
         else if (text[end] === ")" && parens-- === 0) break;
         end++;

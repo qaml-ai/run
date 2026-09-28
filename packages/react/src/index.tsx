@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * React bindings for an agent chat: a provider that holds the chat with the user's agent, and hooks
  * that read it. Every hook subscribes to only what it returns, so a streamed token re-renders the

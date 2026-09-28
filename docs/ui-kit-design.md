@@ -195,7 +195,7 @@ import "@camelai/agent-runtime-react/styles.css";
   sends, Shift+Enter newline, Escape stops a run. Question cards are
   `fieldset`/`legend` with radio or checkbox groups; they announce, never steal
   focus. Buttons have names; focus rings visible; `prefers-reduced-motion`
-  respected; WCAG AA contrast in both themes (checked with axe in tests).
+  respected; WCAG AA contrast in both themes: a test computes every text color against its backgrounds from styles.css (axe in jsdom cannot, having no layout, so its color-contrast rule is off there).
 
 ## 6. Generative UI (per-tool renderers)
 

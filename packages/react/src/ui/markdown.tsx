@@ -8,11 +8,17 @@ import { cx, useUI } from "./context.tsx";
  * allows them (`allowImages`): loading an image the model chose tells its server about the reader.
  */
 export const Markdown = memo(function Markdown({ text, streaming = false, className }: { text: string; streaming?: boolean; className?: string }) {
-  const blocks = useMemo(() => parseMarkdown(text, { streaming }), [text, streaming]);
+  const blocks = useMemo(() => safely(text, streaming), [text, streaming]);
   return <div className={cx("agent-chat__markdown", className)}>{blocks.map((block, at) => <BlockView key={at} block={block} open={streaming && at === blocks.length - 1} />)}</div>;
 });
 
 /** A block; `open`: the last block of text still streaming (it may parse differently once settled). */
+/** The blocks, or the text as one paragraph should parsing ever fail: a reply always shows. */
+function safely(text: string, streaming: boolean): Block[] {
+  try { return parseMarkdown(text, { streaming }); }
+  catch { return [{ type: "paragraph", children: [{ type: "text", text }], raw: text }]; }
+}
+
 const BlockView = memo(function BlockView({ block }: { block: Block; open?: boolean }) {
   switch (block.type) {
     case "paragraph": return <p><Inlines nodes={block.children} /></p>;

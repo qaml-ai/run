@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * A prebuilt chat with the user's agent: messages that stream in as markdown, tool cards (or your own
  * components per tool), the agent's questions and approvals, files it hands over, a composer with

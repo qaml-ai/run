@@ -69,3 +69,24 @@ test("blocks keep their source, so unchanged ones can be skipped while the last 
   assert.equal(first[0].raw, second[0].raw);
   assert.notEqual(first[1].raw, second[1].raw);
 });
+
+test("adversarial text parses quickly and shallowly: deep nesting, unmatched markers and brackets", () => {
+  const inputs = [
+    ">".repeat(5000) + " deep",
+    "- ".repeat(2000) + "item",
+    "*a ".repeat(20_000),
+    "[".repeat(20_000) + "x",
+    "[a](".repeat(5000),
+    "`a ".repeat(20_000),
+    "**".repeat(10_000) + "x",
+    "_a ".repeat(20_000),
+  ];
+  for (const input of inputs) for (const streaming of [false, true]) {
+    const started = performance.now();
+    const blocks = parseMarkdown(input, { streaming });
+    const took = performance.now() - started;
+    assert.ok(took < 1000, `${JSON.stringify(input.slice(0, 12))}… took ${Math.round(took)} ms`);
+    const depth = (value: unknown): number => Array.isArray(value) ? 1 + Math.max(0, ...value.map(depth)) : value && typeof value === "object" ? Math.max(0, ...Object.values(value).map(depth)) : 0;
+    assert.ok(depth(blocks) < 200, "and nests boundedly");
+  }
+});
