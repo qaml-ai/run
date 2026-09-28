@@ -13,7 +13,7 @@ import { validFileRef } from "./files.ts";
  * `onProgress` hears the server's progress notifications for the call.
  */
 export type ToolCall = {
-  name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; innerCallId?: string; run?: string; origin?: Record<string, unknown>; actor?: string;
+  name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; innerCallId?: string; messageIndex?: number; run?: string; origin?: Record<string, unknown>; actor?: string;
   /** The same for every attempt of this call (a retry, a call run again after a person answered): a tool dedupes its effect by it. */
   idempotencyKey?: string;
   onProgress?: (progress: Progress) => void;
@@ -22,9 +22,12 @@ export type ToolCall = {
   /** The agent has someone to ask: the call may answer MCP's `input_required` with elicitations. */
   elicit?: boolean;
 };
-/** A call's idempotency key: the agent's and the model's ids for the call (and its place in js_exec's code), hashed. */
-export function toolCallKey(agent: string, toolCallId: string, innerCallId?: string) {
-  return createHash("sha256").update(`${agent}:${toolCallId}:${innerCallId ?? ""}`).digest("hex").slice(0, 32);
+/**
+ * A call's idempotency key: the agent, the history index of the message that made the call, the model's id for it,
+ * and its place in js_exec's code, hashed. The index matters: providers may number calls per response (call_0...).
+ */
+export function toolCallKey(agent: string, messageIndex: number | undefined, toolCallId: string, innerCallId?: string) {
+  return createHash("sha256").update(`${agent}:${messageIndex ?? ""}:${toolCallId}:${innerCallId ?? ""}`).digest("hex").slice(0, 32);
 }
 
 /** What a tool server is told about a call in its `_meta`: the call's ids and idempotency key, where its turn came from and who acts in it. */

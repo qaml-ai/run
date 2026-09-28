@@ -226,6 +226,18 @@ export function createAgentHost(io: HostIO) {
     return [system, ...bounded];
   }
 
+  /**
+   * Where the model made a call: the history index of the assistant message carrying it. With the call's id it names
+   * the call for good (providers may number calls per response, so ids repeat across turns), the same on a retry or resume.
+   */
+  function made(toolCallId: string): { messageIndex?: number } {
+    for (let index = transcript.context.length - 1; index >= 0; index--) {
+      const message = transcript.context[index];
+      if (message.role === "assistant" && message.content.some(part => part.type === "toolCall" && part.id === toolCallId)) return { messageIndex: transcript.offset + index };
+    }
+    return {};
+  }
+
   /** The tools code can call; `toolCallId` is the js_exec call running it, if the model made one. */
   function bridge(signal: AbortSignal, toolCallId?: string): ToolBridge {
     let calls = 0;
@@ -233,7 +245,7 @@ export function createAgentHost(io: HostIO) {
       definitions: config.tools.filter(tool => tool.exposure !== "direct"),
       call: async (name, args) => {
         signal.throwIfAborted();
-        const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}` } : undefined);
+        const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}`, ...made(toolCallId) } : undefined);
         // MCP tools answer with content; code gets their data.
         return config.tools.find(tool => tool.name === name)?.resultFormat === "content" ? scriptValue(value) : value;
       },
@@ -264,7 +276,7 @@ export function createAgentHost(io: HostIO) {
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
         execute: async (toolCallId, args, signal) => {
           signal?.throwIfAborted();
-          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId });
+          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...made(toolCallId) });
           signal?.throwIfAborted();
           // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
           if (value?.inputRequired) {

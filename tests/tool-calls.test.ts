@@ -23,7 +23,7 @@ export async function mcpServer(t: T, tools: Record<string, (args: any, params: 
   return { url: `${url}/mcp`, calls };
 }
 
-const key = (agent: string, toolCallId: string, innerCallId?: string) => createHash("sha256").update(`${agent}:${toolCallId}:${innerCallId ?? ""}`).digest("hex").slice(0, 32);
+const key = (agent: string, messageIndex: number, toolCallId: string, innerCallId?: string) => createHash("sha256").update(`${agent}:${messageIndex}:${toolCallId}:${innerCallId ?? ""}`).digest("hex").slice(0, 32);
 
 test("every tool call carries a stable idempotency key: MCP servers in _meta, OpenAPI operations as an Idempotency-Key header", async t => {
   const server = await mcpServer(t, { echo: () => ({ content: [{ type: "text", text: "echoed" }] }) });
@@ -47,8 +47,21 @@ test("every tool call carries a stable idempotency key: MCP servers in _meta, Op
   const definition = (await r.call("/v1/definitions", { body: { name: "Tools", mcpServers: [{ name: "tools", url: server.url, exposure: "both" }], openApi: [{ name: "notes", spec: `${api}/openapi.json` }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id as string;
   await r.prompt(agent, "go");
-  assert.deepEqual(server.calls.map(call => call._meta["agent-runtime/idempotencyKey"]), [key(agent, "call_direct"), key(agent, "call_code", "call_code:1")]);
-  assert.deepEqual(headers, [key(agent, "call_code", "call_code:2")]);
+  // History: the prompt (0), the direct call (1), its result (2), the js_exec call (3).
+  assert.deepEqual(server.calls.map(call => call._meta["agent-runtime/idempotencyKey"]), [key(agent, 1, "call_direct"), key(agent, 3, "call_code", "call_code:1")]);
+  assert.deepEqual(headers, [key(agent, 3, "call_code", "call_code:2")]);
+});
+
+test("calls whose ids repeat across turns (as providers that number calls per response give them) get keys of their own", async t => {
+  const server = await mcpServer(t, { echo: () => ({ content: [{ type: "text", text: "echoed" }] }) });
+  const r = await runtime(t, (_body, index) => index % 2 === 0 ? toolCall("tools__echo", {}, "call_0") : { role: "assistant", content: "done" }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Tools", mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id as string;
+  await r.prompt(agent, "one");
+  await r.prompt(agent, "two");
+  const keys = server.calls.map(call => call._meta["agent-runtime/idempotencyKey"]);
+  assert.equal(keys.length, 2);
+  assert.notEqual(keys[0], keys[1], "two calls, two keys, though both are call_0");
 });
 
 const slow = { name: "slow", description: "Takes a while", inputSchema: { type: "object", properties: {} }, _meta: { "agent-runtime/exposure": "direct", "agent-runtime/timeoutMs": 1500 } };

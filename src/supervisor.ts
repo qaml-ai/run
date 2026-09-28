@@ -74,7 +74,7 @@ export class AgentSupervisor {
     const controller = new AbortController();
     handle.calls.add(controller);
     try {
-      const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId, ...(params.innerCallId ? { innerCallId: params.innerCallId } : {}) } : undefined);
+      const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId, ...(params.innerCallId ? { innerCallId: params.innerCallId } : {}), ...(Number.isSafeInteger(params.messageIndex) ? { messageIndex: params.messageIndex } : {}) } : undefined);
       controller.signal.throwIfAborted();
       return JSON.parse(jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result"));
     }

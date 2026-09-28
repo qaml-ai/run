@@ -1178,7 +1178,7 @@ export class ClientSessions {
     try {
       result = await this.recordingFailures(session, call, () => server.call({
         ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}),
-        ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.toolCallId, call.innerCallId) } : {}),
+        ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.messageIndex, call.toolCallId, call.innerCallId) } : {}),
         ...(plan?.approval ? { approval: { input: plan.approval.input, by: this.approver(plan.approval.by), at: plan.approval.at } } : {}),
         ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),
         ...(this.humanSurface(session) ? { elicit: true } : {}),

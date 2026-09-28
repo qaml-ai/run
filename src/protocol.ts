@@ -5,7 +5,8 @@ import type { ToolDefinition } from "../shared/client-protocol.ts";
 export type { ToolDefinition };
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 /** Which model tool call a tool call belongs to: its own, or for a call from js_exec, the js_exec call's and the call's id within it. */
-export type CallContext = { toolCallId: string; innerCallId?: string };
+/** A tool call from the model: its id, its place in js_exec's code if made there, and the history index of the assistant message that made it. */
+export type CallContext = { toolCallId: string; innerCallId?: string; messageIndex?: number };
 import type { HistoryChunk } from "./history-pages.ts";
 export interface ToolBridge {
   definitions: ToolDefinition[];
