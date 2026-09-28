@@ -351,10 +351,13 @@ export class Agent {
   /** The agent's whole history (`historyPage` reads a page at a time). */
   history(): Promise<AgentHistory> { return this.client.history(); }
   historyPage(options: { before?: number; limit?: number } = {}): Promise<HistoryPage> { return this.client.historyPage(options); }
-  /** Add a message to the running turn (it fails if none runs: use `run`). */
-  steer(text: string, options: Pick<RunOptions, "user" | "files" | "metadata"> = {}) { return this.client.steer(text, messageOptions(options)); }
-  /** A message for the agent once its running turn ends (or now, if none runs). */
-  followUp(text: string, options: Pick<RunOptions, "user" | "files" | "metadata"> = {}) { return this.client.followUp(text, messageOptions(options)); }
+  /**
+   * A message for the running turn, which reads it after its current step and answers with it in mind; with
+   * no turn running, it starts one. Resolves with the run that took it: `run(text, { whileRunning: "steer" })`.
+   */
+  steer(text: string, options: Omit<RunOptions, "whileRunning"> = {}) { return this.run(text, { ...options, whileRunning: "steer" }); }
+  /** A message that runs once the running turn ends (at once, if none runs): `run(text)`, which queues. */
+  followUp(text: string, options: Omit<RunOptions, "whileRunning"> = {}) { return this.run(text, { ...options, whileRunning: "queue" }); }
   /** Change its model, instructions, thinking level or tools between runs. */
   configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp">) {
     const { instructions, ...rest } = config;

@@ -1046,11 +1046,11 @@ class AgentClient:
         return await self._http("/history?" + urlencode({"limit": limit, **({"before": before} if before is not None else {})}))
 
     async def steer(self, text, *, from_=None, files=None, metadata=None):
-        """Add a message to the running turn."""
+        """The legacy steer request: a message held for the running turn. New code: prompt(text, while_running="steer")."""
         return await self._message("steer", text, from_=from_, files=files, metadata=metadata)
 
     async def follow_up(self, text, *, from_=None, files=None, metadata=None):
-        """A message for the agent once its running turn ends."""
+        """The legacy followUp request: a message held for after the running turn. New code: prompt(text)."""
         return await self._message("followUp", text, from_=from_, files=files, metadata=metadata)
 
     async def _message(self, method, text, *, from_=None, files=None, metadata=None, idempotency_key=None, extra=None, **options):
@@ -1444,13 +1444,14 @@ class Agent:
     async def history_page(self, *, before=None, limit=50):
         return await self.client.history_page(before=before, limit=limit)
 
-    async def steer(self, text, *, user=None, files=None, metadata=None):
-        """Add a message to the running turn."""
-        return await self.client.steer(text, from_=_sender(user) if user else None, files=files, metadata=metadata)
+    async def steer(self, text, **options):
+        """A message for the running turn, which reads it after its current step; with no turn running, it starts one.
+        Returns the run that took it: run(text, while_running="steer")."""
+        return await self.run(text, **options, while_running="steer")
 
-    async def follow_up(self, text, *, user=None, files=None, metadata=None):
-        """A message for the agent once its running turn ends."""
-        return await self.client.follow_up(text, from_=_sender(user) if user else None, files=files, metadata=metadata)
+    async def follow_up(self, text, **options):
+        """A message that runs once the running turn ends (at once, if none runs): run(text), which queues."""
+        return await self.run(text, **options, while_running="queue")
 
     async def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None):
         """Change its model, instructions, thinking level or tools between runs."""

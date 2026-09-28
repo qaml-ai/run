@@ -204,7 +204,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
         await agent.configure(tools=[added], instructions="Be brief.")
         self.assertEqual((await agent.client.execute('return await tools.added({value:"x"})'))["output"], ["added x"])
-        await agent.follow_up("later")
+        self.assertEqual((await agent.follow_up("later")).text, "seen")
         minted = await self.agents.runtime.browser_token(agent.id, ttl_seconds=60)
         self.assertEqual(minted["agentId"], agent.id)
         self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{agent.id}/state", headers={"Authorization": f"Bearer {minted['token']}"})).status_code, 200)

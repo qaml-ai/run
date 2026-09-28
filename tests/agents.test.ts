@@ -210,3 +210,11 @@ test("a process that connects with other tools than the agent has declares them;
     return result?.output?.[0] === "fresh x";
   }, "the new tools to be declared");
 });
+
+test("steer and followUp are runs: with no turn running, each starts one and resolves with it", async t => {
+  const { make, r } = await setup(t, () => ({ role: "assistant", content: "noted" }));
+  const agent = await make();
+  assert.equal((await agent.steer("Also check the logs")).text, "noted");
+  assert.equal((await agent.followUp("And then summarize")).text, "noted");
+  assert.equal(r.model.bodies.length, 2);
+});

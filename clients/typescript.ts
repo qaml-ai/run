@@ -1126,7 +1126,9 @@ export class AgentClient {
     return this.http(`/history?${query}`);
   }
   continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }
+  /** The legacy steer request: a message held for the running turn. New code: `prompt(text, { whileRunning: "steer" })`. */
   steer(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("steer", text, options); }
+  /** The legacy followUp request: a message held for after the running turn. New code: `prompt(text)`, which queues. */
   followUp(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("followUp", text, options); }
   /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string }) {
