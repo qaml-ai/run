@@ -213,6 +213,20 @@ function capped(response: Response, url: URL, maxBytes: number, done: () => void
   return Object.defineProperty(new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers }), "url", { value: url.toString() });
 }
 
+/** The operator's outbound policy variables, which an agent's process is given too (it calls tenants' model endpoints). */
+export const OUTBOUND_ENV = ["AGENT_OUTBOUND_ALLOW_HTTP", "AGENT_OUTBOUND_ALLOW_CIDRS", "AGENT_OUTBOUND_BLOCK_CIDRS"];
+
+let modelOutbound: Outbound | undefined;
+/**
+ * The fetch for a model call to an endpoint a tenant gave (a key scope's `baseUrl`, a custom provider's): through the
+ * outbound guard, like any URL a tenant gives. A model's reply streams for as long as it takes; its start has ten minutes.
+ */
+export function guardedModelFetch(): typeof fetch {
+  modelOutbound ??= outboundFromEnvironment();
+  const outbound = modelOutbound;
+  return (input, init) => outbound.fetch(String(input), { ...init as RequestInit, stream: true, timeoutMs: 600_000, maxBytes: 1024 * 1024 * 1024 });
+}
+
 /** The policy operators set: AGENT_OUTBOUND_ALLOW_HTTP, AGENT_OUTBOUND_ALLOW_CIDRS and AGENT_OUTBOUND_BLOCK_CIDRS. */
 export function outboundFromEnvironment(env = process.env): Outbound {
   const list = (value?: string) => (value ?? "").split(",").map(entry => entry.trim()).filter(Boolean);

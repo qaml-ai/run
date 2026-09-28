@@ -40,7 +40,7 @@
 | `AGENT_CODE_WORKERS_MIN`, `AGENT_CODE_WORKERS_MAX` | codemode worker threads kept warm (default min(4, cores); none in each agent process under `process` hosting, which starts one on demand) and the most there may be (default 32); workers beyond the minimum stop after 30 s idle, and executions beyond the maximum queue within their own timeout. With sandbox processes, the totals are shared among them |
 | `AGENT_SANDBOX_PROCESSES` | read by `agent-launcher` (the image's entrypoint): how many [sandbox processes](sandbox.md) run js_exec (default 2, at most 16; 0 runs it in the runtime process) |
 | `AGENT_SANDBOX_REQUIRED` | `1` (the image's default) refuses to start without sandbox processes |
-| `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers and `web_fetch` use `http://` URLs (tests and development only) |
+| `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers, `web_fetch` and tenants' model endpoints (key scopes' `baseUrl`) use `http://` URLs (tests and development only) |
 | `AGENT_OUTBOUND_BLOCK_CIDRS` | ranges no tool source may reach, on top of the built-in private and reserved ranges, e.g. the VPC's CIDR (see [Outbound calls](../guides/tools.md#outbound-calls)) |
 | `AGENT_OUTBOUND_ALLOW_CIDRS` | exceptions to the built-in ranges, e.g. `127.0.0.1/32` for a local test server; never set in production |
 | `AGENT_SANDBOX_SOCKETS` | set by `agent-launcher`: the sandbox processes' sockets. Without it, js_exec runs on worker threads in the runtime process, as in development on macOS; the `listening` log line's `sandbox` field says which |

@@ -163,7 +163,7 @@ const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, r
 const definitions = new Definitions({ db, accounts, outbound });
 // Saving a definition lists its MCP servers, as its agents would.
 definitions.listMcp = (tenant, id, servers) => toolSources.listed(tenant, id, servers);
-const keyScopes = new KeyScopes({ db, accounts });
+const keyScopes = new KeyScopes({ db, accounts, outbound });
 // Each model response's usage, POSTed to the tenant's receiver from a durable outbox any node sends from.
 // Which tenants have endpoints for run events: runs of the others write none.
 const subscribers = new Subscribers(db);

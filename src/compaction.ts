@@ -9,6 +9,7 @@ import type { CompactionState } from "./transcript.ts";
 import { messageChars } from "./history.ts";
 import { fileChars as charsOf, validFileRef } from "./files.ts";
 import type { Credentials } from "./protocol.ts";
+import { guardedModelFetch } from "./outbound.ts";
 
 /**
  * Context compaction on top of pi-agent-core's compaction functions. Pi picks the
@@ -182,7 +183,8 @@ function authorize(model: Model<Api>, options: any, credentials: Credentials, si
   };
   if (!fetchable) return [baseUrl ? { ...model, baseUrl } : model, callOptions];
   const from = [PROVIDER_ROOTS[model.provider], model.baseUrl].filter(Boolean).map(prefix => prefix.replace(/\/+$/, "")).sort((a, b) => b.length - a.length);
-  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl } } : {}), keyless: !apiKey }) }];
+  // An endpoint the tenant gave is called through the outbound guard, as every URL a tenant gives is.
+  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl }, base: guardedModelFetch() } : {}), keyless: !apiKey }) }];
 }
 
 /**

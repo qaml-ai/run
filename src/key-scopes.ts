@@ -2,6 +2,7 @@ import type { Accounts, Sealed } from "./accounts.ts";
 import type { Db } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { providerInfo } from "./catalog.ts";
+import { OutboundBlocked, type Outbound } from "./outbound.ts";
 
 /**
  * Key scopes: named sets of provider credentials within a tenant, such as one per customer org
@@ -19,19 +20,30 @@ const CACHE_MS = 5_000;
 const validScope = (scope: string) => /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(scope);
 const aad = (tenant: string, scope: string, provider: string) => `key-scope:${tenant}:${scope}:${provider}`;
 const invalid = (message: string): never => { throw new HttpError(400, message); };
+/** Bedrock's own regional endpoint, which names the region. */
+const BEDROCK = /^https:\/\/bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com\/?$/;
 
 export function checkScope(scope: unknown): string {
   if (typeof scope !== "string" || !validScope(scope)) invalid("keyScope must be 1–100 letters, digits, '_', '.' or '-', starting with a letter or digit");
   return scope as string;
 }
 
-/** A tenant-configured endpoint: HTTPS, or plain HTTP to this host for development, without credentials, query or fragment. */
-function endpoint(value: unknown): string {
+/** A tenant-configured endpoint's URL, without credentials, query or fragment; whether the runtime may call it is `KeyScopes.set`'s check. */
+export function endpoint(value: unknown): string {
   let url: URL | undefined;
   try { url = new URL(String(value)); } catch { /* invalid below */ }
-  const local = url?.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if (typeof value !== "string" || !url || !(url.protocol === "https:" || local) || url.username || url.password || url.search || url.hash) invalid("baseUrl must be an https:// URL without credentials, query or fragment");
+  if (typeof value !== "string" || !url || !["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) invalid("baseUrl must be an https:// URL without credentials, query or fragment");
   return (value as string).replace(/\/+$/, "");
+}
+
+/** An endpoint the runtime may call now: through the outbound guard, as it will be at each call (a public https address, unless the operator allows others). */
+export async function reachableEndpoint(outbound: Outbound, baseUrl: string) {
+  try { await outbound.reachable(baseUrl); }
+  catch (error) {
+    if (error instanceof OutboundBlocked) invalid(`baseUrl ${baseUrl} cannot be called: ${error.message}`);
+    if (["ENOTFOUND", "EAI_AGAIN", "ENODATA"].includes((error as NodeJS.ErrnoException).code ?? "")) invalid(`baseUrl ${baseUrl} cannot be called: its host does not resolve`);
+    throw error;
+  }
 }
 
 export function scopeEntry(provider: string, input: any): ScopeEntry {
@@ -52,7 +64,7 @@ export function scopeEntry(provider: string, input: any): ScopeEntry {
     }
   }
   // Bedrock's region is given, or read from its regional endpoint as baseUrl.
-  const hosted = typeof baseUrl === "string" ? /^https:\/\/bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com\/?$/.exec(baseUrl)?.[1] : undefined;
+  const hosted = typeof baseUrl === "string" ? BEDROCK.exec(baseUrl)?.[1] : undefined;
   if (bedrock && hosted && region !== undefined && region !== hosted) invalid(`region ${region} does not match the baseUrl's ${hosted}`);
   if (bedrock) region ??= hosted;
   if (region !== undefined && (!bedrock || typeof region !== "string" || !/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region))) invalid("region is only for amazon-bedrock, and must be an AWS region like us-west-2");
@@ -63,16 +75,20 @@ export function scopeEntry(provider: string, input: any): ScopeEntry {
 export class KeyScopes {
   private readonly db: Db;
   private readonly accounts: Accounts;
+  private readonly outbound: Outbound;
   private readonly cache = new Map<string, { entry?: ScopeEntry; until: number }>();
 
-  constructor(options: { db: Db; accounts: Accounts }) {
+  constructor(options: { db: Db; accounts: Accounts; outbound: Outbound }) {
     this.db = options.db;
     this.accounts = options.accounts;
+    this.outbound = options.outbound;
   }
 
   async set(tenant: string, scope: string, provider: string, entry: ScopeEntry) {
     checkScope(scope);
     if (!this.accounts.canStoreKeys) throw new HttpError(503, "This runtime is not configured to store provider keys");
+    // A gateway's address is the tenant's to give, and checked; Bedrock's own regional endpoint is AWS's.
+    if (entry.baseUrl !== undefined && !BEDROCK.test(entry.baseUrl)) await reachableEndpoint(this.outbound, entry.baseUrl);
     const { apiKey, headers, ...settings } = entry;
     await this.db.query(`
       insert into key_scope_providers (tenant, scope, provider, sealed, last4, settings, set_at) values ($1, $2, $3, $4, $5, $6, $7)

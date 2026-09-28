@@ -3,17 +3,20 @@ import assert from "node:assert/strict";
 import { fakeModel, runtime } from "./runtime-server.ts";
 import { anthropic, converse, gateway, responses } from "./provider-fixtures.ts";
 
+/** The fake gateways listen on this host, over http: reachable only where the operator allows it. */
+const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const reply = (text: string) => () => ({ role: "assistant", content: text, usage: { prompt_tokens: 10, completion_tokens: 2 } });
 
 test("key scopes store sealed entries, and an agent's calls use its scope's current key, gateway and headers, else the tenant's", async t => {
   // The default model (openrouter) answers with the tenant's admin key; the gateway stands in for an AI gateway in front of OpenRouter.
-  const r = await runtime(t, reply("tenant key"));
+  const r = await runtime(t, reply("tenant key"), LOCAL);
   const aiGateway = await fakeModel(t, reply("scope key"));
   const put = (scope: string, provider: string, body: unknown) => r.call(`/v1/key-scopes/${scope}/providers/${provider}`, { method: "PUT", body });
 
   for (const [scope, provider, body] of [
     ["org_1", "openrouter", { apiKey: "" }],
-    ["org_1", "openrouter", { apiKey: "k", baseUrl: "http://gateway.example.com" }],
+    ["org_1", "openrouter", { apiKey: "k", baseUrl: "https://10.1.2.3/openrouter" }],
+    ["org_1", "openrouter", { apiKey: "k", baseUrl: "https://gateway.invalid" }],
     ["org_1", "openrouter", { apiKey: "k", region: "us-west-2" }],
     ["org_1", "openrouter", { apiKey: "k", headers: { "bad header": "x" } }],
     ["org_1", "no-such-provider", { apiKey: "k" }],
@@ -75,7 +78,7 @@ test("a scope's model provider need not be the tenant's: an agent may be created
     ["messageStop", { stopReason: "end_turn" }],
     ["metadata", { usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105 }, metrics: { latencyMs: 5 } }],
   ]));
-  const r = await runtime(t, reply("unused"));
+  const r = await runtime(t, reply("unused"), LOCAL);
   const model = "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0";
   assert.equal((await r.call("/v1/agents", { body: { model, keyScope: "org_2" } })).status, 400, "no Bedrock key anywhere yet");
   const set = await r.call("/v1/key-scopes/org_2/providers/amazon-bedrock", { method: "PUT", body: { apiKey: "bedrock-api-key-wxyz", baseUrl: bedrock.url, region: "us-west-2" } });
@@ -94,7 +97,7 @@ test("a scope's baseUrl replaces the provider's root, a keyless entry sends only
   const aiGateway = await gateway(t, body => body.model.startsWith("anthropic/")
     ? anthropic([{ type: "text", text: "Messages API." }], "end_turn")
     : responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Responses API.", annotations: [] }] }]));
-  const r = await runtime(t, reply("unused"));
+  const r = await runtime(t, reply("unused"), LOCAL);
   const put = await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { baseUrl: `${aiGateway.url}/openrouter`, headers: { "cf-aig-authorization": "Bearer gateway-token", "cf-aig-metadata": "scope" } } });
   assert.equal(put.status, 200, put.text);
   assert.equal(put.json.providers[0].last4, undefined);
@@ -134,7 +137,7 @@ test("a scope's baseUrl replaces the provider's root, a keyless entry sends only
 });
 
 test("Bedrock's region comes from the entry or its regional endpoint", async t => {
-  const r = await runtime(t, reply("unused"));
+  const r = await runtime(t, reply("unused"), LOCAL);
   const put = (body: object) => r.call("/v1/key-scopes/org_3/providers/amazon-bedrock", { method: "PUT", body });
   const set = await put({ apiKey: "bedrock-key", baseUrl: "https://bedrock-runtime.eu-west-1.amazonaws.com" });
   assert.equal(set.status, 200, set.text);
@@ -142,4 +145,22 @@ test("Bedrock's region comes from the entry or its regional endpoint", async t =
   assert.equal((await put({ apiKey: "bedrock-key", baseUrl: "https://bedrock-runtime.eu-west-1.amazonaws.com", region: "us-east-1" })).status, 400);
   assert.equal((await put({ apiKey: "bedrock-key" })).status, 400, "a region is needed");
   assert.equal((await put({ baseUrl: "https://bedrock-runtime.eu-west-1.amazonaws.com" })).status, 400, "Bedrock needs its key");
+});
+
+test("a scope's baseUrl is a public address the runtime may call, checked when saved and at every call", async t => {
+  const gateway = await fakeModel(t, reply("gateway"));
+  const put = (r: Awaited<ReturnType<typeof runtime>>, baseUrl: string) => r.call("/v1/key-scopes/org_1/providers/openrouter", { method: "PUT", body: { apiKey: "k", baseUrl } });
+  // Plain http, a loopback or private address: refused unless the operator allows them (as for MCP servers and web_fetch).
+  const strict = await runtime(t, reply("unused"));
+  for (const baseUrl of [gateway.url, "https://127.0.0.1:9/v1", "https://10.0.0.5/v1", "https://169.254.169.254/latest"]) {
+    const refused = await put(strict, baseUrl);
+    assert.equal(refused.status, 400, baseUrl);
+  }
+  const http = await runtime(t, reply("unused"), { AGENT_OUTBOUND_ALLOW_HTTP: "true" });
+  assert.match((await put(http, gateway.url)).json.error, /127\.0\.0\.1/, "http is allowed there, the loopback address still is not");
+  // Allowed, the call goes through the same guard from the agent's process.
+  const allowed = await runtime(t, reply("tenant key"), LOCAL);
+  assert.equal((await put(allowed, gateway.url)).status, 200);
+  const agent = (await allowed.call("/v1/agents", { body: { keyScope: "org_1" } })).json.id;
+  assert.equal((await allowed.prompt(agent, "Hi")).outcome.result.reply, "gateway");
 });

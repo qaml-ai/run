@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import { OUTBOUND_ENV } from "./outbound.ts";
 import { fileURLToPath } from "node:url";
 import type { WireMessage } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
@@ -57,6 +58,8 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
       PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, TMPDIR: cwd, AGENT_CODE_WORKERS_MIN: "0",
       // Where agent-launcher's sandbox processes listen, when it started them.
       ...(process.env.AGENT_SANDBOX_SOCKETS ? { AGENT_SANDBOX_SOCKETS: process.env.AGENT_SANDBOX_SOCKETS } : {}),
+      // The outbound policy (outbound.ts): the agent calls endpoints tenants give for their models.
+      ...Object.fromEntries(OUTBOUND_ENV.filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]!])),
       // The history backlog's bound (transcript.ts), which tests lower.
       ...(process.env.AGENT_HISTORY_BACKLOG_BYTES ? { AGENT_HISTORY_BACKLOG_BYTES: process.env.AGENT_HISTORY_BACKLOG_BYTES } : {}),
       // The dimension of the metric lines an agent process writes (metrics.ts).
