@@ -217,7 +217,7 @@ export class AutoTopup {
     const metadata = { purpose: "agent-runtime-auto-topup", attempt: a.id, tenant: a.tenant };
     if (a.step === "create") {
       const invoice = await this.stripe.post("/v1/invoices", { customer: a.customer, currency: "usd", auto_advance: false,
-        collection_method: "charge_automatically", pending_invoice_items_behavior: "exclude", discounts: "", default_tax_rates: "", metadata }, key);
+        collection_method: "charge_automatically", pending_invoice_items_behavior: "exclude", discounts: "", automatic_tax: { enabled: false }, metadata }, key);
       if (!this.owns(a, invoice)) return this.transition(a, "reconcile");
       return this.advance(a, "credit", { invoice: invoice.id });
     }

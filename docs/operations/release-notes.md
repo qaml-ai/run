@@ -35,6 +35,10 @@ against the upgraded billing schema. Automatic top-up stays off until a customer
 explicitly consents. An expired bank confirmation now voids the unpaid invoice
 and stays paused until fresh consent; it cannot generate daily charge attempts.
 
+Automatic invoice creation no longer sends an empty `default_tax_rates` value,
+which Stripe rejects. It explicitly disables automatic tax and continues to
+clear inherited discounts, keeping the invoice equal to the customer's quote.
+
 Before rollout, exercise the full Stripe flow in a separate sandbox using the
 pinned API version and restricted key. Check decline/retry with a changed default
 card (including InvoicePayment allocation count), 3DS confirmation, invoices,

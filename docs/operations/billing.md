@@ -362,9 +362,10 @@ capped accounts skip scans until their UTC reset or newly consented terms. A
 committed usage flush wakes eligible low-balance scanning. Waiting declined,
 missing-card and bank-confirmation attempts are checked hourly; invoice webhooks,
 explicit retry and authenticated portal returns can wake them sooner. Invoice `auto_advance` is false, pending items are excluded,
-inherited discounts/tax rates are cleared, and each line is attached to the
+inherited discounts are cleared, automatic tax is disabled, and each line is attached to the
 specific invoice. The worker owns retries; Stripe's automatic collection is not
-used. The ledger uses one purchase key per automatic attempt.
+used. Standalone invoice creation omits `default_tax_rates`: Stripe rejects an
+empty string for that parameter. The ledger uses one purchase key per automatic attempt.
 
 A paid invoice is not sufficient proof of payment: the worker retrieves its
 Invoice Payment and expanded PaymentIntent and verifies the customer,

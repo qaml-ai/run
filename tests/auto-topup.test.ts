@@ -38,6 +38,8 @@ async function fixture(t: TestContext) {
       const id = `in_${++seq}`;
       assert.equal(params.get("pending_invoice_items_behavior"), "exclude");
       assert.equal(params.get("auto_advance"), "false");
+      assert.equal(params.has("default_tax_rates"), false, "Stripe rejects unsetting default_tax_rates on invoice creation");
+      assert.equal(params.get("automatic_tax[enabled]"), "false");
       value = { id, customer: params.get("customer"), livemode: false, metadata: { purpose: params.get("metadata[purpose]"), attempt: params.get("metadata[attempt]") }, currency: "usd", status: "draft", auto_advance: false, starting_balance: 0, total: 0, amount_due: 0, amount_paid: 0, hosted_invoice_url: `https://invoice.stripe.test/${id}` };
       invoices.set(id, value);
     } else if (req.method === "POST" && path === "/v1/invoiceitems") {
