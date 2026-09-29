@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { CheckCircle2, Loader2, Plus, Receipt } from "lucide-react";
+import { BillingAlertsSection } from "@/components/billing-alerts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -220,6 +221,7 @@ export function BillingPage() {
               </CardDescription>
             </CardHeader>
           </Card>
+          <BillingAlertsSection />
           <h2 className="mb-3 text-sm font-medium">Ledger</h2>
           {entries.length === 0 ? <EmptyState icon={<Receipt />} title="No credit movements yet" /> : (
             <div className="bg-card border"><LedgerTable entries={entries} /></div>

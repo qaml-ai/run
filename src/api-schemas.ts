@@ -629,6 +629,16 @@ export const Billing = z.object({
     webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
   }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost" }),
 }).openapi("Billing");
+export const BillingAlertChoices = z.object({ low: z.boolean(), depleted: z.boolean(), problems: z.boolean(), receipts: z.boolean() });
+export const BillingRecipient = z.object({ id: z.uuid(), email: z.email(), status: z.enum(["pending", "verified", "bounced"]), events: BillingAlertChoices });
+export const BillingAlerts = z.object({ threshold: micros("Low-balance threshold"), emailEnabled: z.boolean(), recipients: z.array(BillingRecipient) });
+export const BillingRecipientInput = z.object({ email: z.email().max(254), events: BillingAlertChoices.optional() });
+export const BillingAlertThreshold = z.object({ thresholdUsd: z.number().min(0.01).max(500) });
+export const BillingConfirmationInput = z.object({ token: z.string().max(100) });
+export const BillingConfirmation = z.union([
+  z.object({ status: z.literal("unavailable") }),
+  z.object({ status: z.enum(["ready", "confirmed"]), tenant: z.string(), email: z.email() }),
+]);
 export const AdjustmentInput = z.object({
   tenant: z.string(),
   amount: z.number().int().refine(value => value !== 0 && Math.abs(value) <= 1e12, "amount must be a non-zero integer of micro-USD").openapi({ description: "Micro-USD to add (negative to remove)" }),

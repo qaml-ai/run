@@ -22,6 +22,7 @@ import { DefinitionsPage } from "@/pages/definitions";
 import { ModelsPage } from "@/pages/models";
 import { TokensPage } from "@/pages/tokens";
 import { UsagePage } from "@/pages/usage";
+import { BillingConfirmationPage } from "@/pages/billing-confirmation";
 import { BillingPage } from "@/pages/billing";
 import { QuickstartPage } from "@/pages/quickstart";
 import { VolumePage, VolumesPage } from "@/pages/volumes";
@@ -187,5 +188,5 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><TooltipProvider><App /></TooltipProvider></StrictMode>,
+  <StrictMode><TooltipProvider>{location.pathname === "/console/billing/confirm" ? <BillingConfirmationPage /> : <App />}</TooltipProvider></StrictMode>,
 );

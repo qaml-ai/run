@@ -4829,6 +4829,200 @@
         }
       }
     },
+    "/v1/billing/alerts/confirmation/inspect": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mailbox confirmation state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "confirmed"
+                          ]
+                        },
+                        "tenant": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "tenant",
+                        "email"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/confirmation/confirm": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mailbox confirmation state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "confirmed"
+                          ]
+                        },
+                        "tenant": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "tenant",
+                        "email"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me": {
       "get": {
         "responses": {
@@ -7244,6 +7438,555 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Billing"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Billing alert settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "threshold": {
+                      "type": "integer",
+                      "description": "Low-balance threshold, in micro-USD (1 USD = 1000000)"
+                    },
+                    "emailEnabled": {
+                      "type": "boolean"
+                    },
+                    "recipients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "email": {
+                            "type": "string",
+                            "format": "email"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "verified",
+                              "bounced"
+                            ]
+                          },
+                          "events": {
+                            "type": "object",
+                            "properties": {
+                              "low": {
+                                "type": "boolean"
+                              },
+                              "depleted": {
+                                "type": "boolean"
+                              },
+                              "problems": {
+                                "type": "boolean"
+                              },
+                              "receipts": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "low",
+                              "depleted",
+                              "problems",
+                              "receipts"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "email",
+                          "status",
+                          "events"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "threshold",
+                    "emailEnabled",
+                    "recipients"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "thresholdUsd": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 500
+                  }
+                },
+                "required": [
+                  "thresholdUsd"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Billing alert settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "threshold": {
+                      "type": "integer",
+                      "description": "Low-balance threshold, in micro-USD (1 USD = 1000000)"
+                    },
+                    "emailEnabled": {
+                      "type": "boolean"
+                    },
+                    "recipients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "email": {
+                            "type": "string",
+                            "format": "email"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "verified",
+                              "bounced"
+                            ]
+                          },
+                          "events": {
+                            "type": "object",
+                            "properties": {
+                              "low": {
+                                "type": "boolean"
+                              },
+                              "depleted": {
+                                "type": "boolean"
+                              },
+                              "problems": {
+                                "type": "boolean"
+                              },
+                              "receipts": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "low",
+                              "depleted",
+                              "problems",
+                              "receipts"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "email",
+                          "status",
+                          "events"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "threshold",
+                    "emailEnabled",
+                    "recipients"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/recipients": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "format": "email"
+                  },
+                  "events": {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "boolean"
+                      },
+                      "depleted": {
+                        "type": "boolean"
+                      },
+                      "problems": {
+                        "type": "boolean"
+                      },
+                      "receipts": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "depleted",
+                      "problems",
+                      "receipts"
+                    ]
+                  }
+                },
+                "required": [
+                  "email"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Address awaiting mailbox confirmation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "bounced"
+                      ]
+                    },
+                    "events": {
+                      "type": "object",
+                      "properties": {
+                        "low": {
+                          "type": "boolean"
+                        },
+                        "depleted": {
+                          "type": "boolean"
+                        },
+                        "problems": {
+                          "type": "boolean"
+                        },
+                        "receipts": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "low",
+                        "depleted",
+                        "problems",
+                        "receipts"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "email",
+                    "status",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/recipients/{id}": {
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "low": {
+                    "type": "boolean"
+                  },
+                  "depleted": {
+                    "type": "boolean"
+                  },
+                  "problems": {
+                    "type": "boolean"
+                  },
+                  "receipts": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "low",
+                  "depleted",
+                  "problems",
+                  "receipts"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recipient preferences",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "bounced"
+                      ]
+                    },
+                    "events": {
+                      "type": "object",
+                      "properties": {
+                        "low": {
+                          "type": "boolean"
+                        },
+                        "depleted": {
+                          "type": "boolean"
+                        },
+                        "problems": {
+                          "type": "boolean"
+                        },
+                        "receipts": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "low",
+                        "depleted",
+                        "problems",
+                        "receipts"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "email",
+                    "status",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recipient removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/recipients/{id}/resend": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Confirmation queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "queued"
+                  ]
                 }
               }
             }

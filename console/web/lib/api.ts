@@ -147,3 +147,7 @@ export const formatBytes = (value: number) => {
   for (; value >= 1024 && index < units.length - 1; index++) value /= 1024;
   return `${index ? value.toFixed(1) : value} ${units[index]}`;
 };
+
+export interface AlertChoices { low: boolean; depleted: boolean; problems: boolean; receipts: boolean }
+export interface BillingRecipient { id: string; email: string; status: "pending" | "verified" | "bounced"; events: AlertChoices }
+export interface BillingAlerts { threshold: number; emailEnabled: boolean; recipients: BillingRecipient[] }

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import { answerList, type ClientSessions } from "./client-sessions.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
@@ -33,6 +34,7 @@ import { BrowserTokens, readableFrame, readableMessage, readableRequest, type Br
  */
 export interface ApiContext {
   accounts: Accounts;
+  billingAlerts?: { service: BillingAlerts; emailEnabled: boolean };
   clients: ClientSessions;
   consoleAuth: ConsoleAuth;
   /** OAuth for the hosted MCP endpoint: its access tokens act for their tenant here too. */
@@ -149,6 +151,19 @@ export function api(context: ApiContext) {
   app.post("/v1/billing/stripe/webhook", async c => {
     const payload = await readText(c.req.raw.body, 1024 * 1024);
     return json(c, 200, await accounts.billing.webhook(payload, c.req.header("stripe-signature")));
+  });
+  // Token possession only proves the mailbox. Neither route grants account access.
+  // The token travels in a JSON body, not a logged URL; GET never confirms consent.
+  for (const action of ["inspect", "confirm"] as const) route(createRoute({
+    method: "post", path: `/v1/billing/alerts/confirmation/${action}`, security: [],
+    request: { body: content(schema.BillingConfirmationInput) },
+    responses: { 200: reply("Mailbox confirmation state", schema.BillingConfirmation) },
+  }), async c => {
+    const { token } = parse(schema.BillingConfirmationInput, await readJson(c.req.raw.body, 1024, {}));
+    const service = context.billingAlerts?.service;
+    if (!service) return json(c, 200, { status: "unavailable" });
+    if (action === "confirm" && !await service.confirm(token)) return json(c, 200, { status: "unavailable" });
+    return json(c, 200, await service.inspectConfirmation(token));
   });
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
@@ -520,6 +535,42 @@ export function api(context: ApiContext) {
 
   route(createRoute({ method: "get", path: "/v1/billing", responses: { 200: reply("Prepaid credit: balance, this month, recent entries and rates", schema.Billing) } }),
     async c => json(c, 200, await accounts.billing.summary(c.var.principal.tenant)));
+  const alertService = async (tenant: string, sending = false) => {
+    if (await accounts.billing.mode(tenant) !== "prepaid") throw new HttpError(400, "Billing alerts are only available for prepaid accounts");
+    if (!context.billingAlerts || (sending && !context.billingAlerts.emailEnabled)) throw new HttpError(503, "Billing email is not configured on this runtime");
+    return context.billingAlerts.service;
+  };
+  route(createRoute({ method: "get", path: "/v1/billing/alerts", responses: { 200: reply("Billing alert settings", schema.BillingAlerts) } }), async c =>
+    json(c, 200, { ...await (await alertService(c.var.principal.tenant)).get(c.var.principal.tenant), emailEnabled: context.billingAlerts!.emailEnabled }));
+  route(createRoute({ method: "put", path: "/v1/billing/alerts", request: { body: content(schema.BillingAlertThreshold) }, responses: { 200: reply("Billing alert settings", schema.BillingAlerts) } }), async c => {
+    const service = await alertService(c.var.principal.tenant);
+    const { thresholdUsd } = parse(schema.BillingAlertThreshold, await readJson(c.req.raw.body, 4096, {}));
+    if (Math.abs(thresholdUsd * 100 - Math.round(thresholdUsd * 100)) > 1e-6) throw new HttpError(400, "thresholdUsd must be in whole cents");
+    return json(c, 200, { ...await service.setThreshold(c.var.principal.tenant, Math.round(thresholdUsd * 100) * 10_000), emailEnabled: context.billingAlerts!.emailEnabled });
+  });
+  route(createRoute({ method: "post", path: "/v1/billing/alerts/recipients", request: { body: content(schema.BillingRecipientInput) }, responses: { 201: reply("Address awaiting mailbox confirmation", schema.BillingRecipient) } }), async c => {
+    const service = await alertService(c.var.principal.tenant, true);
+    const body = parse(schema.BillingRecipientInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 201, await service.add(c.var.principal.tenant, body.email, body.events));
+  });
+  const recipientId = z.object({ id: z.uuid() });
+  route(createRoute({ method: "put", path: "/v1/billing/alerts/recipients/{id}", request: { params: recipientId, body: content(schema.BillingAlertChoices) }, responses: { 200: reply("Recipient preferences", schema.BillingRecipient) } }), async c => {
+    const service = await alertService(c.var.principal.tenant);
+    const { id } = parse(recipientId, c.req.param());
+    return json(c, 200, await service.update(c.var.principal.tenant, id, parse(schema.BillingAlertChoices, await readJson(c.req.raw.body, 4096, {}))));
+  });
+  route(createRoute({ method: "delete", path: "/v1/billing/alerts/recipients/{id}", request: { params: recipientId }, responses: { 200: reply("Recipient removed", schema.Deleted) } }), async c => {
+    const service = await alertService(c.var.principal.tenant);
+    const { id } = parse(recipientId, c.req.param());
+    if (!await service.remove(c.var.principal.tenant, id)) throw new HttpError(404, "Unknown billing recipient");
+    return json(c, 200, { deleted: true });
+  });
+  route(createRoute({ method: "post", path: "/v1/billing/alerts/recipients/{id}/resend", request: { params: recipientId }, responses: { 200: reply("Confirmation queued", z.object({ queued: z.literal(true) })) } }), async c => {
+    const service = await alertService(c.var.principal.tenant, true);
+    const { id } = parse(recipientId, c.req.param());
+    await service.resend(c.var.principal.tenant, id);
+    return json(c, 200, { queued: true });
+  });
   route(createRoute({
     method: "get", path: "/v1/billing/ledger",
     request: { query: z.object({ before: z.string().optional().openapi({ description: "Entries older than this id" }), limit: z.string().optional().openapi({ description: "1–200, default 50" }) }) },

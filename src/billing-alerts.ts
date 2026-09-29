@@ -131,6 +131,16 @@ export class BillingAlerts {
     });
   }
 
+  /** Read-only mailbox proof lookup. No account credential is issued by this flow. */
+  async inspectConfirmation(token: string, now = Date.now()): Promise<
+    { status: "unavailable" } | { status: "ready" | "confirmed"; tenant: string; email: string }
+  > {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return { status: "unavailable" };
+    const row = (await this.db.query("select * from billing_recipients where confirmation_hash=$1 and confirmation_expires>$2", [sha(token), now])).rows[0];
+    if (!row || row.status === "bounced" || (await this.db.query("select 1 from billing_email_suppressions where email_hash=$1", [sha(row.email)])).rowCount) return { status: "unavailable" };
+    return { status: row.status === "verified" ? "confirmed" : "ready", tenant: row.tenant, email: row.email };
+  }
+
   /** A token proves mailbox access, not tenant access. Invoke only on an explicit POST, never an email scanner's GET. */
   async confirm(token: string, now = Date.now()): Promise<boolean> {
     if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return false;
@@ -197,6 +207,9 @@ export class BillingAlerts {
       : current.balance < current.threshold && enabled.low ? "low" : null;
     if (!kind) return;
     const now = Date.now();
+    // Repeated preference toggles must not keep mailing the same current state.
+    if ((await sql.query(`select 1 from billing_email_outbox where recipient=$1 and kind=$2
+      and state in ('pending','sent') and created_at>$3 limit 1`, [row.id, kind, now - DAY])).rowCount) return;
     await sql.query(`insert into billing_email_outbox (tenant, recipient, kind, payload, due, created_at)
       values ($1,$2,$3,$4,$5,$5)`, [row.tenant, row.id, kind,
     { type: `billing.balance.${kind}`, data: { balance: current.balance, threshold: current.threshold, source: "recipient_enabled" } }, now]);
@@ -229,8 +242,8 @@ export class BillingAlerts {
     });
   }
 
-  async sent(id: string, lease: string) {
-    return !!(await this.db.query("update billing_email_outbox set state='sent', secret=null where id=$1 and lease=$2 and state='pending'", [id, lease])).rowCount;
+  async sent(id: string, lease: string, providerMessageId?: string) {
+    return !!(await this.db.query("update billing_email_outbox set state='sent', secret=null, provider_message_id=$3 where id=$1 and lease=$2 and state='pending'", [id, lease, providerMessageId ?? null])).rowCount;
   }
   async retry(id: string, lease: string, now = Date.now()) {
     return !!(await this.db.query(`update billing_email_outbox set lease=null,

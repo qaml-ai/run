@@ -138,7 +138,7 @@ products) are acknowledged and ignored. Setup: create a secret or restricted key
 `stripe` secret and rolls the service.
 
 
-## Balance notices and recipient storage
+## Balance notices and billing email
 
 Migration 032 records `billing.balance.low` and `billing.balance.depleted` at the
 balance-row update. The trigger writes the event, endpoint deliveries and selected
@@ -154,7 +154,8 @@ choices. Confirmation is required before billing mail; tokens expire after 24 ho
 and resend invalidates the previous token. Only hashes are kept on recipient rows;
 outbox tokens are sealed under `AGENT_SECRETS_KEY` and removed after sending.
 Confirmation sends are limited across tenants and survive removing/re-adding an
-address. Provider-authenticated bounces/complaints must call `suppress`.
+address. Signed provider feedback suppresses addresses after permanent bounces or
+complaints, including across tenants.
 
 Recipient and preference mutations lock the balance row first, so they serialize
 with ledger writes. Delivery claims re-check consent and suppression, have one-minute
@@ -163,6 +164,59 @@ process can lose the acknowledgement after its provider accepts an email. A send
 already in flight cannot be recalled when a recipient opts out. Consumers must
 start sends within the lease and limit concurrency accordingly.
 
-The recipient HTTP routes, confirmation page, email renderer, provider feedback
-handler and sending worker are not connected yet. This service and its outbox are
-the foundation for that next slice; this release does not yet send billing emails.
+The console's **Billing → Alerts** editor manages the threshold and up to five
+recipients. Recipient and checkbox changes save immediately; the threshold has its
+own save button. These routes require an authenticated prepaid tenant:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /v1/billing/alerts` | Threshold, recipients and whether email sending is configured |
+| `PUT /v1/billing/alerts` | Set `thresholdUsd` ($0.01–$500, whole cents) |
+| `POST /v1/billing/alerts/recipients` | Add an `email`, with optional `events` choices |
+| `PUT /v1/billing/alerts/recipients/{id}` | Replace all four `events` choices |
+| `DELETE /v1/billing/alerts/recipients/{id}` | Remove a recipient and cancel queued mail |
+| `POST /v1/billing/alerts/recipients/{id}/resend` | Send a new confirmation, subject to rate limits |
+
+Confirmation links open `/console/billing/confirm` with the token in the URL
+fragment, which is not sent in the page request. The page submits it in a JSON body
+to `POST /v1/billing/alerts/confirmation/inspect` for a read-only preview. Only the
+explicit **Confirm** button calls `POST /v1/billing/alerts/confirmation/confirm`.
+Neither route requires sign-in or creates a session. Opening the link, including
+an email scanner's GET, does not subscribe the address. Invalid, expired, removed
+and suppressed recipients all receive the same unavailable state.
+
+Confirming or enabling an alert while the balance is already low queues the current
+state. Repeated off/on changes cannot send that same kind to the same recipient
+more than once in 24 hours. Genuine later balance crossings are independent of
+this current-state cooldown.
+
+### Configuring delivery
+
+Email is optional. Without `AGENT_BILLING_EMAIL_FROM`, no worker starts and adding
+or resending recipients returns 503; balance events and threshold editing still
+work. To enable sending, configure:
+
+- `AGENT_BILLING_EMAIL_FROM`: a verified SES sender address.
+- `AGENT_BILLING_EMAIL_CONFIGURATION_SET`: an SES configuration set that publishes
+  bounce and complaint events to SNS.
+- `AGENT_BILLING_EMAIL_SNS_TOPICS`: the comma-separated topic ARNs allowed to send
+  feedback to `POST /v1/billing/email/feedback`.
+- `AGENT_PUBLIC_URL`: the public HTTPS origin for console links and email images
+  (HTTP is accepted only for local development).
+- `AGENT_SECRETS_KEY` (or its Secrets Manager setting) and `AWS_REGION`; the runtime
+  role must be allowed to call SES `SendEmail` for the configured sender.
+
+Subscribe that HTTPS feedback URL to the configured SNS topics. The handler
+validates SNS signatures and topic allowlisting, confirms matching signed
+subscription requests, and correlates feedback with this product's delivery tags
+and recipient. Transient bounces do not suppress the address. Configure the SES
+event destination as described in [SES event publishing](https://docs.aws.amazon.com/ses/latest/dg/monitor-using-event-publishing.html).
+No AWS resources are provisioned by this application change.
+
+The worker polls every five seconds, claims at most five deliveries, and sends
+them concurrently with a 15-second request deadline and no SDK retries. The outbox
+owns retries. The currently implemented emails are confirmation, low balance and
+out of credit; top-up problem and receipt preferences are stored for the payment
+implementation. Mail is multipart HTML/text and uses public assets under
+`/console/email/`. Its table layout and branding follow camelStream's existing
+email design; the animated banner was rendered from the console's `DitherLiquid`.
