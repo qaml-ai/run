@@ -70,7 +70,7 @@ test("a tenant's OpenAI-compatible provider: stored sealed, listed with its mode
   assert.deepEqual({ ...listed, key: { ...listed.key, setAt: undefined } }, {
     id: "mine", kind: "model", models: 1, apiKey: true, key: { provider: "mine", source: "tenant", last4: "1234", setAt: undefined },
     custom: {
-      type: "openai-completions", baseUrl: server.url, headers: ["x-org"],
+      type: "openai-completions", baseUrl: server.url, auth: "bearer", headers: ["x-org"],
       models: [{ id: "llama-4-scout", contextWindow: 131072, maxOutputTokens: 4096, input: ["text"], reasoning: false, pricing: { input: 50, output: 150, cacheRead: 0, cacheWrite: 0 } }],
     },
   });

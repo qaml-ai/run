@@ -390,12 +390,12 @@ export interface CustomModel {
 /** A provider of your own: a public https server that speaks OpenAI Chat Completions (`POST <baseUrl>/chat/completions`). */
 /** The API a custom provider speaks. */
 export type CustomProviderType = "openai-completions" | "openai-responses" | "anthropic-messages";
-export interface CustomProviderInput { type: CustomProviderType; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] }
+export interface CustomProviderInput { type: CustomProviderType; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; /** anthropic-messages: "bearer" sends the key as Authorization: Bearer, not x-api-key. */ auth?: "x-api-key" | "bearer"; models: CustomModel[] }
 /** A provider as GET /v1/providers lists it; never a key or header value. */
 export interface ProviderSummary {
   id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string;
   key: { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number } | null;
-  custom?: { type: CustomProviderType; baseUrl: string; headers?: string[]; models: CustomModel[] };
+  custom?: { type: CustomProviderType; baseUrl: string; auth: "x-api-key" | "bearer"; headers?: string[]; models: CustomModel[] };
 }
 /** An agent as GET /v1/agents lists it. */
 export interface AgentSummary { id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null }

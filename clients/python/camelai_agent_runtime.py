@@ -506,12 +506,12 @@ class AgentRuntime:
     async def delete_definition(self, definition_id):
         return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "DELETE", retry=False)
 
-    async def set_provider(self, name, *, base_url, models, type="openai-completions", api_key=_DEFAULT, headers=_DEFAULT):
+    async def set_provider(self, name, *, base_url, models, type="openai-completions", api_key=_DEFAULT, headers=_DEFAULT, auth=None):
         """Add or replace a provider of your own: a public https server that speaks type (openai-completions,
         openai-responses or anthropic-messages), with its models ([{"id", "contextWindow", "maxOutputTokens"?, "input"?,
         "reasoning"?, "pricing"?, "compat"?}]). Agents name them "<name>/<model id>". api_key and headers left out keep
-        what is stored; None removes them."""
-        body = {"type": type, "baseUrl": base_url, "models": models,
+        what is stored; None removes them. auth="bearer" sends an anthropic-messages key as Authorization: Bearer."""
+        body = {"type": type, "baseUrl": base_url, "models": models, **({"auth": auth} if auth else {}),
                 **({} if api_key is _DEFAULT else {"apiKey": api_key}), **({} if headers is _DEFAULT else {"headers": headers})}
         return await _http(self.http, self.base, f"/v1/providers/{quote(name, safe='')}", self._operator(), "PUT", body)
 

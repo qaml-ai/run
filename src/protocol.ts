@@ -33,7 +33,8 @@ export const SCOPE_KEY = "agent-runtime:key-scope";
  * A key scope's entry may also put an endpoint in front of the provider (`baseUrl`), add `headers`,
  * and name Bedrock's `region`.
  */
-export type Credentials = { apiKey: string; identity?: boolean; baseUrl?: string; headers?: Record<string, string>; region?: string };
+/** `bearer`: send the key as `Authorization: Bearer` where the API would send `x-api-key` (an Anthropic gateway that wants it so). */
+export type Credentials = { apiKey: string; identity?: boolean; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true };
 export interface AgentConfig {
   id: string;
   directory: string;
