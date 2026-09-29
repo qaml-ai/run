@@ -222,9 +222,12 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
   const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
   const modelHeaders = headers === undefined ? null : modelHeadersInput(headers);
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
-  const made = params?.definition !== undefined ? await steps.time("definition", definitions.provision(tenant, params)) : undefined;
+  // Its definition and the tenant's own providers are read at once.
+  const [made, custom] = await Promise.all([
+    params?.definition !== undefined ? steps.time("definition", definitions.provision(tenant, params)) : undefined,
+    steps.time("providers", modelProviders.resolvable(tenant, keyScope)),
+  ]);
   if (made) params = made.params;
-  const custom = await steps.time("providers", modelProviders.resolvable(tenant, keyScope));
   const fallback = params.model === undefined ? await steps.time("providers", defaultModelFor(tenant, keyScope)) : model;
   const config = { ...sessionConfig(params, fallback, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
   // A custom provider's models need no key of the tenant's: the provider has its own, or takes none.

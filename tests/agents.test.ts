@@ -181,6 +181,20 @@ test("upsert: the same key is the same agent, and a changed configuration reconf
   await assert.rejects(agents.upsert("not a key!"), /letters, digits/);
 });
 
+test("the same create sent twice at once makes one agent, and the same prompt twice at once runs once", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const body = { name: "thread", ttlSeconds: null, systemPromptAppend: "Be brief.", subject: "user_1", context: { org: "org_1" } };
+  const made = await Promise.all([1, 2].map(() => r.call("/v1/agents", { body, headers: { "Idempotency-Key": "thread_1" } })));
+  assert.deepEqual(made.map(result => result.status), [201, 201], JSON.stringify(made.map(result => result.json)));
+  assert.equal(made[0].json.id, made[1].json.id);
+  assert.deepEqual((await r.call("/v1/agents")).json.map((agent: any) => agent.id), [made[0].json.id]);
+  const id = made[0].json.id;
+  const sent = await Promise.all([1, 2].map(() => r.call(`/v1/agents/${id}/prompt`, { body: { text: "hi", requestId: "send_1" } })));
+  assert.ok(sent.every(result => [200, 202].includes(result.status) && result.json.id === "send_1"), JSON.stringify(sent.map(result => [result.status, result.json])));
+  await until(async () => (await r.call(`/v1/agents/${id}/requests/send_1`)).json.state === "completed", "the turn to end");
+  assert.equal(r.model.bodies.length, 1, "one turn, one model call");
+});
+
 test("one process serves an agent's tools at a time; others may still run it, and takeover replaces the one serving", async t => {
   const { r } = await setup(t, () => ({ role: "assistant", content: "ok" }));
   const one = new Agents({ url: r.base, apiKey: OPERATOR }), two = new Agents({ url: r.base, apiKey: OPERATOR }), three = new Agents({ url: r.base, apiKey: OPERATOR });

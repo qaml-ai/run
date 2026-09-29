@@ -1481,7 +1481,8 @@ export class ClientSessions {
       const changed = changes(existing.value);
       if (await steps.time("route", this.ownerElsewhere(id))) return { id, token, expiresAt: existing.value.expiresAt, running: true, ...changed };
     }
-    let session = await steps.time("load", this.load(id));
+    // A key with no agent a moment ago needs no second read: unless a create here is making it, this one does.
+    let session = existing || this.sessions.has(id) || this.loading.has(id) ? await steps.time("load", this.load(id)) : undefined;
     // Another create of this agent on this node is provisioning it: wait for what it makes. Two at once
     // would each take the claim, and the second acquire's new epoch would fence the first out.
     while (!session && this.loading.has(id)) session = await steps.time("load", this.load(id));
@@ -1520,37 +1521,35 @@ export class ClientSessions {
         // chunks stored).
         const refs = (safeConfig.initialMessages ?? []).flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
         if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
-        // A conditional create: if a concurrent request made this agent first, retry as a load.
-        await steps.time("header", this.writeHeader(session));
-        // A new agent's history is indexed from its first message.
-        await steps.time("index", this.historyIndex.begin(id));
+        // A conditional create: if a concurrent request made this agent first, retry as a load. A new agent's history is
+        // indexed from its first message; beginning its index is idempotent, so it goes alongside.
+        await Promise.all([steps.time("header", this.writeHeader(session)), steps.time("index", this.historyIndex.begin(id))]);
         this.sessions.set(id, session);
         created = true;
         settle(session);
-        if (granted) await steps.time("watch", this.options.volumes!.watch(id, tenant, [], granted, claim));
-        if (access.spendLimit !== undefined) await steps.time("spend", this.setSpendLimit(session, access.spendLimit));
+        await Promise.all([
+          granted && steps.time("watch", this.options.volumes!.watch(id, tenant, [], granted, claim)),
+          access.spendLimit !== undefined && steps.time("spend", this.setSpendLimit(session, access.spendLimit)),
+        ]);
       } catch (error) {
         settle();
         if (!created) {
           this.supervisor.unreserve(id);
           if (claim) await this.options.ownership!.release(claim).catch(() => {});
-          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, identity, access);
+          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, identity, access, steps);
           throw error;
         }
         await this.discard(session!);
         throw error;
       }
     }
-    try {
-      await steps.time("start", this.ensureStarted(session));
-      // An agent whose lifetime ran out as it started has been made, and is already gone: no status to give.
-      const status = await steps.time("status", this.supervisor.request(id, "status")).catch(error => { if (session.header.revoked) return {}; throw error; });
-      return { id, token, expiresAt: session.header.expiresAt, ...status, ...changed };
-    } catch (error) {
-      // From the caller's view creation is atomic: an agent that never started is gone, so a retry with the same key starts afresh.
-      if (created) await this.discard(session);
-      throw error;
-    }
+    // Creating records the agent: its host starts in the background, so the response does not wait on listing its tool
+    // servers, and a prompt sent meanwhile waits on the same start. A start that fails is only logged: the agent exists,
+    // and its next request starts it again, answering with the error if it recurs.
+    if (created) void this.ensureStarted(session).catch(error => {
+      if (!session.header.revoked) console.error(JSON.stringify({ type: "agent_start_failed", agent: id, tenant, error: errorText(error) }));
+    });
+    return { id, token, expiresAt: session.header.expiresAt, ...changed };
   }
 
   /**
@@ -1755,6 +1754,7 @@ export class ClientSessions {
       const session = await this.load(id);
       if (session) await this.cancelInputs(session, "aborted");
     }
+    await this.sessions.get(id)?.starting?.catch(() => {});
     if (this.supervisor.agents.has(id)) await this.supervisor.request(id, "abort");
     return true;
   }
@@ -2274,6 +2274,8 @@ export class ClientSessions {
 
   private async execute(session: Session, record: RequestRecord, params: any, method: RequestMethod = record.method) {
     const id = session.header.id;
+    // An agent still starting answers nothing yet: wait for it (should it fail, it is not running).
+    await session.starting?.catch(() => {});
     const live = this.supervisor.agents.has(id);
     if (record.method === "status" && !live) return { running: false };
     // Aborting a suspended turn cancels its inputs: the turn is closed without the model.
