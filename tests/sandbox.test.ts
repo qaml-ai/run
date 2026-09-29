@@ -102,7 +102,7 @@ test("host policy validates schemas and rejects execution policy overrides", asy
   const { run } = await fixture(t);
   await assert.rejects(run('return await tools.read({path: 12});'), /Invalid arguments/);
   await assert.rejects(run('return await tools.write({path: "x", content: "ok", extra: "no"});'), /Invalid arguments/);
-  await assert.rejects(run('return await tools.notRegistered({});'), /not a function/);
+  await assert.rejects(run('return await tools.notRegistered({});'), /tools\.notRegistered is not a tool/);
   await assert.rejects(run('return await tools.read({path: "x".repeat(150000)});'), /size limit/);
   for (const [key, value] of Object.entries({ runtime: "/bin/sh", directory: "/", bridge: {}, tools: [], cpuMs: 100000, wasmBytes: 1e9 })) {
     assert.throws(() => codeRequest({ code: "return 1", [key]: value }), /Unknown codemode option/);
@@ -142,6 +142,23 @@ test("output floods are bounded by both characters and event count", async t => 
   const result = await run('for(let i=0;i<10000;i++) text("x");', { maxOutputCharacters: 128000 });
   assert.equal(result.output.length, SANDBOX_LIMITS.outputEvents);
   assert.equal(result.truncated, true);
+});
+
+test("a tool name code gets wrong says which tool it may have meant", async t => {
+  const bridge: ToolBridge = {
+    definitions: ["camel__list_commits", "camel__read", "helpdesk__read"].map(name => ({ name, description: name, parameters: { type: "object" } })),
+    call: async name => ({ called: name }),
+  };
+  const { run } = await fixture(t, bridge);
+  // The server prefix left off: the one tool it can be.
+  await assert.rejects(run("return await tools.list_commits({});"), /tools\.list_commits is not a tool\. Did you mean tools\.camel__list_commits\?/);
+  // More than one server has it: each is named.
+  await assert.rejects(run("return await tools.read({});"), /Did you mean tools\.camel__read or tools\.helpdesk__read\?/);
+  await assert.rejects(run("return await tools.nothing_like_it({});"), /tools\.nothing_like_it is not a tool\. tools\.search/);
+  // What code may look up without calling still works: the tools object itself, its names, and real tools.
+  assert.deepEqual(JSON.parse((await run("return { keys: Object.keys(tools).length, then: typeof tools.then, json: JSON.stringify(tools) !== undefined, fn: typeof tools.camel__read };")).output.at(-1)!),
+    { keys: 6, then: "undefined", json: true, fn: "function" });
+  assert.equal((await run("const t = tools; return (await t.camel__read({})).called;")).output.at(-1), "camel__read");
 });
 
 test("the model reads what code returned as it is, after what it logged, with cuts marked", async t => {
@@ -268,7 +285,8 @@ test("timeouts and aborts cancel the guest, and the worker is reused once it unw
   const { run } = await fixture(t, hang.bridge, pool);
   await run("return 0");
   const [worker] = threads(pool);
-  const timedOut = assert.rejects(run("await tools.hang({});", { timeoutMs: 500 }), /timed out after 500ms/);
+  // The model is told which call it was waiting on, and that timeoutMs can be raised for a slow tool.
+  const timedOut = assert.rejects(run("await tools.hang({});", { timeoutMs: 500 }), /timed out after 500ms while tools\.hang was still running; external side effects may have completed\. Pass a larger timeoutMs \(at most 120000\) for slow tools/);
   await hang.entered(1);
   await timedOut;
   const controller = new AbortController();

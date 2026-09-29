@@ -83,7 +83,27 @@ export const SANDBOX_BOOTSTRAP = `
     tools.search = async (query = "", options) => parse(await call("${HOST_CALLS.search}", stringify(options === undefined ? query : { ...(typeof options === "string" ? { namespace: options } : options), query })));
     tools.describe = async name => parse(await call("${HOST_CALLS.describe}", stringify(StringCtor(name))));
     tools.namespaces = async () => parse(await call("${HOST_CALLS.namespaces}", "null"));
-    Object.defineProperty(globalThis, "tools", { value: Object.freeze(tools) });
+    // A name that is not a tool fails where code reads it, naming the tool it may have meant (a
+    // server's prefix left off, most often), rather than as a bare "not a function" at the call.
+    // Symbols and the names a promise, JSON or a conversion look up stay undefined.
+    const names = Object.keys(tools);
+    const LOOKUPS = ["then", "toJSON", "constructor", "valueOf", "toString", "inspect", "prototype", "__proto__"];
+    const notATool = key => {
+      const prefix = key.lastIndexOf("__");
+      const bare = (prefix < 0 ? key : key.slice(prefix + 2)).toLowerCase();
+      const meant = names.filter(name => name.toLowerCase() === key.toLowerCase() || name.toLowerCase().endsWith("__" + bare));
+      return new TypeError("tools." + key + " is not a tool." +
+        (meant.length ? " Did you mean " + meant.slice(0, 3).map(name => "tools." + name).join(" or ") + "?" : "") +
+        " tools.search(\\"what it does\\") finds tools; tools.describe(name) shows one's arguments.");
+    };
+    const frozen = Object.freeze(tools);
+    const guarded = new Proxy(frozen, {
+      get: (target, key) => {
+        if (typeof key !== "string" || key in target || LOOKUPS.includes(key)) return target[key];
+        throw notATool(key);
+      },
+    });
+    Object.defineProperty(globalThis, "tools", { value: guarded });
   };
   const formatError = error => {
     try { return slice(StringCtor(error && error.message || error), 0, 2048); }

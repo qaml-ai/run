@@ -351,7 +351,7 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
   // Mounts change through the owner of the agent; an idle agent restarts without the file tools.
   await reader.waitForRequest(wake.id);
   await f.sessions.setMounts(reader.session.id, "default", []);
-  await assert.rejects(reader.execute('return await tools.read({ path: "/shared/today.md" })'), /not a function/);
+  await assert.rejects(reader.execute('return await tools.read({ path: "/shared/today.md" })'), /tools\.read is not a tool/);
   await assert.rejects(f.sessions.setMounts(reader.session.id, "default", [{ volumeId: workspace, path: "/a", mode: "ro" }, { volumeId: workspace, path: "/a/b", mode: "ro" }]), /overlaps/);
 });
 
