@@ -39,6 +39,7 @@
 | `AGENT_EMAIL_BUCKET` | the bucket an SES S3 receipt action stores mail in (the runtime reads messages and their attachments from it, under the task role); without it, only mail SES puts in the SNS notification itself (up to 150 KB) arrives |
 | `AGENT_EMAIL_REGION` | SES and S3's region (default `AWS_REGION`) |
 | `AGENT_BILLING_EMAIL_FROM` | optional verified SES sender for billing confirmation and balance alerts; unset disables billing email |
+| `AGENT_BILLING_EMAIL_NAME` | sender display name, default `camelRun Billing`; the FROM setting remains the bare verified address |
 | `AGENT_BILLING_EMAIL_CONFIGURATION_SET`, `AGENT_BILLING_EMAIL_SNS_TOPICS` | required with the billing sender: SES configuration set publishing bounce/complaint feedback and comma-separated SNS topic ARNs; see [Billing email](billing.md#configuring-delivery). Also requires `AGENT_PUBLIC_URL`, `AGENT_SECRETS_KEY` and SES access in `AWS_REGION` |
 | `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
 | `AGENT_OPENROUTER_CREDIT_MULTIPLIER` | actual dollars paid per dollar of platform OpenRouter credits (default `1.055`, Standard card funding); use `1` for a fee waiver, or the effective ratio from purchases when discounts, minimum fees or non-recoverable taxes apply. Independent of the checkout fee. |

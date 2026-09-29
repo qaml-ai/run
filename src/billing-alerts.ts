@@ -6,7 +6,7 @@ import { HttpError } from "./http.ts";
 
 /** Billing email consent and durable deliveries; deliberately independent of agent email channels. */
 export type AlertChoices = { low: boolean; depleted: boolean; problems: boolean; receipts: boolean };
-export type BillingRecipient = { id: string; email: string; status: "pending" | "verified" | "bounced"; events: AlertChoices };
+export type BillingRecipient = { id: string; email: string; status: "pending" | "verified" | "bounced" | "unsubscribed"; events: AlertChoices };
 export type BillingAlertsView = { threshold: number; recipients: BillingRecipient[] };
 type SecretStore = Pick<Accounts, "seal" | "unseal">;
 const DEFAULT_CHOICES: AlertChoices = { low: true, depleted: true, problems: true, receipts: false };
@@ -122,10 +122,10 @@ export class BillingAlerts {
     return transaction(this.db, async sql => {
       await lockTenant(sql, tenant);
       const row = await this.recipient(sql, tenant, id);
-      if (row.status !== "pending") throw new HttpError(400, "Only an unconfirmed address can receive a confirmation email");
+      if (!["pending", "unsubscribed"].includes(row.status)) throw new HttpError(400, "Only an unconfirmed or unsubscribed address can receive a confirmation email");
       await this.rateLimit(sql, tenant, row.email, now);
       const token = randomBytes(32).toString("base64url");
-      await sql.query("update billing_recipients set confirmation_hash = $3, confirmation_expires = $4 where tenant = $1 and id = $2", [tenant, id, sha(token), now + DAY]);
+      await sql.query("update billing_recipients set status='pending', confirmation_hash = $3, confirmation_expires = $4 where tenant = $1 and id = $2", [tenant, id, sha(token), now + DAY]);
       await sql.query("update billing_email_outbox set state = 'cancelled', secret = null where recipient = $1 and kind = 'confirmation' and state = 'pending'", [id]);
       await this.queueConfirmation(sql, { ...row, confirmation_hash: sha(token), confirmation_expires: now + DAY }, token, now);
     });
@@ -137,7 +137,7 @@ export class BillingAlerts {
   > {
     if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return { status: "unavailable" };
     const row = (await this.db.query("select * from billing_recipients where confirmation_hash=$1 and confirmation_expires>$2", [sha(token), now])).rows[0];
-    if (!row || row.status === "bounced" || (await this.db.query("select 1 from billing_email_suppressions where email_hash=$1", [sha(row.email)])).rowCount) return { status: "unavailable" };
+    if (!row || !["pending", "verified"].includes(row.status) || (await this.db.query("select 1 from billing_email_suppressions where email_hash=$1", [sha(row.email)])).rowCount) return { status: "unavailable" };
     return { status: row.status === "verified" ? "confirmed" : "ready", tenant: row.tenant, email: row.email };
   }
 
@@ -149,13 +149,45 @@ export class BillingAlerts {
       if (!found) return false;
       await lockTenant(sql, found.tenant);
       const row = (await sql.query("select * from billing_recipients where confirmation_hash = $1 and confirmation_expires > $2", [sha(token), now])).rows[0];
-      if (!row || row.status === "bounced") return false;
+      if (!row || !["pending", "verified"].includes(row.status)) return false;
       if ((await sql.query("select 1 from billing_email_suppressions where email_hash = $1", [sha(row.email)])).rowCount) return false;
       if (row.status === "verified") return true;
       await sql.query("update billing_recipients set status = 'verified' where id = $1", [row.id]);
       await sql.query("update billing_email_outbox set state = 'cancelled', secret = null where recipient = $1 and kind = 'confirmation' and state = 'pending'", [row.id]);
       await this.queueCurrent(sql, row, row);
       return true;
+    });
+  }
+
+  /** Stable per-recipient capability. It only removes consent and never grants account access. */
+  async unsubscribeToken(tenant: string, id: string): Promise<string> {
+    return transaction(this.db, async sql => {
+      await lockTenant(sql, tenant);
+      const row = await this.recipient(sql, tenant, id);
+      const context = `billing-unsubscribe:${id}`;
+      if (row.unsubscribe_secret) return this.secrets.unseal(context, row.unsubscribe_secret);
+      const token = randomBytes(32).toString("base64url");
+      await sql.query("update billing_recipients set unsubscribe_hash=$2, unsubscribe_secret=$3 where id=$1", [id, sha(token), this.secrets.seal(context, token)]);
+      return token;
+    });
+  }
+
+  async inspectUnsubscribe(token: string): Promise<{ status: "unavailable" } | { status: "ready" | "unsubscribed"; tenant: string; email: string }> {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return { status: "unavailable" };
+    const row = (await this.db.query("select tenant,email,status from billing_recipients where unsubscribe_hash=$1", [sha(token)])).rows[0];
+    if (!row) return { status: "unavailable" };
+    return { status: row.status === "unsubscribed" ? "unsubscribed" : "ready", tenant: row.tenant, email: row.email };
+  }
+
+  /** POST only. Leaves other tenants' subscriptions alone and requires fresh mailbox consent to resume. */
+  async unsubscribe(token: string): Promise<void> {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return;
+    await transaction(this.db, async sql => {
+      const found = (await sql.query("select tenant from billing_recipients where unsubscribe_hash=$1", [sha(token)])).rows[0];
+      if (!found) return;
+      await lockTenant(sql, found.tenant);
+      const row = (await sql.query("update billing_recipients set status='unsubscribed', confirmation_expires=0 where unsubscribe_hash=$1 returning id", [sha(token)])).rows[0];
+      if (row) await sql.query("update billing_email_outbox set state='cancelled', secret=null where recipient=$1 and state='pending'", [row.id]);
     });
   }
 
@@ -244,6 +276,15 @@ export class BillingAlerts {
 
   async sent(id: string, lease: string, providerMessageId?: string) {
     return !!(await this.db.query("update billing_email_outbox set state='sent', secret=null, provider_message_id=$3 where id=$1 and lease=$2 and state='pending'", [id, lease, providerMessageId ?? null])).rowCount;
+  }
+  /** Re-check after token preparation: it may have waited behind a settings transaction. */
+  async deliverable(id: string, lease: string, now = Date.now()) {
+    return !!(await this.db.query(`select 1 from billing_email_outbox o join billing_recipients r on r.id=o.recipient
+      where o.id=$1 and o.lease=$2 and o.state='pending' and o.due>$3
+      and not exists (select 1 from billing_email_suppressions s where s.email_hash=encode(sha256(convert_to(r.email,'UTF8')),'hex'))
+      and case o.kind when 'confirmation' then r.status='pending' and r.confirmation_hash=o.payload->>'confirmationHash' and o.expires_at>$4
+        else r.status='verified' and case o.kind when 'low' then r.low when 'depleted' then r.depleted when 'problems' then r.problems when 'receipts' then r.receipts else false end end`,
+    [id, lease, now + 20_000, now])).rowCount;
   }
   async retry(id: string, lease: string, now = Date.now()) {
     return !!(await this.db.query(`update billing_email_outbox set lease=null,

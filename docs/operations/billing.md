@@ -130,8 +130,17 @@ of `<t>.<payload>` under the endpoint's signing secret, at most five minutes old
 - `charge.refunded`: credit is removed in proportion to the refunded share of the
   charge, once per refunded total.
 
-Sessions and charges the runtime did not create (the Stripe account serves other
-products) are acknowledged and ignored. Setup: create a secret or restricted key
+Sessions and explicitly tagged charges from other products are acknowledged and
+ignored. A refund with no known purchase is retained by charge/payment-intent ID,
+amount, currency and cumulative refunded amount, without changing any balance.
+When its purchase arrives, the purchase and all known refunds are appended in the
+same transaction and move the balance together. This handles Stripe's
+[out-of-order event delivery](https://docs.stripe.com/webhooks#event-ordering).
+Older cumulative refund totals cannot reverse newer ones; a refund never removes
+more credit than its purchase supplied. Refund records without a product tag are
+kept because an older Checkout event can still arrive later.
+
+Setup: create a restricted key
 (Customers and Checkout Sessions, write) and a webhook endpoint at
 `https://<host>/v1/billing/stripe/webhook` for those three events, then run
 `infra/stripe.sh` and paste the key and the signing secret; it stores them in the
@@ -165,8 +174,10 @@ already in flight cannot be recalled when a recipient opts out. Consumers must
 start sends within the lease and limit concurrency accordingly.
 
 The console's **Billing → Alerts** editor manages the threshold and up to five
-recipients. Recipient and checkbox changes save immediately; the threshold has its
-own save button. These routes require an authenticated prepaid tenant:
+recipients. Recipient and checkbox changes save immediately; the threshold saves
+on blur, Enter, or Done. Invalid thresholds keep the dialog open with an error.
+These routes require an authenticated prepaid tenant. OAuth tokens with the MCP
+agents scope cannot mutate billing settings or start a checkout:
 
 | Route | Purpose |
 | --- | --- |
@@ -185,6 +196,25 @@ Neither route requires sign-in or creates a session. Opening the link, including
 an email scanner's GET, does not subscribe the address. Invalid, expired, removed
 and suppressed recipients all receive the same unavailable state.
 
+Every billing email also includes **Stop these alerts**, usable without an account.
+Its landing page requires an explicit button press; it never unsubscribes on GET.
+An independent random per-recipient token is hashed for lookup and encrypted for
+reuse in future mail. Opt-out sets the recipient to `unsubscribed`, invalidates its
+old confirmation, and cancels queued mail. Other accounts at the same address are
+unaffected. Checkbox edits cannot restore consent: **Request confirmation** sends
+a new confirmation link before alerts can resume. Removing and re-adding a row
+also requires a new confirmation.
+
+The emails carry `List-Unsubscribe` and `List-Unsubscribe-Post`. The public
+`POST /v1/billing/alerts/one-click/{token}` accepts the RFC 8058
+`List-Unsubscribe=One-Click` form in URL-encoded or multipart format, without
+cookies or authentication, and returns 204 without redirects. The token in this
+specific endpoint's URL only permits opt-out; omit/redact it in proxy access logs.
+For email clients to offer their one-click action, verify that the sender's DKIM
+signature covers both headers, as required by
+[RFC 8058](https://www.rfc-editor.org/info/rfc8058/). Browser preview checks do not
+verify a provider's delivered DKIM signature.
+
 Confirming or enabling an alert while the balance is already low queues the current
 state. Repeated off/on changes cannot send that same kind to the same recipient
 more than once in 24 hours. Genuine later balance crossings are independent of
@@ -197,6 +227,8 @@ or resending recipients returns 503; balance events and threshold editing still
 work. To enable sending, configure:
 
 - `AGENT_BILLING_EMAIL_FROM`: a verified SES sender address.
+- `AGENT_BILLING_EMAIL_NAME`: optional display name, default `camelRun Billing`.
+  The sender address remains separate; feedback compares the address only.
 - `AGENT_BILLING_EMAIL_CONFIGURATION_SET`: an SES configuration set that publishes
   bounce and complaint events to SNS.
 - `AGENT_BILLING_EMAIL_SNS_TOPICS`: the comma-separated topic ARNs allowed to send

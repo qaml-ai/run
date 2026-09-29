@@ -165,9 +165,36 @@ export function api(context: ApiContext) {
     if (action === "confirm" && !await service.confirm(token)) return json(c, 200, { status: "unavailable" });
     return json(c, 200, await service.inspectConfirmation(token));
   });
+  for (const action of ["inspect", "stop"] as const) route(createRoute({
+    method: "post", path: `/v1/billing/alerts/unsubscribe/${action}`, security: [],
+    request: { body: content(schema.BillingConfirmationInput) }, responses: { 200: reply("Email opt-out state", schema.BillingUnsubscribe) },
+  }), async c => {
+    const { token } = parse(schema.BillingConfirmationInput, await readJson(c.req.raw.body, 1024, {}));
+    const service = context.billingAlerts?.service;
+    if (!service) return json(c, 200, { status: "unavailable" });
+    if (action === "stop") await service.unsubscribe(token);
+    return json(c, 200, await service.inspectUnsubscribe(token));
+  });
+  // RFC 8058 uses the opaque capability in the URL, with no account session.
+  // GET only opens the confirmation page; only a correctly formed POST opts out.
+  app.get("/v1/billing/alerts/one-click/:token", c => c.redirect(`/console/billing/unsubscribe#${encodeURIComponent(c.req.param("token"))}`));
+  app.post("/v1/billing/alerts/one-click/:token", async c => {
+    const type = c.req.header("content-type") ?? "";
+    if (!/^(application\/x-www-form-urlencoded|multipart\/form-data)(;|$)/i.test(type)) throw new HttpError(415, "Expected a form submission");
+    const body = await readText(c.req.raw.body, 4096);
+    let form: FormData;
+    try { form = await new Request("https://localhost", { method: "POST", headers: { "Content-Type": type }, body }).formData(); }
+    catch { throw new HttpError(400, "Invalid form submission"); }
+    if (form.get("List-Unsubscribe") !== "One-Click") throw new HttpError(400, "Expected a one-click unsubscribe request");
+    await context.billingAlerts?.service.unsubscribe(c.req.param("token"));
+    return c.body(null, 204);
+  });
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
     c.set("principal", principal);
+    if (principal.via === "oauth" && c.req.method !== "GET" && c.req.path.startsWith("/v1/billing/")) {
+      throw new HttpError(403, "An OAuth access token cannot change billing settings");
+    }
     // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else.
     if (principal.browser) {
       const [, agent, scope] = BROWSER_ROUTE.exec(c.req.path) ?? [];

@@ -1,11 +1,12 @@
 /** Table-based transactional mail, using camelStream's palette and layout. */
-export interface BillingEmail { subject: string; html: string; text: string }
+export interface BillingEmail { subject: string; html: string; text: string; headers?: { Name: string; Value: string }[] }
 export interface BillingEmailInput {
   kind: "confirmation" | "low" | "depleted";
   tenant: string;
   email: string;
   origin: string;
   token?: string;
+  unsubscribeToken?: string;
   balance?: number;
   threshold?: number;
 }
@@ -18,6 +19,7 @@ export function billingEmail(input: BillingEmailInput): BillingEmail {
   const confirmation = input.kind === "confirmation";
   const depleted = input.kind === "depleted";
   const billing = `${origin}/console/billing`;
+  const stop = input.unsubscribeToken ? `${origin}/console/billing/unsubscribe#${encodeURIComponent(input.unsubscribeToken)}` : undefined;
   const link = confirmation ? `${origin}/console/billing/confirm#${encodeURIComponent(input.token!)}` : billing;
   const balance = dollars(input.balance ?? 0);
   const subject = confirmation ? "Confirm your email for camelRun billing alerts"
@@ -26,7 +28,7 @@ export function billingEmail(input: BillingEmailInput): BillingEmail {
   const sentence = confirmation ? `Confirm that ${input.email} should receive billing alerts for ${input.tenant}.`
     : depleted ? `Add credit to ${input.tenant} to resume new runs.` : `Add credit to ${input.tenant} to keep your agents running.`;
   const cta = confirmation ? "Confirm email" : "Add credit";
-  const note = confirmation ? "This link expires in 24 hours. Opening it does not confirm your email." : "";
+  const note = confirmation ? "The button opens a page where you confirm. The link expires in 24 hours." : "";
   const details: [string, string][] = confirmation ? [] : [["Account", input.tenant], ["Balance", balance],
     depleted ? ["New runs", "Paused"] : ["Alert below", dollars(input.threshold ?? 2e6)]];
   const footer = confirmation ? `Someone added this address to the billing alerts for ${input.tenant}. If this wasn't you, ignore this email and nothing else is sent.`
@@ -49,8 +51,13 @@ ${details.length ? `<table role="presentation" width="100%" cellpadding="0" cell
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#111113" style="mso-padding-alt:13px 28px"><a href="${e(link)}" style="display:inline-block;padding:13px 28px;font-family:${MONO};font-size:11px;line-height:18px;letter-spacing:3px;text-transform:uppercase;color:#f6f4ee;text-decoration:none">${cta}</a></td></tr></table></td></tr></table>
 ${note ? `<p style="margin:20px 0 0;font-family:${FONT};font-size:13px;line-height:20px;color:#8a888f;text-align:center">${e(note)}</p>` : ""}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:28px"><tr><td style="border-top:1px solid #d5d2c9;padding-top:20px"><p style="margin:0 0 6px;font-family:${FONT};font-size:12px;line-height:18px;color:#8a888f">If the button doesn't work, copy and paste this link into your browser:</p><p style="margin:0;font-family:'Courier New',monospace;font-size:12px;line-height:18px;word-break:break-all"><a href="${e(link)}" style="color:#3f3f45">${e(link)}</a></p></td></tr></table>
-</td></tr></table></td></tr><tr><td align="center" style="padding:24px 20px 0"><p style="margin:0 0 10px;font-family:${FONT};font-size:12px;line-height:18px;color:#8a888f">${e(footer)}${confirmation ? "" : ` <a href="${billing}" style="color:#3f3f45">Manage alerts in Billing</a>, or ask the account owner.`}</p><p style="margin:0;font-family:${MONO};font-size:10px;line-height:18px;letter-spacing:2px;color:#8a888f">CAMELAI · DURABLE AGENTS. HOSTED.</p></td></tr></table>
+</td></tr></table></td></tr><tr><td align="center" style="padding:24px 20px 0"><p style="margin:0 0 10px;font-family:${FONT};font-size:12px;line-height:18px;color:#8a888f">${e(footer)}${confirmation ? "" : ` <a href="${billing}" style="color:#3f3f45">Manage alerts in Billing</a>.`}${stop ? ` <a href="${e(stop)}" style="color:#3f3f45">Stop these alerts</a>.` : ""}</p><p style="margin:0;font-family:${MONO};font-size:10px;line-height:18px;letter-spacing:2px;color:#8a888f">CAMELAI · DURABLE AGENTS. HOSTED.</p></td></tr></table>
 <!--[if mso]></td></tr></table><![endif]--></td></tr></table></body></html>`;
   return { subject, html, text: [heading, sentence, ...details.map(([k,v]) => `${k}: ${v}`), `${cta}: ${link}`, note, footer,
-    ...confirmation ? [] : [`Manage alerts in Billing: ${billing}, or ask the account owner.`], "camelAI · Durable agents. Hosted."].filter(Boolean).join("\n\n") };
+    ...confirmation ? [] : [`Manage alerts in Billing: ${billing}`], stop ? `Stop these alerts: ${stop}` : "", "camelAI · Durable agents. Hosted."].filter(Boolean).join("\n\n"),
+    ...(input.unsubscribeToken ? { headers: [
+      { Name: "List-Unsubscribe", Value: `<${origin}/v1/billing/alerts/one-click/${encodeURIComponent(input.unsubscribeToken)}>` },
+      { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+    ] } : {}),
+  };
 }

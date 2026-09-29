@@ -53,6 +53,10 @@ test("billing recipient API, scanner-safe confirmation, and SES delivery work to
   assert.deepEqual(sent[0].Destination.ToAddresses, ["billing@example.test"]);
   assert.equal(sent[0].ConfigurationSetName, "billing");
   assert.equal(sent[0].EmailTags[0].Value, "camelrun-billing");
+  assert.match(sent[0].FromEmailAddress, /<billing@example.test>$/);
+  assert.match(sent[0].FromEmailAddress, new RegExp(Buffer.from("camelRun Billing").toString("base64")));
+  assert.equal(sent[0].Content.Simple.Headers[1].Value, "List-Unsubscribe=One-Click");
+  const stopToken = /\/one-click\/([\w-]{43})/.exec(sent[0].Content.Simple.Headers[0].Value)![1];
   const token = /\/console\/billing\/confirm#([\w-]{43})/.exec(sent[0].Content.Simple.Body.Text.Data)![1];
   const inspect = () => r.call(`${path}/confirmation/inspect`, { token: null, body: { token } });
   assert.deepEqual((await inspect()).json, { status: "ready", tenant: "alice", email: "billing@example.test" });
@@ -69,6 +73,17 @@ test("billing recipient API, scanner-safe confirmation, and SES delivery work to
   await until(() => sent.length === 2, "low balance sent");
   assert.match(sent[1].Content.Simple.Subject.Data, /balance is low: \$1.00/);
   assert.match(sent[1].Content.Simple.Body.Html.Data, /billing-banner.gif/);
+  const oneClick = `${r.base}${path}/one-click/${stopToken}`;
+  assert.equal((await fetch(oneClick, { redirect: "manual" })).status, 302);
+  assert.equal((await r.call(path)).json.recipients[0].status, "verified", "scanner GET never unsubscribes");
+  const previewStop = await r.call(`${path}/unsubscribe/inspect`, { token: null, body: { token: stopToken } });
+  assert.equal(previewStop.json.status, "ready");
+  const stopped = await fetch(oneClick, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "List-Unsubscribe=One-Click" });
+  assert.equal(stopped.status, 204); assert.equal(stopped.headers.get("set-cookie"), null);
+  assert.equal((await r.call(path)).json.recipients[0].status, "unsubscribed");
+  const multipart = new FormData(); multipart.set("List-Unsubscribe", "One-Click");
+  assert.equal((await fetch(oneClick, { method: "POST", body: multipart })).status, 204, "multipart repeat is harmless");
+  assert.equal((await r.call(`${path}/unsubscribe/inspect`, { token: null, body: { token: stopToken } })).json.status, "unsubscribed");
   assert.equal((await r.call(`${path}/recipients/${recipient.id}`, { method: "PUT", body: NONE })).status, 200);
   assert.equal((await r.call(`${path}/recipients/${recipient.id}`, { method: "DELETE" })).status, 200);
   assert.equal((await r.call(path)).json.recipients.length, 0);
@@ -130,6 +145,7 @@ test("billing templates escape content and include HTML, plain text, fallbacks a
   assert.equal(billingMailConfig({}), undefined);
   assert.throws(() => billingMailConfig({ AGENT_BILLING_EMAIL_FROM: "a@example.test" }), /requires/);
   assert.throws(() => billingMailConfig({ ...MAIL, AGENT_PUBLIC_URL: "http://example.test" }), /HTTPS/);
+  assert.throws(() => billingMailConfig({ ...MAIL, AGENT_PUBLIC_URL: "https://example.test", AGENT_BILLING_EMAIL_NAME: "Billing\r\nBcc: stolen@example.test" }), /display name/);
 });
 
 test("only signed, configured and correlated SES feedback suppresses a billing recipient", async () => {
@@ -148,7 +164,7 @@ test("only signed, configured and correlated SES feedback suppresses a billing r
     const signed = ["Message","MessageId","Timestamp","TopicArn","Type"].map(k=>`${k}\n${m[k]}\n`).join("");
     return {...m, SigningCertURL:certUrl, SignatureVersion:"2", Signature:sign("sha256",Buffer.from(signed),key!).toString("base64")};
   }
-  const event = { eventType:"Bounce", mail:{source:MAIL.AGENT_BILLING_EMAIL_FROM, destination:[recipient.email], tags:{product:["camelrun-billing"],billing_delivery:[delivery.id]}},bounce:{bounceType:"Permanent",bouncedRecipients:[{emailAddress:recipient.email}]}};
+  const event = { eventType:"Bounce", mail:{source:`camelRun Billing <${MAIL.AGENT_BILLING_EMAIL_FROM}>`, destination:[recipient.email], tags:{product:["camelrun-billing"],billing_delivery:[delivery.id]}},bounce:{bounceType:"Permanent",bouncedRecipients:[{emailAddress:recipient.email}]}};
   const send = (m:any) => app.request("/v1/billing/email/feedback",{method:"POST",body:JSON.stringify(m)});
   assert.equal((await send(message(event,{TopicArn:TOPIC+"-other"}))).status,403);
   assert.equal((await send({...message(event),Signature:"bad"})).status,401);
@@ -166,4 +182,33 @@ test("only signed, configured and correlated SES feedback suppresses a billing r
   assert.equal((await send(message(complaint))).status, 200);
   assert.equal((await alerts.get("alice")).recipients.find(r => r.id === second.id)!.status, "bounced");
   assert.equal((await db.query("select state from billing_email_outbox where id=$1", [secondDelivery.id])).rows[0].state, "cancelled");
+});
+
+test("unsubscribe is tenant-scoped, fences queued mail and old confirmation, and needs fresh consent to resume", async () => {
+  const { db, alerts } = await fixture();
+  await postLedger(db, [{ tenant: "alice", kind: "grant", amount: 1e6, key: "initial" }]);
+  const recipient = await alerts.add("alice", "outside@example.test");
+  const [confirmation] = await alerts.claim();
+  await alerts.confirm(confirmation.token!);
+  const stop = await alerts.unsubscribeToken("alice", recipient.id);
+  assert.equal(await alerts.unsubscribeToken("alice", recipient.id), stop);
+  const other = await alerts.add("other", recipient.email, ALL, Date.now() + 61_000);
+  const claimed = await alerts.claim();
+  const low = claimed.find(row => row.kind === "low")!;
+  assert.equal(await alerts.deliverable(low.id, low.lease), true);
+  assert.equal(await alerts.deliverable(low.id, low.lease, Date.now() + 41_000), false, "do not start a send too close to lease expiry");
+  await alerts.unsubscribe(stop);
+  assert.equal(await alerts.deliverable(low.id, low.lease), false);
+  assert.equal(await alerts.confirm(confirmation.token!), false);
+  await alerts.update("alice", recipient.id, ALL);
+  assert.equal((await alerts.get("alice")).recipients[0].status, "unsubscribed", "owner checkbox changes cannot restore consent");
+  assert.equal((await alerts.get("other")).recipients[0].id, other.id);
+  assert.equal((await alerts.get("other")).recipients[0].status, "pending");
+  assert.equal((await db.query("select count(*) from billing_email_outbox where tenant='alice' and state='pending'")).rows[0].count, 0);
+  const later = Date.now() + 125_000;
+  await alerts.resend("alice", recipient.id, later);
+  const renewed = (await alerts.claim(later)).find(row => row.tenant === "alice")!;
+  assert.notEqual(renewed.token, confirmation.token);
+  assert.equal(await alerts.confirm(renewed.token!, later), true);
+  assert.equal((await alerts.get("alice")).recipients[0].status, "verified");
 });

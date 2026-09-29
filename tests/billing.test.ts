@@ -567,7 +567,7 @@ test("credit is bought through Stripe Checkout with the fee on top, added once t
   assert.equal(await balance(), 10_000_000 - Math.round(10_000_000 * 264 / 1055));
   await Promise.all([webhook(refunded(1055)), webhook(refunded(1055))]);
   assert.equal(await balance(), 0);
-  assert.equal((await webhook({ ...refunded(1055), data: { object: { ...refunded(1055).data.object, id: "ch_2", payment_intent: "pi_unknown" } } })).json.handled, "ignored");
+  assert.equal((await webhook({ ...refunded(1055), data: { object: { ...refunded(1055).data.object, id: "ch_2", payment_intent: "pi_unknown" } } })).json.handled, "pending refund");
   const kinds = (await call("/v1/billing/ledger", { token: PAYG })).json.entries.map((entry: any) => [entry.kind, entry.amount]);
   assert.deepEqual(kinds, [["refund", -(10_000_000 - Math.round(10_000_000 * 264 / 1055))], ["refund", -Math.round(10_000_000 * 264 / 1055)], ["purchase", 10_000_000]]);
   assert.equal((await call("/v1/billing", { token: PAYG })).json.freeCredit, true, "fully refunded: back on free credit");

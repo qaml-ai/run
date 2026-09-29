@@ -149,5 +149,5 @@ export const formatBytes = (value: number) => {
 };
 
 export interface AlertChoices { low: boolean; depleted: boolean; problems: boolean; receipts: boolean }
-export interface BillingRecipient { id: string; email: string; status: "pending" | "verified" | "bounced"; events: AlertChoices }
+export interface BillingRecipient { id: string; email: string; status: "pending" | "verified" | "bounced" | "unsubscribed"; events: AlertChoices }
 export interface BillingAlerts { threshold: number; emailEnabled: boolean; recipients: BillingRecipient[] }

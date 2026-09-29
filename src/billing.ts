@@ -360,11 +360,24 @@ export class Billing {
       if (object.payment_status !== "paid") return { handled: "awaiting payment" };
       const tenant = object.metadata.tenant, amount = Number(object.metadata.credit);
       if (typeof tenant !== "string" || !Number.isSafeInteger(amount) || amount <= 0) throw new HttpError(400, "Checkout session without a tenant or credit amount");
-      await this.post([{
-        tenant, kind: "purchase", amount, key: `purchase:${object.id}`,
-        metadata: { session: object.id, paymentIntent: object.payment_intent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null },
-      }]);
-      if (typeof object.customer === "string") await this.db.query("update credit_accounts set stripe_customer = coalesce(stripe_customer, $2) where tenant = $1", [tenant, object.customer]);
+      if (typeof object.id !== "string") throw new HttpError(400, "Checkout session without an id");
+      const paymentIntent = typeof object.payment_intent === "string" ? object.payment_intent : object.payment_intent?.id;
+      const posted = await transaction(this.db, async sql => {
+        await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-payment:${paymentIntent ?? object.id}`]);
+        const prior = (await sql.query("select tenant, amount, metadata from credit_ledger where idempotency_key=$1", [`purchase:${object.id}`])).rows[0];
+        const samePayment = paymentIntent && (await sql.query("select metadata from credit_ledger where kind='purchase' and metadata->>'paymentIntent'=$1", [paymentIntent])).rows[0];
+        if (samePayment && samePayment.metadata.session !== object.id) throw new HttpError(400, "Payment is already attached to another purchase");
+        if (prior && (prior.tenant !== tenant || prior.amount !== amount || prior.metadata.paymentIntent !== (paymentIntent ?? null))) throw new HttpError(400, "Checkout session conflicts with its recorded purchase");
+        const purchase: LedgerEntry = { tenant, kind: "purchase", amount, key: `purchase:${object.id}`,
+          metadata: prior?.metadata ?? { session: object.id, paymentIntent: paymentIntent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null } };
+        const refunds = paymentIntent ? await this.refundEntries(sql, purchase, paymentIntent) : [];
+        // Fulfillment and earlier refunds move the balance together. A fully
+        // refunded purchase never exposes temporary credit or a false depletion.
+        const appended = await postLedger(sql, [purchase, ...refunds]);
+        if (typeof object.customer === "string") await sql.query("update credit_accounts set stripe_customer = coalesce(stripe_customer, $2) where tenant = $1", [tenant, object.customer]);
+        return appended;
+      });
+      this.invalidate(posted.map(entry => entry.tenant));
       console.log(JSON.stringify({ type: "credit_purchased", tenant, amount, session: object.id }));
       return { handled: "purchase" };
     }
@@ -372,24 +385,51 @@ export class Billing {
     return { handled: "ignored" };
   }
 
-  /** Bring a purchase's refunds up to the charge's refunded total; concurrent deliveries for one charge take turns. */
-  private async refund(charge: { id: string; payment_intent?: string; amount: number; amount_refunded: number }) {
-    if (typeof charge.payment_intent !== "string" || !(charge.amount > 0)) return "ignored";
+  /** Keep cumulative refunds even when their purchase has not arrived. All writers serialize by payment intent. */
+  private async refund(charge: { id: string; payment_intent?: string; amount: number; amount_refunded: number; currency?: string; metadata?: Record<string, string> }) {
+    if (typeof charge.payment_intent !== "string" || typeof charge.id !== "string") return "ignored";
+    if (charge.metadata?.purpose && charge.metadata.purpose !== PURPOSE) return "ignored";
+    if (!Number.isSafeInteger(charge.amount) || charge.amount <= 0 || !Number.isSafeInteger(charge.amount_refunded) || charge.amount_refunded < 0 || charge.amount_refunded > charge.amount) {
+      throw new HttpError(400, "Invalid cumulative refund amount");
+    }
     const posted = await transaction(this.db, async sql => {
-      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-refund:${charge.id}`]);
-      const purchase = (await sql.query("select tenant, amount from credit_ledger where kind = 'purchase' and metadata->>'paymentIntent' = $1", [charge.payment_intent])).rows[0];
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-payment:${charge.payment_intent}`]);
+      const prior = (await sql.query("select * from billing_stripe_refunds where charge=$1", [charge.id])).rows[0];
+      if (prior && (prior.payment_intent !== charge.payment_intent || prior.amount !== charge.amount || (prior.currency && charge.currency && prior.currency !== charge.currency))) throw new HttpError(400, "Refund conflicts with its recorded charge");
+      const stored = await sql.query(`insert into billing_stripe_refunds (charge,payment_intent,amount,refunded,currency,updated_at) values ($1,$2,$3,$4,$5,$6)
+        on conflict (charge) do update set refunded=greatest(billing_stripe_refunds.refunded,excluded.refunded), currency=coalesce(billing_stripe_refunds.currency,excluded.currency), updated_at=excluded.updated_at
+        where billing_stripe_refunds.payment_intent=excluded.payment_intent and billing_stripe_refunds.amount=excluded.amount
+          and (billing_stripe_refunds.currency is null or excluded.currency is null or billing_stripe_refunds.currency=excluded.currency)
+        returning charge`,
+      [charge.id, charge.payment_intent, charge.amount, charge.amount_refunded, charge.currency ?? null, Date.now()]);
+      if (!stored.rowCount) throw new HttpError(400, "Refund conflicts with its recorded charge");
+      const purchase = (await sql.query("select tenant, amount, metadata from credit_ledger where kind = 'purchase' and metadata->>'paymentIntent' = $1", [charge.payment_intent])).rows[0];
       if (!purchase) return undefined;
-      const refunded = -Number((await sql.query("select coalesce(sum(amount), 0) as sum from credit_ledger where kind = 'refund' and metadata->>'charge' = $1", [charge.id])).rows[0].sum);
-      const target = Math.round(purchase.amount * Math.min(1, charge.amount_refunded / charge.amount));
-      if (target <= refunded) return [];
-      return postLedger(sql, [{
-        tenant: purchase.tenant, kind: "refund", amount: refunded - target, key: `refund:${charge.id}:${charge.amount_refunded}`,
-        metadata: { charge: charge.id, paymentIntent: charge.payment_intent, refunded: charge.amount_refunded },
-      }]);
+      return postLedger(sql, await this.refundEntries(sql, purchase, charge.payment_intent!));
     });
-    if (!posted) return "ignored";
+    if (!posted) return "pending refund";
     this.invalidate(posted.map(entry => entry.tenant));
     return "refund";
+  }
+
+  private async refundEntries(sql: Sql, purchase: { tenant: string; amount: number; metadata?: Record<string, unknown> }, paymentIntent: string): Promise<LedgerEntry[]> {
+    const refunds = (await sql.query("select * from billing_stripe_refunds where payment_intent=$1 order by charge", [paymentIntent])).rows;
+    const applied = (await sql.query("select metadata->>'charge' as charge, -sum(amount) as amount from credit_ledger where kind='refund' and metadata->>'paymentIntent'=$1 group by metadata->>'charge'", [paymentIntent])).rows;
+    let remaining = Math.max(0, purchase.amount - applied.reduce((sum, row) => sum + Number(row.amount), 0));
+    const entries: LedgerEntry[] = [];
+    for (const refund of refunds) {
+      if (purchase.metadata?.currency && refund.currency && purchase.metadata.currency !== refund.currency) throw new HttpError(400, "Refund currency does not match purchase");
+      if (typeof purchase.metadata?.paid === "number" && purchase.metadata.paid !== refund.amount) throw new HttpError(400, "Refund charge amount does not match purchase");
+      const already = Number(applied.find(row => row.charge === refund.charge)?.amount ?? 0);
+      // BigInt keeps rounding exact even for large valid cumulative totals.
+      const target = Number((BigInt(purchase.amount) * BigInt(refund.refunded) * 2n + BigInt(refund.amount)) / (BigInt(refund.amount) * 2n));
+      const amount = Math.min(remaining, Math.max(0, target - already));
+      if (!amount) continue;
+      remaining -= amount;
+      entries.push({ tenant: purchase.tenant, kind: "refund", amount: -amount, key: `refund:${refund.charge}:${refund.refunded}`,
+        metadata: { charge: refund.charge, paymentIntent, refunded: refund.refunded } });
+    }
+    return entries;
   }
 
   // Storage -------------------------------------------------------------------

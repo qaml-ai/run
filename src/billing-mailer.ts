@@ -7,7 +7,7 @@ import { verifySns } from "./channels-email.ts";
 import { readText } from "./http.ts";
 
 export interface BillingMailOptions {
-  db: Db; alerts: BillingAlerts; origin: string; from: string; configurationSet: string; topics: string[]; region?: string;
+  db: Db; alerts: BillingAlerts; origin: string; from: string; displayName?: string; configurationSet: string; topics: string[]; region?: string;
   /** Test transport; production uses SES v2, one recipient per call. Must honor the abort signal. */
   send?: (mail: BillingEmail & { to: string; delivery: string }, signal: AbortSignal) => Promise<string | undefined>;
   fetch?: typeof fetch;
@@ -15,6 +15,8 @@ export interface BillingMailOptions {
 export function billingMailConfig(env = process.env) {
   if (!env.AGENT_BILLING_EMAIL_FROM) return undefined;
   if (!z.email().safeParse(env.AGENT_BILLING_EMAIL_FROM).success) throw new Error("AGENT_BILLING_EMAIL_FROM must be an email address");
+  const displayName = env.AGENT_BILLING_EMAIL_NAME ?? "camelRun Billing";
+  if (!displayName.trim() || displayName.length > 80 || /[\r\n]/.test(displayName)) throw new Error("AGENT_BILLING_EMAIL_NAME must be a single display name, at most 80 characters");
   const configurationSet = env.AGENT_BILLING_EMAIL_CONFIGURATION_SET;
   const topics = (env.AGENT_BILLING_EMAIL_SNS_TOPICS ?? "").split(",").map(s => s.trim()).filter(Boolean);
   if (!configurationSet || !topics.length || topics.some(t => !/^arn:aws(?:-cn|-us-gov)?:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]+$/.test(t))) {
@@ -24,7 +26,7 @@ export function billingMailConfig(env = process.env) {
   if (origin.username || origin.password || origin.search || origin.hash || (origin.protocol !== "https:" && !(origin.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)))) {
     throw new Error("Billing email requires a public HTTPS origin (HTTP is allowed for loopback development)");
   }
-  return { origin: origin.origin, from: env.AGENT_BILLING_EMAIL_FROM, configurationSet, topics, region: env.AWS_REGION };
+  return { origin: origin.origin, from: env.AGENT_BILLING_EMAIL_FROM, displayName, configurationSet, topics, region: env.AWS_REGION };
 }
 
 /** Five concurrent sends per node, each bounded to 15s, comfortably inside the 60s outbox lease. */
@@ -44,7 +46,9 @@ export class BillingMailer {
       try {
         if (!["confirmation", "low", "depleted"].includes(row.kind)) throw new Error("Unsupported billing email type");
         const mail = billingEmail({ kind: row.kind as "confirmation" | "low" | "depleted", tenant: row.tenant, email: row.email,
-          origin: this.options.origin, token: row.token, balance: row.payload.data?.balance, threshold: row.payload.data?.threshold });
+          origin: this.options.origin, token: row.token, unsubscribeToken: await alerts.unsubscribeToken(row.tenant, row.recipient),
+          balance: row.payload.data?.balance, threshold: row.payload.data?.threshold });
+        if (!await alerts.deliverable(row.id, row.lease)) { await alerts.retry(row.id, row.lease); return; }
         const signal = AbortSignal.timeout(15_000);
         const message = { ...mail, to: row.email, delivery: row.id };
         const id = this.options.send ? await this.options.send(message, signal) : await this.send(message, signal);
@@ -62,10 +66,10 @@ export class BillingMailer {
     this.client ??= new SESv2Client({ region: this.options.region, maxAttempts: 1,
       requestHandler: new NodeHttpHandler({ connectionTimeout: 5_000, requestTimeout: 15_000 }) });
     const result = await this.client.send(new SendEmailCommand({
-      FromEmailAddress: this.options.from, Destination: { ToAddresses: [mail.to] },
+      FromEmailAddress: `=?UTF-8?B?${Buffer.from(this.options.displayName ?? "camelRun Billing").toString("base64")}?= <${this.options.from}>`, Destination: { ToAddresses: [mail.to] },
       ConfigurationSetName: this.options.configurationSet,
       EmailTags: [{ Name: "product", Value: "camelrun-billing" }, { Name: "billing_delivery", Value: mail.delivery }],
-      Content: { Simple: { Subject: { Data: mail.subject, Charset: "UTF-8" }, Body: {
+      Content: { Simple: { Subject: { Data: mail.subject, Charset: "UTF-8" }, Headers: mail.headers, Body: {
         Html: { Data: mail.html, Charset: "UTF-8" }, Text: { Data: mail.text, Charset: "UTF-8" },
       } } },
     }), { abortSignal: signal });
@@ -94,7 +98,8 @@ export class BillingMailer {
       if (message.Type !== "Notification") return c.body(null, 200);
       let event: any;
       try { event = JSON.parse(message.Message); } catch { return c.body(null, 400); }
-      if (event?.mail?.source !== from || !event.mail.tags?.product?.includes("camelrun-billing")) return c.body(null, 200);
+      const source = typeof event?.mail?.source === "string" ? (/<([^<>]+)>$/.exec(event.mail.source)?.[1] ?? event.mail.source).trim().toLowerCase() : "";
+      if (source !== from.toLowerCase() || !event.mail.tags?.product?.includes("camelrun-billing")) return c.body(null, 200);
       const id = event.mail.tags.billing_delivery?.[0];
       if (typeof id !== "string" || !z.uuid().safeParse(id).success) return c.body(null, 200);
       const row = (await db.query(`select r.email from billing_email_outbox o join billing_recipients r on r.id=o.recipient where o.id=$1`, [id])).rows[0];
