@@ -24,7 +24,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/channels.md", about: "Slack, Telegram and Discord" },
   { section: "Guides", path: "production.md", about: "the checklist before shipping" },
   { section: "Reference", path: "reference/sdk.md", about: "the TypeScript and Python SDKs" },
-  { section: "Reference", path: "reference/cli.md", about: "the camelai CLI and MCP server: deploying agent.yaml manifests, running and managing agents from a terminal or a coding agent" },
+  { section: "Reference", path: "reference/cli.md", about: "the Camel Run CLI (camelrun) and MCP servers, hosted at /mcp and local: deploying agent.yaml manifests, running and managing agents from a terminal or a coding agent" },
   { section: "Reference", path: "reference/events.md", about: "every event on an agent's stream, and a run's outcome" },
   { section: "Reference", path: "reference/limits.md", about: "every limit, with its value" },
   { section: "Reference", path: "reference/errors.md", about: "HTTP errors, run failures and tool errors, and what to do about each" },

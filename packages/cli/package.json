@@ -1,7 +1,7 @@
 {
-  "name": "@camelai/cli",
+  "name": "@camelai/camelrun",
   "version": "0.10.0",
-  "description": "Deploy and manage agents on the camelAI agent runtime from a terminal, or from a coding agent over MCP (camelai mcp).",
+  "description": "Camel Run CLI: deploy and manage agents on the camelAI agent runtime from a terminal, or from a coding agent over MCP (camelrun mcp).",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -15,7 +15,7 @@
     "access": "public"
   },
   "bin": {
-    "camelai": "dist/bin.js"
+    "camelrun": "dist/bin.js"
   },
   "files": [
     "dist",

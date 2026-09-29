@@ -4,11 +4,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { parseAllDocuments } from "yaml";
 import { z } from "zod";
 import { Api, enc } from "./api.ts";
-import { VERSION } from "./cli.ts";
+import { VERSION } from "./version.ts";
 import { findManifest, interpolate, loadManifests, parseManifest } from "./manifest.ts";
 import * as ops from "./ops.ts";
 
-const INSTRUCTIONS = `Deploy and manage agents on the camelAI agent runtime (https://agents.camelai.dev).
+const INSTRUCTIONS = `Deploy and manage agents on Camel Run, the camelAI agent runtime (https://agents.camelai.dev).
 
 - An agent is durable and keyed: the same key is the same agent, with its history, until deleted. Tools take an agent's key or its id (client_…).
 - A definition is a reusable configuration (model, system prompt, built-ins, MCP servers, OpenAPI specs). Keep it in the repository as agent.yaml and deploy it with deploy: the same key is the same definition, and deploying again makes a new revision. apply: true also moves live agents to it between their turns.
@@ -20,8 +20,8 @@ const definition = z.string().describe("The definition's key, or its id (def_…
 const wait = z.number().min(0).max(300).optional().describe("Seconds to wait for the run to end (default 50); a run still going comes back as running");
 
 /** Serve the CLI's operations as MCP tools over stdio. Credentials are read on each call, so a login takes effect at once. */
-export async function serve(api: () => Api, cwd: string) {
-  const server = createServer(api, cwd);
+export async function serve(api: () => Api, options: { cwd: string }) {
+  const server = createServer(api, options);
   // The transport does not notice its client going away: stdin ending is that.
   const closed = new Promise<void>(resolve => { server.server.onclose = resolve; process.stdin.once("end", resolve); });
   await server.connect(new StdioServerTransport());
@@ -29,8 +29,14 @@ export async function serve(api: () => Api, cwd: string) {
   await server.close();
 }
 
-export function createServer(api: () => Api, cwd: string) {
-  const server = new McpServer({ name: "camelai-agents", version: VERSION }, { instructions: INSTRUCTIONS });
+/**
+ * The tools, for `api`. With `cwd` they run on the user's machine: deploy reads manifests and the files they name,
+ * and `${NAME}` reads the environment. Without it (the runtime's hosted /mcp), deploy takes the manifest's YAML
+ * only, and reads no file and no environment variable of the server's.
+ */
+export function createServer(api: () => Api, options: { cwd?: string } = {}) {
+  const { cwd } = options;
+  const server = new McpServer({ name: "camelrun", title: "Camel Run", version: VERSION }, { instructions: INSTRUCTIONS });
   const tool = <S extends z.ZodRawShape>(name: string, description: string, input: S, handler: (args: z.infer<z.ZodObject<S>>) => Promise<unknown>, annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {}) => {
     server.registerTool(name, { description, inputSchema: input, annotations }, (async (args: any) => {
       try {
@@ -54,20 +60,30 @@ export function createServer(api: () => Api, cwd: string) {
     return models.map(({ id, name, contextWindow, reasoning, cost, available }) => ({ id, name, available, contextWindow, reasoning, cost }));
   }, read);
 
+  const hosted = cwd === undefined;
   tool("deploy",
     "Deploy agent manifests: upsert each definition by its key (a new revision only when it changed) and make the keyed agents it lists. " +
-    "Give `file` (a path to an agent.yaml; default ./agent.yaml) or `manifest` (the YAML itself). `${NAME}` in strings reads this server's environment.",
+    (hosted
+      ? "Give `manifest`, the YAML itself (as an agent.yaml holds it). This hosted server reads no files and no environment variables: put the system prompt in systemPrompt and any OpenAPI spec in spec."
+      : "Give `file` (a path to an agent.yaml; default ./agent.yaml) or `manifest` (the YAML itself). `${NAME}` in strings reads this server's environment."),
     {
-      file: z.string().optional().describe("Path to the manifest, relative to the working directory"),
-      manifest: z.string().optional().describe("The manifest's YAML, instead of a file"),
+      ...(hosted ? {} : { file: z.string().optional().describe("Path to the manifest, relative to the working directory") }),
+      manifest: hosted ? z.string().describe("The manifest's YAML") : z.string().optional().describe("The manifest's YAML, instead of a file"),
       apply: z.boolean().optional().describe("Also move live agents made from the definition to the new revision, between their turns"),
       dryRun: z.boolean().optional().describe("Show what would be deployed, credentials hidden, without changing anything"),
     },
-    async ({ file, manifest, apply, dryRun }) => {
+    async (args: Record<string, unknown>) => {
+      const { file, manifest, apply, dryRun } = args as { file?: string; manifest?: string; apply?: boolean; dryRun?: boolean };
       if (file && manifest) throw new Error("Give file or manifest, not both");
-      const manifests = manifest
-        ? parseAllDocuments(manifest).map(document => document.toJS()).filter(Boolean).map(document => parseManifest(interpolate(document, process.env, "manifest"), resolve(cwd, "agent.yaml"), "manifest"))
-        : loadManifests(file ? (isAbsolute(file) ? file : resolve(cwd, file)) : findManifest(cwd));
+      const manifests = manifest !== undefined
+        ? parseAllDocuments(manifest).map(document => {
+          if (document.errors.length) throw new Error(`manifest: ${document.errors[0].message}`);
+          return document.toJS();
+        }).filter(document => document != null).map(document => hosted
+          ? parseManifest(interpolate(document, {}, "manifest (a hosted deploy reads no environment variables: write the value in, or deploy with the camelrun CLI)"), "manifest", "manifest", { files: false })
+          : parseManifest(interpolate(document, process.env, "manifest"), resolve(cwd, "agent.yaml"), "manifest"))
+        : loadManifests(file ? (isAbsolute(file) ? file : resolve(cwd!, file)) : findManifest(cwd));
+      if (!manifests.length) throw new Error("manifest: empty");
       const results = await ops.deploy(api(), manifests, { apply, dryRun });
       return dryRun ? results.map((result, index) => ({ ...result, definition: ops.redact(manifests[index].definition) })) : results;
     });
@@ -167,15 +183,9 @@ export function createServer(api: () => Api, cwd: string) {
     return client.call("DELETE", `/v1/agents/${enc(await client.agentId(agent))}/schedules/${enc(scheduleId)}`);
   }, { destructiveHint: true });
 
-  tool("read_docs", "The runtime's documentation as Markdown: with no path, the index (llms.txt); else a page such as guides/definitions.md, guides/tools.md or concepts.md.", {
-    path: z.string().optional(),
-  }, async ({ path }) => {
-    const url = api().url;
-    const page = path ? `/docs/${path.replace(/^\/?(docs\/)?/, "")}` : "/llms.txt";
-    const response = await fetch(url + page);
-    if (!response.ok) throw new Error(`${page}: ${response.status}`);
-    return response.text();
-  }, read);
+  tool("read_docs", "The runtime's documentation as Markdown: with no path, the index (llms.txt); else a page such as guides/definitions.md, guides/tools.md or reference/cli.md.", {
+    path: z.string().regex(/^(?!.*\.\.)[A-Za-z0-9/_.-]*$/).optional(),
+  }, ({ path }) => api().text(path ? `/docs/${path.replace(/^\/?(docs\/)?/, "")}` : "/llms.txt"), read);
 
   return server;
 }

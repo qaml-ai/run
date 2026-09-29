@@ -9,13 +9,13 @@ import { Api } from "../packages/cli/src/api.ts";
 import { main } from "../packages/cli/src/cli.ts";
 import { loadManifests } from "../packages/cli/src/manifest.ts";
 import { createServer } from "../packages/cli/src/mcp.ts";
-import { OPERATOR, lastUser, runtime, toolResults, toolCall } from "./runtime-server.ts";
+import { OPERATOR, lastUser, runtime, toolResults, toolCall, until } from "./runtime-server.ts";
 
 /** The CLI run in-process against `base`, as a script would (JSON out); resolves with its exit code and output. */
 function cli(base: string, cwd: string, env: Record<string, string> = {}) {
   return async (...argv: string[]) => {
     const out: string[] = [], err: string[] = [];
-    const code = await main(argv, { out: text => out.push(text), err: text => err.push(text), tty: false, cwd, env: { CAMELAI_API_KEY: OPERATOR, CAMELAI_URL: base, CAMELAI_CONFIG: join(cwd, "credentials.json"), ...env } });
+    const code = await main(argv, { out: text => out.push(text), err: text => err.push(text), tty: false, cwd, env: { CAMELAI_API_KEY: OPERATOR, CAMELAI_URL: base, CAMELRUN_CONFIG: join(cwd, "credentials.json"), ...env } });
     const text = out.join("\n");
     let json: any;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
@@ -25,7 +25,7 @@ function cli(base: string, cwd: string, env: Record<string, string> = {}) {
 
 test("the CLI deploys a manifest, runs its agent, and manages agents and definitions", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }));
-  const dir = mkdtempSync(join(tmpdir(), "camelai-cli-"));
+  const dir = mkdtempSync(join(tmpdir(), "camelrun-cli-"));
   const run = cli(r.base, dir, { GREETING: "Hello from the manifest." });
 
   const me = await run("whoami");
@@ -77,8 +77,9 @@ test("the CLI deploys a manifest, runs its agent, and manages agents and definit
 
   // An agent that exists is brought to what the manifest now says of it.
   const redeployed = await cli(r.base, dir, { GREETING: "", WORKSPACE: "eu" })("deploy");
-  assert.equal(redeployed.json[0].agents[0].status, "ready", redeployed.text);
-  assert.equal((await run("agents", "get", "support-main")).json.systemPromptAppend, "Workspace eu");
+  assert.deepEqual(redeployed.json[0].agents[0], { key: "support-main", id: deployed.json[0].agents[0].id, status: "ready", reconfigured: true }, redeployed.text);
+  // It lands between the agent's turns, so shortly.
+  await until(async () => (await run("agents", "get", "support-main")).json.systemPromptAppend === "Workspace eu", "the agent to be reconfigured");
 
   const definition = await run("definitions", "get", "support");
   assert.equal(definition.json.id, deployed.json[0].id, "a definition is found by its key");
@@ -111,7 +112,7 @@ test("the CLI deploys a manifest, runs its agent, and manages agents and definit
 test("a run waiting on a person exits 2 and resumes once answered", async t => {
   const ask = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("ask_user", ask) : { role: "assistant", content: `Deploying to ${toolResults(body).at(-1)}` });
-  const dir = mkdtempSync(join(tmpdir(), "camelai-cli-"));
+  const dir = mkdtempSync(join(tmpdir(), "camelrun-cli-"));
   writeFileSync(join(dir, "agent.yaml"), "key: asker\nbuiltins: [ask_user]\nagents: [{ key: asker-1 }]\n");
   const run = cli(r.base, dir);
   assert.equal((await run("deploy")).code, 0);
@@ -131,7 +132,7 @@ test("a run waiting on a person exits 2 and resumes once answered", async t => {
 
 test("login saves a checked key readable only by its owner", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
-  const dir = mkdtempSync(join(tmpdir(), "camelai-cli-"));
+  const dir = mkdtempSync(join(tmpdir(), "camelrun-cli-"));
   const run = cli(r.base, dir, { CAMELAI_API_KEY: "" });
   assert.equal((await run("login", "--api-key", "wrong-key-that-is-at-least-24-chars", "--url", r.base)).code, 1);
   const login = await run("login", "--api-key", OPERATOR, "--url", r.base);
@@ -139,14 +140,14 @@ test("login saves a checked key readable only by its owner", async t => {
   assert.equal(statSync(join(dir, "credentials.json")).mode & 0o777, 0o600);
   const saved = cli(r.base, dir, { CAMELAI_API_KEY: "", CAMELAI_URL: "" });
   // Empty variables are unset ones: the saved login answers.
-  assert.equal((await main(["whoami"], { out: () => {}, err: () => {}, tty: false, cwd: dir, env: { CAMELAI_CONFIG: join(dir, "credentials.json") } })), 0);
+  assert.equal((await main(["whoami"], { out: () => {}, err: () => {}, tty: false, cwd: dir, env: { CAMELRUN_CONFIG: join(dir, "credentials.json") } })), 0);
   assert.equal((await saved("logout")).json.loggedOut, true);
 });
 
 test("the MCP server deploys and runs agents for a coding agent", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }));
-  const dir = mkdtempSync(join(tmpdir(), "camelai-mcp-"));
-  const server = createServer(() => new Api({ url: r.base, apiKey: OPERATOR }), dir);
+  const dir = mkdtempSync(join(tmpdir(), "camelrun-mcp-"));
+  const server = createServer(() => new Api({ url: r.base, apiKey: OPERATOR }), { cwd: dir });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   const client = new Client({ name: "test", version: "1" });

@@ -21,7 +21,7 @@ export const Deleted = z.object({ deleted: z.literal(true) });
 
 export const Me = z.object({
   tenant: z.string(),
-  via: z.enum(["operator", "token", "console"]),
+  via: z.enum(["operator", "token", "console", "oauth"]),
   login: z.string().optional().openapi({ description: "GitHub login, for console sessions" }),
   canStoreKeys: z.boolean(),
   defaultModel: z.string().openapi({ description: "The model an agent gets when it names none, as provider/model-id", example: "anthropic/claude-sonnet-5" }),
@@ -380,6 +380,11 @@ export const Schedule = z.object({
 
 export const TokenInput = z.object({ name: z.string().openapi({ description: "1–80 characters" }) }).openapi("TokenInput");
 export const Token = z.object({ id: z.string(), name: z.string(), prefix: z.string(), createdAt: z.number() }).openapi("Token");
+export const OAuthGrant = z.object({
+  id: z.string(), clientName: z.string().openapi({ description: "The name the application registered with" }),
+  login: z.string().nullable().openapi({ description: "Who consented, when they signed in with GitHub" }),
+  scope: z.string(), createdAt: z.number(), usedAt: z.number().nullable().openapi({ description: "When it last got tokens" }),
+}).openapi("OAuthGrant");
 export const TokenCreated = Token.extend({ token: z.string().openapi({ description: "The secret; shown only once" }) }).openapi("TokenCreated");
 
 const Totals = z.object({

@@ -17,6 +17,9 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY src ./src
 COPY shared ./shared
+# The hosted MCP endpoint (/mcp) serves the camelrun CLI's MCP tools.
+COPY packages/cli/package.json ./packages/cli/package.json
+COPY packages/cli/src ./packages/cli/src
 COPY migrations ./migrations
 # Served at /docs/, /llms.txt and /llms-full.txt, and the UI registry at /r/ (src/docs.ts).
 COPY docs ./docs

@@ -20,7 +20,7 @@ const KEY = /^[A-Za-z0-9_-]{1,80}$/;
 
 export function findManifest(cwd = process.cwd()) {
   const found = DEFAULT_FILES.map(name => resolve(cwd, name)).find(path => existsSync(path));
-  if (!found) throw new Error(`No manifest: expected one of ${DEFAULT_FILES.join(", ")} here, or pass a path (camelai init writes one)`);
+  if (!found) throw new Error(`No manifest: expected one of ${DEFAULT_FILES.join(", ")} here, or pass a path (camelrun init writes one)`);
   return found;
 }
 
@@ -41,19 +41,22 @@ export function loadManifests(file: string, env: Record<string, string | undefin
 }
 
 /** A manifest from its parsed document, with files it names read relative to it. */
-export function parseManifest(document: unknown, path: string, where = path): Manifest {
+export function parseManifest(document: unknown, path: string, where = path, options: { files?: boolean } = {}): Manifest {
   if (!document || typeof document !== "object" || Array.isArray(document)) throw new Error(`${where}: a manifest is a mapping of fields`);
   const { key, agents = [], systemPromptFile, ...definition } = document as Record<string, any>;
   if (typeof key !== "string" || !KEY.test(key)) throw new Error(`${where}: key is required, 1 to 80 letters, digits, _ and - (the same key is the same definition)`);
   if (typeof definition.name !== "string" || !definition.name) definition.name = key;
   const base = dirname(path);
+  const noFiles = (field: string, instead: string) => { if (options.files === false) throw new Error(`${where}: a hosted deploy reads no files, so ${field} cannot be used; give ${instead}, or deploy with the camelrun CLI`); };
   if (systemPromptFile !== undefined) {
+    noFiles("systemPromptFile", "systemPrompt");
     if (definition.systemPrompt !== undefined) throw new Error(`${where}: give systemPrompt or systemPromptFile, not both`);
     definition.systemPrompt = readFileSync(resolve(base, String(systemPromptFile)), "utf8").trim();
   }
   if (Array.isArray(definition.openApi)) {
     definition.openApi = definition.openApi.map((source: any) => {
       if (!source || typeof source !== "object" || source.specFile === undefined) return source;
+      noFiles("specFile", "spec");
       const { specFile, ...rest } = source;
       if (rest.spec !== undefined) throw new Error(`${where}: an openApi source takes spec or specFile, not both`);
       const text = readFileSync(resolve(base, String(specFile)), "utf8");
@@ -84,12 +87,12 @@ export function interpolate(value: unknown, env: Record<string, string | undefin
 }
 
 export function template(key: string, model?: string) {
-  return `# An agent on the camelAI agent runtime. Deploy it with \`camelai deploy\`; deploying again
+  return `# An agent on the camelAI agent runtime. Deploy it with \`camelrun deploy\`; deploying again
 # updates the definition in place (the same key is the same definition).
 # Fields: https://agents.camelai.dev/docs/guides/definitions.md
 key: ${key}
 name: ${key}
-${model ? `model: ${model}` : "# model: anthropic/claude-sonnet-5-5   # camelai models --available lists yours"}
+${model ? `model: ${model}` : "# model: anthropic/claude-sonnet-5-5   # camelrun models --available lists yours"}
 systemPrompt: |
   You are a helpful assistant. Be concise.
 # systemPromptFile: prompts/${key}.md   # or keep the prompt in its own file

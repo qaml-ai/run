@@ -1,14 +1,14 @@
-# @camelai/cli
+# @camelai/camelrun
 
-Deploy and manage agents on the [camelAI agent runtime](https://agents.camelai.dev) from a
-terminal, a script or CI, and give a coding agent the same powers over MCP.
+The Camel Run CLI: deploy and manage agents on the [camelAI agent runtime](https://agents.camelai.dev)
+from a terminal, a script or CI, and give a coding agent the same powers over MCP.
 
 ```sh
-npm install -g @camelai/cli
-camelai login                    # an API key from the console's API tokens page
-camelai init support             # writes agent.yaml
-camelai deploy                   # the definition, and the agents it lists
-camelai run support "Which tickets look urgent?"
+npm install -g @camelai/camelrun
+camelrun login                   # an API key from the console's API tokens page
+camelrun init support            # writes agent.yaml
+camelrun deploy                  # the definition, and the agents it lists
+camelrun run support "Which tickets look urgent?"
 ```
 
 `agent.yaml` keeps an agent's configuration in your repository; deploying again makes a new
@@ -28,17 +28,21 @@ agents:
 ```
 
 Output is JSON when stdout is not a terminal (or with `--json`); exit code 2 means a run waits
-on a person (`camelai inputs`, `camelai answer`).
+on a person (`camelrun inputs`, `camelrun answer`).
 
 ## For coding agents
 
+The hosted MCP server needs nothing installed; sign in when the client asks:
+
 ```sh
-claude mcp add camelai -- npx -y @camelai/cli mcp
+claude mcp add --transport http camelrun https://agents.camelai.dev/mcp
 ```
 
-`camelai mcp` serves `deploy`, `run_agent`, `get_run`, `agent_history`, `list_agents`,
-`answer_input`, `read_docs` and the rest over stdio. Other clients: `{"command": "npx", "args":
-["-y", "@camelai/cli", "mcp"]}`.
+Or run it locally, where its `deploy` also reads your repository's manifests:
+
+```sh
+claude mcp add camelrun -- npx -y @camelai/camelrun mcp
+```
 
 Every command, the manifest's fields and the MCP tools:
 [CLI and MCP server](https://agents.camelai.dev/docs/reference/cli.md).

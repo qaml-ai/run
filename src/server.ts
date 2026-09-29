@@ -20,6 +20,8 @@ import { Ownership } from "./ownership.ts";
 import { tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
 import { ConsoleAuth } from "./console-auth.ts";
+import { OAuth } from "./oauth.ts";
+import { hostedMcp } from "./hosted-mcp.ts";
 import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
@@ -144,6 +146,8 @@ const outbound = outboundFromEnvironment();
 const mcp = new McpConnections({ outbound });
 // Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
 const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
+// OAuth for the hosted MCP endpoint; the issuer follows the signer's, which is the public URL once it is known.
+const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, publicUrl: () => signer.issuer, github: !!github });
 // web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else (prepaid) the
 // platform's, whose calls are charged to credit at that provider's price.
 const webKey = async (tenant: string, provider: string) => {
@@ -437,13 +441,13 @@ const app = new Hono<Env>();
 // node stays healthy (ECS replaces tasks that fail it, protected or not) and hands new work to its peers instead.
 // The runtime's public signing keys: tool servers verify its identity tokens with them.
 app.get("/.well-known/jwks.json", async c => c.json(await signer.jwks(), 200, { "Cache-Control": "public, max-age=300" }));
-// OAuth authorization server metadata (RFC 8414), as MCP's authorization spec reads it: the issuer of
-// identity tokens and where its keys are, so a tool server that names the runtime in its protected-resource
-// metadata can verify them with standard OAuth tooling. The runtime issues tokens only to itself: no endpoints.
+// OAuth authorization server metadata (RFC 8414), as MCP's authorization spec reads it. It serves two purposes: the
+// issuer of identity tokens and where its keys are, so a tool server that names the runtime in its protected-resource
+// metadata can verify them with standard OAuth tooling; and the endpoints MCP clients of the hosted /mcp sign in
+// with (src/oauth.ts), whose access tokens are opaque and never signed with those keys.
 app.get("/.well-known/oauth-authorization-server", c => c.json({
-  issuer: signer.issuer, jwks_uri: `${signer.issuer}/.well-known/jwks.json`,
-  response_types_supported: [], grant_types_supported: [], token_endpoint_auth_methods_supported: [], code_challenge_methods_supported: [],
-}, 200, { "Cache-Control": "public, max-age=300" }));
+  issuer: signer.issuer, jwks_uri: `${signer.issuer}/.well-known/jwks.json`, ...oauth.metadata(),
+}, 200, { "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" }));
 // The public docs (docs/ in the image), for people and for models: cacheable, and readable from any page.
 const docs = loadDocs(resolve(process.env.AGENT_DOCS_DIR ?? fileURLToPath(new URL("../docs", import.meta.url))), publicUrl);
 // The UI registry's JSON (packages/registry/public/r/ in the image), for `npx shadcn add <runtime>/r/<name>.json`.
@@ -514,10 +518,18 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 });
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
+app.route("/", oauth.app);
+// The hosted MCP endpoint: its tools call this node's REST API locally, as the caller.
+const loopbackHost = !process.env.HOST || ["0.0.0.0", "::", "127.0.0.1", "localhost"].includes(process.env.HOST) ? "127.0.0.1" : process.env.HOST.includes(":") ? `[${process.env.HOST}]` : process.env.HOST;
+app.route("/", hostedMcp({
+  authenticate: async authorization => await accounts.authenticate(authorization) ?? await oauth.authenticate(authorization),
+  publicUrl: () => signer.issuer,
+  loopback: () => `http://${loopbackHost}:${(server.address() as { port: number }).port}`,
+}));
 app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, modelProviders, defaultModel: `${model.provider}/${model.id}`, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: `${model.provider}/${model.id}`, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);

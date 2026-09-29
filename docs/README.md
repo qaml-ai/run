@@ -25,7 +25,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Limits](reference/limits.md)
    - [Errors](reference/errors.md)
    - [SDKs](reference/sdk.md): TypeScript and Python, the simple and the lower-level API
-   - [CLI and MCP server](reference/cli.md): deploy and manage agents from a terminal or a coding agent
+   - [CLI and MCP server](reference/cli.md): deploy and manage agents from a terminal, or from a coding agent over the hosted MCP server
    - REST API: [`openapi.json`](../openapi.json), also served at <https://agents.camelai.dev/v1/openapi.json>
 
 Running or developing the runtime itself? See [Operations](operations/README.md).

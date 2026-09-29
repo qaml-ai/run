@@ -13,7 +13,8 @@ export interface DeployResult {
   status: "created" | "updated" | "unchanged" | "planned";
   toolSources?: unknown[];
   applied?: { agent: string; requestId: string; status: string; error?: string }[];
-  agents: { key: string; id?: string; status: "ready" | "failed" | "planned"; error?: string }[];
+  /** reconfigured: an agent that existed takes the manifest's changes to it between its turns. */
+  agents: { key: string; id?: string; status: "ready" | "failed" | "planned"; reconfigured?: true; error?: string }[];
 }
 
 /** Deploy manifests: upsert each definition by its key, apply it to live agents if asked, and make its keyed agents. */
@@ -37,7 +38,7 @@ export async function deploy(api: Api, manifests: Manifest[], options: { apply?:
     for (const { key, ...config } of manifest.agents) {
       try {
         const agent = await api.call("POST", "/v1/agents", { definition: saved.id, ...config }, { "Idempotency-Key": key });
-        result.agents.push({ key, id: agent.id, status: "ready" });
+        result.agents.push({ key, id: agent.id, status: "ready", ...(agent.reconfigured ? { reconfigured: true as const } : {}) });
       } catch (error) {
         result.agents.push({ key, status: "failed", error: (error as Error).message });
       }
@@ -59,7 +60,7 @@ const redactAll = (value: unknown): unknown => value && typeof value === "object
 
 export interface RunSummary {
   agent: string; requestId: string;
-  /** running: it has not ended yet (poll it with `camelai runs get`, or the get_run tool). */
+  /** running: it has not ended yet (poll it with `camelrun runs get`, or the get_run tool). */
   status: "running" | "completed" | "input_required" | "failed";
   text?: string;
   error?: { code: string; message: string };

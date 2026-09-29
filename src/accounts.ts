@@ -15,7 +15,7 @@ import { enqueueEvents, usageEvent, type WebhookEvent } from "./webhooks.ts";
  * Everything is in Postgres (`tenants`, `provider_keys`, `api_tokens`, `usage`), so
  * any node can serve any tenant.
  */
-export interface Principal { tenant: string; via: "operator" | "token" | "console"; tokenId?: string }
+export interface Principal { tenant: string; via: "operator" | "token" | "console" | "oauth"; tokenId?: string }
 /** Whose key an agent calls a provider with: the tenant's own, one an admin set for the tenant, or the platform's (billed to prepaid credit). */
 export type KeySource = "tenant" | "admin" | "platform";
 export interface KeyStatus { provider: string; source: KeySource; last4?: string; setAt?: number }

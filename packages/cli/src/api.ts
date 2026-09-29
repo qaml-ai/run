@@ -24,7 +24,7 @@ export class Api {
   async call<T = any>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
     const response = await this.fetch(this.url + path, {
       method,
-      headers: { Authorization: `Bearer ${this.apiKey}`, "User-Agent": "camelai-cli", ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...headers },
+      headers: { Authorization: `Bearer ${this.apiKey}`, "User-Agent": "camelrun", ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await response.text();
@@ -32,11 +32,17 @@ export class Api {
     try { json = text ? JSON.parse(text) : undefined; } catch { json = undefined; }
     if (!response.ok) {
       const message = json?.error ?? json?.message ?? (text.slice(0, 300) || response.statusText);
-      throw new ApiError(response.status, response.status === 401 ? `${message} (check your API key: camelai login)` : message, json?.code);
+      throw new ApiError(response.status, response.status === 401 ? `${message} (check your API key: camelrun login)` : message, json?.code);
     }
     return json as T;
   }
   get<T = any>(path: string) { return this.call<T>("GET", path); }
+  /** A public document of the runtime's (its docs), as text. */
+  async text(path: string) {
+    const response = await this.fetch(this.url + path);
+    if (!response.ok) throw new ApiError(response.status, `${path}: ${response.status === 404 ? "no such page (read_docs with no path lists them)" : response.statusText}`);
+    return response.text();
+  }
 
   me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.get("/v1/me"); }
 
@@ -52,7 +58,7 @@ export class Api {
     if (keyOrId.startsWith("client_")) return keyOrId;
     const agents = await this.get<{ id: string; key: string | null }[]>("/v1/agents");
     const found = agents.find(agent => agent.key === keyOrId);
-    if (!found) throw new ApiError(404, `No agent with key ${JSON.stringify(keyOrId)} (camelai agents list shows them)`);
+    if (!found) throw new ApiError(404, `No agent with key ${JSON.stringify(keyOrId)} (camelrun agents list shows them)`);
     return found.id;
   }
 }

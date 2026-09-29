@@ -2217,26 +2217,28 @@ temporary local runtime with scripted code, calling no model.
 
 <!-- https://agents.camelai.dev/docs/reference/cli.md -->
 
-# CLI and MCP server
+# Camel Run CLI and MCP server
 
-`camelai` deploys and manages agents from a terminal, a script or CI. `camelai mcp`
-serves the same operations to a coding agent (Claude Code, Cursor, Codex…) as an
-MCP server, so it can write an agent's manifest, deploy it, talk to the agent and
-read what it did.
+`camelrun` deploys and manages agents from a terminal, a script or CI. Coding
+agents (Claude Code, Cursor, Codex…) get the same operations over MCP, so they can
+write an agent's manifest, deploy it, talk to the agent and read what it did:
+from the hosted MCP server at `https://agents.camelai.dev/mcp`, with nothing to
+install ([below](#hosted-mcp-server)), or from `camelrun mcp` on your machine,
+which can also deploy the manifests in your repository.
 
 ```sh
-npm install -g @camelai/cli      # Node 22+; or npx @camelai/cli <command>
-camelai login                    # paste an API key from the console's API tokens page
+npm install -g @camelai/camelrun   # Node 22+; or npx @camelai/camelrun <command>
+camelrun login                     # paste an API key from the console's API tokens page
 ```
 
-`login` checks the key and saves it to `~/.config/camelai/credentials.json` (mode
-600). `CAMELAI_API_KEY` and `CAMELAI_URL` (for a self-hosted runtime), or
+`login` checks the key and saves it to `~/.config/camelrun/credentials.json`
+(mode 600). `CAMELAI_API_KEY` and `CAMELAI_URL` (for a self-hosted runtime), or
 `--api-key` and `--url`, take precedence over it.
 
 ## Deploy from a manifest
 
-An agent's configuration lives in your repository as `agent.yaml`, and `camelai
-deploy` makes it so in the runtime. `camelai init [key]` writes one to start from.
+An agent's configuration lives in your repository as `agent.yaml`, and `camelrun
+deploy` makes it so in the runtime. `camelrun init [key]` writes one to start from.
 
 ```yaml
 key: support                     # the same key is the same definition
@@ -2276,10 +2278,10 @@ agents:                          # keyed agents made from it on deploy
 - A file can hold several manifests as YAML documents separated by `---`.
 
 ```sh
-camelai deploy                   # ./agent.yaml (or agent.yml, agent.json)
-camelai deploy agents/*.yaml     # several files
-camelai deploy --dry-run         # what would change, credentials hidden
-camelai deploy --apply           # also move live agents to the new revision
+camelrun deploy                  # ./agent.yaml (or agent.yml, agent.json)
+camelrun deploy agents/*.yaml    # several files
+camelrun deploy --dry-run        # what would change, credentials hidden
+camelrun deploy --apply          # also move live agents to the new revision
 ```
 
 Deploying upserts each definition by its key: it is created the first time, gets
@@ -2334,41 +2336,13 @@ and agents get JSON without asking. Errors go to stderr, as `{"error", "status",
 | 1 | an error, a failed run, or an agent in a deploy that failed |
 | 2 | the run waits on a person: its `inputs` say what to `answer` |
 
-## MCP server
+## MCP tools
 
-`camelai mcp` is an MCP server over stdio, with tools for everything above:
-`deploy` (a manifest file, or its YAML inline), `list_agents`, `get_agent`,
-`create_agent`, `configure_agent`, `delete_agent`, `run_agent`, `get_run`,
-`agent_history`, `abort_agent`, `list_inputs`, `answer_input`, the schedule and
-definition tools, `list_models`, `whoami`, and `read_docs`, which reads these
-docs. It uses the same credentials as the CLI, read on each call.
-
-Claude Code:
-
-```sh
-claude mcp add camelai -- npx -y @camelai/cli mcp
-# or, with a key of its own:
-claude mcp add camelai -e CAMELAI_API_KEY=art_... -- npx -y @camelai/cli mcp
-```
-
-Cursor, Windsurf and other clients configured with JSON:
-
-```json
-{
-  "mcpServers": {
-    "camelai": { "command": "npx", "args": ["-y", "@camelai/cli", "mcp"], "env": { "CAMELAI_API_KEY": "art_..." } }
-  }
-}
-```
-
-Codex (`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.camelai]
-command = "npx"
-args = ["-y", "@camelai/cli", "mcp"]
-env = { CAMELAI_API_KEY = "art_..." }
-```
+Both MCP servers have tools for everything above: `deploy`, `list_agents`,
+`get_agent`, `create_agent`, `configure_agent`, `delete_agent`, `run_agent`,
+`get_run`, `agent_history`, `abort_agent`, `list_inputs`, `answer_input`, the
+schedule and definition tools, `list_models`, `whoami`, and `read_docs`, which
+reads these docs.
 
 `run_agent` and `get_run` wait at most `wait` seconds (default 50, so a call
 stays inside clients' tool timeouts); a run still going comes back as `running`
@@ -2377,8 +2351,83 @@ with its `requestId`. A run that asks a person something comes back as
 decided. `delete_agent` and `delete_definition` are marked destructive, so
 clients that ask before such calls ask you first.
 
-The key can create and delete every agent in the account. Give a coding agent a
-key of its own (API tokens in the console) so you can revoke it alone.
+## Hosted MCP server
+
+`https://agents.camelai.dev/mcp` serves the tools over Streamable HTTP. Add it
+by URL and sign in when your client asks: the runtime's sign-in page (GitHub,
+or an API token) asks you to allow the client, which then acts for your
+account until you revoke it.
+
+Claude Code:
+
+```sh
+claude mcp add --transport http camelrun https://agents.camelai.dev/mcp
+# then /mcp in Claude Code to sign in; or skip signing in with a key:
+claude mcp add --transport http camelrun https://agents.camelai.dev/mcp --header "Authorization: Bearer art_..."
+```
+
+Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
+connector, with the URL above. Cursor and other clients configured with JSON:
+
+```json
+{ "mcpServers": { "camelrun": { "url": "https://agents.camelai.dev/mcp" } } }
+```
+
+How it differs from `camelrun mcp`:
+
+- `deploy` takes the manifest's YAML (`manifest`), not a file. The hosted
+  server reads no files and no environment variables of its own, so
+  `systemPromptFile`, `specFile` and `${NAME}` are refused: write the values in,
+  or deploy from your machine with `camelrun deploy`.
+- It keeps no session: every request stands alone, on any node.
+
+Signing in is OAuth 2.1, as MCP's authorization spec describes: a `401` from
+`/mcp` names `/.well-known/oauth-protected-resource/mcp`, which names the
+runtime as the authorization server (`/.well-known/oauth-authorization-server`);
+clients register themselves (`/oauth/register`) and use the authorization code
+flow with PKCE. Access tokens last an hour and act as your tenant at `/mcp` and
+the REST API, except that they cannot create API tokens; refresh tokens last 30
+days and rotate on each use, and a refresh token used twice revokes its grant.
+The console's API tokens page lists connected apps under **Connected apps**,
+where you revoke them (or `GET /v1/oauth/grants`, `DELETE
+/v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.
+
+## Local MCP server
+
+`camelrun mcp` serves the tools over stdio, with the CLI's credentials (read on
+each call). Its `deploy` also takes `file`, a path to a manifest (default
+`./agent.yaml`), and reads the files and environment variables it names.
+
+Claude Code:
+
+```sh
+claude mcp add camelrun -- npx -y @camelai/camelrun mcp
+# or, with a key of its own:
+claude mcp add camelrun -e CAMELAI_API_KEY=art_... -- npx -y @camelai/camelrun mcp
+```
+
+Cursor, Windsurf and other clients configured with JSON:
+
+```json
+{
+  "mcpServers": {
+    "camelrun": { "command": "npx", "args": ["-y", "@camelai/camelrun", "mcp"], "env": { "CAMELAI_API_KEY": "art_..." } }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.camelrun]
+command = "npx"
+args = ["-y", "@camelai/camelrun", "mcp"]
+env = { CAMELAI_API_KEY = "art_..." }
+```
+
+A key or a connected app can create and delete every agent in the account. Give
+a coding agent a key of its own, or connect it with OAuth, so you can revoke it
+alone.
 
 ---
 

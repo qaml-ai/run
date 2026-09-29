@@ -40,7 +40,7 @@ for agents and tools that read documentation.
 
 - `src/` server, supervisor, agent host, sessions, scheduler, REST API, sandbox
 - `clients/` the TypeScript and Python SDKs; `sdk/` publishes `@camelai/agent-runtime`
-- `packages/cli/` the `camelai` CLI and MCP server (`@camelai/cli`)
+- `packages/cli/` the `camelrun` CLI and MCP server (`@camelai/camelrun`)
 - `console/` the tenant console; `studio/` a local chat and trace UI
 - `examples/` runnable examples; `docs/` the documentation
 - `migrations/`, `shared/`, `infra/`, `deploy/`, `tests/`

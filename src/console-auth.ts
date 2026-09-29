@@ -23,6 +23,9 @@ export interface ConsoleAuthOptions {
 export const CONSOLE_HEADER = "x-agent-runtime-console";
 const SESSION_COOKIE = "ar_session";
 const STATE_COOKIE = "ar_oauth_state";
+/** Where GitHub sign-in returns to when it was started from the MCP consent page (src/oauth.ts). */
+const NEXT_COOKIE = "ar_next";
+const nextPath = (value: string | undefined) => value && /^\/oauth\/authorize\?[^\s]*$/.test(value) ? value : undefined;
 
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 function cookies(req: Request) {
@@ -68,6 +71,9 @@ export class ConsoleAuth {
     try { return new URL(origin).host === req.headers.get("host"); } catch { return false; }
   }
 
+  /** A session cookie for `tenant`, as sign-in sets it. */
+  session(tenant: string, login?: string) { return this.startSession(tenant, login); }
+
   private startSession(tenant: string, login?: string) {
     const hours = this.options.sessionHours ?? 12;
     const payload = b64(JSON.stringify({ tenant, ...(login ? { login } : {}), exp: Date.now() + hours * 3600_000 }));
@@ -100,7 +106,8 @@ export class ConsoleAuth {
       if (!github.open) authorize.searchParams.set("scope", "read:org");
       authorize.searchParams.set("state", state);
       authorize.searchParams.set("allow_signup", github.open ? "true" : "false");
-      return redirect(c, authorize.href, [this.cookie(STATE_COOKIE, state, 600, "/console/auth")]);
+      const next = nextPath(c.req.query("next"));
+      return redirect(c, authorize.href, [this.cookie(STATE_COOKIE, state, 600, "/console/auth"), ...(next ? [this.cookie(NEXT_COOKIE, encodeURIComponent(next), 600, "/console/auth")] : [])]);
     });
     app.get("/console/auth/callback", async c => {
       const github = this.options.github;
@@ -108,8 +115,10 @@ export class ConsoleAuth {
       const code = c.req.query("code");
       const expected = cookies(c.req.raw)[STATE_COOKIE];
       const clearState = this.cookie(STATE_COOKIE, "", 0, "/console/auth");
+      const next = nextPath(decodeURIComponent(cookies(c.req.raw)[NEXT_COOKIE] ?? ""));
+      const clearNext = this.cookie(NEXT_COOKIE, "", 0, "/console/auth");
       if (!github || !state || !code || !expected || state.length !== expected.length || !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) {
-        return fail(c, "Sign-in expired or was tampered with; try again", [clearState]);
+        return fail(c, "Sign-in expired or was tampered with; try again", [clearState, clearNext]);
       }
       try {
         const exchange = await fetch(new URL("/login/oauth/access_token", github.webUrl ?? "https://github.com"), {
@@ -132,9 +141,9 @@ export class ConsoleAuth {
         const tenant = await this.options.accounts.tenantForGithub(
           { login: user.login, id: user.id, ...(Number.isFinite(createdAt) ? { createdAt } : {}) },
           { minAccountAgeMs: (github.minAccountDays ?? 30) * 86_400_000 });
-        return redirect(c, "/console/", [clearState, this.startSession(tenant, user.login)]);
+        return redirect(c, next ?? "/console/", [clearState, clearNext, this.startSession(tenant, user.login)]);
       } catch (error) {
-        return fail(c, (error as Error).message, [clearState]);
+        return fail(c, (error as Error).message, [clearState, clearNext]);
       }
     });
     // Operator or API token sign-in, for tenants an admin created without GitHub.

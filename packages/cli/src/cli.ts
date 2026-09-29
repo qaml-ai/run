@@ -1,16 +1,16 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Api, enc } from "./api.ts";
 import { DEFAULT_URL, forget, resolve, save } from "./config.ts";
 import { DEFAULT_FILES, findManifest, loadManifests, template } from "./manifest.ts";
 import * as ops from "./ops.ts";
+import { VERSION } from "./version.ts";
 
-export const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
-const HELP = `camelai: deploy and manage agents on the camelAI agent runtime
+const HELP = `camelrun: deploy and manage agents on Camel Run, the camelAI agent runtime
 
-Usage: camelai <command> [options]
+Usage: camelrun <command> [options]
 
 Setup
   login [--api-key art_…]          Save an API key (checked against the runtime)
@@ -48,6 +48,7 @@ Definitions (a definition is its key or its id, def_…)
 
 MCP
   mcp                              Serve these commands as an MCP server over stdio
+                                   (or connect clients to the hosted one: https://agents.camelai.dev/mcp)
 
 Options
   --json                           Print JSON (the default when stdout is not a terminal)
@@ -74,7 +75,7 @@ class UsageError extends Error {}
 export async function main(argv: string[], io: Io = { out: text => process.stdout.write(text + "\n"), err: text => process.stderr.write(text + "\n"), tty: !!process.stdout.isTTY, env: process.env, cwd: process.cwd() }): Promise<number> {
   let parsed;
   try { parsed = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, strict: true }); }
-  catch (error) { io.err(`${(error as Error).message}\n\nRun camelai --help for usage.`); return 1; }
+  catch (error) { io.err(`${(error as Error).message}\n\nRun camelrun --help for usage.`); return 1; }
   const { values: flags, positionals } = parsed;
   if (flags.version) { io.out(VERSION); return 0; }
   const [command, ...args] = positionals;
@@ -86,7 +87,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
     switch (command) {
       case "mcp": {
         const { serve } = await import("./mcp.ts");
-        await serve(() => api(), io.cwd);
+        await serve(() => api(), { cwd: io.cwd });
         return 0;
       }
       case "login": return await login(flags, io, print);
@@ -112,7 +113,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         const path = `${io.cwd}/agent.yaml`;
         if (DEFAULT_FILES.some(name => existsSync(`${io.cwd}/${name}`)) && !flags.force) throw new UsageError("A manifest is already here (--force overwrites agent.yaml)");
         writeFileSync(path, template(key, flags.model));
-        print({ file: path, key }, () => `Wrote ${path}. Edit it, then: camelai deploy`);
+        print({ file: path, key }, () => `Wrote ${path}. Edit it, then: camelrun deploy`);
         return 0;
       }
       case "deploy": {
@@ -127,18 +128,18 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       case "definitions": return await definitions(args, flags, api, print);
       case "run": {
         const [agent, ...words] = args;
-        if (!agent || !words.length) throw new UsageError("Usage: camelai run <agent> <message…>");
+        if (!agent || !words.length) throw new UsageError("Usage: camelrun run <agent> <message…>");
         const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"] });
         return printRun(result, print, io);
       }
       case "runs": {
         const [sub, agent, requestId] = args;
-        if (sub !== "get" || !agent || !requestId) throw new UsageError("Usage: camelai runs get <agent> <requestId> [--wait s]");
+        if (sub !== "get" || !agent || !requestId) throw new UsageError("Usage: camelrun runs get <agent> <requestId> [--wait s]");
         const client = api();
         return printRun(await ops.waitFor(client, await client.agentId(agent), requestId, flags.wait ? Number(flags.wait) : 0), print, io);
       }
       case "history": {
-        if (!args[0]) throw new UsageError("Usage: camelai history <agent> [--limit n]");
+        if (!args[0]) throw new UsageError("Usage: camelrun history <agent> [--limit n]");
         const page = await ops.history(api(), args[0], flags.limit ? Number(flags.limit) : 20);
         print(page, () => page.messages.map((message: any) => {
           const head = message.role === "toolResult" ? `[${message.tool} →]` : `${message.role}${"from" in message ? ` (${message.from})` : ""}:`;
@@ -148,7 +149,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         return 0;
       }
       case "abort": {
-        if (!args[0]) throw new UsageError("Usage: camelai abort <agent>");
+        if (!args[0]) throw new UsageError("Usage: camelrun abort <agent>");
         const client = api();
         const id = await client.agentId(args[0]);
         print(await client.call("POST", `/v1/agents/${enc(id)}/abort`, {}), () => `Aborted the running turn of ${args[0]}`);
@@ -162,7 +163,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       }
       case "answer": {
         const [agent, inputId, ...rest] = args;
-        if (!agent || !inputId || !rest.length) throw new UsageError("Usage: camelai answer <agent> <inputId> <value>");
+        if (!agent || !inputId || !rest.length) throw new UsageError("Usage: camelrun answer <agent> <inputId> <value>");
         const raw = rest.join(" ");
         let value: unknown = raw;
         try { value = JSON.parse(raw); } catch { /* text */ }
@@ -170,7 +171,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note), 0);
       }
       case "schedules": return await schedules(args, flags, api, print);
-      default: throw new UsageError(`Unknown command: ${command}. Run camelai --help`);
+      default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);
     }
   } catch (error) {
     io.err(json && !(error instanceof UsageError) ? JSON.stringify({ error: (error as Error).message, ...("status" in (error as object) ? { status: (error as any).status, code: (error as any).code } : {}) }) : `Error: ${(error as Error).message}`);
@@ -199,23 +200,23 @@ async function agents(args: string[], flags: Flags, api: () => Api, print: (valu
   switch (sub) {
     case "list": case undefined: {
       const list: any[] = await client.get("/v1/agents");
-      print(list, () => list.length ? table(list, ["key", "id", "model", "running", "connected"]) : "No agents yet: camelai deploy, or camelai agents create <key>");
+      print(list, () => list.length ? table(list, ["key", "id", "model", "running", "connected"]) : "No agents yet: camelrun deploy, or camelrun agents create <key>");
       return 0;
     }
     case "get": {
-      if (!target) throw new UsageError("Usage: camelai agents get <agent>");
+      if (!target) throw new UsageError("Usage: camelrun agents get <agent>");
       const detail = await client.get(`/v1/agents/${enc(await client.agentId(target))}`);
       print(detail);
       return 0;
     }
     case "create": {
-      if (!target) throw new UsageError("Usage: camelai agents create <key> [--definition d] [--model m] [--prompt text]");
+      if (!target) throw new UsageError("Usage: camelrun agents create <key> [--definition d] [--model m] [--prompt text]");
       const created = await ops.upsertAgent(client, target, { definition: flags.definition, model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], name: flags.name });
       print(created, () => `${created.key}: ${created.id}${created.reconfigured ? " (reconfigured)" : ""}`);
       return 0;
     }
     case "configure": {
-      if (!target) throw new UsageError("Usage: camelai agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]");
+      if (!target) throw new UsageError("Usage: camelrun agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]");
       const changes = Object.fromEntries(Object.entries({ model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], thinkingLevel: flags.thinking }).filter(([, value]) => value !== undefined));
       if (!Object.keys(changes).length) throw new UsageError("Nothing to change: pass --model, --prompt, --prompt-append or --thinking");
       const result = await ops.configure(client, target, changes);
@@ -223,13 +224,13 @@ async function agents(args: string[], flags: Flags, api: () => Api, print: (valu
       return result.status === "failed" ? 1 : 0;
     }
     case "delete": {
-      if (!target) throw new UsageError("Usage: camelai agents delete <agent> --yes");
+      if (!target) throw new UsageError("Usage: camelrun agents delete <agent> --yes");
       if (!flags.yes) throw new UsageError(`Deleting ${target} stops it and purges its history and files. Pass --yes to go ahead.`);
       const id = await client.agentId(target);
       print(await client.call("DELETE", `/v1/agents/${enc(id)}`), () => `Deleted ${target} (${id})`);
       return 0;
     }
-    default: throw new UsageError(`Unknown: agents ${sub}. Run camelai --help`);
+    default: throw new UsageError(`Unknown: agents ${sub}. Run camelrun --help`);
   }
 }
 
@@ -239,11 +240,11 @@ async function definitions(args: string[], flags: Flags, api: () => Api, print: 
   switch (sub) {
     case "list": case undefined: {
       const list: any[] = await client.get("/v1/definitions");
-      print(list, () => list.length ? table(list, ["id", "name", "revision", "model"]) : "No definitions yet: camelai init, then camelai deploy");
+      print(list, () => list.length ? table(list, ["id", "name", "revision", "model"]) : "No definitions yet: camelrun init, then camelrun deploy");
       return 0;
     }
     case "get": case "agents": case "delete": {
-      if (!target) throw new UsageError(`Usage: camelai definitions ${sub} <definition>`);
+      if (!target) throw new UsageError(`Usage: camelrun definitions ${sub} <definition>`);
       const id = await client.definitionId(target);
       if (sub === "get") print(await client.get(`/v1/definitions/${id}`));
       else if (sub === "agents") {
@@ -255,13 +256,13 @@ async function definitions(args: string[], flags: Flags, api: () => Api, print: 
       }
       return 0;
     }
-    default: throw new UsageError(`Unknown: definitions ${sub}. Run camelai --help`);
+    default: throw new UsageError(`Unknown: definitions ${sub}. Run camelrun --help`);
   }
 }
 
 async function schedules(args: string[], flags: Flags, api: () => Api, print: (value: unknown, human?: () => string) => void) {
   const [sub, agent, scheduleId] = args;
-  if (!agent) throw new UsageError("Usage: camelai schedules list|add|delete <agent> …");
+  if (!agent) throw new UsageError("Usage: camelrun schedules list|add|delete <agent> …");
   const client = api();
   const id = await client.agentId(agent);
   switch (sub) {
@@ -271,18 +272,18 @@ async function schedules(args: string[], flags: Flags, api: () => Api, print: (v
       return 0;
     }
     case "add": {
-      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelai schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
+      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
       const body = { text: flags.text, ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
       const created = await client.call("POST", `/v1/agents/${enc(id)}/schedules`, body);
       print(created, () => `${created.id}: due ${new Date(created.dueAt).toISOString()}`);
       return 0;
     }
     case "delete": {
-      if (!scheduleId) throw new UsageError("Usage: camelai schedules delete <agent> <scheduleId>");
+      if (!scheduleId) throw new UsageError("Usage: camelrun schedules delete <agent> <scheduleId>");
       print(await client.call("DELETE", `/v1/agents/${enc(id)}/schedules/${enc(scheduleId)}`), () => `Deleted ${scheduleId}`);
       return 0;
     }
-    default: throw new UsageError(`Unknown: schedules ${sub}. Run camelai --help`);
+    default: throw new UsageError(`Unknown: schedules ${sub}. Run camelrun --help`);
   }
 }
 
@@ -297,9 +298,9 @@ function waitSeconds(flags: Flags) {
 function printRun(result: ops.RunSummary, print: (value: unknown, human?: () => string) => void, io: Io) {
   print(result, () => {
     switch (result.status) {
-      case "running": return `Still running: camelai runs get ${result.agent} ${result.requestId} --wait 60`;
+      case "running": return `Still running: camelrun runs get ${result.agent} ${result.requestId} --wait 60`;
       case "failed": return `Failed (${result.error?.code}): ${result.error?.message}`;
-      case "input_required": return [result.text, ...(result.inputs ?? []).map(input => `Waiting on ${input.kind} ${input.id}: ${input.message ?? JSON.stringify(input.detail)}\n  camelai answer ${result.agent} ${input.id} <value>`)].filter(Boolean).join("\n");
+      case "input_required": return [result.text, ...(result.inputs ?? []).map(input => `Waiting on ${input.kind} ${input.id}: ${input.message ?? JSON.stringify(input.detail)}\n  camelrun answer ${result.agent} ${input.id} <value>`)].filter(Boolean).join("\n");
       default: return [result.text || "(no reply)", ...(result.toolErrors ?? []).map(error => `tool error: ${JSON.stringify(error)}`)].join("\n");
     }
   });
@@ -320,7 +321,7 @@ function describeDeploy(result: ops.DeployResult) {
   for (const source of (result.toolSources ?? []) as any[]) lines.push(`  tools from ${source.name}: ${source.status === "error" ? `error: ${source.error}` : `${source.tools?.length ?? 0} tools`}`);
   for (const applied of result.applied ?? []) lines.push(`  applied to ${applied.agent}: ${applied.status}${applied.error ? ` (${applied.error})` : ""}`);
   if (result.status === "updated" && !result.applied) lines.push("  live agents keep their revision; deploy with --apply to move them");
-  for (const agent of result.agents) lines.push(`  agent ${agent.key}: ${agent.status}${agent.id ? ` (${agent.id})` : ""}${agent.error ? `: ${agent.error}` : ""}`);
+  for (const agent of result.agents) lines.push(`  agent ${agent.key}: ${agent.status}${agent.id ? ` (${agent.id})` : ""}${agent.reconfigured ? ", reconfigured between its turns" : ""}${agent.error ? `: ${agent.error}` : ""}`);
   return lines.join("\n");
 }
 

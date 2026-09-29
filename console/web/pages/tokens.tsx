@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { KeyRound, Loader2, Plus } from "lucide-react";
+import { KeyRound, Loader2, Plug, Plus } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { CodeBlock, ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type ApiToken } from "@/lib/api";
+import { api, formatTime, useApi, type ApiToken, type OAuthGrant } from "@/lib/api";
 
 function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState("");
@@ -92,7 +92,46 @@ export function TokensPage() {
           </Table>
         </div>
       )}
+      <ConnectedApps />
       {creating && <CreateTokenDialog onClose={() => setCreating(false)} onCreated={() => void tokens.reload()} />}
     </>
+  );
+}
+
+/** Applications connected to the hosted MCP endpoint with OAuth (Claude, Cursor, …), each until revoked. */
+function ConnectedApps() {
+  const grants = useApi<OAuthGrant[]>("/v1/oauth/grants");
+  const [error, setError] = useState<string>();
+  const url = `${window.location.origin}/mcp`;
+  return (
+    <section className="mt-10">
+      <h2 className="text-lg font-semibold">Connected apps</h2>
+      <p className="text-muted-foreground mb-4 text-sm">Coding agents and assistants connect to Camel Run's MCP server at the URL below and sign in here. Each one you allow acts as your tenant, like an API token, until you revoke it.</p>
+      <CodeBlock code={url} />
+      <ErrorAlert error={grants.error ?? error} />
+      {!grants.data ? <Skeleton className="mt-4 h-24 w-full" /> : grants.data.length === 0 ? (
+        <div className="mt-4"><EmptyState icon={<Plug />} title="No connected apps">Add the URL above as a remote MCP server in your client, then sign in when it asks.</EmptyState></div>
+      ) : (
+        <div className="mt-4 rounded-lg border">
+          <Table>
+            <TableHeader><TableRow><TableHead>App</TableHead><TableHead>Allowed by</TableHead><TableHead>Connected</TableHead><TableHead>Last used</TableHead><TableHead /></TableRow></TableHeader>
+            <TableBody>
+              {grants.data.map(grant => (
+                <TableRow key={grant.id}>
+                  <TableCell className="font-medium">{grant.clientName}</TableCell>
+                  <TableCell className="text-muted-foreground text-xs">{grant.login ?? "API token sign-in"}</TableCell>
+                  <TableCell className="text-muted-foreground text-xs">{formatTime(grant.createdAt)}</TableCell>
+                  <TableCell className="text-muted-foreground text-xs">{grant.usedAt ? formatTime(grant.usedAt) : "-"}</TableCell>
+                  <TableCell className="text-right">
+                    <ConfirmButton size="xs" label="Revoke" title={`Disconnect “${grant.clientName}”?`} description="It loses access within seconds, and must be connected again to come back." confirm="Revoke"
+                      onConfirm={async () => { try { await api(`/v1/oauth/grants/${grant.id}`, { method: "DELETE" }); await grants.reload(); } catch (caught) { setError((caught as Error).message); } }} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </section>
   );
 }
