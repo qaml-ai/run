@@ -12,6 +12,7 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const PAYG = "payg-operator-token-at-least-24-chars";
 const OWN = "own-operator-token-at-least-24-chars";
 const OPS = "ops-operator-token-at-least-24-chars";
+const ADMIN_KEYED = "admin-keyed-operator-token-at-least-24";
 const tenantsFile = {
   tenants: {
     payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
@@ -298,4 +299,18 @@ test("a definition pins web_search's providers; a platform search is charged at 
   assert.deepEqual([rates.webSearch, rates.webRender], [{ exa: 7_000, brave: 5_000, parallel: 20_000 }, 830]);
   const providers = (await r.call("/v1/providers", { token: PAYG })).json.filter((provider: any) => provider.kind !== "model").map((provider: any) => [provider.id, provider.kind]);
   assert.deepEqual(providers, [["brave", "search"], ["exa", "search"], ["firecrawl", "fetch"], ["parallel", "search"]]);
+});
+
+test("a search key the operator set for a tenant (its apiKeys) is used, and is not counted as the platform's", async t => {
+  const brave = await fakeBrave(t);
+  const r = await runtime(t, researcher, {
+    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_BRAVE_SEARCH_URL: brave.url, AGENT_WEB_SEARCH_PROVIDERS: "brave",
+    AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_USD: "0.25",
+  }, { ...tenantsFile, tenants: { admin: { tokenSha256: sha(ADMIN_KEYED), apiKeys: { openrouter: "fixture-model-key", brave: "admin-brave-key" } } } });
+  const definition = (await r.call("/v1/definitions", { body: { name: "Researcher", builtins: ["web_search"] }, token: ADMIN_KEYED })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id }, token: ADMIN_KEYED })).json.id;
+  await r.prompt(agent, "look it up", ADMIN_KEYED);
+  assert.equal(brave.searches.at(-1)!.token, "admin-brave-key");
+  const usage = await until(async () => (await r.call("/v1/usage", { token: ADMIN_KEYED })).json.days.find((day: any) => day.model === "brave/web_search"), "the search's usage");
+  assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 0, 0]);
 });

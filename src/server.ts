@@ -148,7 +148,8 @@ const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
 // platform's, whose calls are charged to credit at that provider's price.
 const webKey = async (tenant: string, provider: string) => {
   const resolved = await accounts.providerKey(tenant, provider);
-  return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
+  // Only the platform's own key is the platform's: an admin's key for the tenant (its apiKeys) is the tenant's to account for.
+  return resolved && { key: resolved.key, platform: resolved.source === "platform" };
 };
 const searchTimeoutMs = Number(process.env.AGENT_WEB_SEARCH_TIMEOUT_MS ?? 5_000);
 if (!Number.isInteger(searchTimeoutMs) || searchTimeoutMs < 100 || searchTimeoutMs > 60_000) throw new Error("AGENT_WEB_SEARCH_TIMEOUT_MS must be an integer between 100 and 60000");
