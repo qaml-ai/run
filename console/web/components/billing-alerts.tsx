@@ -73,7 +73,8 @@ function AlertsDialog({ data, refresh, close }: { data: BillingAlerts; refresh()
           {["pending", "unsubscribed"].includes(recipient.status) && <Button variant="link" size="sm" disabled={busy || !data.emailEnabled} onClick={async () => { if (await mutate(`${PATH}/recipients/${recipient.id}/resend`, "POST", {})) setNotice("Confirmation email queued."); }}>{recipient.status === "unsubscribed" ? "Request confirmation" : "Resend"}</Button>}
           <Button variant="ghost" size="sm" aria-label={`Remove ${recipient.email}`} disabled={busy} onClick={() => void mutate(`${PATH}/recipients/${recipient.id}`, "DELETE")}>Remove</Button>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">{CHOICES.map(([key, label]) => <label key={key} className="flex items-center gap-2 text-xs"><input type="checkbox" className="size-4 accent-foreground" checked={recipient.events[key]} disabled={busy} onChange={e => void select(recipient, key, e.target.checked)} />{label}</label>)}</div>
+        {recipient.status === "unsubscribed" && <p className="text-muted-foreground mt-2 text-xs">Alerts resume after this address confirms again.</p>}
+        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">{CHOICES.map(([key, label]) => <label key={key} className="flex items-center gap-2 text-xs"><input type="checkbox" className="size-4 accent-foreground" checked={recipient.events[key]} disabled={busy || recipient.status === "unsubscribed"} onChange={e => void select(recipient, key, e.target.checked)} />{label}</label>)}</div>
       </div>)}
       {!data.recipients.length && <p className="text-muted-foreground py-4 text-sm">No recipients added.</p>}
     </div>

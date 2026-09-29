@@ -159,6 +159,7 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
     ["/v1/billing/alerts/recipients", "POST", { email: "finance@example.test" }],
     ["/v1/billing/alerts/recipients/00000000-0000-4000-8000-000000000000", "DELETE", undefined],
     ["/v1/billing/checkout", "POST", { amountUsd: 20 }],
+    ["/v1/billing/portal", "POST", { flow: "payment_method" }],
   ] as const) assert.equal((await r.call(path, { token: tokens.access_token, method, body })).status, 403, "agents OAuth scope cannot change billing");
   const grants = (await r.call("/v1/oauth/grants")).json;
   assert.deepEqual(grants.map((grant: any) => [grant.clientName, grant.login]), [["Test Agent", null]]);

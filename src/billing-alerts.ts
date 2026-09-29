@@ -161,6 +161,8 @@ export class BillingAlerts {
 
   /** Stable per-recipient capability. It only removes consent and never grants account access. */
   async unsubscribeToken(tenant: string, id: string): Promise<string> {
+    const saved = await this.recipient(this.db, tenant, id);
+    if (saved.unsubscribe_secret) return this.secrets.unseal(`billing-unsubscribe:${id}`, saved.unsubscribe_secret);
     return transaction(this.db, async sql => {
       await lockTenant(sql, tenant);
       const row = await this.recipient(sql, tenant, id);

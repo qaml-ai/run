@@ -654,7 +654,14 @@ export const StartingCreditGrantInput = z.object({
   amountUsd: z.number().min(1).max(100).openapi({ description: "Starting credit to award in USD ($1–$100, whole cents), once per GitHub identity", example: 5 }),
   reason: z.string().trim().min(1).max(500).openapi({ description: "Private support audit note; never included in the tenant's ledger" }),
 }).openapi("StartingCreditGrantInput");
+export const BillingPortalInput = z.object({ flow: z.enum(["manage", "payment_method"]).default("manage") }).strict();
+export const BillingPortal = z.object({ url: z.string() });
+export const BillingPaymentMethod = z.object({
+  portal: z.boolean(), customer: z.boolean(),
+  card: z.object({ brand: z.string(), last4: z.string(), expMonth: z.number(), expYear: z.number() }).nullable(),
+});
 export const CheckoutInput = z.object({
+  requestId: z.uuid().optional().openapi({ description: "Reuse this UUID when retrying the same purchase; a different amount needs a new UUID" }),
   amountUsd: z.number().openapi({ description: "Credit to buy, in USD with at most two decimals; the fee is added on top", example: 10 }),
 }).openapi("CheckoutInput");
 export const Checkout = z.object({

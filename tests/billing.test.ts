@@ -484,8 +484,8 @@ async function fakeStripe(t: { after(fn: () => void | Promise<void>): void }) {
     const params = new URLSearchParams(body);
     requests.push({ path: req.url!, params, idempotencyKey: req.headers["idempotency-key"] as string | undefined, authorization: req.headers.authorization });
     const count = requests.length;
-    const reply = req.url === "/v1/customers" ? { id: `cus_${params.get("metadata[tenant]")}` }
-      : req.url === "/v1/checkout/sessions" ? { id: `cs_test_${count}`, url: `https://checkout.stripe.test/c/pay/cs_test_${count}` }
+    const reply = req.url === "/v1/customers" ? { id: `cus_${params.get("metadata[tenant]")}`, livemode: false }
+      : req.url === "/v1/checkout/sessions" ? { id: `cs_test_${count}`, url: `https://checkout.stripe.test/c/pay/cs_test_${count}`, status: "open", livemode: false, mode: "payment", currency: "usd", customer: params.get("customer"), client_reference_id: params.get("client_reference_id"), metadata: { order: params.get("metadata[order]") }, amount_total: Number(params.get("line_items[0][price_data][unit_amount]")) + Number(params.get("line_items[1][price_data][unit_amount]")), expires_at: Math.floor(Date.now()/1000)+86400 }
       : undefined;
     res.writeHead(reply ? 200 : 404, { "Content-Type": "application/json" }).end(JSON.stringify(reply ?? { error: { message: "No such route" } }));
   });
@@ -526,12 +526,13 @@ test("credit is bought through Stripe Checkout with the fee on top, added once t
   assert.deepEqual(checkout.json, { id: "cs_test_2", url: "https://checkout.stripe.test/c/pay/cs_test_2", amount: 10_000_000, fee: 550_000, total: 10_550_000 });
   const [customer, session] = stripeApi.requests;
   assert.equal(customer.path, "/v1/customers");
-  assert.equal(customer.idempotencyKey, "agent-runtime-customer:payg");
+  assert.match(customer.idempotencyKey!, /^camelrun:customer:/);
   assert.equal(customer.authorization, "Bearer sk_test_fixture");
   const params = Object.fromEntries(session.params);
   assert.equal(params.mode, "payment");
   assert.equal(params.customer, "cus_payg");
-  assert.equal(params.client_reference_id, "payg");
+  assert.equal(params.client_reference_id, params["metadata[order]"]);
+  assert.equal(params["invoice_creation[enabled]"], "true");
   assert.equal(params["line_items[0][price_data][unit_amount]"], "1000");
   assert.equal(params["line_items[1][price_data][unit_amount]"], "55");
   assert.equal(params["line_items[1][price_data][product_data][name]"], "Processing fee (5.5%)");
@@ -544,7 +545,7 @@ test("credit is bought through Stripe Checkout with the fee on top, added once t
 
   const completed = (id: string, extra: object = {}) => ({
     id: `evt_${id}`, type: "checkout.session.completed",
-    data: { object: { id, object: "checkout.session", payment_status: "paid", payment_intent: `pi_${id}`, customer: "cus_payg", amount_total: 1055, currency: "usd", metadata: { purpose: "agent-runtime-credit", tenant: "payg", credit: "10000000" }, ...extra } },
+    data: { object: { id, created: 1, livemode: false, mode: "payment", client_reference_id: params["metadata[order]"], object: "checkout.session", payment_status: "paid", payment_intent: `pi_${id}`, customer: "cus_payg", amount_total: 1055, currency: "usd", metadata: { purpose: "agent-runtime-credit", tenant: "payg", credit: "10000000", order: params["metadata[order]"] }, ...extra } },
   });
   const balance = async () => (await call("/v1/billing", { token: PAYG })).json.balance;
   assert.equal((await webhook(completed("cs_test_2"), "t=1,v1=bad")).status, 400);
@@ -744,7 +745,7 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
   assert.match(limited.json.error, /buy credit/);
 
   // The first purchase lifts both limits at once.
-  const event = { id: "evt_buy", type: "checkout.session.completed", data: { object: { id: "cs_erin", payment_status: "paid", payment_intent: "pi_erin", metadata: { purpose: "agent-runtime-credit", tenant: "erin", credit: "5000000" } } } };
+  const event = { id: "evt_buy", type: "checkout.session.completed", data: { object: { id: "cs_erin", created: 1, livemode: false, payment_status: "paid", payment_intent: "pi_erin", metadata: { purpose: "agent-runtime-credit", tenant: "erin", credit: "5000000" } } } };
   assert.equal((await call("/v1/billing/stripe/webhook", { body: event, token: null, headers: { "Stripe-Signature": signWebhook(WEBHOOK_SECRET, JSON.stringify(event)) } })).status, 200);
   assert.equal((await call("/v1/billing", { token })).json.freeCredit, false);
   assert.equal((await prompt(call, agent.id, token)).result.reply, "finished");

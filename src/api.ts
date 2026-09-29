@@ -611,10 +611,16 @@ export function api(context: ApiContext) {
     method: "post", path: "/v1/billing/checkout", request: { body: content(schema.CheckoutInput) },
     responses: { 201: reply("A Stripe Checkout session; the credit is added once Stripe reports the payment", schema.Checkout) },
   }), async c => {
-    const { amountUsd } = parse(schema.CheckoutInput, await readJson(c.req.raw.body, 4096, {}));
+    const { amountUsd, requestId } = parse(schema.CheckoutInput, await readJson(c.req.raw.body, 4096, {}));
     const amount = Math.round(amountUsd * 100) * 10_000;
     if (Math.abs(amountUsd * 100 - Math.round(amountUsd * 100)) > 1e-6) throw new HttpError(400, "amountUsd must be in whole cents");
-    return json(c, 201, await accounts.billing.checkout(c.var.principal.tenant, amount));
+    return json(c, 201, await accounts.billing.checkout(c.var.principal.tenant, amount, requestId));
+  });
+  route(createRoute({ method: "get", path: "/v1/billing/payment-method", responses: { 200: reply("Saved card display details from Stripe", schema.BillingPaymentMethod) } }),
+    async c => json(c, 200, await accounts.billing.paymentMethod(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/billing/portal", request: { body: content(schema.BillingPortalInput) }, responses: { 201: reply("Stripe-hosted billing portal", schema.BillingPortal) } }), async c => {
+    const { flow } = parse(schema.BillingPortalInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 201, await accounts.billing.portal(c.var.principal.tenant, flow));
   });
   route(createRoute({
     method: "post", path: "/v1/billing/starting-credit/grant", request: { body: content(schema.StartingCreditGrantInput) },

@@ -3,8 +3,9 @@ import type { Tenants } from "./tenants.ts";
 import { transaction, type Db, type Sql } from "./db.ts";
 import type { Storage } from "../shared/storage.ts";
 import { HttpError } from "./http.ts";
-import { DEFAULT_PRICING, MICROS, purchaseFee, storageCharge, type Pricing } from "./pricing.ts";
+import { DEFAULT_PRICING, MICROS, storageCharge, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
+import { BillingPayments, stripeId } from "./billing-payments.ts";
 import type { StorageUsage } from "./storage-usage.ts";
 
 /**
@@ -125,6 +126,7 @@ export class Billing {
   readonly tenants: Tenants;
   readonly pricing: Pricing;
   private readonly options: BillingOptions;
+  readonly payments?: BillingPayments;
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
@@ -135,6 +137,7 @@ export class Billing {
     this.db = options.db;
     this.tenants = options.tenants;
     this.pricing = options.pricing ?? DEFAULT_PRICING;
+    if (options.stripe) this.payments = new BillingPayments(this.db, options.stripe, this.pricing, options.publicUrl);
   }
 
   /** Admin tenants are billed as their entry says (unbilled by default); tenants created by sign-in as their row says. */
@@ -307,41 +310,27 @@ export class Billing {
    * A Stripe Checkout session buying `amount` of credit (whole cents), with the fee as a
    * line of its own. The credit is added when Stripe reports the payment (`webhook`).
    */
-  async checkout(tenant: string, amount: number) {
+  async checkout(tenant: string, amount: number, requestId?: string) {
     const stripe = this.options.stripe;
     if (!stripe) throw new HttpError(503, "Credit purchases are not configured on this runtime");
     if (await this.mode(tenant) !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
-    const { minPurchase, maxPurchase, purchaseFeeBps } = this.pricing;
+    const { minPurchase, maxPurchase } = this.pricing;
     if (!Number.isSafeInteger(amount) || amount % CENT || amount < minPurchase || amount > maxPurchase) {
       throw new HttpError(400, `Buy between ${usd(minPurchase)} and ${usd(maxPurchase)} of credit, in whole cents`);
     }
-    const fee = purchaseFee(this.pricing, amount);
-    const customer = await this.customer(tenant);
-    const page = `${this.options.publicUrl ?? ""}/console/billing`;
-    const metadata = { purpose: PURPOSE, tenant, credit: String(amount) };
-    const session = await stripe.post<{ id: string; url: string }>("/v1/checkout/sessions", {
-      mode: "payment", customer, client_reference_id: tenant, metadata, payment_intent_data: { metadata },
-      line_items: [
-        { quantity: 1, price_data: { currency: "usd", unit_amount: amount / CENT, product_data: { name: "camelRun credit" } } },
-        ...(fee ? [{ quantity: 1, price_data: { currency: "usd", unit_amount: fee / CENT, product_data: { name: `Processing fee (${purchaseFeeBps / 100}%)` } } }] : []),
-      ],
-      // Stripe fills in the session id, so the console can wait for this purchase rather than any.
-      success_url: `${page}?checkout=success&session={CHECKOUT_SESSION_ID}`, cancel_url: `${page}?checkout=cancelled`,
-    });
-    return { id: session.id, url: session.url, amount, fee, total: amount + fee };
+    return this.payments!.checkout(tenant, amount, requestId);
   }
 
-  /** The tenant's Stripe customer, created at its first checkout. */
-  private async customer(tenant: string): Promise<string> {
-    const row = (await this.db.query("select stripe_customer from credit_accounts where tenant = $1", [tenant])).rows[0];
-    if (row?.stripe_customer) return row.stripe_customer;
-    // Concurrent first checkouts send the same idempotency key, so Stripe makes one customer.
-    const created = await this.options.stripe!.post<{ id: string }>("/v1/customers", { name: tenant, metadata: { purpose: PURPOSE, tenant } }, `agent-runtime-customer:${tenant}`);
-    const { rows } = await this.db.query(`
-      insert into credit_accounts (tenant, stripe_customer) values ($1, $2)
-      on conflict (tenant) do update set stripe_customer = coalesce(credit_accounts.stripe_customer, excluded.stripe_customer)
-      returning stripe_customer`, [tenant, created.id]);
-    return rows[0].stripe_customer;
+  async portal(tenant: string, flow: "manage" | "payment_method") {
+    if (!this.payments) throw new HttpError(503, "Stripe billing is not configured");
+    if (await this.mode(tenant) !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
+    return this.payments.portal(tenant, flow);
+  }
+
+  async paymentMethod(tenant: string) {
+    if (!this.payments) return { portal: false, customer: false, card: null };
+    if (await this.mode(tenant) !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
+    return this.payments.paymentMethod(tenant);
   }
 
   /**
@@ -354,22 +343,26 @@ export class Billing {
     if (!stripe) throw new HttpError(404, "Credit purchases are not configured on this runtime");
     const event = stripe.verify(payload, signature);
     if (!event) throw new HttpError(400, "Invalid Stripe signature");
+    if (event.livemode !== undefined && event.livemode !== stripe.live) return { handled: "ignored" };
     const object = event.data?.object ?? {};
     if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
       if (object.metadata?.purpose !== PURPOSE) return { handled: "ignored" };
       if (object.payment_status !== "paid") return { handled: "awaiting payment" };
-      const tenant = object.metadata.tenant, amount = Number(object.metadata.credit);
+      const order = await this.payments!.purchase(object);
+      const tenant = order?.tenant ?? object.metadata.tenant, amount = order?.amount ?? Number(object.metadata.credit);
       if (typeof tenant !== "string" || !Number.isSafeInteger(amount) || amount <= 0) throw new HttpError(400, "Checkout session without a tenant or credit amount");
       if (typeof object.id !== "string") throw new HttpError(400, "Checkout session without an id");
-      const paymentIntent = typeof object.payment_intent === "string" ? object.payment_intent : object.payment_intent?.id;
+      const paymentIntent = stripeId(object.payment_intent);
+      if (order && !paymentIntent) throw new HttpError(400, "Paid Checkout has no payment intent");
       const posted = await transaction(this.db, async sql => {
+        if (order) await this.payments!.recordPaid(sql, order, object, paymentIntent!);
         await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-payment:${paymentIntent ?? object.id}`]);
         const prior = (await sql.query("select tenant, amount, metadata from credit_ledger where idempotency_key=$1", [`purchase:${object.id}`])).rows[0];
         const samePayment = paymentIntent && (await sql.query("select metadata from credit_ledger where kind='purchase' and metadata->>'paymentIntent'=$1", [paymentIntent])).rows[0];
         if (samePayment && samePayment.metadata.session !== object.id) throw new HttpError(400, "Payment is already attached to another purchase");
         if (prior && (prior.tenant !== tenant || prior.amount !== amount || prior.metadata.paymentIntent !== (paymentIntent ?? null))) throw new HttpError(400, "Checkout session conflicts with its recorded purchase");
         const purchase: LedgerEntry = { tenant, kind: "purchase", amount, key: `purchase:${object.id}`,
-          metadata: prior?.metadata ?? { session: object.id, paymentIntent: paymentIntent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null } };
+          metadata: prior?.metadata ?? { session: object.id, paymentIntent: paymentIntent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null, ...(order ? { order: order.id, invoice: stripeId(object.invoice) ?? null } : {}) } };
         const refunds = paymentIntent ? await this.refundEntries(sql, purchase, paymentIntent) : [];
         // Fulfillment and earlier refunds move the balance together. A fully
         // refunded purchase never exposes temporary credit or a false depletion.
@@ -418,8 +411,11 @@ export class Billing {
     let remaining = Math.max(0, purchase.amount - applied.reduce((sum, row) => sum + Number(row.amount), 0));
     const entries: LedgerEntry[] = [];
     for (const refund of refunds) {
-      if (purchase.metadata?.currency && refund.currency && purchase.metadata.currency !== refund.currency) throw new HttpError(400, "Refund currency does not match purchase");
-      if (typeof purchase.metadata?.paid === "number" && purchase.metadata.paid !== refund.amount) throw new HttpError(400, "Refund charge amount does not match purchase");
+      if ((purchase.metadata?.currency && refund.currency && purchase.metadata.currency !== refund.currency)
+        || (typeof purchase.metadata?.paid === "number" && purchase.metadata.paid !== refund.amount)) {
+        console.error(JSON.stringify({ type: "billing_reconciliation_required", kind: "refund_mismatch", charge: refund.charge, paymentIntent }));
+        throw new HttpError(400, "Refund amount or currency does not match purchase");
+      }
       const already = Number(applied.find(row => row.charge === refund.charge)?.amount ?? 0);
       // BigInt keeps rounding exact even for large valid cumulative totals.
       const target = Number((BigInt(purchase.amount) * BigInt(refund.refunded) * 2n + BigInt(refund.amount)) / (BigInt(refund.amount) * 2n));

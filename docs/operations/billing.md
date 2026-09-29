@@ -117,7 +117,7 @@ accounts no automatic catch-up grant. Their status is `not_granted`, without
 guessing why the historical grant is absent. Decision records survive tenant
 deletion to prevent a recreated identity from receiving another award.
 
-**Buying credit.** `POST /v1/billing/checkout {amountUsd}` ($5 to $1000, whole
+**Buying credit.** `POST /v1/billing/checkout {amountUsd, requestId?}` ($5 to $1000, whole
 cents) creates a Stripe Checkout session (mode `payment`) for the tenant's Stripe
 customer, with a 5.5% processing fee as a line of its own ($10 of credit costs
 $10.55), and returns its `url`; Stripe returns the buyer to
@@ -140,11 +140,61 @@ Older cumulative refund totals cannot reverse newer ones; a refund never removes
 more credit than its purchase supplied. Refund records without a product tag are
 kept because an older Checkout event can still arrive later.
 
-Setup: create a restricted key
-(Customers and Checkout Sessions, write) and a webhook endpoint at
-`https://<host>/v1/billing/stripe/webhook` for those three events, then run
-`infra/stripe.sh` and paste the key and the signing secret; it stores them in the
-`stripe` secret and rolls the service.
+New Checkouts create a paid invoice as well as a receipt. Before the Stripe call,
+`billing_checkouts` stores the tenant, environment, customer, amount, fee, currency,
+API version and complete request parameters. Supply a UUID `requestId` and reuse it
+for retries of the same purchase; changing its amount returns 409. The console
+keeps the same ID while retrying an amount in its open purchase dialog. Callers
+that omit the ID create a fresh purchase on each request.
+
+The saved parameters and Stripe idempotency key survive restarts and price changes.
+An ambiguous create is never retried after 23 hours (Stripe can prune keys after 24
+hours). It returns 409 and logs `billing_reconciliation_required`; reconcile the
+existing object in Stripe before taking further action. A known session is
+retrieved, not re-created. Fulfillment checks the recorded customer, environment,
+currency, total and session/order IDs. Metadata cannot change the credit or tenant.
+`invoice.paid` does not credit a second time; manual purchases are fulfilled only
+from paid Checkout events. Purchase, early refunds and the order's paid marker
+commit together.
+
+Migration 036 records a cutover timestamp. **Drain older Checkout creators before
+migrating, then replace all old billing webhook handlers before accepting new
+purchases.** Only unregistered sessions created at or before cutover use legacy
+metadata fulfillment. Historical sessions remain payable; new unregistered ones
+are rejected. Test and live customers have separate durable rows. Existing
+customers are adopted only after Stripe confirms their environment and the
+product/tenant tags used by the previous integration.
+
+`POST /v1/billing/portal {flow: "manage"}` opens Stripe's billing portal for an
+existing customer. `flow: "payment_method"` creates the customer if needed and
+opens Stripe's focused card-update flow, which sets the customer's default payment
+method. Both use a fixed console return URL and accept no customer ID or caller
+return URL. Saving a card does not enable auto top-up or authorize a charge.
+`GET /v1/billing/payment-method` reads the default card from Stripe and returns only
+brand, last four digits and expiry. No card number, fingerprint or payment-method
+ID is exposed. OAuth agents cannot create Checkout or portal sessions.
+
+Set `AGENT_STRIPE_PORTAL_CONFIGURATION` to a dedicated configuration with metadata
+`purpose=agent-runtime-credit`, invoice history and payment-method updates enabled,
+and subscription cancellation/updates disabled. The server verifies these settings
+and the environment before opening the portal. The Billing page shows **Manage
+billing** once the tenant has a Stripe customer and the portal is configured.
+Portal customer emails are independent of the confirmed billing-alert recipients.
+
+Setup: use a restricted key with Customer and Checkout Session read/write, and
+Customer Portal Session write and Configuration read permissions. Invoice creation
+must be enabled for these one-time purchases. Pin the webhook endpoint to
+`2026-08-26.dahlia`, matching the request `Stripe-Version`, and subscribe to
+`checkout.session.completed`, `checkout.session.async_payment_succeeded`, and
+`charge.refunded`. Keep the key and signing secret in `AGENT_STRIPE_SECRET_ARN`
+(or the development environment variables). Use a separate Stripe sandbox for
+integration validation before live rollout. The local suite uses an isolated
+Postgres database and an HTTP Stripe fake; it does not verify account permissions,
+portal branding, hosted pages, or live invoice generation.
+
+Tax is not enabled by this change. Confirm applicable registrations and the tax
+setup before adding Stripe Tax; turning on `automatic_tax` alone is insufficient.
+See [Stripe Tax for Checkout](https://docs.stripe.com/tax/checkout).
 
 
 ## Balance notices and billing email

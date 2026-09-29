@@ -17,7 +17,7 @@ async function fixture() {
   const account = async () => (await db.query("select balance,purchased from credit_accounts where tenant='alice'")).rows[0];
   return { db, billing, send, account };
 }
-const purchase = { id: "cs_refund", payment_status: "paid", payment_intent: "pi_refund", customer: "cus_alice", amount_total: 1055, currency: "usd",
+const purchase = { created: 1, livemode: false, id: "cs_refund", payment_status: "paid", payment_intent: "pi_refund", customer: "cus_alice", amount_total: 1055, currency: "usd",
   metadata: { purpose: "agent-runtime-credit", tenant: "alice", credit: "10000000" } };
 const refund = (amount = 1055) => ({ id: "ch_refund", payment_intent: "pi_refund", amount: 1055, amount_refunded: amount, currency: "usd" });
 

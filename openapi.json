@@ -3127,6 +3127,11 @@
       "CheckoutInput": {
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Reuse this UUID when retrying the same purchase; a different amount needs a new UUID"
+          },
           "amountUsd": {
             "type": "number",
             "description": "Credit to buy, in USD with at most two decimals; the fee is added on top",
@@ -8279,6 +8284,138 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Checkout"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/payment-method": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Saved card display details from Stripe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "portal": {
+                      "type": "boolean"
+                    },
+                    "customer": {
+                      "type": "boolean"
+                    },
+                    "card": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "brand": {
+                          "type": "string"
+                        },
+                        "last4": {
+                          "type": "string"
+                        },
+                        "expMonth": {
+                          "type": "number"
+                        },
+                        "expYear": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "brand",
+                        "last4",
+                        "expMonth",
+                        "expYear"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "portal",
+                    "customer",
+                    "card"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/portal": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "flow": {
+                    "type": "string",
+                    "enum": [
+                      "manage",
+                      "payment_method"
+                    ],
+                    "default": "manage"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Stripe-hosted billing portal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ]
                 }
               }
             }

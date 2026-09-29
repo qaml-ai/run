@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CheckCircle2, Loader2, Plus, Receipt } from "lucide-react";
 import { BillingAlertsSection } from "@/components/billing-alerts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -58,21 +58,24 @@ function LedgerTable({ entries }: { entries: LedgerEntry[] }) {
   );
 }
 
-const AMOUNTS = [5, 10, 25, 50, 100];
+const AMOUNTS = [10, 25, 50, 100];
 
 /** Choose an amount, then pay for it on Stripe's checkout page, which returns here. */
 function AddCreditDialog({ rates, onClose }: { rates: Billing["rates"]; onClose: () => void }) {
   const [choice, setChoice] = useState("10");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const attempt = useRef<{ amount: number; requestId: string } | null>(null);
   const amount = Math.round(Number(choice) * 100) * 10_000;
-  const valid = Number.isFinite(Number(choice)) && amount >= rates.minPurchase && amount <= rates.maxPurchase;
+  const valid = Number.isFinite(Number(choice)) && Math.abs(Number(choice) * 100 - Math.round(Number(choice) * 100)) < 1e-6 && amount >= rates.minPurchase && amount <= rates.maxPurchase;
   // Whole cents, as the server and Stripe round it.
   const fee = Math.round(amount * rates.purchaseFeeBps / 10_000 / 10_000) * 10_000;
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (busy || !valid) return;
     setBusy(true); setError(undefined);
-    try { location.assign((await api<{ url: string }>("/v1/billing/checkout", { body: { amountUsd: Number(choice) } })).url); }
+    if (attempt.current?.amount !== amount) attempt.current = { amount, requestId: crypto.randomUUID() };
+    try { location.assign((await api<{ url: string }>("/v1/billing/checkout", { body: { amountUsd: Number(choice), requestId: attempt.current.requestId } })).url); }
     catch (caught) { setError((caught as Error).message); setBusy(false); }
   }
   return (
@@ -86,12 +89,12 @@ function AddCreditDialog({ rates, onClose }: { rates: Billing["rates"]; onClose:
           <ErrorAlert error={error} />
           <div className="flex flex-wrap gap-2">
             {AMOUNTS.map(value => (
-              <Button key={value} type="button" size="sm" variant={choice === String(value) ? "default" : "outline"} onClick={() => setChoice(String(value))}>${value}</Button>
+              <Button key={value} type="button" size="sm" variant={choice === String(value) ? "default" : "outline"} disabled={busy} onClick={() => setChoice(String(value))}>${value}</Button>
             ))}
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="credit-amount">Amount (USD)</Label>
-            <Input id="credit-amount" inputMode="decimal" value={choice} onChange={event => setChoice(event.target.value.replace(/[^0-9.]/g, ""))} />
+            <Input id="credit-amount" disabled={busy} inputMode="decimal" value={choice} onChange={event => setChoice(event.target.value.replace(/[^0-9.]/g, ""))} />
             <p className="text-muted-foreground text-xs">Between {formatMicros(rates.minPurchase)} and {formatMicros(rates.maxPurchase)}.</p>
           </div>
           {valid && (
@@ -135,6 +138,14 @@ export function BillingPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const data = billing.data;
+  const payment = useApi<{ portal: boolean; customer: boolean }>(data?.billing === "prepaid" && data.checkout ? "/v1/billing/payment-method" : undefined);
+  const [portalBusy, setPortalBusy] = useState(false);
+  async function manageBilling() {
+    if (portalBusy) return;
+    setPortalBusy(true); setError(undefined);
+    try { location.assign((await api<{ url: string }>("/v1/billing/portal", { body: { flow: "manage" } })).url); }
+    catch (caught) { setError((caught as Error).message); setPortalBusy(false); }
+  }
   const entries = [...(data?.recent ?? []), ...older];
   const cursor = next === undefined ? data?.recent.at(-1)?.id : next;
   // The purchase has arrived once its entry (by checkout session; else any purchase in the last 15 minutes)
@@ -164,12 +175,15 @@ export function BillingPage() {
   return (
     <>
       <PageHeader title="Billing" description="Prepaid credit pays for model usage on the platform's keys at cost, time your agents spend in turns, and storage."
-        actions={data?.billing === "prepaid" && data.checkout && <Button onClick={() => setAdding(true)}><Plus />Add credit</Button>} />
-      <ErrorAlert error={billing.error ?? error} />
+        actions={data?.billing === "prepaid" && data.checkout && <>
+          {payment.data?.portal && payment.data.customer && <Button variant="outline" disabled={portalBusy} onClick={() => void manageBilling()}>Manage billing</Button>}
+          <Button onClick={() => setAdding(true)}><Plus />Add credit</Button>
+        </>} />
+      <ErrorAlert error={billing.error ?? error ?? payment.error} />
       {returned === "success" && data?.billing !== "none" && (
         <Alert className="mb-4">
           {arrived ? <CheckCircle2 className="text-[#5aa7ff]!" /> : gaveUp ? <Receipt /> : <Loader2 className="animate-spin" />}
-          <AlertTitle>{arrived ? "Credit added" : "Payment received"}</AlertTitle>
+          <AlertTitle>{arrived ? "Credit added" : "Confirming payment"}</AlertTitle>
           <AlertDescription>
             {arrived ? "Thank you. Your new balance is below."
               : gaveUp ? "Stripe hasn't confirmed the payment yet. The credit is added when it does; refresh this page later."
