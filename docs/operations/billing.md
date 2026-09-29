@@ -181,8 +181,9 @@ and the environment before opening the portal. The Billing page shows **Manage
 billing** once the tenant has a Stripe customer and the portal is configured.
 Portal customer emails are independent of the confirmed billing-alert recipients.
 
-Setup: use a restricted key with Customer and Checkout Session read/write, and
-Customer Portal Session write and Configuration read permissions. Invoice creation
+Setup: in Stripe's restricted-key Dashboard, set **Customers**, **Checkout
+Sessions** and **Customer Portal** to **Write**. The Customer Portal permission
+covers session creation and configuration reads. Invoice creation
 must be enabled for these one-time purchases. Pin the webhook endpoint to
 `2026-08-26.dahlia`, matching the request `Stripe-Version`, and subscribe to
 `checkout.session.completed`, `checkout.session.async_payment_succeeded`, and
@@ -401,10 +402,22 @@ No pager destination or production routing is configured by this change.
 Subscribe the existing signed Stripe endpoint to `invoice.paid`,
 `invoice.payment_failed`, `invoice.payment_action_required`, and `invoice.voided`
 as well as the existing Checkout/refund events. Invoice events wake observation;
-periodic polling recovers missed or reordered events. Extend the restricted key
-with Invoice and Invoice Item read/write, Invoice Payment read, PaymentIntent
-read, and PaymentMethod read permissions. Verify hosted flows and these
-permissions in a separate Stripe sandbox before rollout.
+periodic polling recovers missed or reordered events. For automatic top-up,
+add these Dashboard permissions to the restricted key:
+
+| Resource | Permission |
+| --- | --- |
+| Invoices | Write |
+| Payment Intents | Read |
+| Payment Methods | Read |
+
+Invoices includes invoice-item creation, finalization, payment, voiding and
+Invoice Payment reads. All other resources and Connect permissions can remain
+None. These six combined scopes passed test-mode acceptance on
+`2026-08-26.dahlia`: Checkout creation/retrieval, both portal flows, automatic
+refill and invoice reconciliation, including recovery without webhook forwarding.
+Verify the deployed key and hosted flows in the intended Stripe environment
+before live rollout; this check did not provision production credentials.
 
 Events `billing.topup.receipt`, `.declined`, `.action_required`, `.no_card`,
 `.limit`, and `.reconcile` feed the existing signed webhook and email outboxes.
