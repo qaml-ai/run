@@ -26,7 +26,8 @@ export class Api {
   private readonly headers: Record<string, string>;
   private readonly fetch: typeof globalThis.fetch;
   private tenant?: Promise<string>;
-  constructor(credentials: Credentials, fetch = globalThis.fetch) {
+  // Browser fetch requires the global receiver, even when stored on this client.
+  constructor(credentials: Credentials, fetch = globalThis.fetch.bind(globalThis)) {
     this.url = credentials.url.replace(/\/+$/, "");
     this.apiKey = credentials.apiKey;
     this.headers = credentials.headers ?? {};
