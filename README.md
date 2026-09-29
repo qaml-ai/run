@@ -60,3 +60,9 @@ The client SDKs and frontend packages are MIT, so you can use them in any applic
 - `packages/` (React, Vue, Svelte, Solid, `create-agent-app`, the CLI): MIT, each with its own `LICENSE`
 - `shared/client-protocol.ts`, which ships inside the SDK: MIT
 - `examples/`: [MIT](examples/LICENSE)
+
+### Commercial licensing
+
+If the AGPL-3.0 doesn't work for your organization, we offer the runtime under a commercial license too. Contact us through [camelai.com](https://camelai.com).
+
+Contributions are accepted under our [Contributor License Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md).
