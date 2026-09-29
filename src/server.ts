@@ -47,7 +47,7 @@ import { errorCode, errorStatus, HttpError, readJson, readText } from "./http.ts
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
-import { webhookBacklogLine } from "./metrics.ts";
+import { recordCreate, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
@@ -194,8 +194,21 @@ webhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 // Idempotency keys' answers are kept a day.
 setInterval(() => void expireIdempotencyKeys(db).catch(error => console.error(JSON.stringify({ type: "idempotency_expiry_failed", error: errorText(error) }))), 60 * 60_000).unref();
 
-/** Provision an agent for `tenant` (POST /v1/agents). */
+/** Provision an agent for `tenant` (POST /v1/agents), recording how long each step took (`create_timing`). */
 async function createAgent(tenant: string, params: any, key?: string) {
+  const steps = new Steps();
+  const made: { agent?: string; upsert: boolean } = { upsert: false };
+  try {
+    const result = await provisionAgent(tenant, params, key, steps, made);
+    recordCreate(steps, { tenant, ...made });
+    return result;
+  } catch (error) {
+    recordCreate(steps, { tenant, ...made, error: errorText(error) });
+    throw error;
+  }
+}
+
+async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
   const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, ...rest } = params ?? {};
   // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
@@ -209,13 +222,14 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
   const modelHeaders = headers === undefined ? null : modelHeadersInput(headers);
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
-  const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
+  const made = params?.definition !== undefined ? await steps.time("definition", definitions.provision(tenant, params)) : undefined;
   if (made) params = made.params;
-  const custom = await modelProviders.resolvable(tenant, keyScope);
-  const fallback = params.model === undefined ? await defaultModelFor(tenant, keyScope) : model;
+  const custom = await steps.time("providers", modelProviders.resolvable(tenant, keyScope));
+  const fallback = params.model === undefined ? await steps.time("providers", defaultModelFor(tenant, keyScope)) : model;
   const config = { ...sessionConfig(params, fallback, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
   // A custom provider's models need no key of the tenant's: the provider has its own, or takes none.
-  if (!Object.hasOwn(custom ?? {}, config.model.provider) && !(keyScope && await keyScopes.entry(tenant, keyScope, config.model.provider)) && !await accounts.hasKey(tenant, config.model.provider)) {
+  const keyed = async () => Object.hasOwn(custom ?? {}, config.model.provider) || !!(keyScope && await keyScopes.entry(tenant, keyScope, config.model.provider)) || await accounts.hasKey(tenant, config.model.provider);
+  if (!await steps.time("key", keyed)) {
     // Said plainly when the model is the runtime's default: the caller may not know one was chosen for it.
     const which = `${config.model.provider}/${config.model.id}${params.model === undefined ? ", the runtime's default model (this agent names none)" : ""}`;
     throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}, for ${which}; name a model you can use (GET /v1/models?available=true), or set a key with PUT /v1/providers/${config.model.provider}/key`);
@@ -227,11 +241,13 @@ async function createAgent(tenant: string, params: any, key?: string) {
   const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-    { keyScope, spendLimit, builtins, ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) });
+    { keyScope, spendLimit, builtins, ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) }, steps);
+  outcome.agent = made_.id;
+  outcome.upsert = !!reconfigure;
   if (!reconfigure) return made_;
   // The key's agent exists: bring it to this configuration between its turns. Every upsert queues its own request, so
   // the last one sent wins; one whose configuration the agent has already changes nothing when it runs.
-  const reconfigured = await submitAnywhere(made_.id, tenant, { id: `upsert-${randomUUID()}`, method: "configure", params: reconfigure as Record<string, unknown> });
+  const reconfigured = await steps.time("configure", submitAnywhere(made_.id, tenant, { id: `upsert-${randomUUID()}`, method: "configure", params: reconfigure as Record<string, unknown> }));
   return { ...made_, reconfigured };
 }
 
