@@ -321,11 +321,17 @@ reserved. Billing recipients are optional and do not gate activation.
   the cap, or immediate-charge condition requires reviewing a fresh preview.
   Acceptance, settings and an immediately due reservation commit together.
 - `POST /v1/billing/auto-topup/disable` stops new reservations and cancels an
-  unsubmitted reservation. Once invoice creation has begun, the existing top-up
-  can finish; the UI must disclose this when `attempt.submitted` is true.
+  unsubmitted reservation. Declined or missing-card attempts enter `cancelling`:
+  the worker checks Stripe, voids the unpaid invoice, then releases the hold.
+  A payment already settling is fulfilled if successful. Bank confirmation stays
+  available for 24 hours from its first action-required observation, then the
+  worker voids it if still unpaid. The UI discloses that an in-progress payment
+  may finish.
 - `POST /v1/billing/auto-topup/retry` takes `{attemptId}` and retries a declined
   payment against the same invoice, using the current default card. It creates
   neither another invoice nor another cap reservation.
+- `POST /v1/billing/auto-topup/refresh` wakes existing waiting work after a portal
+  return. It does not retry a declined payment or grant new consent.
 - `GET /v1/billing/auto-topup` returns settings, effective state, used and held
   amounts, reset time and any unresolved attempt. OAuth agents cannot mutate
   these endpoints.
@@ -347,8 +353,12 @@ is uncertain. Settings changes do not rewrite an existing attempt's quote.
 Each durable attempt advances through invoice creation, the explicit credit and
 fee items, finalization, default-card selection, payment, and observation. Each
 mutation has its own stable Stripe idempotency key and saved step start time.
-The worker claims one-minute leases and performs network calls outside database
-transactions. Invoice `auto_advance` is false, pending items are excluded,
+The worker claims one-minute leases, renews each ready step, and advances without
+waiting for the next timer tick. Network calls stay outside database transactions.
+Enabled tenant scans are claimed across nodes; healthy balances make no Stripe
+requests. A committed usage flush wakes low-balance scanning. Waiting declined,
+missing-card and bank-confirmation attempts are checked hourly; invoice webhooks,
+explicit retry and authenticated portal returns can wake them sooner. Invoice `auto_advance` is false, pending items are excluded,
 inherited discounts/tax rates are cleared, and each line is attached to the
 specific invoice. The worker owns retries; Stripe's automatic collection is not
 used. The ledger uses one purchase key per automatic attempt.
@@ -360,13 +370,26 @@ received. Fulfillment and any early refunds commit atomically with the paid
 attempt marker and receipt event. Out-of-band, altered, split or otherwise
 unrecognized payments go to `reconcile`; they do not grant credit automatically.
 
-States are `off`, `on`, `processing`, `action_required`, `paused_declined`,
+States are `off`, `on`, `processing`, `cancelling`, `action_required`, `paused_declined`,
 `paused_no_card`, `limit_reached`, and `reconcile`. Missing cards resume when a
 new default exists; declined cards require an explicit retry. Bank confirmation
 uses the hosted invoice URL. An ambiguous create/item/pay past 23 hours retains
 its hold and emits `billing_reconciliation_required`; a known successful invoice
 can still be reconciled without another charge. Operators must inspect the Stripe
 invoice and the saved attempt before resolving these cases.
+
+Route `billing_reconciliation_required` logs to the operations pager. The customer
+email explains the temporary pause and offers manual credit; it does not ask the
+customer to reconcile records. Operator procedure: disable auto top-up, identify
+its saved attempt/customer/environment and inspect the invoice plus all invoice
+payments in Stripe. A fully verified paid invoice can be requeued at `observe`
+with a cleared lease; fulfillment is idempotent. A confirmed unpaid invoice must
+be voided before marking its attempt cancelled and releasing the reservation.
+Never clear a hold merely because an HTTP response timed out, and never manually
+insert another purchase for the same PaymentIntent. Multiple allocations,
+out-of-band payments, or an unknown create require investigation before any
+state change. Keep the original attempt, Stripe IDs and an incident record.
+No pager destination or production routing is configured by this change.
 
 Subscribe the existing signed Stripe endpoint to `invoice.paid`,
 `invoice.payment_failed`, `invoice.payment_action_required`, and `invoice.voided`

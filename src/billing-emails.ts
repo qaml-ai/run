@@ -43,7 +43,7 @@ export function billingEmail(input: BillingEmailInput): BillingEmail {
       : notice === "action_required" ? `Action needed: confirm your ${total} camelRun top-up`
       : notice === "declined" ? "camelRun auto top-up paused: card declined"
       : notice === "no_card" ? "camelRun auto top-up paused: add a card"
-      : notice === "limit" ? "camelRun auto top-up reached this month's limit" : "Your camelRun top-up needs review";
+      : notice === "limit" ? "camelRun auto top-up reached this month's limit" : "camelRun auto top-up is temporarily paused";
     heading = receipt ? "Credit added automatically" : notice === "action_required" ? "Confirm your top-up"
       : notice === "limit" ? "Monthly top-up limit reached" : "Auto top-up is paused";
     sentence = receipt ? `${dollars(payment?.amount ?? 0)} of credit was added to ${input.tenant}.`
@@ -51,7 +51,7 @@ export function billingEmail(input: BillingEmailInput): BillingEmail {
       : notice === "declined" ? `Your card was declined. Update it in Billing, then retry the same ${total} top-up.`
       : notice === "no_card" ? `Add a default card in Billing to resume auto top-up for ${input.tenant}.`
       : notice === "limit" ? `Raise the monthly limit in Billing or add credit manually to ${input.tenant}.`
-      : `Contact support@camelai.com to reconcile the pending top-up for ${input.tenant}.`;
+      : "We’re checking a recent top-up, so auto top-up is paused for now. Add credit manually to keep agents running. Questions? support@camelai.com.";
     cta = receipt ? "View invoice" : notice === "action_required" ? "Confirm payment" : notice === "no_card" ? "Add card" : notice === "declined" ? "Update card" : notice === "limit" ? "Raise limit" : "Open Billing";
     link = (receipt || notice === "action_required") && payment?.invoiceUrl?.startsWith("https://") ? payment.invoiceUrl : billing;
     details = receipt ? [["Credit added", dollars(payment?.amount ?? 0)], ["Fee", dollars(payment?.fee ?? 0)], ["Charged", total], ["New balance", balance]] : [];
@@ -72,7 +72,7 @@ export function billingEmail(input: BillingEmailInput): BillingEmail {
 <tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#efede6" style="background-color:#efede6;border:1px solid #d5d2c9;border-collapse:separate;border-spacing:0">
 <tr><td><img src="${origin}/console/email/billing-banner.gif" width="440" height="120" alt="Durable agents. Hosted." style="display:block;border:0;width:100%;height:auto"></td></tr>
 <tr><td style="padding:28px 28px 32px"><p style="margin:0 0 14px;font-family:${MONO};font-size:10px;line-height:18px;letter-spacing:3px;color:#8a888f">CAMELRUN · BILLING</p>
-${(depleted || (isPayment && payment?.notice !== "receipt" && payment?.notice !== "limit")) ? `<p style="margin:0 0 14px"><span style="padding:4px 7px;background:#f7ded7;color:#b8281b;font-family:${MONO};font-size:10px;letter-spacing:1px">ACTION NEEDED</span></p>` : ""}
+${(depleted || (isPayment && ["action_required", "declined", "no_card"].includes(payment?.notice ?? ""))) ? `<p style="margin:0 0 14px"><span style="padding:4px 7px;background:#f7ded7;color:#b8281b;font-family:${MONO};font-size:10px;letter-spacing:1px">ACTION NEEDED</span></p>` : ""}
 <h1 style="margin:0 0 12px;font-family:${FONT};font-size:20px;line-height:28px;font-weight:600;color:#111113">${e(heading)}</h1>
 <p style="margin:0 0 24px;font-family:${FONT};font-size:14px;line-height:22px;color:#3f3f45">${e(sentence)}</p>
 ${details.length ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f6f4ee" style="border:1px solid #d5d2c9;margin:0 0 24px">${details.map(([label, value], i) => `<tr><td style="padding:10px 12px;${i ? "border-top:1px solid #d5d2c9;" : ""}font-family:${FONT};font-size:13px;color:#8a888f">${e(label)}</td><td align="right" style="padding:10px 12px;${i ? "border-top:1px solid #d5d2c9;" : ""}font-family:'Courier New',monospace;font-size:13px;word-break:break-word;color:#111113">${e(value)}</td></tr>`).join("")}</table>` : ""}

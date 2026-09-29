@@ -8473,6 +8473,7 @@
                         "off",
                         "on",
                         "processing",
+                        "cancelling",
                         "action_required",
                         "paused_declined",
                         "paused_no_card",
@@ -8912,6 +8913,7 @@
                         "off",
                         "on",
                         "processing",
+                        "cancelling",
                         "action_required",
                         "paused_declined",
                         "paused_no_card",
@@ -9083,6 +9085,179 @@
                         "off",
                         "on",
                         "processing",
+                        "cancelling",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/refresh": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refresh after a hosted billing return",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "cancelling",
                         "action_required",
                         "paused_declined",
                         "paused_no_card",
@@ -9273,6 +9448,7 @@
                         "off",
                         "on",
                         "processing",
+                        "cancelling",
                         "action_required",
                         "paused_declined",
                         "paused_no_card",

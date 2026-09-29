@@ -401,6 +401,7 @@ export class Accounts {
       await enqueueEvents(sql, events);
     });
     this.billing.invalidate(charges.keys());
+    await this.billing.autoTopup?.balanceChanged(charges.keys());
   }
 
   /** The tenant's model spend this UTC month, turns and compaction, read from the database at most every few seconds. */

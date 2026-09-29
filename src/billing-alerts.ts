@@ -40,11 +40,12 @@ async function lockTenant(sql: Sql, tenant: string) {
 const currentProblem = `(o.kind <> 'problems' or o.payload->'data'->>'notice' is null or
   case when o.payload->'data'->>'attempt' is not null then exists (
     select 1 from billing_auto_attempts a where a.id::text=o.payload->'data'->>'attempt'
-      and a.tenant=o.tenant and a.generation::text=o.payload->'data'->>'generation'
+      and a.tenant=o.tenant and (not a.cancel_requested or a.state='reconcile') and a.generation::text=o.payload->'data'->>'generation'
       and a.state=case o.payload->'data'->>'notice' when 'declined' then 'paused_declined'
         when 'no_card' then 'paused_no_card' when 'action_required' then 'action_required' else 'reconcile' end)
   else exists (select 1 from billing_auto_settings s where s.tenant=o.tenant and s.enabled
     and s.livemode::text=o.payload->'data'->>'livemode' and s.version::text=o.payload->'data'->>'settingsVersion'
+    and (o.payload->'data'->>'notice'<>'limit' or (o.payload->'data'->>'resetsAt')::bigint > extract(epoch from clock_timestamp())*1000)
     and s.status=case o.payload->'data'->>'notice' when 'no_card' then 'paused_no_card' else 'limit_reached' end) end)`;
 
 export class BillingAlerts {

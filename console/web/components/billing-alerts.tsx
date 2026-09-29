@@ -10,18 +10,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 const CHOICES: [keyof AlertChoices, string][] = [["low", "Low balance"], ["depleted", "Out of credit"], ["problems", "Top-up issues"], ["receipts", "Receipts"]];
 const PATH = "/v1/billing/alerts";
-export function BillingAlertsSection() {
-  const alerts = useApi<BillingAlerts>(PATH, 30_000);
+export function BillingAlertsSection({ alerts }: { alerts: ReturnType<typeof useApi<BillingAlerts>> }) {
   const [editing, setEditing] = useState(false);
   const data = alerts.data;
-  return <section className="mb-6 border-y py-5">
-    <div className="mb-2 flex items-center justify-between gap-4"><h2 className="text-sm font-medium">Alerts</h2><Button variant="outline" size="sm" disabled={!data} onClick={() => setEditing(true)}>Edit alerts</Button></div>
+  return <section className="border-b py-5">
+    <div className="mb-2 flex items-center justify-between gap-4"><h2 className="text-sm font-medium">Alerts</h2><Button variant="outline" size="sm" disabled={!data} onClick={() => setEditing(true)}>Edit</Button></div>
     <ErrorAlert error={alerts.error} />
     {!data ? <Skeleton className="h-10 w-64" /> : <>
       <p className="text-muted-foreground text-sm">When the balance drops below {formatMicros(data.threshold)}</p>
       {data.recipients.length ? <p className="mt-1 break-all text-sm">{data.recipients[0].email}{data.recipients.length > 1 && ` and ${data.recipients.length - 1} more`}</p>
         : <p className="bg-muted text-muted-foreground mt-3 px-3 py-2 text-sm">No alert email yet, so alerts only show here in the console. <button className="text-foreground underline underline-offset-4" onClick={() => setEditing(true)}>Add email</button></p>}
-      {data.recipients.some(r => r.status === "bounced") && <p className="mt-3 bg-[var(--tint-danger)] px-3 py-2 text-sm">One or more alert addresses cannot receive email. Update them in Alerts.</p>}
+      {data.recipients.some(r => r.status === "bounced") && <p className="mt-3 bg-[var(--tint-danger)] px-3 py-2 text-sm">Emails to {data.recipients.filter(r => r.status === "bounced").map(r => r.email).join(", ")} are bouncing. <button className="underline underline-offset-4" onClick={() => setEditing(true)}>Fix</button></p>}
       {editing && <AlertsDialog data={data} refresh={alerts.reload} close={() => setEditing(false)} />}
     </>}
   </section>;
@@ -80,7 +79,7 @@ function AlertsDialog({ data, refresh, close }: { data: BillingAlerts; refresh()
     </div>
     {data.emailEnabled ? data.recipients.length < 5 && <div className="grid gap-2"><Label htmlFor="alert-email">Add email</Label><div className="flex gap-2"><Input id="alert-email" type="email" placeholder="billing@example.com" value={email} disabled={busy} onChange={e => setEmail(e.target.value)} /><Button disabled={busy || !email.trim()} onClick={() => void add()}>Add</Button></div></div>
       : <p className="bg-muted text-muted-foreground px-3 py-2 text-sm">Email alerts aren't available on this runtime.</p>}
-    <p className="text-muted-foreground text-xs">Each address confirms by email first. Changes save automatically.</p>
+    <p className="text-muted-foreground text-xs">Each address confirms by email first. Invoices come from Stripe. Changes save automatically.</p>
     <DialogFooter><Button disabled={busy} onMouseDown={e => e.preventDefault()} onClick={() => void finish()}>Done</Button></DialogFooter>
   </DialogContent></Dialog>;
 }

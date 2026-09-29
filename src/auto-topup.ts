@@ -44,11 +44,12 @@ export class AutoTopup {
     await this.guard(tenant);
     const s = await this.settings(this.db, tenant), sums = await this.amounts(this.db, tenant);
     const attempt = (await this.db.query(`select * from billing_auto_attempts where tenant=$1 and livemode=$2 and ${active}`, [tenant, this.stripe.live])).rows[0];
-    return { enabled: s.enabled, state: attempt?.state ?? (s.enabled ? s.status : "off"), version: s.version,
+    const status = s.status === "limit_reached" && sums.used+s.amount+s.fee <= s.monthly_limit ? "on" : s.status;
+    return { enabled: s.enabled, state: attempt?.cancel_requested && attempt.state !== "reconcile" ? "cancelling" : attempt?.state ?? (s.enabled ? status : "off"), version: s.version,
       threshold: s.threshold, amount: s.amount, fee: s.fee, total: s.amount+s.fee, monthlyLimit: s.monthly_limit,
       usedThisPeriod: sums.used, held: sums.held, resetsAt: resetsAt(this.now()),
       attempt: attempt ? { id: attempt.id, state: attempt.state, amount: attempt.amount, fee: attempt.fee, total: attempt.amount+attempt.fee,
-        card: displayCard(attempt.card), invoiceUrl: attempt.invoice_url, canRetry: attempt.state === "paused_declined", submitted: !!attempt.submitted_at } : null };
+        card: displayCard(attempt.card), invoiceUrl: attempt.invoice_url, canRetry: attempt.state === "paused_declined" && !attempt.cancel_requested, submitted: !!attempt.submitted_at } : null };
   }
   async quote(tenant: string, terms: AutoTerms) {
     await this.guard(tenant);
@@ -103,6 +104,7 @@ export class AutoTopup {
       await this.lock(sql, tenant);
       await sql.query("update billing_auto_settings set enabled=false,version=version+1 where tenant=$1 and livemode=$2", [tenant, this.stripe.live]);
       await sql.query(`update billing_auto_attempts set state='cancelled',lease=null where tenant=$1 and livemode=$2 and ${active} and submitted_at is null`, [tenant, this.stripe.live]);
+      await sql.query(`update billing_auto_attempts set cancel_requested=true,due=$3 where tenant=$1 and livemode=$2 and state in ('paused_declined','paused_no_card')`, [tenant, this.stripe.live, this.now()]);
     });
     return this.get(tenant);
   }
@@ -113,7 +115,7 @@ export class AutoTopup {
     await transaction(this.db, async sql => {
       await this.lock(sql, tenant);
       const a = (await sql.query("select * from billing_auto_attempts where id=$1 and tenant=$2 and livemode=$3 for update", [id, tenant, this.stripe.live])).rows[0];
-      if (!a || a.state !== "paused_declined" || a.customer !== card.customer) throw new HttpError(409, "This top-up is not ready to retry");
+      if (!a || a.state !== "paused_declined" || a.cancel_requested || a.customer !== card.customer) throw new HttpError(409, "This top-up is not ready to retry");
       await sql.query("update billing_auto_attempts set state='processing',step='prepare',card=$2,generation=generation+1,step_started_at=null,lease=null,lease_until=0,due=$3 where id=$1", [id, card, this.now()]);
       await sql.query("update billing_email_outbox set state='cancelled' where tenant=$1 and kind='problems' and state='pending' and payload->'data'->>'attempt'=$2", [tenant, id]);
     });
@@ -144,15 +146,22 @@ export class AutoTopup {
   }
   pump(): Promise<void> { return this.running ??= this.run().finally(() => { this.running = undefined; }); }
   private async run() {
-    const rows = (await this.db.query("select tenant from billing_auto_settings where enabled and livemode=$1 and checked_at<=$2 order by checked_at,tenant limit 25", [this.stripe.live, this.now()-30_000])).rows;
-    for (const { tenant } of rows) {
+    // Claim before touching Stripe: healthy tenants cost no provider requests, and nodes share scans.
+    const rows = (await this.db.query(`with picked as (
+      select s.tenant,s.livemode from billing_auto_settings s join credit_accounts c on c.tenant=s.tenant
+      where s.enabled and s.livemode=$1 and s.checked_at<=$2::bigint-30000
+      and (c.balance<s.threshold or s.status='paused_no_card')
+      and (s.status<>'paused_no_card' or s.checked_at<=$2::bigint-3600000)
+      and not exists (select 1 from billing_auto_attempts a where a.tenant=s.tenant and a.livemode=s.livemode and a.state not in ('paid','cancelled'))
+      order by s.checked_at,s.tenant limit 10 for update of s skip locked)
+      update billing_auto_settings s set checked_at=$2 from picked p where s.tenant=p.tenant and s.livemode=p.livemode returning s.tenant`, [this.stripe.live, this.now()])).rows;
+    await Promise.all(rows.map(async ({ tenant }) => {
       try {
-        if (await this.billing.mode(tenant) !== "prepaid") continue;
+        if (await this.billing.mode(tenant) !== "prepaid") return;
         const card = await this.billing.payments!.defaultCard(tenant);
         await transaction(this.db, async sql => { await this.lock(sql, tenant); await this.reserve(sql, tenant, await this.settings(sql, tenant), card); });
       } catch { console.error(JSON.stringify({ type: "auto_topup_account_check_failed", tenant })); }
-      finally { await this.db.query("update billing_auto_settings set checked_at=$3 where tenant=$1 and livemode=$2", [tenant, this.stripe.live, this.now()]); }
-    }
+    }));
     const attempts = (await this.db.query(`with picked as (select id from billing_auto_attempts where livemode=$1 and ${active} and state <> 'reconcile'
       and due<=$2 and lease_until<=$2 order by due,id limit 5 for update skip locked)
       update billing_auto_attempts a set lease=gen_random_uuid(),lease_until=$2+60000 from picked where a.id=picked.id returning a.*`, [this.stripe.live, this.now()])).rows;
@@ -165,9 +174,11 @@ export class AutoTopup {
     }));
     await this.billing.payments!.refreshInvoices();
   }
-  /** One durable external step per lease. Retrying a step always repeats its original key and parameters. */
-  private async process(a: any) {
+  /** Advance immediately while ready, persisting and renewing the lease before each external step. */
+  private async process(a: any): Promise<void> {
+    if (!(await this.db.query(`update billing_auto_attempts set lease_until=$3 where id=$1 and lease=$2 and ${active} returning id`, [a.id, a.lease, this.now()+60_000])).rowCount) return;
     if (a.api_version !== STRIPE_API_VERSION) return this.transition(a, "reconcile");
+    if (a.cancel_requested || (a.state === "action_required" && a.action_expires_at != null && a.action_expires_at <= this.now())) return this.cancelInvoice(a);
     if (!a.submitted_at) {
       const ok = await transaction(this.db, async sql => {
         await this.lock(sql, a.tenant);
@@ -273,21 +284,59 @@ export class AutoTopup {
     return this.transition(a, "reconcile", invoice);
   }
   private invoiceUrl(invoice: any) { return typeof invoice.hosted_invoice_url === "string" && invoice.hosted_invoice_url.startsWith("https://") ? invoice.hosted_invoice_url : null; }
-  private async advance(a: any, step: string, fields: { invoice?: string; card?: Card; generation?: number } = {}) {
-    await this.db.query(`update billing_auto_attempts set step=$3,state='processing',step_started_at=null,invoice=coalesce($4,invoice),card=coalesce($5,card),generation=coalesce($6,generation),due=$7,lease_until=0,lease=null where id=$1 and lease=$2 and ${active}`,
-    [a.id, a.lease, step, fields.invoice ?? null, fields.card ?? null, fields.generation ?? null, this.now()]);
+  private async advance(a: any, step: string, fields: { invoice?: string; card?: Card; generation?: number } = {}): Promise<void> {
+    const next = (await this.db.query(`update billing_auto_attempts set step=$3,state='processing',step_started_at=null,invoice=coalesce($4,invoice),card=coalesce($5,card),generation=coalesce($6,generation),due=$7,lease_until=$7::bigint+60000 where id=$1 and lease=$2 and ${active} returning *`,
+    [a.id, a.lease, step, fields.invoice ?? null, fields.card ?? null, fields.generation ?? null, this.now()])).rows[0];
     if (a.state === "paused_no_card") await this.db.query("update billing_email_outbox set state='cancelled' where tenant=$1 and kind='problems' and state='pending' and payload->'data'->>'attempt'=$2", [a.tenant, a.id]);
+    if (next) await this.process(next);
   }
   private async transition(a: any, state: string, invoice?: any) {
     if (state === "reconcile") console.error(JSON.stringify({ type: "billing_reconciliation_required", kind: "auto_topup", attempt: a.id, step: a.step }));
     await transaction(this.db, async sql => {
       await this.lock(sql, a.tenant);
-      const fresh = (await sql.query(`update billing_auto_attempts set state=$3,invoice_url=coalesce($4,invoice_url),due=$5,lease_until=0,lease=null
-        where id=$1 and lease=$2 and ${active} returning id`, [a.id, a.lease, state, invoice ? this.invoiceUrl(invoice) : null, this.now()+30_000])).rows[0];
+      const fresh = (await sql.query(`update billing_auto_attempts set state=$3,invoice_url=coalesce($4,invoice_url),due=$5,lease_until=0,lease=null,action_expires_at=case when $3='action_required' then coalesce(action_expires_at,$6) else action_expires_at end
+        where id=$1 and lease=$2 and ${active} returning id`, [a.id, a.lease, state, invoice ? this.invoiceUrl(invoice) : null, this.now()+(state === "processing" ? 30_000 : HOUR), this.now()+24*HOUR])).rows[0];
       if (!fresh || a.state === state || state === "processing") return;
       const notice = state === "paused_declined" ? "declined" : state === "paused_no_card" ? "no_card" : state === "action_required" ? "action_required" : "reconcile";
       await this.emit(sql, a.tenant, notice, { attempt: a.id, generation: a.generation, total: a.amount+a.fee, card: displayCard(a.card), invoiceUrl: invoice ? this.invoiceUrl(invoice) : a.invoice_url }, `${a.id}:${a.generation}:${state}`);
     });
+  }
+  private async cancelInvoice(a: any): Promise<void> {
+    const invoice = await this.stripe.get(`/v1/invoices/${a.invoice}`);
+    if (!this.owns(a, invoice) || invoice.total !== (a.amount+a.fee)/CENT || invoice.currency !== "usd") return this.transition(a, "reconcile", invoice);
+    if (invoice.status === "paid") return this.observe(a, invoice);
+    if (invoice.amount_paid !== 0) return this.transition(a, "reconcile", invoice);
+    if (invoice.status !== "void") {
+      if (invoice.status !== "open") return this.transition(a, "reconcile", invoice);
+      const payments = await this.stripe.get("/v1/invoice_payments", { invoice: a.invoice, limit: 100, expand: ["data.payment.payment_intent"] });
+      if (payments.has_more) return this.transition(a, "reconcile", invoice);
+      for (const p of payments.data ?? []) {
+        const pi = p.payment?.payment_intent;
+        if (p.payment?.type !== "payment_intent" || stripeId(p.invoice) !== a.invoice || stripeId(pi?.customer) !== a.customer
+          || pi?.livemode !== this.stripe.live || pi?.currency !== "usd" || pi?.amount !== (a.amount+a.fee)/CENT) return this.transition(a, "reconcile", invoice);
+        if (["processing", "succeeded"].includes(pi.status)) return this.transition(a, "processing", invoice); // Retain the hold while settling.
+        if (!["requires_payment_method", "requires_action", "canceled"].includes(pi.status)) return this.transition(a, "reconcile", invoice);
+      }
+      const voided = await this.stripe.post(`/v1/invoices/${a.invoice}/void`, {}, `camelrun:topup:${a.id}:void`);
+      if (!this.owns(a, voided) || voided.status !== "void" || voided.amount_paid !== 0) return this.transition(a, "reconcile", voided);
+    }
+    await transaction(this.db, async sql => {
+      await this.lock(sql, a.tenant);
+      await sql.query(`update billing_auto_attempts set state='cancelled',lease=null,lease_until=0 where id=$1 and lease=$2 and ${active}`, [a.id, a.lease]);
+    });
+  }
+  /** Called after a committed usage flush; only the database is on its critical path. */
+  async balanceChanged(tenants: Iterable<string>) {
+    const ids = [...tenants]; if (!ids.length) return;
+    await this.db.query(`update billing_auto_settings s set checked_at=0 from credit_accounts c where s.tenant=c.tenant and s.tenant=any($1::text[]) and s.livemode=$2 and s.enabled and s.status<>'paused_no_card' and c.balance<s.threshold`, [ids, this.stripe.live]);
+    if (this.timer) void this.pump().catch(() => console.error(JSON.stringify({ type: "auto_topup_poll_failed" })));
+  }
+  /** An authenticated portal return wakes paused work without authorizing a new retry. */
+  async refresh(tenant: string) {
+    await this.guard(tenant);
+    await this.db.query("update billing_auto_settings set checked_at=0 where tenant=$1 and livemode=$2", [tenant, this.stripe.live]);
+    await this.db.query(`update billing_auto_attempts set due=$3 where tenant=$1 and livemode=$2 and state in ('paused_no_card','action_required','paused_declined')`, [tenant, this.stripe.live, this.now()]);
+    return this.get(tenant);
   }
   async wake(invoice: string) { await this.db.query(`update billing_auto_attempts set due=$3 where invoice=$1 and livemode=$2 and ${active} and state <> 'reconcile'`, [invoice, this.stripe.live, this.now()]); }
 }

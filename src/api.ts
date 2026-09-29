@@ -643,6 +643,8 @@ export function api(context: ApiContext) {
   });
   route(createRoute({ method: "post", path: "/v1/billing/auto-topup/disable", responses: { 200: reply("Future top-ups disabled", schema.AutoTopup) } }),
     async c => json(c, 200, await autoTopup().disable(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/refresh", responses: { 200: reply("Refresh after a hosted billing return", schema.AutoTopup) } }),
+    async c => json(c, 200, await autoTopup().refresh(c.var.principal.tenant)));
   route(createRoute({ method: "post", path: "/v1/billing/auto-topup/retry", request: { body: content(schema.AutoTopupRetry) }, responses: { 200: reply("Retry the existing invoice", schema.AutoTopup) } }), async c => {
     const body = parse(schema.AutoTopupRetry, await readJson(c.req.raw.body, 4096, {}));
     return json(c, 200, await autoTopup().retry(c.var.principal.tenant, body.attemptId));

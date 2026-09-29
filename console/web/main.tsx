@@ -11,7 +11,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthLayout } from "@/components/auth-layout";
 import { PIXEL_STYLE } from "@/components/brand";
 import { ErrorAlert, PageErrorBoundary } from "@/components/common";
-import { StartingCreditBanner } from "@/components/starting-credit";
+import { BillingBanner, BillingBalance } from "@/components/billing-banner";
+import { BillingDialogs } from "@/components/billing-controls";
+import { useBillingState } from "@/components/billing-state";
 import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -65,6 +67,7 @@ function App() {
   const [section, ...rest] = path.split("/");
   const isAgentsList = !section || (section === "agents" && !rest[0]);
   const billing = useApi<Billing>(me.data ? "/v1/billing" : undefined, 30_000);
+  const billingState = useBillingState(billing);
   const agents = useApi<AgentSummary[]>(me.data && isAgentsList ? "/v1/agents" : undefined, 10_000);
   useWebMcp(me.data?.tenant);
   if (me.loading && !me.data) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
@@ -76,7 +79,7 @@ function App() {
     : section === "models" ? <ModelsPage me={me.data} />
     : section === "tokens" ? <TokensPage />
     : section === "usage" ? <UsagePage />
-    : section === "billing" ? <BillingPage />
+    : section === "billing" ? <BillingPage state={billingState} />
     : section === "quickstart" ? <QuickstartPage />
     : <AgentsPage agents={agents} billing={billing} />;
   const active = section || "agents";
@@ -90,7 +93,7 @@ function App() {
             <FullLogo className="h-5 w-auto" />
             <div className="text-muted-foreground mt-2 truncate text-xs">{location.host}</div>
           </div>
-          <div className="md:hidden"><SignOut /></div>
+          <div className="flex items-center gap-4 md:hidden"><BillingBalance state={billingState} mobile /><SignOut /></div>
         </div>
         <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-col md:gap-0.5 md:overflow-visible">
           {NAV.map(({ to, label, icon: Icon }) => (
@@ -104,6 +107,7 @@ function App() {
         </nav>
         <div className="mt-auto hidden md:block">
           <Separator />
+          <BillingBalance state={billingState} />
           <div className="flex items-center gap-3 px-3 py-3">
             <span aria-hidden="true" className="border-sidebar-border bg-sidebar-accent flex size-8 shrink-0 items-center justify-center border text-sm font-medium">
               {who[0]?.toUpperCase() ?? "?"}
@@ -117,10 +121,11 @@ function App() {
         </div>
       </aside>
       <main className="min-w-0 flex-1">
-        {active !== "billing" && (!isAgentsList || !!agents.data?.length) && <StartingCreditBanner billing={billing.data} />}
+        <BillingBanner state={billingState} hideStarting={active === "billing" || (isAgentsList && !agents.data?.length)} />
+        <BillingDialogs state={billingState} />
         <div className="px-4 py-6 md:px-10 md:py-8">
           <div className="mx-auto max-w-6xl">
-            <PageErrorBoundary key={path}>{page}</PageErrorBoundary>
+            <PageErrorBoundary key={path}>{active !== "billing" && <ErrorAlert error={billingState.error} />}{page}</PageErrorBoundary>
           </div>
         </div>
       </main>

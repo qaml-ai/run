@@ -19,6 +19,7 @@ async function fixture(t: TestContext) {
   let outcome: "success" | "decline" | "action" | "processing" = "success";
   let card: any = { id: "pm_4242", type: "card", customer: "cus_alice", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030 } };
   let lost: string | undefined;
+  let tamper = false;
   const invoices = new Map<string, any>(), payments = new Map<string, any>(), keys = new Map<string, any>();
   const calls: { path: string; method: string; params: URLSearchParams; key?: string }[] = [];
   const url = await listen(t, async (req,res) => {
@@ -43,7 +44,11 @@ async function fixture(t: TestContext) {
       const invoice = invoices.get(params.get("invoice")!)!;
       assert.equal(invoice.status, "draft"); assert.equal(params.get("discountable"), "false");
       const amount = Number(params.get("amount")); invoice.total += amount; invoice.amount_due += amount;
+      if (tamper) { tamper = false; invoice.total += 100; }
       value = { id: `ii_${++seq}`, invoice: invoice.id, amount };
+    } else if (path.endsWith("/void")) {
+      value = invoices.get(path.split("/")[3]); value.status = "void";
+      const pi = payments.get(value.id); if (pi) pi.status = "canceled";
     } else if (path.endsWith("/finalize")) {
       value = invoices.get(path.split("/")[3]); value.status = "open";
       payments.set(value.id, { id: `pi_${value.id}`, customer: value.customer, livemode: false, currency: "usd", amount: value.total, amount_received: 0, status: "requires_payment_method" });
@@ -55,7 +60,7 @@ async function fixture(t: TestContext) {
       if (outcome === "success") { value.status = "paid"; value.amount_paid = value.total; pi.amount_received = pi.amount; }
     }
     if (key && value) keys.set(key, { body, value });
-    if (lost === path && req.method === "POST") { lost = undefined; res.destroy(); return; }
+    if ((lost === path || (lost === "pay" && path.endsWith("/pay"))) && req.method === "POST") { lost = undefined; res.destroy(); return; }
     res.writeHead(value ? 200 : 404, { "Content-Type": "application/json" }).end(JSON.stringify(value ?? { error: { code: "resource_missing" } }));
   });
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { alice: { tokenSha256: "a".repeat(64), billing: "prepaid" } } }) }); await tenants.reload();
@@ -70,7 +75,7 @@ async function fixture(t: TestContext) {
   const balance = async () => (await billing.account("alice")).balance;
   return { db, billing, stripe, auto, url, quote, enable, advance, pump, balance, calls, invoices, payments,
     setOutcome: (next: typeof outcome) => { outcome = next; }, setCard: (next: typeof card) => { card = next; },
-    lose: (path: string) => { lost = path; }, restart: () => new AutoTopup(billing, stripe, () => now),
+    tamper: () => { tamper = true; }, lose: (path: string) => { lost = path; }, restart: () => new AutoTopup(billing, stripe, () => now),
     approve: () => { for (const [id, pi] of payments) { pi.status = "succeeded"; pi.amount_received = pi.amount; const invoice = invoices.get(id); invoice.status = "paid"; invoice.amount_paid = invoice.total; } } };
 }
 
@@ -140,10 +145,10 @@ test("declines keep the reservation across months; explicit retry pays the same 
 test("bank confirmation remains on the original invoice; invoice.paid without a successful payment cannot grant credit", async t => {
   const f = await fixture(t); f.setOutcome("action"); await f.enable(); await f.pump();
   assert.equal((await f.auto.get("alice")).state, "action_required"); assert.equal(await f.balance(), 0);
-  f.approve(); f.advance(); await f.pump(1); assert.equal(await f.balance(), 20e6);
+  f.approve(); await f.auto.wake([...f.invoices.keys()][0]); await f.pump(1); assert.equal(await f.balance(), 20e6);
   const g = await fixture(t); g.setOutcome("action"); await g.enable(); await g.pump();
   const invoice = [...g.invoices.values()][0]; invoice.status = "paid"; invoice.amount_paid = invoice.total;
-  g.advance(); await g.pump(1); assert.equal(await g.balance(), 0); assert.equal((await g.auto.get("alice")).state, "reconcile");
+  await g.auto.wake([...g.invoices.keys()][0]); await g.pump(1); assert.equal(await g.balance(), 0); assert.equal((await g.auto.get("alice")).state, "reconcile");
 });
 
 test("disable cancels unsubmitted reservations but an already submitted invoice can finish", async t => {
@@ -156,14 +161,14 @@ test("disable cancels unsubmitted reservations but an already submitted invoice 
 test("a removed card pauses before payment and resumes the same invoice when a default card is restored", async t => {
   const f = await fixture(t); await f.enable(); f.setCard(null); await f.pump();
   assert.equal((await f.auto.get("alice")).state, "paused_no_card"); assert.equal(f.calls.filter(c => c.path.endsWith("/pay")).length, 0);
-  f.setCard({ id: "pm_back", type: "card", customer: "cus_alice", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030 } }); f.advance(); await f.pump(3);
+  f.setCard({ id: "pm_back", type: "card", customer: "cus_alice", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030 } }); await f.auto.refresh("alice"); await f.pump(3);
   assert.equal(await f.balance(), 20e6); assert.equal(f.invoices.size, 1);
 });
 
 test("ambiguous old invoice creates retain the hold; invoice totals are checked before charging", async t => {
   const f = await fixture(t); await f.enable(); f.lose("/v1/invoices"); await f.pump(1); f.advance(24*3_600_000); await f.pump(1);
   assert.equal((await f.auto.get("alice")).state, "reconcile"); assert.equal((await f.auto.get("alice")).held, 21.1e6); assert.equal(f.invoices.size, 1);
-  const g = await fixture(t); await g.enable(); await g.pump(3); [...g.invoices.values()][0].total += 100; await g.pump(1);
+  const g = await fixture(t); await g.enable(); g.tamper(); await g.pump(1);
   assert.equal((await g.auto.get("alice")).state, "reconcile"); assert.equal(g.calls.filter(c => c.path.endsWith("/pay")).length, 0);
 });
 
@@ -176,14 +181,13 @@ test("payment emails include exact charges, the invoice link, and escaped text",
 
 
 test("an old ambiguous pay is reconciled from its successful invoice without charging again", async t => {
-  const f = await fixture(t); await f.enable(); await f.pump(5);
-  const invoice = [...f.invoices.values()][0]; f.lose(`/v1/invoices/${invoice.id}/pay`); await f.pump(1);
+  const f = await fixture(t); await f.enable(); f.lose("pay"); await f.pump(1);
   assert.equal(await f.balance(), 0); f.advance(24*3_600_000); await f.pump(1);
   assert.equal(await f.balance(), 20e6); assert.equal(f.calls.filter(c => c.path.endsWith("/pay")).length, 1);
 });
 
 test("failed ledger writes roll back the paid marker and retry fulfillment without another payment", async t => {
-  const f = await fixture(t); await f.enable(); await f.pump(6);
+  const f = await fixture(t); await f.enable();
   await f.db.query("create function reject_auto_credit() returns trigger language plpgsql as $$ begin raise exception 'fixture rejection'; end $$");
   await f.db.query("create trigger reject_auto_credit before insert on credit_ledger for each row execute function reject_auto_credit()");
   await f.pump(1); assert.equal((await f.auto.get("alice")).held, 21.1e6); assert.equal(await f.balance(), 0);
@@ -200,7 +204,7 @@ test("the mail worker sends payment receipts and drops a resolved no-card warnin
   const mailer = new BillingMailer({ db: f.db, alerts, origin: "https://agents.example.test", from: "billing@example.test", configurationSet: "fixture", topics: [], send: async mail => { sent.push(mail.subject); return "ses_fixture"; } });
   await f.enable(); f.setCard(null); await f.pump(5);
   assert.equal((await f.auto.get("alice")).state, "paused_no_card");
-  f.setCard({ id: "pm_back", type: "card", customer: "cus_alice", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030 } }); f.advance(); await f.pump(3);
+  f.setCard({ id: "pm_back", type: "card", customer: "cus_alice", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030 } }); await f.auto.refresh("alice"); await f.pump(3);
   await mailer.pump(); await mailer.stop();
   assert.deepEqual(sent, ["Auto top-up added $20.00 to camelRun"]);
 });
@@ -221,4 +225,54 @@ test("auto top-up REST requires the exact quote version and explicit consent", a
   const enabled = await r.call("/v1/billing/auto-topup/enable", { body: { ...body, consent: true } });
   assert.equal(enabled.status, 200, JSON.stringify(enabled.json)); assert.equal(enabled.json.held, 21.1e6);
   assert.equal((await r.call("/v1/billing/auto-topup/disable", { body: {} })).json.state, "off");
+});
+
+test("healthy balances make no polling Stripe calls; nodes claim a low-balance scan only once", async t => {
+  const f = await fixture(t); await f.billing.post([{ tenant: "alice", kind: "grant", amount: 10e6, key: "healthy" }]);
+  await f.enable(); const before = f.calls.length;
+  f.advance(3_600_000); await Promise.all([f.auto.pump(), f.restart().pump()]); assert.equal(f.calls.length, before);
+  await f.billing.post([{ tenant: "alice", kind: "usage", amount: -10e6, key: "spend" }]);
+  await Promise.all([f.auto.pump(), f.restart().pump()]);
+  assert.equal(f.calls.slice(before).filter(c => c.path === "/v1/customers/cus_alice").length, 2, "one scan and one pre-payment card refresh");
+  assert.equal(f.invoices.size, 1); assert.equal(await f.balance(), 20e6, "ready steps finish within one pump");
+});
+
+test("waiting attempts back off for an hour and portal returns wake card recovery", async t => {
+  const f = await fixture(t); await f.enable(); f.setCard(null); await f.pump(1);
+  const before = f.calls.length; f.advance(); await f.pump(1); assert.equal(f.calls.length, before);
+  f.setCard({ id: "pm_back", type: "card", customer: "cus_alice", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030 } });
+  await f.auto.refresh("alice"); await f.pump(1); assert.equal(await f.balance(), 20e6);
+});
+
+test("disable voids a declined invoice and releases its hold before re-enabling", async t => {
+  const f = await fixture(t); f.setOutcome("decline"); await f.enable(); await f.pump(1);
+  assert.equal((await f.auto.disable("alice")).state, "cancelling"); await f.pump(1);
+  assert.equal([...f.invoices.values()][0].status, "void"); assert.equal((await f.auto.get("alice")).held, 0);
+  f.setOutcome("success"); await f.enable(); await f.pump(1); assert.equal(f.invoices.size, 2); assert.equal(await f.balance(), 20e6);
+});
+
+test("disable reconciles a concurrent completed payment rather than voiding it", async t => {
+  const f = await fixture(t); f.setOutcome("decline"); await f.enable(); await f.pump(1);
+  await f.auto.disable("alice"); f.approve(); await f.pump(1);
+  assert.equal(await f.balance(), 20e6); assert.equal(f.calls.filter(c => c.path.endsWith("/void")).length, 0);
+});
+
+test("bank confirmation can finish after disable, but an unpaid action expires after a day", async t => {
+  const f = await fixture(t); f.setOutcome("action"); await f.enable(); await f.pump(1);
+  await f.auto.disable("alice"); f.advance(23*3_600_000); await f.pump(1);
+  assert.equal((await f.auto.get("alice")).held, 21.1e6); assert.equal(f.calls.filter(c => c.path.endsWith("/void")).length, 0);
+  f.advance(2*3_600_000); await f.pump(1);
+  assert.equal((await f.auto.get("alice")).held, 0); assert.equal([...f.invoices.values()][0].status, "void");
+});
+
+test("reconciliation mail explains the pause without assigning internal work to the customer", () => {
+  const mail = billingEmail({ kind: "problems", tenant: "alice", email: "b@example.test", origin: "https://agents.example.test", payment: { notice: "reconcile" } });
+  assert.match(mail.text, /We’re checking a recent top-up/); assert.doesNotMatch(mail.html, /ACTION NEEDED/);
+});
+
+test("a lost void response retains the hold until Stripe confirms the invoice is void", async t => {
+  const f = await fixture(t); f.setOutcome("decline"); await f.enable(); await f.pump(1);
+  const invoice = [...f.invoices.values()][0]; await f.auto.disable("alice"); f.lose(`/v1/invoices/${invoice.id}/void`); await f.pump(1);
+  assert.equal((await f.auto.get("alice")).held, 21.1e6); f.advance(); await f.pump(1);
+  assert.equal((await f.auto.get("alice")).held, 0); assert.equal(f.calls.filter(c => c.path.endsWith("/void")).length, 1);
 });
