@@ -1915,8 +1915,8 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   from the same address, under `settings.fromName` if set.
 - **Who may write.** The allowlist holds addresses and `@domain` entries for
   everyone at a domain. A sender counts only when SES proves the From address:
-  DMARC passed, or SPF passed for the From domain (or one above it), or SES's
-  own `Authentication-Results` shows a DKIM signature from it. Mail that fails
+  DMARC passed, or SPF passed for the From domain (or one above it). DKIM alone
+  does not count, since SES does not say which domain signed. Mail that fails
   DMARC, is spam or carries a virus is dropped, as is mail an agent should not
   answer: `Auto-Submitted` other than `no`, `Precedence: bulk`, `list` or `junk`,
   bounces (`mailer-daemon`, `postmaster`), and mail from the runtime's own domain.

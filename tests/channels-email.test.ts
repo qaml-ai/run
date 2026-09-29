@@ -228,6 +228,8 @@ test("mail is dropped unless SES proves its sender, and automatic or bulk mail n
     ["SPF passed for another domain", ada, { dmarc: "GRAY", spf: "PASS", source: "x@attacker.com" }],
     ["DKIM passed for another domain", ada, { dmarc: "GRAY", dkim: "PASS", authResults: "amazonses.com; dkim=pass header.i=@attacker.com" }],
     ["DKIM results the sender wrote", ada, { dmarc: "GRAY", dkim: "PASS", authResults: "mx.attacker.com; dkim=pass header.i=@example.com" }],
+    // SES adds no Authentication-Results of its own, so even one naming amazonses.com may be the sender's.
+    ["DKIM without DMARC", ada, { dmarc: "GRAY", dkim: "PASS", authResults: "amazonses.com; spf=fail smtp.mailfrom=x.net; dkim=pass header.i=@example.com; dmarc=none" }],
     ["an auto-reply", { ...ada, headers: ["Auto-Submitted: auto-replied"] }, {}],
     ["bulk mail", { ...ada, headers: ["Precedence: bulk"] }, {}],
     ["a bounce", { from: "MAILER-DAEMON@example.com" }, {}],
@@ -236,13 +238,12 @@ test("mail is dropped unless SES proves its sender, and automatic or bulk mail n
     ["mail to no channel", ada, { recipients: [`nobody@${DOMAIN}`] }],
   ];
   for (const [what, mail, receipt] of drops) assert.equal(await r.deliver({ ...mail, text: what }, receipt), 200, what);
-  // Proven senders are let in: SPF for the From domain, DKIM signed by it, and anyone at an allowed domain.
+  // Proven senders are let in: DMARC passed, SPF for the From domain, and anyone at an allowed domain.
   await r.deliver({ ...ada, text: "spf" }, { dmarc: "GRAY", spf: "PASS", source: "bounce@example.com" });
-  await r.deliver({ ...ada, text: "dkim" }, { dmarc: "GRAY", dkim: "PASS", authResults: "amazonses.com; spf=fail smtp.mailfrom=x.net; dkim=pass header.i=@example.com; dmarc=none" });
   await r.deliver({ from: "carol@example.org", text: "domain" });
-  await until(() => r.prompts.length === 3, "the proven messages");
+  await until(() => r.prompts.length === 2, "the proven messages");
   await sleep(300);
-  assert.deepEqual(r.prompts.map(prompt => prompt.text.split("\n").at(-1)).sort(), ["dkim", "domain", "spf"]);
+  assert.deepEqual(r.prompts.map(prompt => prompt.text.split("\n").at(-1)).sort(), ["domain", "spf"]);
 });
 
 test("mail SES stored in S3 is read from there, and so are its attachments", async t => {

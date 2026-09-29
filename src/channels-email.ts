@@ -291,8 +291,10 @@ interface SesNotification {
 }
 
 /**
- * Whether SES's checks prove the From address: DMARC passed, or SPF or DKIM passed for its
- * domain (or one above it). A DMARC failure, spam or a virus rejects the message outright.
+ * Whether SES's checks prove the From address: DMARC passed, or SPF passed for its domain (or
+ * one above it). A DMARC failure, spam or a virus rejects the message outright. DKIM alone is not
+ * enough: SES's verdict does not say which domain signed, and it adds no Authentication-Results
+ * header of its own to say so, so any such header came with the message.
  */
 export function authentic(notification: SesNotification, from: string): boolean {
   const receipt = notification.receipt ?? {};
@@ -300,12 +302,7 @@ export function authentic(notification: SesNotification, from: string): boolean 
   if ([receipt.dmarcVerdict, receipt.spamVerdict, receipt.virusVerdict].some(verdict => status(verdict) === "FAIL")) return false;
   if (status(receipt.dmarcVerdict) === "PASS") return true;
   const domain = domainOf(from);
-  if (status(receipt.spfVerdict) === "PASS" && notification.mail?.source && vouches(domainOf(notification.mail.source), domain)) return true;
-  if (status(receipt.dkimVerdict) !== "PASS") return false;
-  // Which domain signed is only in SES's Authentication-Results, the topmost one; any below it came with the message.
-  const results = notification.mail?.headers?.find(header => header.name.toLowerCase() === "authentication-results")?.value ?? "";
-  if (!/^\s*amazonses\.com\s*;/i.test(results)) return false;
-  return [...results.matchAll(/dkim=pass[^;]*?header\.(?:d=|i=[^@\s;]*@)([a-z0-9.-]+)/gi)].some(match => vouches(match[1].toLowerCase(), domain));
+  return status(receipt.spfVerdict) === "PASS" && !!notification.mail?.source && vouches(domainOf(notification.mail.source), domain);
 }
 
 /** Why a message is not for an agent (automatic, bulk, a bounce, or from this domain), or undefined when it is. */
@@ -392,8 +389,10 @@ export function emailReceiver(channels: Channels, options: EmailOptions) {
     let body: string, message: SnsMessage;
     try { body = await readText(c.req.raw.body, 2_000_000); } catch { return c.body(null, 413); }
     try { message = JSON.parse(body); } catch { return c.body(null, 400); }
-    if (!message || typeof message !== "object" || !await verifySns(message, fetcher)) { log({ rejected: "signature" }); return c.body(null, 401); }
+    if (!message || typeof message !== "object") return c.body(null, 400);
+    // The topic first: a post naming any other is refused without fetching a certificate for it.
     if (!message.TopicArn || !options.topics.includes(message.TopicArn)) { log({ rejected: "topic", topic: message.TopicArn }); return c.body(null, 403); }
+    if (!await verifySns(message, fetcher)) { log({ rejected: "signature" }); return c.body(null, 401); }
     if (!(Date.now() - Date.parse(message.Timestamp ?? "") < MAX_AGE_MS)) { log({ rejected: "stale" }); return c.body(null, 400); }
     if (message.Type === "SubscriptionConfirmation") {
       const confirm = snsUrl(message.SubscribeURL);
