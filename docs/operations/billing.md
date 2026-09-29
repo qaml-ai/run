@@ -100,11 +100,14 @@ Billing page shows both. An operator of a tenant in `AGENT_BILLING_ADMINS` can
 `POST /v1/billing/adjustments` `{tenant, amount (micro-USD), reason, idempotencyKey?}`.
 
 For a support exception to starting-credit eligibility, use
-`POST /v1/billing/starting-credit/grant` with `{tenant, amount (micro-USD), reason}`
+`POST /v1/billing/starting-credit/grant` with `{tenant, amountUsd, reason}` ($1–$100, whole cents)
 as a billing-admin operator. It uses the signup award's identity-scoped key;
 repeating the same award returns the earlier entry, while a different amount
 returns 409. The reason stays in the private decision record, not the public
-ledger. Ordinary adjustments are separate and must not be used for this purpose.
+ledger. Ordinary adjustments are separate and must not be used for the initial
+award. To correct an already-issued award, post only the difference through the
+operator adjustment endpoint, with a unique correction idempotency key and an
+auditable reason; do not delete or rewrite the original award.
 
 Before deploying migration 031, set the existing signup eligibility policy in
 deployment configuration: it no longer has a source-code default. Replace/drain
@@ -133,3 +136,33 @@ products) are acknowledged and ignored. Setup: create a secret or restricted key
 `https://<host>/v1/billing/stripe/webhook` for those three events, then run
 `infra/stripe.sh` and paste the key and the signing secret; it stores them in the
 `stripe` secret and rolls the service.
+
+
+## Balance notices and recipient storage
+
+Migration 032 records `billing.balance.low` and `billing.balance.depleted` at the
+balance-row update. The trigger writes the event, endpoint deliveries and selected
+email deliveries in the same transaction. A failed outbox insert rolls the charge
+back. Existing balances are not replayed by migration. At the default $2 threshold,
+$2.00 is not low; a balance strictly below it is. Zero counts as depleted. A single
+charge crossing both boundaries creates both webhook events and only the depleted
+email. Purchases or adjustments that restore the balance re-arm later crossings.
+
+`src/billing-alerts.ts` provides the recipient and email-outbox service. Each tenant
+can have five addresses, each with separate low, depleted, top-up-problem and receipt
+choices. Confirmation is required before billing mail; tokens expire after 24 hours
+and resend invalidates the previous token. Only hashes are kept on recipient rows;
+outbox tokens are sealed under `AGENT_SECRETS_KEY` and removed after sending.
+Confirmation sends are limited across tenants and survive removing/re-adding an
+address. Provider-authenticated bounces/complaints must call `suppress`.
+
+Recipient and preference mutations lock the balance row first, so they serialize
+with ledger writes. Delivery claims re-check consent and suppression, have one-minute
+leases, and require the lease to acknowledge/retry. Delivery is at least once: a
+process can lose the acknowledgement after its provider accepts an email. A send
+already in flight cannot be recalled when a recipient opts out. Consumers must
+start sends within the lease and limit concurrency accordingly.
+
+The recipient HTTP routes, confirmation page, email renderer, provider feedback
+handler and sending worker are not connected yet. This service and its outbox are
+the foundation for that next slice; this release does not yet send billing emails.

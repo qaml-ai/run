@@ -421,6 +421,10 @@ type RunFacts = { agentId: string; requestId: string; method: "prompt" | "contin
  * `created` is Unix seconds; dedupe by `id`. Payloads carry ids and key facts: read the rest with the tenant token.
  */
 export type WebhookEvent = { id: string; created: number } & (
+  | { type: "billing.balance.low" | "billing.balance.depleted"; data: {
+      /** Integer micro-USD, including negative balances. */
+      balance: number; threshold: number; previousBalance?: number; source: "balance" | "threshold_changed";
+    } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
   | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; stopped?: "input_required" | "spend_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
   | { type: "run.failed"; data: RunFacts & { usage: RunUsage | null; error: string; uncertain?: boolean; steeredInto?: string } }

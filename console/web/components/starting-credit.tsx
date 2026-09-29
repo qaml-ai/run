@@ -1,5 +1,6 @@
-import { useApi, type Billing } from "@/lib/api";
+import { type Billing } from "@/lib/api";
 import { Link } from "@/lib/router";
+import { Banner } from "@/components/banner";
 import { Button } from "@/components/ui/button";
 
 export function needsStartingCredit(data: Billing | undefined) {
@@ -18,11 +19,10 @@ export function StartingCreditHelp({ status }: { status: Billing["startingCredit
 }
 
 /** Until the account adds credit, other console pages offer the same way forward. */
-export function StartingCreditBanner() {
-  const billing = useApi<Billing>("/v1/billing", 30_000);
-  if (!needsStartingCredit(billing.data)) return null;
-  return <div role="status" className="bg-muted mb-6 flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+export function StartingCreditBanner({ billing }: { billing: Billing | undefined }) {
+  if (!needsStartingCredit(billing)) return null;
+  return <Banner>
     <span>Add credit to start running agents.</span>
     <Button size="sm" asChild><Link to="billing">Add credit</Link></Button>
-  </div>;
+  </Banner>;
 }

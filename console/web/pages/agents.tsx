@@ -7,7 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { FirstRunPanel } from "@/components/brand";
 import { ErrorAlert, PageHeader } from "@/components/common";
 import { needsStartingCredit, StartingCreditHelp } from "@/components/starting-credit";
-import { formatMicros, formatTime, useApi, type AgentSummary, type Billing } from "@/lib/api";
+import { formatMicros, formatTime, type useApi, type AgentSummary, type Billing } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
 
 export function AgentStatus({ agent }: { agent: Pick<AgentSummary, "running" | "connected"> }) {
@@ -16,9 +16,10 @@ export function AgentStatus({ agent }: { agent: Pick<AgentSummary, "running" | "
   return <Badge variant="outline" className="text-muted-foreground">Asleep</Badge>;
 }
 
-export function AgentsPage() {
-  const agents = useApi<AgentSummary[]>("/v1/agents", 10_000);
-  const billing = useApi<Billing>(agents.data?.length === 0 ? "/v1/billing" : undefined, 30_000);
+export function AgentsPage({ agents, billing }: {
+  agents: ReturnType<typeof useApi<AgentSummary[]>>;
+  billing: ReturnType<typeof useApi<Billing>>;
+}) {
   const needsCredit = needsStartingCredit(billing.data);
   const emptyBalance = billing.data?.billing === "prepaid" && billing.data.balance <= 0;
   return (
@@ -29,17 +30,20 @@ export function AgentsPage() {
         actions={<Button variant="outline" size="sm" onClick={() => void agents.reload()}><RefreshCw />Refresh</Button>}
       />
       <ErrorAlert error={agents.error} />
-      {agents.loading && !agents.data ? <Skeleton className="h-40 w-full" />
-        : agents.data?.length === 0 ? (
+      <ErrorAlert error={agents.data?.length === 0 ? billing.error : undefined} />
+      {(agents.loading && !agents.data) || (agents.data?.length === 0 && !billing.data && !billing.error) ? <Skeleton className="h-40 w-full" />
+        : agents.data?.length === 0 && billing.data ? (
           <FirstRunPanel hero art="liquid" eyebrow="FIRST AGENT" title="No agents yet"
             action={<PixelButton size="hero" asChild><Link to={emptyBalance ? "billing" : "quickstart"}>{emptyBalance ? "Add credit" : "Open quickstart"}</Link></PixelButton>}>
             {needsCredit ? <StartingCreditHelp status={billing.data!.startingCredit.status} />
               : emptyBalance ? "Add credit to start running agents."
               : billing.data?.startingCredit?.status === "granted" && billing.data.freeCredit
                 ? <>You started with {formatMicros(billing.data.startingCredit.amount)} of credit. Follow the Quickstart to create your first agent.</>
-                : <>Follow the <Link className="text-foreground underline underline-offset-4" to="quickstart">Quickstart</Link> to create your first agent.</>}
+                : billing.data?.billing === "none"
+                  ? <>Add a model key under <Link className="text-foreground underline underline-offset-4" to="models">Models & keys</Link>, then follow the Quickstart to create your first agent.</>
+                  : <>Follow the <Link className="text-foreground underline underline-offset-4" to="quickstart">Quickstart</Link> to create your first agent.</>}
           </FirstRunPanel>
-        ) : agents.data && (
+        ) : !!agents.data?.length && (
           <div className="bg-card border">
             <Table>
               <TableHeader>

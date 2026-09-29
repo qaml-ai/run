@@ -637,7 +637,7 @@ export const AdjustmentInput = z.object({
 }).openapi("AdjustmentInput");
 export const StartingCreditGrantInput = z.object({
   tenant: z.string(),
-  amount: z.number().int().positive().max(1e12).openapi({ description: "Starting credit to award in micro-USD, once per GitHub identity" }),
+  amountUsd: z.number().min(1).max(100).openapi({ description: "Starting credit to award in USD ($1–$100, whole cents), once per GitHub identity", example: 5 }),
   reason: z.string().trim().min(1).max(500).openapi({ description: "Private support audit note; never included in the tenant's ledger" }),
 }).openapi("StartingCreditGrantInput");
 export const CheckoutInput = z.object({

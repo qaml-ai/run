@@ -12,7 +12,7 @@ import { AuthLayout } from "@/components/auth-layout";
 import { PIXEL_STYLE } from "@/components/brand";
 import { ErrorAlert, PageErrorBoundary } from "@/components/common";
 import { StartingCreditBanner } from "@/components/starting-credit";
-import { api, useApi, type Me } from "@/lib/api";
+import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { AgentsPage } from "@/pages/agents";
@@ -60,10 +60,13 @@ function useWebMcp(tenant: string | undefined) {
 function App() {
   const me = useApi<Me>("/v1/me");
   const path = usePath();
+  const [section, ...rest] = path.split("/");
+  const isAgentsList = !section || (section === "agents" && !rest[0]);
+  const billing = useApi<Billing>(me.data ? "/v1/billing" : undefined, 30_000);
+  const agents = useApi<AgentSummary[]>(me.data && isAgentsList ? "/v1/agents" : undefined, 10_000);
   useWebMcp(me.data?.tenant);
   if (me.loading && !me.data) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
   if (!me.data) return <SignIn onSignedIn={() => void me.reload()} />;
-  const [section, ...rest] = path.split("/");
   const page = section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
     : section === "volumes" ? (rest[0] ? <VolumePage id={rest[0]} /> : <VolumesPage />)
     : section === "definitions" ? <DefinitionsPage />
@@ -73,7 +76,7 @@ function App() {
     : section === "usage" ? <UsagePage />
     : section === "billing" ? <BillingPage />
     : section === "quickstart" ? <QuickstartPage />
-    : <AgentsPage />;
+    : <AgentsPage agents={agents} billing={billing} />;
   const active = section || "agents";
   const who = me.data.login ?? me.data.tenant;
   // The shell stays quiet: ground-colored, split from the page by a rule, no art or display type.
@@ -111,10 +114,12 @@ function App() {
           </div>
         </div>
       </aside>
-      <main className="min-w-0 flex-1 px-4 py-6 md:px-10 md:py-8">
-        <div className="mx-auto max-w-6xl">
-          {active !== "billing" && active !== "agents" && <StartingCreditBanner />}
-          <PageErrorBoundary key={path}>{page}</PageErrorBoundary>
+      <main className="min-w-0 flex-1">
+        {active !== "billing" && (!isAgentsList || !!agents.data?.length) && <StartingCreditBanner billing={billing.data} />}
+        <div className="px-4 py-6 md:px-10 md:py-8">
+          <div className="mx-auto max-w-6xl">
+            <PageErrorBoundary key={path}>{page}</PageErrorBoundary>
+          </div>
         </div>
       </main>
     </div>

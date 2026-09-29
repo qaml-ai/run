@@ -20,7 +20,7 @@ import { deliveryLine, recordEventMetrics, writeMetricLine } from "./metrics.ts"
  * body, as before: nodes of an earlier release, which send from that outbox during a deploy, never see
  * an endpoint's deliveries, and a change they make to the usage webhook is the one every node reads.
  */
-export const EVENT_TYPES = ["run.started", "run.completed", "run.failed", "input.requested", "input.resolved", "usage.recorded"] as const;
+export const EVENT_TYPES = ["run.started", "run.completed", "run.failed", "input.requested", "input.resolved", "usage.recorded", "billing.balance.low", "billing.balance.depleted"] as const;
 export type EventType = typeof EVENT_TYPES[number];
 /** An event for the tenant's endpoints; `legacy` is a usage event's body for the usage webhook. */
 export type WebhookEvent = { id: string; type: EventType; tenant: string; created: number; data: Record<string, unknown>; legacy?: UsageEvent };

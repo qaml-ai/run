@@ -546,7 +546,8 @@ export function api(context: ApiContext) {
     if (principal.via !== "operator" || !context.billingAdmins?.includes(principal.tenant)) throw new HttpError(403, "Only the platform operator can grant starting credit");
     const body = parse(schema.StartingCreditGrantInput, await readJson(c.req.raw.body, 4096, {}));
     if (!await accounts.exists(body.tenant)) throw new HttpError(404, `Unknown tenant ${body.tenant}`);
-    return json(c, 201, await accounts.billing.grantStartingCredit(body.tenant, body.amount, body.reason, principal.tenant));
+    if (Math.abs(body.amountUsd * 100 - Math.round(body.amountUsd * 100)) > 1e-6) throw new HttpError(400, "amountUsd must be in whole cents");
+    return json(c, 201, await accounts.billing.grantStartingCredit(body.tenant, Math.round(body.amountUsd * 100) * 10_000, body.reason, principal.tenant));
   });
   route(createRoute({
     method: "post", path: "/v1/billing/adjustments", request: { body: content(schema.AdjustmentInput) },

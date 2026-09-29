@@ -1234,6 +1234,15 @@ Every event is an envelope:
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
 | `usage.recorded` | A model response's usage was counted | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response` or `compaction`), tokens, `cost: {usd, source}`, `at` |
+| `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |
+| `billing.balance.depleted` | Positive balance reaches zero or below | Same balance fields |
+
+Billing events are recorded in the transaction that changes the balance, including
+usage, storage, refunds and adjustments. Remaining below a threshold does not
+repeat the event; recovering above it allows a later crossing to notify again.
+One charge can emit both types. A new account with no credit emits neither.
+A threshold change can emit `billing.balance.low` with `source: "threshold_changed"`
+and no `previousBalance`; ordinary crossings have `source: "balance"`.
 
 - Payloads are small: ids and the key facts. Read the rest with your API key: the
   run (`GET /v1/agents/:id/requests/:requestId`, with its reply in

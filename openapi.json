@@ -1094,7 +1094,9 @@
                 "run.failed",
                 "input.requested",
                 "input.resolved",
-                "usage.recorded"
+                "usage.recorded",
+                "billing.balance.low",
+                "billing.balance.depleted"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -1131,7 +1133,9 @@
                 "run.failed",
                 "input.requested",
                 "input.resolved",
-                "usage.recorded"
+                "usage.recorded",
+                "billing.balance.low",
+                "billing.balance.depleted"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -1165,7 +1169,9 @@
                 "run.failed",
                 "input.requested",
                 "input.resolved",
-                "usage.recorded"
+                "usage.recorded",
+                "billing.balance.low",
+                "billing.balance.depleted"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -3137,11 +3143,12 @@
           "tenant": {
             "type": "string"
           },
-          "amount": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 1000000000000,
-            "description": "Starting credit to award in micro-USD, once per GitHub identity"
+          "amountUsd": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Starting credit to award in USD ($1–$100, whole cents), once per GitHub identity",
+            "example": 5
           },
           "reason": {
             "type": "string",
@@ -3152,7 +3159,7 @@
         },
         "required": [
           "tenant",
-          "amount",
+          "amountUsd",
           "reason"
         ]
       },

@@ -128,7 +128,7 @@ test("a disabled signup grant is not awarded when grants are enabled later", asy
   await disabled.tenantForGithub(person(707, "disabled"));
   const enabled = await accountsOn(db);
   await enabled.tenantForGithub(person(707, "disabled"), policy);
-  assert.deepEqual(await enabled.billing.startingCredit("disabled"), { status: "not_granted", amount: 0 });
+  assert.deepEqual(await enabled.billing.startingCredit("disabled"), { status: "not_applicable", amount: 0 });
   assert.equal(await count(db, "credit_ledger"), 0);
 });
 

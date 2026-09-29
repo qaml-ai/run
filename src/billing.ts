@@ -59,12 +59,12 @@ export async function postLedger(sql: Sql, entries: LedgerEntry[], now = Date.no
       select * from jsonb_to_recordset($1::jsonb) as t(tenant text, kind text, amount bigint, key text, metadata jsonb)
     ), appended as (
       insert into credit_ledger (tenant, kind, amount, idempotency_key, metadata, created_at)
-      select tenant, kind, amount, key, coalesce(metadata, '{}'), $2 from input
+      select tenant, kind, amount, key, coalesce(metadata, '{}'), $2 from input order by tenant, key
       on conflict (idempotency_key) do nothing
       returning id, tenant, kind, amount, idempotency_key, metadata
     ), moved as (
       insert into credit_accounts (tenant, balance, purchased)
-      select tenant, sum(amount), coalesce(sum(amount) filter (where kind in ('purchase', 'refund')), 0) from appended group by tenant
+      select tenant, sum(amount), coalesce(sum(amount) filter (where kind in ('purchase', 'refund')), 0) from appended group by tenant order by tenant
       on conflict (tenant) do update set balance = credit_accounts.balance + excluded.balance, purchased = credit_accounts.purchased + excluded.purchased
     )
     select id, tenant, kind, amount, idempotency_key as key, metadata from appended`, [JSON.stringify(entries), now]);
@@ -238,7 +238,7 @@ export class Billing {
       where t.id = $1`, [tenant])).rows[0];
     if (!row || row.billing !== "prepaid") return { status: "not_applicable", amount: 0 };
     if (row.amount > 0) return { status: "granted", amount: row.amount };
-    return { status: row.decision === "ineligible" ? "not_eligible" : "not_granted", amount: 0 };
+    return { status: row.decision === "disabled" ? "not_applicable" : row.decision === "ineligible" ? "not_eligible" : "not_granted", amount: 0 };
   }
 
   /** An operator-approved exception uses the same identity key as an automatic signup award. */
