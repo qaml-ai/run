@@ -14,10 +14,28 @@ const KIND_LABELS: Record<LedgerKind, string> = {
   grant: "Credit grant", purchase: "Purchase", usage: "Agent usage", storage: "Storage", adjustment: "Adjustment", refund: "Refund",
 };
 
+function activityDetail(entry: LedgerEntry) {
+  const meta = entry.metadata;
+  if (meta.card) return cardLabel(meta.card);
+  if (entry.kind === "usage") {
+    const parts = [];
+    if (meta.hour) parts.push(Date.now() < entry.createdAt + 3_600_000 ? "This hour so far" : "Hour total");
+    if (meta.tokens) parts.push(`${formatMicros(meta.tokens)} model tokens`);
+    if (meta.funding) parts.push(`${formatMicros(meta.funding)} provider credit funding`);
+    if (meta.activeMs) parts.push(`${formatNumber(Math.round(meta.activeMs / 1000))} s of agent time`);
+    if (meta.searches) parts.push(`${formatNumber(meta.searches)} web search${meta.searches === 1 ? "" : "es"}`);
+    if (meta.renders) parts.push(`${formatNumber(meta.renders)} page render${meta.renders === 1 ? "" : "s"}`);
+    if (meta.toolSearches) parts.push(`${formatNumber(meta.toolSearches)} tool search${meta.toolSearches === 1 ? "" : "es"}`);
+    return parts.join(" · ");
+  }
+  if (entry.kind === "storage") return `${formatNumber((meta.bytes ?? 0) / 1e9)} GB stored`;
+  return meta.reason;
+}
+
 function Activity({ entries }: { entries: LedgerEntry[] }) {
   return <ul className="divide-y border-b">{entries.map(entry => {
     const meta = entry.metadata, url = invoiceLink(meta.invoiceUrl);
-    const detail = meta.card ? cardLabel(meta.card) : entry.kind === "storage" ? `${formatNumber((meta.bytes ?? 0) / 1e9)} GB stored` : meta.reason;
+    const detail = activityDetail(entry);
     return <li key={entry.id} className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 py-3 text-sm sm:grid-cols-[140px_minmax(0,1fr)_auto]">
       <time dateTime={new Date(entry.createdAt).toISOString()} className="text-muted-foreground col-span-2 text-xs tabular-nums sm:col-span-1">{new Date(entry.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time>
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span>{meta.autoTopup ? "Auto top-up" : KIND_LABELS[entry.kind]}</span>{detail && <span className="text-muted-foreground break-words text-xs">{detail}</span>}{url && <a className="text-xs underline underline-offset-4" href={url} target="_blank" rel="noopener noreferrer">Invoice ↗</a>}</div>

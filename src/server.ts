@@ -623,9 +623,11 @@ tenantsTimer?.unref();
 
 // Load for autoscaling, as a CloudWatch metric extracted from the log line.
 const loadTimer = setInterval(() => {
+  const memory = process.memoryUsage();
   console.log(nodeLoadLine({
-    hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: process.memoryUsage.rss(),
+    hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: memory.rss,
     watchers: clients.watchers, dbConnections: db.totalCount, dbIdle: db.idleCount, dbWaiting: db.waitingCount,
+    heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers,
   }, process.env.AGENT_SERVICE_NAME, { node, retiring: retiringSince !== undefined }));
   // Every node reports the shared outboxes' backlog: read it with Maximum.
   void webhooks.backlog().then(backlog => console.log(webhookBacklogLine(backlog)))

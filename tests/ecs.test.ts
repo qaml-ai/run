@@ -171,6 +171,12 @@ test("node load also carries event stream watchers and the database pool, when t
   assert.equal(line.dbWaiting, 2);
 });
 
+test("node load reports heap and buffer memory in bytes, when the node gives them", () => {
+  const load = { hostedAgents: 0, sessions: 0, volumes: 0, runningTurns: 0, rssBytes: 700, heapUsedBytes: 90, heapTotalBytes: 400, externalBytes: 30, arrayBuffersBytes: 20 };
+  const metrics = JSON.parse(nodeLoadLine(load, "agent-runtime"))._aws.CloudWatchMetrics[0].Metrics;
+  assert.deepEqual(metrics.slice(-4), ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"].map(Name => ({ Name, Unit: "Bytes" })));
+});
+
 test("tenants load from a Secrets Manager secret, and a bad refresh keeps the last good tenants", async t => {
   const arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:agent-runtime/tenants-AbCdEf";
   let secret = JSON.stringify({ tenants: { alice: { tokenSha256: sha("alice-token"), apiKeys: { anthropic: "sk-alice" } } } });

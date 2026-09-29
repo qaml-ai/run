@@ -124,13 +124,17 @@ export class TaskProtection {
  * AGENT_MAX_AGENTS caps. `sessions`: agents loaded here (journal and stream in
  * memory), hosted or not. `watchers`: event stream subscribers held here (watchers and
  * waiting polls). `dbConnections`, `dbIdle`, `dbWaiting`: the database pool's
- * connections, idle ones, and queries waiting for one.
+ * connections, idle ones, and queries waiting for one. `heapUsedBytes`,
+ * `heapTotalBytes`, `externalBytes`, `arrayBuffersBytes`: the V8 heap and native
+ * buffer memory inside `rssBytes`, to tell live objects from memory kept after use.
  */
 export type NodeLoad = {
   hostedAgents: number; sessions: number; volumes: number; runningTurns: number; rssBytes: number;
   watchers?: number; dbConnections?: number; dbIdle?: number; dbWaiting?: number;
+  heapUsedBytes?: number; heapTotalBytes?: number; externalBytes?: number; arrayBuffersBytes?: number;
 };
 const OPTIONAL_LOAD = ["watchers", "dbConnections", "dbIdle", "dbWaiting"] as const;
+const OPTIONAL_BYTES = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"] as const;
 
 /**
  * A `node_load` log line in CloudWatch Embedded Metric Format: CloudWatch Logs
@@ -146,6 +150,7 @@ export function nodeLoadLine(load: NodeLoad, service?: string, extra: Record<str
           { Name: "hostedAgents", Unit: "Count" }, { Name: "sessions", Unit: "Count" },
           { Name: "volumes", Unit: "Count" }, { Name: "runningTurns", Unit: "Count" }, { Name: "rssBytes", Unit: "Bytes" },
           ...OPTIONAL_LOAD.filter(name => load[name] !== undefined).map(name => ({ Name: name, Unit: "Count" })),
+          ...OPTIONAL_BYTES.filter(name => load[name] !== undefined).map(name => ({ Name: name, Unit: "Bytes" })),
         ],
       }],
     },
