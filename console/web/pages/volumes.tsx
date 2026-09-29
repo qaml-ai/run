@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { StatusPanel } from "@/components/brand";
 import { ConfirmButton, CopyButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
 import { FileBrowser } from "@/components/files";
 import { api, formatBytes, formatTime, useApi, type Snapshot, type Volume, type VolumeSummary } from "@/lib/api";
@@ -66,7 +67,7 @@ export function VolumesPage() {
       {volumes.loading && !volumes.data ? <Skeleton className="h-40 w-full" />
         : volumes.data?.length === 0 ? <EmptyState icon={<HardDrive />} title="No volumes yet">Agents get a workspace volume when they are created, or make one here.</EmptyState>
         : volumes.data && (
-          <div className="rounded-lg border">
+          <div className="bg-card border">
             <Table>
               <TableHeader><TableRow>
                 <TableHead>Name</TableHead><TableHead className="hidden sm:table-cell">ID</TableHead><TableHead>Files</TableHead><TableHead>Size</TableHead><TableHead className="hidden lg:table-cell">Created</TableHead>
@@ -86,7 +87,8 @@ export function VolumePage({ id }: { id: string }) {
   const snapshots = useApi<Snapshot[]>(`/v1/volumes/${id}/snapshots`);
   const [snapshotting, setSnapshotting] = useState(false);
   const [error, setError] = useState<string>();
-  if (volume.error?.status === 404) return <ErrorAlert error="This volume does not exist or belongs to another tenant." />;
+  if (volume.error?.status === 404) return <StatusPanel code="404" label="Not found" detail="This volume does not exist or belongs to another tenant."
+    action={<Button variant="outline" asChild><Link to="volumes"><ArrowLeft />Volumes</Link></Button>} />;
   if (!volume.data) return <><ErrorAlert error={volume.error} /><Skeleton className="h-64 w-full" /></>;
   const data = volume.data;
   return (
@@ -112,7 +114,7 @@ export function VolumePage({ id }: { id: string }) {
           <CardContent>
             <ErrorAlert error={snapshots.error} />
             {!snapshots.data?.length ? <p className="text-muted-foreground text-sm">No snapshots. A snapshot copies the file list, sharing contents, so it is cheap.</p> : (
-              <div className="rounded-lg border">
+              <div className="bg-card border">
                 <Table>
                   <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Files</TableHead><TableHead>Size</TableHead><TableHead className="hidden sm:table-cell">Seq</TableHead><TableHead>Created</TableHead><TableHead /></TableRow></TableHeader>
                   <TableBody>

@@ -14,7 +14,7 @@ import { errorCode, errorStatus, HttpError, readJson, readText } from "./http.ts
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import type { Definitions } from "./definitions.ts";
-import { scopeEntry, type KeyScopes } from "./key-scopes.ts";
+import { checkScope, scopeEntry, type KeyScopes } from "./key-scopes.ts";
 import { providerInput, type ModelProviders } from "./model-providers.ts";
 import type { Webhooks } from "./webhooks.ts";
 import { definitionRoutes } from "./definitions-api.ts";
@@ -39,7 +39,8 @@ export interface ApiContext {
   /** Tenants' own OpenAI-compatible providers (`/v1/providers/{name}`). */
   modelProviders?: ModelProviders;
   /** The model an agent gets when it names none, as provider/model-id. */
-  defaultModel: string;
+  /** The model an agent of the tenant that names none gets. */
+  defaultModel: (tenant: string) => Promise<string>;
   /** Provision an agent for a tenant. */
   createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
   verifyKeys?: boolean;
@@ -55,8 +56,8 @@ export interface ApiContext {
   browserTokens?: BrowserTokens;
   /** How long a request holds its Idempotency-Key before a retry may take it over (default 2 minutes). */
   idempotencyLockMs?: number;
-  /** Where browsers reach this runtime (a browser token's `url`). */
-  publicUrl?: string;
+  /** Where browsers reach this runtime (a browser token's `url`); none for a private runtime read through a proxy. */
+  browserUrl?: string;
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
@@ -68,7 +69,7 @@ const BROWSER_ROUTE = /^\/v1\/agents\/([^/]+)\/(events|state|history|inputs)$/;
 
 const DOCUMENT = {
   openapi: "3.1.0",
-  info: { title: "Agent runtime API", version: "1.0.0" },
+  info: { title: "camelRun API", version: "1.0.0" },
   security: [{ bearer: [] }, { console: [] }] as Record<string, string[]>[],
 };
 const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });
@@ -170,9 +171,9 @@ export function api(context: ApiContext) {
     secret: path => /^\/v1\/(?:tokens|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
-  route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), c => {
+  route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {
     const principal = c.var.principal;
-    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: context.defaultModel });
+    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
   });
 
   route(createRoute({ method: "get", path: "/v1/providers", responses: { 200: reply("Key status per provider, and the tenant's own providers", z.array(schema.Provider)) } }), async c => {
@@ -233,7 +234,7 @@ export function api(context: ApiContext) {
   };
   const scopeProvider = { method: "put", path: "/v1/key-scopes/{scope}/providers/{provider}", request: { params: z.object({ scope: z.string(), provider: z.string() }) } } as const;
   route(createRoute({ ...scopeProvider, request: { ...scopeProvider.request, body: content(schema.KeyScopeEntryInput) }, responses: { 200: reply("The entry is stored; agents in the scope use it from their next model call", schema.KeyScope) } }), async c => {
-    const custom = await context.modelProviders?.has(c.var.principal.tenant, c.req.param("provider")!);
+    const custom = await context.modelProviders?.has(c.var.principal.tenant, c.req.param("provider")!, c.req.param("scope")!);
     const entry = scopeEntry(c.req.param("provider")!, await readJson(c.req.raw.body, 64 * 1024, {}), custom);
     return json(c, 200, await keyScopes().set(c.var.principal.tenant, c.req.param("scope")!, c.req.param("provider")!, entry));
   });
@@ -241,11 +242,28 @@ export function api(context: ApiContext) {
     if (!await keyScopes().delete(c.var.principal.tenant, c.req.param("scope")!, c.req.param("provider")!)) throw new HttpError(404, `No ${c.req.param("provider")} entry in this key scope`);
     return json(c, 200, { deleted: true });
   });
+  // A key scope's own model providers: only its agents name their models, before the tenant's of the same name.
+  const scopeModelProvider = { path: "/v1/key-scopes/{scope}/model-providers/{name}", request: { params: z.object({ scope: z.string(), name: z.string() }) } } as const;
+  route(createRoute({
+    ...scopeModelProvider, method: "put", request: { ...scopeModelProvider.request, body: content(schema.CustomProviderInput) },
+    responses: { 200: reply("The provider, never its key or header values; the scope's agents name its models <name>/<model id>", schema.Provider) },
+  }), async c => {
+    const tenant = c.var.principal.tenant, scope = checkScope(c.req.param("scope")), name = c.req.param("name")!;
+    const input = providerInput(await readJson(c.req.raw.body, 1024 * 1024, {}));
+    return json(c, 200, await modelProviders().set(tenant, name, input, Object.keys(accounts.tenants.modelEndpoints(tenant) ?? {}), scope));
+  });
+  route(createRoute({ ...scopeModelProvider, method: "delete", responses: { 200: reply("The provider is deleted: the scope's agents on its models call the tenant's of that name, if any, or fail", schema.Deleted) } }), async c => {
+    if (!await modelProviders().delete(c.var.principal.tenant, c.req.param("name")!, checkScope(c.req.param("scope")))) throw new HttpError(404, `No provider ${c.req.param("name")} in this key scope`);
+    return json(c, 200, { deleted: true });
+  });
+  route(createRoute({ method: "get", path: "/v1/key-scopes/{scope}/model-providers", request: { params: z.object({ scope: z.string() }) }, responses: { 200: reply("The scope's own model providers, never their key or header values", z.array(schema.Provider)) } }),
+    async c => json(c, 200, await modelProviders().list(c.var.principal.tenant, checkScope(c.req.param("scope")))));
   const scopePath = { path: "/v1/key-scopes/{scope}", request: { params: z.object({ scope: z.string() }) } } as const;
   route(createRoute({ ...scopePath, method: "get", responses: { 200: reply("The providers the scope has entries for, never their secrets", schema.KeyScope) } }),
     async c => json(c, 200, await keyScopes().status(c.var.principal.tenant, c.req.param("scope")!)));
-  route(createRoute({ ...scopePath, method: "delete", responses: { 200: reply("Every entry of the scope is deleted", schema.Deleted) } }), async c => {
+  route(createRoute({ ...scopePath, method: "delete", responses: { 200: reply("Every entry and model provider of the scope is deleted", schema.Deleted) } }), async c => {
     await keyScopes().delete(c.var.principal.tenant, c.req.param("scope")!);
+    await context.modelProviders?.deleteScope(c.var.principal.tenant, c.req.param("scope")!);
     return json(c, 200, { deleted: true });
   });
 
@@ -291,7 +309,7 @@ export function api(context: ApiContext) {
 
   route(createRoute({
     method: "get", path: "/v1/models",
-    request: { query: z.object({ provider: z.string().optional(), available: z.enum(["true"]).optional().openapi({ description: "Only models this tenant has a key for" }) }) },
+    request: { query: z.object({ provider: z.string().optional(), available: z.enum(["true"]).optional().openapi({ description: "Only models this tenant has a key for" }), keyScope: z.string().optional().openapi({ description: "Include this key scope's own providers' models, as its agents see them" }) }) },
     responses: { 200: reply("Models in the catalog", z.array(schema.Model)) },
   }), async c => {
     const available = c.req.query("available") === "true";
@@ -302,7 +320,7 @@ export function api(context: ApiContext) {
     const own = Object.entries(endpoints).filter(([provider]) => [undefined, provider].includes(c.req.query("provider")))
       .flatMap(([provider, endpoint]) => Object.keys(endpoint.models ?? {}).map(id => ({ ...modelInfo(resolveModel(`${provider}/${id}`, endpoints)), available: true })));
     // Then the tenant's own providers' declared models, which need no key of the tenant's.
-    const custom = await context.modelProviders?.resolvable(c.var.principal.tenant) ?? {};
+    const custom = await context.modelProviders?.resolvable(c.var.principal.tenant, c.req.query("keyScope") ? checkScope(c.req.query("keyScope")) : undefined) ?? {};
     const declared = Object.entries(custom).filter(([provider]) => [undefined, provider].includes(c.req.query("provider")))
       .flatMap(([provider, entry]) => entry.models.map(model => ({ ...modelInfo(resolveModel(`${provider}/${model.id}`, undefined, custom)), available: true })));
     const models = [...own, ...declared, ...listModels(c.req.query("provider")).map(model => ({ ...model, available: supported.has(model.provider) && keyed(model.provider) }))];
@@ -384,7 +402,7 @@ export function api(context: ApiContext) {
     if (!context.browserTokens) throw new HttpError(404, "Browser tokens are not enabled on this runtime");
     const id = c.req.param("id")!;
     const minted = context.browserTokens.mint(c.var.principal.tenant, id, await readJson(c.req.raw.body, 16 * 1024, {}));
-    return json(c, 201, { ...minted, agentId: id, ...(context.publicUrl ? { url: context.publicUrl } : {}) });
+    return json(c, 201, { ...minted, agentId: id, ...(context.browserUrl ? { url: context.browserUrl } : {}) });
   });
   route(createRoute({ method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId }, responses: { 200: reply("The running turn is aborted", z.object({ aborted: z.literal(true) })) } }), async c => {
     await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant);
@@ -408,10 +426,11 @@ export function api(context: ApiContext) {
     // A model the agent could not call is refused now, not when the request runs.
     if (params.model !== undefined) {
       let provider: string;
-      const custom = await context.modelProviders?.resolvable(tenant);
-      try { provider = resolveModel(params.model, accounts.tenants.modelEndpoints(tenant), custom).provider; } catch (error) { throw new HttpError(400, errorText(error)); }
       // An agent with a key scope may have the provider's key there; its calls say so if not. The tenant's own providers need none.
       const scoped = params.keyScope !== undefined ? params.keyScope : (await clients.inspect(c.req.param("id")!, tenant)).keyScope;
+      // Resolved in the scope the agent will be in: its own providers come first.
+      const custom = await context.modelProviders?.resolvable(tenant, scoped);
+      try { provider = resolveModel(params.model, accounts.tenants.modelEndpoints(tenant), custom).provider; } catch (error) { throw new HttpError(400, errorText(error)); }
       if (!scoped && !Object.hasOwn(custom ?? {}, provider) && !await accounts.hasKey(tenant, provider)) throw new HttpError(400, `No ${provider} API key is configured for this tenant; set one with PUT /v1/providers/${provider}/key`);
     }
     const submit = context.submit ?? clients.submit.bind(clients);

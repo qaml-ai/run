@@ -39,16 +39,19 @@ export class Tenants {
   private readonly file?: string;
   private readonly read?: () => Promise<string>;
 
-  /** `read` returns the tenants file's JSON from elsewhere (a secret); the tenants are empty until `reload`. */
-  constructor(options: { file?: string; read?: () => Promise<string> }) {
+  private readonly from: "file" | "secret" | "env";
+
+  /** `read` returns the tenants file's JSON from elsewhere (a secret, or the environment: `env`); the tenants are empty until `reload`. */
+  constructor(options: { file?: string; read?: () => Promise<string>; env?: boolean }) {
     if (options.file && options.read) throw new Error("Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN, not both");
     if (!options.file && !options.read) throw new Error("Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN to the tenants file");
     this.file = options.file;
     this.read = options.read;
+    this.from = options.file ? "file" : options.env ? "env" : "secret";
     if (options.file) this.parse(readFileSync(options.file, "utf8"));
   }
 
-  get source() { return this.file ? "file" : "secret"; }
+  get source() { return this.from; }
 
   /** Re-read the tenants file or secret (on SIGHUP after adding a tenant). Invalid contents are rejected whole, keeping the tenants loaded before. */
   async reload() {
@@ -156,11 +159,33 @@ function validEndpoints(tenant: string, endpoints: unknown) {
   }
 }
 
-/** Tenants from AGENT_TENANTS_SECRET_ARN (the tenants file's JSON in Secrets Manager) or AGENT_TENANTS_FILE. */
-export async function tenantsFromEnvironment(env = process.env) {
-  const tenants = new Tenants({
-    file: env.AGENT_TENANTS_FILE, read: env.AGENT_TENANTS_SECRET_ARN ? await secretReader(env.AGENT_TENANTS_SECRET_ARN, env) : undefined,
-  });
+/**
+ * Tenants from one of: AGENT_TENANTS_FILE (the tenants file), AGENT_TENANTS_SECRET_ARN (its JSON in Secrets
+ * Manager), AGENT_TENANTS_JSON (its JSON inline), or AGENT_TENANT with AGENT_OPERATOR_TOKEN (one tenant and its
+ * operator token, with AGENT_TENANT_API_KEYS its provider keys as {provider: key}: a self-hosted runtime's).
+ */
+export async function tenantsFromEnvironment(env: NodeJS.ProcessEnv = process.env) {
+  const given = ["AGENT_TENANTS_FILE", "AGENT_TENANTS_SECRET_ARN", "AGENT_TENANTS_JSON", "AGENT_TENANT"].filter(name => env[name]);
+  if (given.length > 1) throw new Error(`Set only one of ${given.join(", ")}`);
+  if (!given.length) throw new Error("Set AGENT_TENANT and AGENT_OPERATOR_TOKEN, or AGENT_TENANTS_FILE, AGENT_TENANTS_JSON or AGENT_TENANTS_SECRET_ARN to the tenants file");
+  const inline = env.AGENT_TENANT ? JSON.stringify(singleTenant(env)) : env.AGENT_TENANTS_JSON;
+  const tenants = new Tenants(inline !== undefined
+    ? { read: async () => inline, env: true }
+    : { file: env.AGENT_TENANTS_FILE || undefined, read: env.AGENT_TENANTS_SECRET_ARN ? await secretReader(env.AGENT_TENANTS_SECRET_ARN, env) : undefined });
   await tenants.reload();
   return tenants;
+}
+
+function singleTenant(env: NodeJS.ProcessEnv) {
+  const token = env.AGENT_OPERATOR_TOKEN;
+  if (!token) throw new Error("AGENT_TENANT needs AGENT_OPERATOR_TOKEN, the tenant's operator token");
+  if (token.length < 24) throw new Error("AGENT_OPERATOR_TOKEN must be at least 24 characters");
+  let apiKeys: unknown = {};
+  if (env.AGENT_TENANT_API_KEYS) {
+    try { apiKeys = JSON.parse(env.AGENT_TENANT_API_KEYS); } catch { apiKeys = undefined; }
+    if (!apiKeys || typeof apiKeys !== "object" || Array.isArray(apiKeys) || Object.values(apiKeys).some(key => typeof key !== "string" || !key)) {
+      throw new Error("AGENT_TENANT_API_KEYS must be a JSON object of provider keys, {\"anthropic\": \"sk-...\"}");
+    }
+  }
+  return { tenants: { [env.AGENT_TENANT!]: { tokenSha256: sha256(token), apiKeys } } };
 }

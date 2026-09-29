@@ -388,12 +388,14 @@ export interface CustomModel {
   compat?: { supportsDeveloperRole?: boolean; supportsUsageInStreaming?: boolean; supportsFinishReason?: boolean; supportsReasoningEffort?: boolean; maxTokensField?: "max_tokens" | "max_completion_tokens"; thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "qwen-chat-template" };
 }
 /** A provider of your own: a public https server that speaks OpenAI Chat Completions (`POST <baseUrl>/chat/completions`). */
-export interface CustomProviderInput { type: "openai-compatible"; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] }
+/** The API a custom provider speaks. */
+export type CustomProviderType = "openai-completions" | "openai-responses" | "anthropic-messages";
+export interface CustomProviderInput { type: CustomProviderType; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] }
 /** A provider as GET /v1/providers lists it; never a key or header value. */
 export interface ProviderSummary {
   id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string;
   key: { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number } | null;
-  custom?: { type: "openai-compatible"; baseUrl: string; headers?: string[]; models: CustomModel[] };
+  custom?: { type: CustomProviderType; baseUrl: string; headers?: string[]; models: CustomModel[] };
 }
 /** An agent as GET /v1/agents lists it. */
 export interface AgentSummary { id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null }
@@ -530,13 +532,28 @@ async function rejectRedirect(response: Response) {
   }
 }
 
+/**
+ * Hosts plain http:// may reach: loopback, and names and addresses only a private network resolves
+ * (a Docker Compose service, `*.internal`, `*.local`, 10/8, 172.16/12, 192.168/16), as for a runtime kept private.
+ */
+export function privateHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  if (["localhost", "[::1]"].includes(host) || /\.(?:localhost|internal|local)$/.test(host)) return true;
+  const ip = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
+  if (ip) {
+    const [a, b] = [Number(ip[1]), Number(ip[2])];
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  return !host.includes(".") && !host.startsWith("[");
+}
+
 class Transport {
   readonly base: string;
   readonly fetcher: typeof globalThis.fetch;
   constructor(options: RuntimeOptions) {
     const url = new URL(options.url ?? DEFAULT_URL);
     if (url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error("Use a runtime origin without credentials, path, or query");
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("Remote runtimes require https://");
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && privateHost(url.hostname))) throw new Error("Remote runtimes require https://; http:// only on a private network (localhost, a single-label or .internal name, a private IP)");
     this.base = url.origin;
     const fetcher = options.fetch;
     this.fetcher = fetcher ? (input, init) => fetcher(input, init) : globalThis.fetch.bind(globalThis);

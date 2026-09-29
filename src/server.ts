@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, join, extname, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentSupervisor, type Hosting } from "./supervisor.ts";
-import { configuredModel } from "./model.ts";
+import { configuredModel, defaultModels } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
@@ -171,6 +171,13 @@ const definitions = new Definitions({ db, accounts, outbound, customProviders: t
 // Saving a definition lists its MCP servers, as its agents would.
 definitions.listMcp = (tenant, id, servers) => toolSources.listed(tenant, id, servers);
 const keyScopes = new KeyScopes({ db, accounts, outbound });
+const defaults = defaultModels(model);
+/** The model an agent of `tenant` that names none gets: the first default its key scope or tenant has a key for, else the first. */
+async function defaultModelFor(tenant: string, keyScope?: string) {
+  const keyed = await accounts.keyedProviders(tenant);
+  for (const candidate of defaults) if (keyed(candidate.provider) || (keyScope && await keyScopes.entry(tenant, keyScope, candidate.provider))) return candidate;
+  return defaults[0];
+}
 modelProviders.onDelete = (tenant, name) => keyScopes.forgetProvider(tenant, name);
 // Each model response's usage, POSTed to the tenant's receiver from a durable outbox any node sends from.
 // Which tenants have endpoints for run events: runs of the others write none.
@@ -197,8 +204,9 @@ async function createAgent(tenant: string, params: any, key?: string) {
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   const made = params?.definition !== undefined ? await definitions.provision(tenant, params) : undefined;
   if (made) params = made.params;
-  const custom = await modelProviders.resolvable(tenant);
-  const config = { ...sessionConfig(params, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
+  const custom = await modelProviders.resolvable(tenant, keyScope);
+  const fallback = params.model === undefined ? await defaultModelFor(tenant, keyScope) : model;
+  const config = { ...sessionConfig(params, fallback, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
   // A custom provider's models need no key of the tenant's: the provider has its own, or takes none.
   if (!Object.hasOwn(custom ?? {}, config.model.provider) && !(keyScope && await keyScopes.entry(tenant, keyScope, config.model.provider)) && !await accounts.hasKey(tenant, config.model.provider)) {
     // Said plainly when the model is the runtime's default: the caller may not know one was chosen for it.
@@ -311,6 +319,9 @@ const volumes = new VolumeService({
 
 // Signed file links, under a key derived from the session secret, so every node verifies any node's links.
 const links = new FileLinks(sessionSecret, publicUrl);
+// Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none (a private runtime
+// whose browsers read through the application's proxy).
+const browserUrl = process.env.AGENT_BROWSER_URL?.replace(/\/+$/, "");
 
 const FORWARDED = "x-agent-runtime-forwarded";
 
@@ -359,8 +370,8 @@ const clients = new ClientSessions(supervisor, {
   },
   scopedKey: async (tenant, keyScope, provider) => {
     const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
-    // The tenant's own provider: the scope's key or address where it gives one, else the provider's; never the platform's.
-    const own = await modelProviders.credentials(tenant, provider);
+    // The key scope's or the tenant's own provider: the scope's key or address where it gives one, else the provider's; never the platform's.
+    const own = await modelProviders.credentials(tenant, provider, keyScope);
     if (own) return { ...own, ...entry, baseUrl: entry?.baseUrl ?? own.baseUrl, apiKey: entry?.apiKey ?? own.apiKey ?? "", platform: false };
     // A scope's entry for a provider that is neither built in nor the tenant's any more (deleted) is nothing to call.
     if (entry && !providerInfo(provider)) return undefined;
@@ -369,7 +380,7 @@ const clients = new ClientSessions(supervisor, {
     return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant" };
   },
   modelEndpoints: tenant => tenants.modelEndpoints(tenant),
-  customProviders: tenant => modelProviders.resolvable(tenant),
+  customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),
   modelToken: (audience, claims) => signer.token(audience, claims),
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
   onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
@@ -381,7 +392,7 @@ const clients = new ClientSessions(supervisor, {
   get hooks() { return channels.hooks; },
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
-    const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
+    const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
     return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false }, sources: sources(spec) };
   },
   sources: toolSources,
@@ -530,7 +541,7 @@ if (emailOptions) app.route("/", emailReceiver(channels, emailOptions));
 app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
-app.route("/", api({ accounts, clients, consoleAuth, createAgent, modelProviders, defaultModel: `${model.provider}/${model.id}`, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get publicUrl() { return links.publicUrl; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, clients, consoleAuth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);

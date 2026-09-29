@@ -273,6 +273,9 @@ const json = (c: Context, status: number, value: unknown) => c.json(value, statu
 /** Never-expiring agents have `expiresAt: null`; a bare `<=` would treat null as 0, long expired. */
 const expired = (expiresAt: number | null, now = Date.now()) => expiresAt !== null && expiresAt <= now;
 const settled = (state: string) => state !== "running";
+/** The key scope an agent has once `update` applies: the one it names (null for none), else its own. */
+const scopeAfter = (header: SessionHeader, update: { keyScope?: unknown }) => Object.hasOwn(update, "keyScope") ? update.keyScope as string | null : header.keyScope;
+
 /** A request as callers see it: queued parameters stay internal, and an ended one's error and early stop are on top. */
 const visible = ({ params: _params, announce: _announce, ...record }: RequestRecord): RequestRecord =>
   record.state === "completed" ? { ...record, ...outcomeEnding(record.outcome) } : record;
@@ -309,7 +312,8 @@ export interface ClientSessionOptions {
   /** The tenant's own model endpoints (tenants file), which its agents' models may name. */
   modelEndpoints?: (tenant: string) => ModelEndpoints;
   /** The tenant's own OpenAI-compatible providers (model-providers.ts), which its agents' models may name. */
-  customProviders?: (tenant: string) => Promise<CustomProviders>;
+  /** The custom providers an agent of `tenant` in `keyScope` resolves models from (the scope's, then the tenant's). */
+  customProviders?: (tenant: string, keyScope?: string | null) => Promise<CustomProviders>;
   /** An identity token for `audience` (the runtime's signer), for model calls to a tenant's own endpoint. */
   modelToken?: (audience: string, claims: TokenClaims) => Promise<string>;
   /** At most this many hosted agents per tenant at once on this node (default: no per-tenant limit). */
@@ -1984,7 +1988,7 @@ export class ClientSessions {
     try {
       if (body.method === "configure" && !applying) {
         const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, ...update } = body.params;
-        configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant));
+        configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, update)));
         if (builtins !== undefined && session.header.definition) throw new HttpError(400, "This agent's builtins come from its definition; change them there");
         if (builtins !== undefined) builtinsInput(builtins);
       }
@@ -2281,7 +2285,7 @@ export class ClientSessions {
       // The agent's own builtins (an agent from a definition has the definition's): its sources, with the tools they offer.
       const sources = builtins === undefined ? session.header.sources : (builtins as string[]).length ? { ...session.header.sources, builtins: builtins as string[] } : undefined;
       const changed = provisionHash === undefined || builtins !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
-      const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
+      const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, given)))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
       // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
       const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;

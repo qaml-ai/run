@@ -18,7 +18,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_agent_runtime import AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
+from camelai_agent_runtime import _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -650,6 +650,15 @@ class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(refusals), 8)
         finally:
             await runtime.close()
+
+
+class OriginTest(unittest.TestCase):
+    def test_plain_http_reaches_only_private_hosts(self):
+        for url in ["http://localhost:8790", "http://127.0.0.1:8790", "http://runtime:8790", "http://agent-runtime.internal", "http://10.1.2.3", "http://172.20.0.5:8790", "http://192.168.1.9", "https://agents.example.com"]:
+            self.assertEqual(_origin(url), url)
+        for url in ["http://agents.example.com", "http://8.8.8.8", "http://172.32.0.1", "http://[2001:db8::1]"]:
+            with self.assertRaisesRegex(ValueError, "require https"):
+                _origin(url)
 
 
 if __name__ == "__main__":

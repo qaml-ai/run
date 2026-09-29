@@ -63,9 +63,9 @@ export function FilePreview({ volume, file, onClose }: { volume: string; file: P
         </DialogHeader>
         <ErrorAlert error={error} />
         {kind === "image" ? (url ? <img src={url} alt={nameOf(file.path)} className="mx-auto max-h-[70dvh] object-contain" /> : <Loader2 className="mx-auto animate-spin" />)
-          : kind === "pdf" ? (url ? <iframe src={url} title={nameOf(file.path)} className="h-[70dvh] w-full rounded border" /> : <Loader2 className="mx-auto animate-spin" />)
+          : kind === "pdf" ? (url ? <iframe src={url} title={nameOf(file.path)} className="h-[70dvh] w-full border" /> : <Loader2 className="mx-auto animate-spin" />)
           : kind === "text" ? (
-            <pre className="bg-muted/50 max-h-[70dvh] overflow-auto rounded p-3 font-mono text-xs whitespace-pre-wrap">
+            <pre className="bg-muted max-h-[70dvh] overflow-auto p-3 font-mono text-xs whitespace-pre-wrap">
               {text ?? "Loading…"}{text !== undefined && file.size > TEXT_PREVIEW && `\n\n… (first ${formatBytes(TEXT_PREVIEW)} of ${formatBytes(file.size)})`}
             </pre>
           ) : <p className="text-muted-foreground text-sm">No preview for this type. Download it instead.</p>}
@@ -86,8 +86,8 @@ export function FileCard({ volume, path, contentType, size, caption, shown }: {
   return (
     <div className="bg-background flex max-w-sm items-center gap-3 rounded-md border p-2 text-left text-xs">
       <button type="button" disabled={!available} onClick={() => setPreviewing(true)} className="shrink-0 cursor-pointer disabled:cursor-default" aria-label={`Preview ${nameOf(shown)}`}>
-        {url && !failed ? <img src={url} alt="" onError={() => setFailed(true)} className="size-12 rounded object-cover" />
-          : <div className="bg-muted flex size-12 items-center justify-center rounded"><FileIcon contentType={contentType} className="size-5" /></div>}
+        {url && !failed ? <img src={url} alt="" onError={() => setFailed(true)} className="size-12 object-cover" />
+          : <div className="bg-muted flex size-12 items-center justify-center"><FileIcon contentType={contentType} className="size-5" /></div>}
       </button>
       <div className="min-w-0 flex-1">
         <div className="truncate font-medium" title={shown}>{nameOf(shown)}</div>
@@ -186,7 +186,7 @@ export function FileBrowser({ volume, root = "/", title = "Files", onChange }: {
         {files && !folders.size && !here.length ? (
           <p className="text-muted-foreground rounded-md border border-dashed px-4 py-8 text-center text-sm">No files here. Drop files to upload them.</p>
         ) : (
-          <div className="rounded-lg border">
+          <div className="bg-card border">
             <Table>
               <TableHeader><TableRow>
                 <TableHead>Name</TableHead><TableHead className="hidden md:table-cell">Type</TableHead><TableHead>Size</TableHead>

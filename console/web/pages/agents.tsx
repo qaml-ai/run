@@ -1,16 +1,18 @@
-import { Bot, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PixelButton } from "@/components/ui/pixel-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, ErrorAlert, PageHeader } from "@/components/common";
+import { FirstRunPanel } from "@/components/brand";
+import { ErrorAlert, PageHeader } from "@/components/common";
 import { formatTime, useApi, type AgentSummary } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
 
 export function AgentStatus({ agent }: { agent: Pick<AgentSummary, "running" | "connected"> }) {
-  if (agent.running) return <Badge>Running</Badge>;
+  if (agent.running) return <Badge variant="live">Running</Badge>;
   if (agent.connected) return <Badge variant="secondary">Connected</Badge>;
-  return <Badge variant="outline">Asleep</Badge>;
+  return <Badge variant="outline" className="text-muted-foreground">Asleep</Badge>;
 }
 
 export function AgentsPage() {
@@ -25,12 +27,13 @@ export function AgentsPage() {
       <ErrorAlert error={agents.error} />
       {agents.loading && !agents.data ? <Skeleton className="h-40 w-full" />
         : agents.data?.length === 0 ? (
-          <EmptyState icon={<Bot />} title="No agents yet">
-            Add a model key under <Link className="underline" to="models">Models &amp; keys</Link>, then follow the{" "}
-            <Link className="underline" to="quickstart">Quickstart</Link> to create one from your app.
-          </EmptyState>
+          <FirstRunPanel hero art="liquid" eyebrow="FIRST AGENT" title="No agents yet"
+            action={<PixelButton asChild><Link to="quickstart">Open quickstart</Link></PixelButton>}>
+            Add a model key under <Link className="text-foreground underline underline-offset-4" to="models">Models &amp; keys</Link>, then follow the{" "}
+            <Link className="text-foreground underline underline-offset-4" to="quickstart">Quickstart</Link> to create one from your app.
+          </FirstRunPanel>
         ) : agents.data && (
-          <div className="rounded-lg border">
+          <div className="bg-card border">
             <Table>
               <TableHeader>
                 <TableRow>

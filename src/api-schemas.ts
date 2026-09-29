@@ -24,7 +24,7 @@ export const Me = z.object({
   via: z.enum(["operator", "token", "console"]),
   login: z.string().optional().openapi({ description: "GitHub login, for console sessions" }),
   canStoreKeys: z.boolean(),
-  defaultModel: z.string().openapi({ description: "The model an agent gets when it names none, as provider/model-id", example: "anthropic/claude-sonnet-5" }),
+  defaultModel: z.string().openapi({ description: "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (Claude Sonnet 5.5 on Anthropic, OpenRouter, then Bedrock, ...) the tenant has a key for. An agent with a key scope counts the scope's keys too", example: "anthropic/claude-sonnet-5-5" }),
 }).openapi("Me");
 
 const KeyStatus = z.object({
@@ -49,9 +49,9 @@ const CustomModel = z.object({
 }).openapi("CustomModel");
 
 export const CustomProviderInput = z.object({
-  type: z.literal("openai-compatible").openapi({ description: "A server that speaks OpenAI Chat Completions (POST <baseUrl>/chat/completions)" }),
-  baseUrl: z.string().openapi({ description: "Its API root, public and https (the outbound guard checks it when saved and at every call)", example: "https://api.example.com/v1" }),
-  apiKey: z.string().nullable().optional().openapi({ description: "Sent as Authorization: Bearer; left out keeps the stored key, null removes it (a server that takes none)" }),
+  type: z.enum(["openai-completions", "openai-responses", "anthropic-messages"]).openapi({ description: "The API the server speaks: openai-completions, OpenAI Chat Completions (POST <baseUrl>/chat/completions); openai-responses, OpenAI Responses (POST <baseUrl>/responses); anthropic-messages, Anthropic Messages (POST <baseUrl>/v1/messages)" }),
+  baseUrl: z.string().openapi({ description: "Its API root, public and https (the outbound guard checks it when saved and at every call): with /v1 for the OpenAI APIs, without for Anthropic's", example: "https://api.example.com/v1" }),
+  apiKey: z.string().nullable().optional().openapi({ description: "Sent as Authorization: Bearer (x-api-key for Anthropic Messages); left out keeps the stored key, null removes it (a server that takes none)" }),
   headers: z.record(z.string(), z.string()).nullable().optional().openapi({ description: "Headers for each call, sealed like the key; left out keeps the stored ones, null removes them" }),
   models: z.array(CustomModel).min(1).max(200),
 }).openapi("CustomProviderInput");
@@ -64,9 +64,9 @@ export const Provider = z.object({
   requires: z.string().optional().openapi({ description: "What the provider needs instead of an API key" }),
   key: KeyStatus.nullable(),
   custom: z.object({
-    type: z.literal("openai-compatible"), baseUrl: z.string(), headers: z.array(z.string()).optional().openapi({ description: "The names of its headers, never their values" }),
+    type: z.enum(["openai-completions", "openai-responses", "anthropic-messages"]), baseUrl: z.string(), headers: z.array(z.string()).optional().openapi({ description: "The names of its headers, never their values" }),
     models: z.array(CustomModel),
-  }).optional().openapi({ description: "A provider of the tenant's own (PUT /v1/providers/{name}): where it is, and the models it declares" }),
+  }).optional().openapi({ description: "A provider of the tenant's own (PUT /v1/providers/{name}) or of a key scope (PUT /v1/key-scopes/{scope}/model-providers/{name}): its API, where it is, and the models it declares" }),
 }).openapi("Provider");
 
 export const KeyInput = z.object({
@@ -195,7 +195,7 @@ export const AgentInput = z.object({
   systemPrompt: z.string().optional(),
   systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt, e.g. per-conversation context. The agent's own: applying its definition replaces the prompt and keeps this" }),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
-  initialMessages: z.array(z.unknown()).optional(),
+  initialMessages: z.array(z.unknown()).optional().openapi({ description: "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide" }),
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without" }),
   mounts: z.array(Mount).optional().openapi({ description: "Volumes for the agent's file tools; default: a new workspace volume at /workspace" }),
@@ -575,6 +575,7 @@ export const LinkInput = z.object({
 }).openapi("LinkInput");
 export const Link = z.object({
   url: z.string().openapi({ description: "Send the method to it, with no Authorization header" }),
+  urlPath: z.string().openapi({ description: "The url's path on the runtime: for a proxy that serves the link at its own origin, in front of a runtime browsers cannot reach" }),
   method: z.enum(["GET", "PUT"]), tenant: z.string(), volume: z.string(), path: z.string(), expiresAt: z.number(),
   maxBytes: z.number().optional(), contentType: z.string().optional(),
 }).openapi("Link");

@@ -289,9 +289,21 @@ def _origin(url):
     address = urlparse(url)
     if address.username or address.password or address.query or address.fragment or address.path not in ("", "/"):
         raise ValueError("Use a runtime origin without credentials, path, or query")
-    if address.scheme != "https" and not (address.scheme == "http" and address.hostname in ("localhost", "127.0.0.1", "::1")):
-        raise ValueError("Remote runtimes require https://")
+    if address.scheme != "https" and not (address.scheme == "http" and _private_host(address.hostname or "")):
+        raise ValueError("Remote runtimes require https://; http:// only on a private network (localhost, a single-label or .internal name, a private IP)")
     return url.rstrip("/")
+
+
+def _private_host(hostname):
+    """Hosts plain http:// may reach: loopback, and names and addresses only a private network resolves."""
+    host = hostname.lower().rstrip(".")
+    if host in ("localhost", "::1") or host.endswith((".localhost", ".internal", ".local")):
+        return True
+    parts = host.split(".")
+    if len(parts) == 4 and all(part.isdigit() for part in parts):
+        a, b = int(parts[0]), int(parts[1])
+        return a in (127, 10) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
+    return "." not in host and ":" not in host
 
 
 def _code(value):
@@ -494,11 +506,12 @@ class AgentRuntime:
     async def delete_definition(self, definition_id):
         return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "DELETE", retry=False)
 
-    async def set_provider(self, name, *, base_url, models, api_key=_DEFAULT, headers=_DEFAULT):
-        """Add or replace a provider of your own: a public https server that speaks OpenAI Chat Completions, with its
-        models ([{"id", "contextWindow", "maxOutputTokens"?, "input"?, "reasoning"?, "pricing"?, "compat"?}]). Agents name
-        them "<name>/<model id>". api_key and headers left out keep what is stored; None removes them."""
-        body = {"type": "openai-compatible", "baseUrl": base_url, "models": models,
+    async def set_provider(self, name, *, base_url, models, type="openai-completions", api_key=_DEFAULT, headers=_DEFAULT):
+        """Add or replace a provider of your own: a public https server that speaks type (openai-completions,
+        openai-responses or anthropic-messages), with its models ([{"id", "contextWindow", "maxOutputTokens"?, "input"?,
+        "reasoning"?, "pricing"?, "compat"?}]). Agents name them "<name>/<model id>". api_key and headers left out keep
+        what is stored; None removes them."""
+        body = {"type": type, "baseUrl": base_url, "models": models,
                 **({} if api_key is _DEFAULT else {"apiKey": api_key}), **({} if headers is _DEFAULT else {"headers": headers})}
         return await _http(self.http, self.base, f"/v1/providers/{quote(name, safe='')}", self._operator(), "PUT", body)
 

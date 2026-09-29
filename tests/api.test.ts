@@ -91,7 +91,7 @@ async function runtime(t: { after(fn: () => Promise<void>): void }, github?: str
 test("tenants set provider keys over REST; keys are encrypted at rest and never returned", async t => {
   const { db, call } = await runtime(t);
   assert.equal((await call("/v1/me")).status, 401);
-  assert.deepEqual((await call("/v1/me", { token: alice })).json, { tenant: "alice", via: "operator", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-4-5" });
+  assert.deepEqual((await call("/v1/me", { token: alice })).json, { tenant: "alice", via: "operator", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
   const providers = (await call("/v1/providers", { token: alice })).json as any[];
   const anthropic = providers.find(provider => provider.id === "anthropic");
   assert.equal(anthropic.apiKey, true);
@@ -236,7 +236,7 @@ test("GitHub sign-in admits active org members, links admin tenants, and creates
   assert.equal(bobSession.location, "/console/");
   assert.equal((await call("/v1/me", { headers: { Cookie: bobSession.session! } })).json.tenant, "bob");
   const carol = await signIn("Carol");
-  assert.deepEqual((await call("/v1/me", { headers: { Cookie: carol.session! } })).json, { tenant: "carol", via: "console", login: "Carol", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-4-5" });
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: carol.session! } })).json, { tenant: "carol", via: "console", login: "Carol", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
   const mallory = await signIn("Mallory");
   assert.equal(mallory.session, undefined);
   assert.match(decodeURIComponent(mallory.location), /Only members of the qaml-ai/);

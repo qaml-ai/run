@@ -85,3 +85,30 @@ messages through your server. See [Showing an agent in a browser](browser.md).
 most 16 string values): the stored message and its run carry it, in history,
 events and webhooks; the model never sees it. Pass `idempotencyKey` to choose the
 run's id, so a retried request never runs twice, and to find the run later.
+
+## Bringing in existing conversations
+
+A conversation that began elsewhere continues on an agent made with its history:
+`initialMessages` on `POST /v1/agents` (`createAgent({ initialMessages })`, or an
+upsert's first create). They are [Pi](https://github.com/earendil-works/pi)
+messages, kept as they are:
+
+- `user` (content a string, or text, image and file blocks), `assistant` (text,
+  thinking and `toolCall` blocks, with its `usage`, `provider` and `model` if you
+  have them) and `toolResult` (`toolCallId`, `toolName`, content).
+- `compactionSummary` (`summary`, `tokensBefore`): the model then sees this
+  summary instead of every message before it, and those that follow. Put it just
+  before the first message it keeps; only the last counts. History still shows
+  every message, so a long conversation need not be summarized again.
+
+History is imported only when the agent is made: an agent that has one keeps it,
+and an upsert with the same key makes the agent once. `GET …/history` shows it at
+once. Thinking from another model reaches the model as text; a tool call with no
+result gets one saying so; tools the old conversation called need not exist.
+When what is imported is more than the model's context holds, the first run
+compacts it before calling the model, charged as any compaction.
+
+A refused import makes no agent: `INVALID_HISTORY` (400) names the message and
+what it lacks, and past 16 MB of JSON it is `HISTORY_TOO_LARGE` (413). Send the
+most recent messages that fit, after a `compactionSummary` of the rest; upload
+images as files first to keep them out of those 16 MB.

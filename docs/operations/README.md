@@ -6,6 +6,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 
 - [Architecture](architecture.md): control and data planes, ownership, logs, draining, deploys, turn handoff
 - [Configuration](configuration.md): environment variables, starting a runtime
+- [Self-hosting](self-host.md): the image, Docker Compose, storage, networking
 - [Persistence](persistence.md): transcripts, history chunks, journals, retries, idle unload, limits per node and tenant
 - [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe
 - [Tenant isolation](isolation.md)
@@ -19,7 +20,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - `shared/` storage backends (file, S3), wire protocol
 - `clients/` TypeScript and Python SDKs; `sdk/` publishes `@camelai/agent-runtime`
 - `console/` tenant console (React); `studio/` local chat/trace UI
-- `infra/` AWS provisioning and deploy scripts; `deploy/smoke.ts` live smoke test
+- `infra/` AWS provisioning and deploy scripts; `deploy/smoke.ts` live smoke test; `deploy/selfhost/` Docker Compose for self-hosting
 - `tests/` Node test suites (no paid model calls)
 
 ## Develop

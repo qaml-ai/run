@@ -5,7 +5,7 @@ import type { Server } from "node:http";
 import express from "express";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { createAgentHandler, type AgentHandler } from "../clients/handler.ts";
+import { agentKeyFor, createAgentHandler, type AgentHandler } from "../clients/handler.ts";
 import { createAgentChat } from "../clients/chat.ts";
 import { nodeListener } from "../clients/node.ts";
 import { listen, OPERATOR, runtime, sleep, until, type T } from "./runtime-server.ts";
@@ -158,4 +158,26 @@ test("proxy: the chat store reads only through the route, per thread", async t =
   const reply = chat.getSnapshot().messages[1];
   assert.equal(reply.role === "assistant" && reply.parts.map(part => part.type === "text" ? part.text : "").join(""), "Streaming done.");
   assert.ok(seen.some(url => url.startsWith("/api/agent/threads/t%201/v1/agents/") && url.includes("/events")), seen.join("\n"));
+});
+
+test("proxy: a file link goes through the route too, so the browser never needs to reach the runtime", async t => {
+  const { r, handler } = await setup(t);
+  const call: Call = (path, init = {}) => handler(new Request(`https://app.example${path}`, init));
+  const { agentId } = await post(call, { action: "token" });
+  const keyed = await r.call("/v1/agents", { body: { systemPrompt: "You help.", subject: "alice" }, headers: { "Idempotency-Key": await agentKeyFor("alice") } });
+  assert.equal(keyed.json.id, agentId);
+  const put = await fetch(`${r.base}/clients/${agentId}/files/workspace/report.txt`, { method: "PUT", headers: { Authorization: `Bearer ${keyed.json.token}`, "Content-Type": "text/plain" }, body: "the proxied report" });
+  assert.ok(put.ok, await put.text());
+
+  const link = await post(call, { action: "link", path: "/workspace/report.txt" });
+  assert.match(link.url, /^\/api\/agent\/v1\/links\/[^/]+\/report\.txt$/, "under the route, on the page's own origin");
+  const file = await call(link.url);
+  assert.equal(file.status, 200);
+  assert.equal(await file.text(), "the proxied report");
+  assert.match(file.headers.get("content-disposition") ?? "", /report\.txt/);
+  const range = await call(link.url, { headers: { Range: "bytes=4-10" } });
+  assert.equal(range.status, 206);
+  assert.equal(await range.text(), "proxied");
+  // A link the runtime did not sign is its to refuse; the route adds no credential of its own.
+  assert.equal((await call("/api/agent/v1/links/forged.token/report.txt")).status, 403);
 });

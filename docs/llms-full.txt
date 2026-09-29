@@ -1161,6 +1161,33 @@ most 16 string values): the stored message and its run carry it, in history,
 events and webhooks; the model never sees it. Pass `idempotencyKey` to choose the
 run's id, so a retried request never runs twice, and to find the run later.
 
+## Bringing in existing conversations
+
+A conversation that began elsewhere continues on an agent made with its history:
+`initialMessages` on `POST /v1/agents` (`createAgent({ initialMessages })`, or an
+upsert's first create). They are [Pi](https://github.com/earendil-works/pi)
+messages, kept as they are:
+
+- `user` (content a string, or text, image and file blocks), `assistant` (text,
+  thinking and `toolCall` blocks, with its `usage`, `provider` and `model` if you
+  have them) and `toolResult` (`toolCallId`, `toolName`, content).
+- `compactionSummary` (`summary`, `tokensBefore`): the model then sees this
+  summary instead of every message before it, and those that follow. Put it just
+  before the first message it keeps; only the last counts. History still shows
+  every message, so a long conversation need not be summarized again.
+
+History is imported only when the agent is made: an agent that has one keeps it,
+and an upsert with the same key makes the agent once. `GET …/history` shows it at
+once. Thinking from another model reaches the model as text; a tool call with no
+result gets one saying so; tools the old conversation called need not exist.
+When what is imported is more than the model's context holds, the first run
+compacts it before calling the model, charged as any compaction.
+
+A refused import makes no agent: `INVALID_HISTORY` (400) names the message and
+what it lacks, and past 16 MB of JSON it is `HISTORY_TOO_LARGE` (413). Send the
+most recent messages that fit, after a `compactionSummary` of the rest; upload
+images as files first to keep them out of those 16 MB.
+
 ---
 
 <!-- https://agents.camelai.dev/docs/guides/webhooks.md -->
@@ -1271,13 +1298,19 @@ Agents name a model as `provider/model-id` from the catalog: `GET /v1/models`
 between runs with `upsert` (a changed `model`) or `agent.configure({ model })`;
 its history carries over.
 
-A model on a server of your own that speaks OpenAI Chat Completions (vLLM,
-Ollama, a hosted API the catalog lacks) is named the same way once you add its
-server as a provider: see [Custom OpenAI-compatible models](custom-models.md).
+A model on a server of your own that speaks OpenAI's or Anthropic's API (vLLM,
+Ollama, a gateway, a hosted API the catalog lacks) is named the same way once
+you add its server as a provider, your account's or a key scope's: see
+[Custom models](custom-models.md).
 
 An agent that names no model (and whose definition names none) gets the
-runtime's default: `anthropic/claude-sonnet-5-5` on agents.camelai.dev. `GET
-/v1/me` says which (`defaultModel`; `runtime.me()` in the SDKs).
+runtime's default: Claude Sonnet 5.5 on agents.camelai.dev, on the first of
+Anthropic (`anthropic/claude-sonnet-5-5`), OpenRouter
+(`openrouter/anthropic/claude-sonnet-5.5`) and Bedrock
+(`amazon-bedrock/global.anthropic.claude-sonnet-5-5`) you have a key for (its
+key scope's keys count too), else `openrouter/openai/gpt-6-luna`. It is chosen
+when the agent is made and stays its model. `GET /v1/me` says which
+(`defaultModel`; `runtime.me()` in the SDKs).
 
 A model call uses, in order: the key of the agent's [key scope](#key-scopes) for
 the model's provider, else your account's own key for the provider
@@ -1459,16 +1492,18 @@ send it with the prompt instead of reconfiguring the agent.
 
 <!-- https://agents.camelai.dev/docs/guides/custom-models.md -->
 
-# Custom OpenAI-compatible models
+# Custom models
 
-Any server that speaks OpenAI Chat Completions can be a provider of your own:
-a hosted API the catalog lacks, a model the catalog has not caught up with yet,
-or your own vLLM, Ollama or LM Studio. You name the provider, list its models,
-and your agents use them like catalog models: `<name>/<model id>`.
+Any server that speaks OpenAI Chat Completions, OpenAI Responses or Anthropic
+Messages can be a provider of your own: a hosted API the catalog lacks, a model
+the catalog has not caught up with yet, a gateway, or your own vLLM, Ollama or
+LM Studio. You name the provider, list its models, and your agents use them
+like catalog models: `<name>/<model id>`. A provider can be your account's, or
+one [key scope](#in-a-key-scope)'s, for one customer's agents only.
 
 ```ts
 await agents.runtime.setProvider("acme-llm", {
-  type: "openai-compatible",
+  type: "openai-completions",
   baseUrl: "https://llm.acme.example/v1",
   apiKey: process.env.ACME_LLM_KEY,
   models: [{ id: "acme-70b", contextWindow: 131072, maxOutputTokens: 8192, pricing: { input: 0.6, output: 0.8 } }],
@@ -1485,9 +1520,9 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
 
 | Field | |
 | --- | --- |
-| `type` | `"openai-compatible"`: the runtime calls `POST <baseUrl>/chat/completions`, streaming |
-| `baseUrl` | the API root, public and `https` (see [Where the server can be](#where-the-server-can-be)) |
-| `apiKey` | sent as `Authorization: Bearer <apiKey>`. Leave it out when you save again to keep the stored key; `null` removes it, for a server that takes none |
+| `type` | the API it speaks: `"openai-completions"`, OpenAI Chat Completions (`POST <baseUrl>/chat/completions`); `"openai-responses"`, OpenAI Responses (`POST <baseUrl>/responses`); `"anthropic-messages"`, Anthropic Messages (`POST <baseUrl>/v1/messages`). All stream |
+| `baseUrl` | the API root, public and `https` (see [Where the server can be](#where-the-server-can-be)): with `/v1` for OpenAI's APIs (`https://api.example.com/v1`), without for Anthropic's (`https://api.example.com`) |
+| `apiKey` | sent as `Authorization: Bearer <apiKey>` (`x-api-key` for Anthropic Messages). Leave it out when you save again to keep the stored key; `null` removes it, for a server that takes none |
 | `headers` | more headers for each call, e.g. `{"api-key": "…"}` for a server that takes its key that way. Stored sealed like the key; left out keeps them, `null` removes them. The runtime sets `Authorization` itself |
 | `models` | the models to use, 1 to 200 (below) |
 
@@ -1512,6 +1547,35 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
   provider's own (its `headers` all of the provider's); what it leaves out is the
   provider's, the key included. Deleting the provider deletes its scopes' entries.
 
+## In a key scope
+
+A [key scope](models-and-keys.md#key-scopes) can have providers of its own, for
+its agents only: each customer's own endpoint, under the same name in every
+scope.
+
+```bash
+curl -X PUT https://agents.camelai.dev/v1/key-scopes/org_42/model-providers/custom \
+  -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
+  -d '{"type": "openai-responses", "baseUrl": "https://bedrock-mantle.us-west-2.api.aws/openai/v1",
+       "apiKey": "'"$ORG_42_BEDROCK_API_KEY"'", "models": [{"id": "openai.gpt-5.6-terra", "contextWindow": 200000, "reasoning": true}]}'
+```
+
+An agent in `org_42` (`keyScope: "org_42"`) then names `custom/openai.gpt-5.6-terra`.
+
+- The body, the name's rules and the limits are those of your own providers
+  (above): up to 20 per scope, besides your account's 20.
+- Only agents in the scope see its providers. An agent elsewhere, in another
+  scope or none, that names the model gets `Unknown model`, and its calls never
+  use the scope's key. In its scope, a provider shadows one of your account's
+  with the same name.
+- A model is resolved in the agent's scope when it is made or configured, and
+  in the new scope when `PATCH /v1/agents/:id/configuration` moves it (give the
+  `model` there too). Definitions name your account's providers only.
+- `GET /v1/key-scopes/{scope}/model-providers` lists the scope's (never their
+  key or header values), `DELETE …/model-providers/{name}` deletes one, and
+  deleting the scope (`DELETE /v1/key-scopes/{scope}`) deletes them all.
+  `GET /v1/models?keyScope={scope}` lists models as the scope's agents see them.
+
 ## Models
 
 Each model is `{id, contextWindow, maxOutputTokens?, input?, reasoning?, pricing?, compat?}`:
@@ -1528,9 +1592,15 @@ Each model is `{id, contextWindow, maxOutputTokens?, input?, reasoning?, pricing
 
 `GET /v1/models` lists your providers' models before the catalog's, all `available`.
 
+A model whose id the catalog knows for the provider's API (Anthropic's models
+over Anthropic Messages, OpenAI's over OpenAI's APIs: a gateway in front of
+them) is called as the catalog calls it, such as which thinking settings it
+takes. What you declare wins, and its price is yours (`pricing`), not the
+catalog's.
+
 ### Servers that differ from OpenAI's
 
-The runtime streams, sends tools as OpenAI function tools and reads tool calls
+For Chat Completions servers. The runtime streams, sends tools as OpenAI function tools and reads tool calls
 as they arrive in pieces. It copes with what many servers leave out:
 
 - A stream without usage costs nothing and counts no tokens. Set
@@ -1564,6 +1634,12 @@ A server on your own machine or network needs a public `https` address in front
 of it, such as a tunnel. Keep it behind a key: anyone with the address can call
 it.
 
+A [self-hosted runtime](../operations/self-host.md#networking) can call servers
+on its own network: its operator names their range in
+`AGENT_OUTBOUND_ALLOW_CIDRS` (e.g. `10.1.2.0/24` for a vLLM or Ollama host), and
+sets `AGENT_OUTBOUND_ALLOW_HTTP=true` if they have no TLS. That opens the range
+to every agent's tools too, so keep it narrow.
+
 ## Billing
 
 Your own providers are yours: their calls never use the platform's keys, and
@@ -1582,7 +1658,7 @@ add Groq's API under a name of your own:
 ```bash
 curl -X PUT https://agents.camelai.dev/v1/providers/groq-preview \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
-  -d '{"type": "openai-compatible", "baseUrl": "https://api.groq.com/openai/v1", "apiKey": "'"$GROQ_API_KEY"'",
+  -d '{"type": "openai-completions", "baseUrl": "https://api.groq.com/openai/v1", "apiKey": "'"$GROQ_API_KEY"'",
        "models": [{"id": "new-model-preview", "contextWindow": 131072, "maxOutputTokens": 8192,
                    "pricing": {"input": 0.2, "output": 0.6}}]}'
 ```
@@ -1599,7 +1675,7 @@ in front with a service token, so only calls carrying the token get through:
 
 ```ts
 await agents.runtime.setProvider("home-ollama", {
-  type: "openai-compatible",
+  type: "openai-completions",
   baseUrl: "https://ollama.example.com/v1",
   apiKey: null,
   headers: { "CF-Access-Client-Id": process.env.ACCESS_CLIENT_ID!, "CF-Access-Client-Secret": process.env.ACCESS_CLIENT_SECRET! },
@@ -2643,6 +2719,7 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 | An agent's key (`Idempotency-Key` on `POST /v1/agents`, the SDKs' `upsert(key)`) | 1–80 characters of `A-Z a-z 0-9 _ -` |
 | Lifetime (`ttlSeconds`) | 60 s to 31,622,400 s (366 days), or `null`: until deleted. Default: until deleted for an agent made with a key; 1 day for one made without |
 | Create body (`POST /v1/agents`, with `initialMessages`) | 18 MiB |
+| Imported history (`initialMessages`) | 16 MB of JSON (`HISTORY_TOO_LARGE`, 413) |
 | `systemPrompt`, `systemPromptAppend` | 32,000 characters each |
 | `modelHeaders` | at most 20 headers, 8 KB in all; never auth headers |
 | `spendLimit.usd` | 0 to 1,000,000 |
@@ -2789,6 +2866,7 @@ retry.
 | Status | `code` | Meaning |
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
+| 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
 | 401 | `UNAUTHORIZED` | No valid token (a bare 401 from the authentication layer has no body) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap |
 | 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent |
@@ -2802,6 +2880,7 @@ retry.
 | 409 | `CONFLICT` | Another conflict, named in the message |
 | 410 | `GONE` | The agent was deleted or has expired |
 | 413 | `TOO_LARGE` | The request body is too large |
+| 413 | `HISTORY_TOO_LARGE` | An imported history is over 16 MB of JSON |
 | 429 | `RATE_LIMITED` | Too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
 | 500 | `INTERNAL` | A bug; retry, and report it with the request id |

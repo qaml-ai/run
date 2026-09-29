@@ -24,8 +24,8 @@ function startupError(env: Record<string, string>) {
 }
 
 test("the runtime refuses to start without a tenants file or secret, or a session secret", () => {
-  assert.match(startupError({ AGENT_TENANTS_FILE: "" }), /Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN/);
-  assert.match(startupError({ AGENT_TENANTS_FILE: "", AGENT_RUNTIME_TOKEN: "an-operator-token-of-the-old-single-tenant-mode" }), /Set AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN/);
+  assert.match(startupError({ AGENT_TENANTS_FILE: "" }), /Set AGENT_TENANT and AGENT_OPERATOR_TOKEN, or AGENT_TENANTS_FILE, AGENT_TENANTS_JSON or AGENT_TENANTS_SECRET_ARN/);
+  assert.match(startupError({ AGENT_TENANTS_FILE: "", AGENT_RUNTIME_TOKEN: "an-operator-token-of-the-old-single-tenant-mode" }), /Set AGENT_TENANT and AGENT_OPERATOR_TOKEN, or AGENT_TENANTS_FILE, AGENT_TENANTS_JSON or AGENT_TENANTS_SECRET_ARN/);
   assert.match(startupError({ AGENT_SESSION_SECRET: "" }), /Set AGENT_SESSION_SECRET/);
 });
 

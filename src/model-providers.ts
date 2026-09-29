@@ -6,23 +6,26 @@ import { FETCH_PROVIDERS } from "./catalog.ts";
 import { SEARCH_PROVIDERS } from "./web-search.ts";
 import { endpoint, reachableEndpoint, RESERVED_HEADERS as RESERVED } from "./key-scopes.ts";
 import type { Outbound } from "./outbound.ts";
-import type { CustomModel, CustomProvider, CustomProviders } from "./session-config.ts";
+import { CUSTOM_APIS, type CustomModel, type CustomProvider, type CustomProviders } from "./session-config.ts";
 
 /**
- * A tenant's own model providers: any server that speaks OpenAI Chat Completions (a hosted API the
- * catalog lacks, a model the catalog has not caught up with, vLLM or Ollama on a public address), named
- * by the tenant, with the models it declares. Agents and definitions name its models `<name>/<model id>`.
- * Its key and headers are sealed like provider keys, and resolved at every model call, so a changed key
- * or address applies at once; the address is called only through the outbound guard. Calls are the
- * tenant's own (never the platform's credit), costing what the models' declared pricing says.
+ * Model providers of a tenant's own, or of one of its key scopes: any server that speaks OpenAI Chat
+ * Completions, OpenAI Responses or Anthropic Messages (a hosted API the catalog lacks, a model the catalog
+ * has not caught up with, a gateway, vLLM or Ollama), named by the tenant, with the models it declares.
+ * Agents and definitions name its models `<name>/<model id>`; a key scope's provider serves only that
+ * scope's agents, before the tenant's of the same name, so each organization in a scope can have its own
+ * "custom". Its key and headers are sealed like provider keys, and resolved at every model call, so a
+ * changed key or address applies at once; the address is called only through the outbound guard. Calls
+ * are the tenant's own (never the platform's credit), costing what the models' declared pricing says.
  */
-export type ProviderInput = { type: "openai-compatible"; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] };
+export type ProviderInput = { type: CustomProvider["type"]; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] };
 
 /** A tenant's providers reach other nodes within this long; the writing node's at once. */
 const CACHE_MS = 5_000;
+/** Providers of the tenant's own, and of each key scope. */
 const MAX_PROVIDERS = 20;
 const MAX_MODELS = 200;
-const aad = (tenant: string, name: string) => `model-provider:${tenant}:${name}`;
+const aad = (tenant: string, name: string, scope = "") => scope ? `model-provider:${tenant}:scope:${scope}:${name}` : `model-provider:${tenant}:${name}`;
 const invalid = (message: string): never => { throw new HttpError(400, message); };
 /** Pi's switches for servers that differ from OpenAI's, which a model may set. */
 const COMPAT: Record<string, (value: unknown) => boolean> = {
@@ -72,10 +75,12 @@ function model(value: any, index: number): CustomModel {
 
 /** A provider as a tenant sends it, checked: `apiKey` and `headers` left out keep what is stored, null removes them. */
 export function providerInput(value: any): ProviderInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Body must be {type: \"openai-compatible\", baseUrl, apiKey?, headers?, models}");
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid(`Body must be {type: ${CUSTOM_APIS.join(" | ")}, baseUrl, apiKey?, headers?, models}`);
   for (const key of Object.keys(value)) if (!["type", "baseUrl", "apiKey", "headers", "models"].includes(key)) invalid(`Unknown field ${key}`);
-  const { type, baseUrl, apiKey, headers, models } = value;
-  if (type !== "openai-compatible") invalid("type must be \"openai-compatible\": a server that speaks OpenAI Chat Completions");
+  const { baseUrl, apiKey, headers, models } = value;
+  // openai-compatible, the one type there was, is Chat Completions.
+  const type = value.type === "openai-compatible" ? "openai-completions" : value.type;
+  if (!CUSTOM_APIS.includes(type)) invalid(`type must be one of ${CUSTOM_APIS.join(", ")}: the API the server speaks`);
   if (apiKey !== undefined && apiKey !== null && (typeof apiKey !== "string" || !apiKey.trim() || apiKey.length > 4096 || /\s/.test(apiKey))) invalid("apiKey must be a non-empty string without spaces, or null for a server that takes none");
   if (headers !== undefined && headers !== null) {
     if (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.keys(headers).length > 20) invalid("headers must be an object of at most 20 header names and string values");
@@ -99,8 +104,10 @@ const shownModel = (entry: CustomModel) => ({
   ...(entry.compat ? { compat: entry.compat } : {}),
 });
 
-type Row = { name: string; config: CustomProvider & { headers?: string[] }; sealed: Sealed; last4: string; set_at: string | number };
+type Row = { scope: string; name: string; config: CustomProvider & { headers?: string[] }; sealed: Sealed; last4: string; set_at: string | number };
 export type ProviderCredentials = { apiKey?: string; baseUrl: string; headers?: Record<string, string> };
+/** Rows stored before there were three APIs say openai-compatible: Chat Completions. */
+const typeOf = (config: Row["config"]) => (config.type as string) === "openai-compatible" ? "openai-completions" : config.type;
 
 export class ModelProviders {
   private readonly db: Db;
@@ -114,68 +121,89 @@ export class ModelProviders {
     this.outbound = options.outbound;
   }
 
-  /** Store `name`'s provider for `tenant`, replacing what it was but for a key or headers left out. */
-  async set(tenant: string, name: string, input: ProviderInput, endpoints: string[] = []) {
+  /** Store `name`'s provider for `tenant` (or its key scope `scope`), replacing what it was but for a key or headers left out. */
+  async set(tenant: string, name: string, input: ProviderInput, endpoints: string[] = [], scope = "") {
     providerName(name, endpoints);
     if (!this.accounts.canStoreKeys) throw new HttpError(503, "This runtime is not configured to store provider keys");
     await reachableEndpoint(this.outbound, input.baseUrl);
-    const current = (await this.rows(tenant, true)).find(row => row.name === name);
-    if (!current && (await this.rows(tenant)).length >= MAX_PROVIDERS) invalid(`A tenant can have at most ${MAX_PROVIDERS} providers`);
-    const kept = current ? JSON.parse(this.accounts.unseal(aad(tenant, name), current.sealed)) as { apiKey?: string; headers?: Record<string, string> } : {};
+    const own = (await this.rows(tenant, scope, true)).filter(row => row.scope === scope);
+    const current = own.find(row => row.name === name);
+    if (!current && own.length >= MAX_PROVIDERS) invalid(scope ? `A key scope can have at most ${MAX_PROVIDERS} providers` : `A tenant can have at most ${MAX_PROVIDERS} providers`);
+    const kept = current ? JSON.parse(this.accounts.unseal(aad(tenant, name, scope), current.sealed)) as { apiKey?: string; headers?: Record<string, string> } : {};
     const apiKey = input.apiKey === undefined ? kept.apiKey : input.apiKey ?? undefined;
     const headers = input.headers === undefined ? kept.headers : input.headers && Object.keys(input.headers).length ? input.headers : undefined;
     const config = { type: input.type, baseUrl: input.baseUrl, models: input.models, ...(headers ? { headers: Object.keys(headers) } : {}) };
     await this.db.query(`
-      insert into model_providers (tenant, name, config, sealed, last4, set_at) values ($1, $2, $3, $4, $5, $6)
-      on conflict (tenant, name) do update set config = excluded.config, sealed = excluded.sealed, last4 = excluded.last4, set_at = excluded.set_at`,
-    [tenant, name, config, this.accounts.seal(aad(tenant, name), JSON.stringify({ ...(apiKey ? { apiKey } : {}), ...(headers ? { headers } : {}) })), apiKey?.slice(-4) ?? "", Date.now()]);
-    this.cache.delete(tenant);
-    return (await this.list(tenant)).find(entry => entry.id === name)!;
+      insert into model_providers (tenant, scope, name, config, sealed, last4, set_at) values ($1, $2, $3, $4, $5, $6, $7)
+      on conflict (tenant, scope, name) do update set config = excluded.config, sealed = excluded.sealed, last4 = excluded.last4, set_at = excluded.set_at`,
+    [tenant, scope, name, config, this.accounts.seal(aad(tenant, name, scope), JSON.stringify({ ...(apiKey ? { apiKey } : {}), ...(headers ? { headers } : {}) })), apiKey?.slice(-4) ?? "", Date.now()]);
+    this.forget(tenant);
+    return (await this.list(tenant, scope)).find(entry => entry.id === name)!;
   }
 
-  /** Delete `name`, and every key scope's entry for it: nothing of it is left to call. */
-  async delete(tenant: string, name: string) {
-    const { rowCount } = await this.db.query("delete from model_providers where tenant = $1 and name = $2", [tenant, name]);
-    if (rowCount) await this.db.query("delete from key_scope_providers where tenant = $1 and provider = $2", [tenant, name]);
-    this.cache.delete(tenant);
-    this.onDelete?.(tenant, name);
+  /**
+   * Delete `name` (of the tenant, or of its key scope `scope`). The tenant's takes every key scope's
+   * entry for it too: nothing of it is left to call.
+   */
+  async delete(tenant: string, name: string, scope = "") {
+    const { rowCount } = await this.db.query("delete from model_providers where tenant = $1 and scope = $2 and name = $3", [tenant, scope, name]);
+    if (rowCount && !scope) await this.db.query("delete from key_scope_providers where tenant = $1 and provider = $2", [tenant, name]);
+    this.forget(tenant);
+    if (rowCount && !scope) this.onDelete?.(tenant, name);
     return !!rowCount;
   }
   /** Told of a deleted provider, to drop cached copies of what it deleted (key scopes' entries). */
   onDelete?: (tenant: string, name: string) => void;
 
-  /** The tenant's providers as GET /v1/providers lists them: never their key or header values. */
-  async list(tenant: string) {
-    return (await this.rows(tenant, true)).map(row => ({
+  /** Delete every provider of a key scope (the scope is deleted). */
+  async deleteScope(tenant: string, scope: string) {
+    await this.db.query("delete from model_providers where tenant = $1 and scope = $2", [tenant, scope]);
+    this.forget(tenant);
+  }
+
+  /** The providers of the tenant's own (or of its key scope `scope`) as GET lists them: never their key or header values. */
+  async list(tenant: string, scope = "") {
+    return (await this.rows(tenant, scope, true)).filter(row => row.scope === scope).map(row => ({
       id: row.name, kind: "model" as const, models: row.config.models.length, apiKey: true,
       key: row.last4 ? { provider: row.name, source: "tenant" as const, last4: row.last4, setAt: Number(row.set_at) } : null,
-      custom: { type: row.config.type, baseUrl: row.config.baseUrl, ...(row.config.headers?.length ? { headers: row.config.headers } : {}), models: row.config.models.map(shownModel) },
+      custom: { type: typeOf(row.config), baseUrl: row.config.baseUrl, ...(row.config.headers?.length ? { headers: row.config.headers } : {}), models: row.config.models.map(shownModel) },
     }));
   }
 
-  /** The tenant's providers as models are resolved from them (session-config.ts). */
-  async resolvable(tenant: string): Promise<CustomProviders> {
-    const rows = await this.rows(tenant);
-    return rows.length ? Object.fromEntries(rows.map(row => [row.name, { type: row.config.type, baseUrl: row.config.baseUrl, models: row.config.models }])) : undefined;
+  /** The providers an agent of `tenant` in key scope `scope` resolves models from: the scope's before the tenant's. */
+  async resolvable(tenant: string, scope?: string | null): Promise<CustomProviders> {
+    const rows = this.visible(await this.rows(tenant, scope ?? ""), scope);
+    return rows.length ? Object.fromEntries(rows.map(row => [row.name, { type: typeOf(row.config), baseUrl: row.config.baseUrl, models: row.config.models }])) : undefined;
   }
 
-  async has(tenant: string, name: string) { return (await this.rows(tenant)).some(row => row.name === name); }
+  async has(tenant: string, name: string, scope?: string | null) { return this.visible(await this.rows(tenant, scope ?? ""), scope).some(row => row.name === name); }
 
-  /** What a call to `name`'s models authenticates with now: its key (if any), address and headers. */
-  async credentials(tenant: string, name: string): Promise<ProviderCredentials | undefined> {
-    const row = (await this.rows(tenant)).find(entry => entry.name === name);
+  /** What a call to `name`'s models from key scope `scope` authenticates with now: its key (if any), address and headers. */
+  async credentials(tenant: string, name: string, scope?: string | null): Promise<ProviderCredentials | undefined> {
+    const row = this.visible(await this.rows(tenant, scope ?? ""), scope).find(entry => entry.name === name);
     if (!row) return undefined;
-    const { apiKey, headers } = JSON.parse(this.accounts.unseal(aad(tenant, name), row.sealed)) as { apiKey?: string; headers?: Record<string, string> };
+    const { apiKey, headers } = JSON.parse(this.accounts.unseal(aad(tenant, name, row.scope), row.sealed)) as { apiKey?: string; headers?: Record<string, string> };
     return { baseUrl: row.config.baseUrl, ...(apiKey ? { apiKey } : {}), ...(headers ? { headers } : {}) };
   }
 
-  /** The tenant's rows, cached for a few seconds unless `fresh`. */
-  private async rows(tenant: string, fresh = false): Promise<Row[]> {
-    const cached = this.cache.get(tenant);
+  /** The providers a scope sees, by name: its own, then the tenant's it has none of that name for. */
+  private visible(rows: Row[], scope?: string | null): Row[] {
+    const own = scope ? rows.filter(row => row.scope === scope) : [];
+    return [...own, ...rows.filter(row => row.scope === "" && !own.some(entry => entry.name === row.name))];
+  }
+
+  private forget(tenant: string) {
+    for (const key of this.cache.keys()) if (key.startsWith(`${tenant}\0`)) this.cache.delete(key);
+  }
+
+  /** The tenant's providers and key scope `scope`'s, cached for a few seconds unless `fresh`. */
+  private async rows(tenant: string, scope: string, fresh = false): Promise<Row[]> {
+    const key = `${tenant}\0${scope}`;
+    const cached = this.cache.get(key);
     if (!fresh && cached && cached.until > Date.now()) return cached.rows;
-    const rows = (await this.db.query("select name, config, sealed, last4, set_at from model_providers where tenant = $1 order by name", [tenant])).rows as Row[];
+    const rows = (await this.db.query("select scope, name, config, sealed, last4, set_at from model_providers where tenant = $1 and scope in ('', $2) order by scope, name", [tenant, scope])).rows as Row[];
     if (this.cache.size > 10_000) this.cache.clear();
-    this.cache.set(tenant, { rows, until: Date.now() + CACHE_MS });
+    this.cache.set(key, { rows, until: Date.now() + CACHE_MS });
     return rows;
   }
 }

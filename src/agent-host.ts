@@ -13,7 +13,7 @@ import { renderMessages, senderInput, stamp } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
-import { boundedContext, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
+import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, runCompaction } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
@@ -457,7 +457,8 @@ export function createAgentHost(hostIO: HostIO) {
         recovered = true;
       } else if (transcript.total === 0 && config.initialMessages?.length) {
         validateInitialMessages(config.initialMessages);
-        await transcript.replace(config.initialMessages);
+        const { messages, compaction } = importedHistory(config.initialMessages);
+        await transcript.replace(messages, undefined, compaction);
       }
       const directTools = directAgentTools(config.tools);
       const jsExec: AgentTool = {

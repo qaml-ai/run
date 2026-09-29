@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
+import { StatusPanel } from "@/components/brand";
 import { ConfirmButton, CopyButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
 import { FileBrowser, FileCard } from "@/components/files";
 import { api, formatBytes, formatTime, putFile, useApi, type AgentDetail, type FileRef, type Mount, type RequestRecord, type RunFiles, type ToolSource } from "@/lib/api";
@@ -65,7 +66,7 @@ function Conversation({ messages, mounts }: { messages: Message[]; mounts?: Moun
               : part.type === "toolCall" && part.name === "present_file" && presented.get(part.id) ? (
                 <RefCard key={partIndex} mounts={mounts} file={presented.get(part.id)} caption={part.arguments?.caption} />
               ) : part.type === "toolCall" ? (
-                <div key={partIndex} className="bg-muted/50 flex items-start gap-2 rounded-md border px-3 py-2 font-mono text-xs">
+                <div key={partIndex} className="bg-muted flex items-start gap-2 border px-3 py-2 font-mono text-xs">
                   <Wrench className="mt-0.5 size-3.5 shrink-0" />
                   <span className="break-all">{part.name}({JSON.stringify(part.arguments)})</span>
                 </div>
@@ -96,7 +97,7 @@ function RunOutputs({ mounts, result }: { mounts?: Mount[]; result?: RunFiles })
 function Requests({ requests, mounts }: { requests: RequestRecord[]; mounts?: Mount[] }) {
   if (!requests.length) return <p className="text-muted-foreground text-sm">No requests recorded since this agent was last loaded.</p>;
   return (
-    <div className="rounded-lg border">
+    <div className="bg-card border">
       <Table>
         <TableHeader><TableRow><TableHead>Request</TableHead><TableHead>Started</TableHead><TableHead>Outcome</TableHead></TableRow></TableHeader>
         <TableBody>
@@ -108,7 +109,7 @@ function Requests({ requests, mounts }: { requests: RequestRecord[]; mounts?: Mo
               </TableCell>
               <TableCell className="text-muted-foreground text-xs">{formatTime(request.startedAt)}</TableCell>
               <TableCell>
-                {request.state === "running" ? <Badge variant="secondary"><Loader2 className="animate-spin" />running</Badge>
+                {request.state === "running" ? <Badge variant="live">running</Badge>
                   : request.outcome?.error ? <Badge variant={request.outcome.uncertain ? "outline" : "destructive"} title={request.outcome.error}>{request.outcome.uncertain ? "interrupted" : "failed"}</Badge>
                   : <Badge variant="outline">completed</Badge>}
               </TableCell>
@@ -165,9 +166,9 @@ function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
       {attached.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {attached.map((file, index) => (
-            <Badge key={index} variant="secondary" className="gap-1">{file.name} · {formatBytes(file.size)}
+            <span key={index} className="bg-secondary text-secondary-foreground inline-flex h-6 items-center gap-1.5 px-2 text-xs">{file.name} · {formatBytes(file.size)}
               <button type="button" aria-label={`Remove ${file.name}`} disabled={busy} onClick={() => setAttached(attached.filter((_, at) => at !== index))}><X className="size-3" /></button>
-            </Badge>
+            </span>
           ))}
         </div>
       )}
@@ -243,7 +244,7 @@ function ToolSources({ agentId, sources }: { agentId: string; sources: ToolSourc
                   <div className="text-muted-foreground line-clamp-3 text-xs">{tool.excluded ? `${tool.excluded}. ` : ""}{tool.description}</div>
                   {tool.parameters && (
                     <details className="mt-1 text-xs"><summary className="text-muted-foreground cursor-pointer">Input schema</summary>
-                      <pre className="bg-muted/50 mt-1 max-h-60 overflow-auto rounded p-2 font-mono">{JSON.stringify(tool.parameters, null, 2)}</pre>
+                      <pre className="bg-muted mt-1 max-h-60 overflow-auto p-2 font-mono">{JSON.stringify(tool.parameters, null, 2)}</pre>
                     </details>
                   )}
                 </div>
@@ -279,7 +280,8 @@ export function AgentPage({ id }: { id: string }) {
   const agent = useApi<AgentDetail>(`/v1/agents/${id}`, 5_000);
   const history = useApi<{ messages: Message[] }>(`/v1/agents/${id}/history`, agent.data?.running ? 3_000 : undefined);
   const [error, setError] = useState<string>();
-  if (agent.error?.status === 404) return <ErrorAlert error="This agent does not exist or belongs to another tenant." />;
+  if (agent.error?.status === 404) return <StatusPanel code="404" label="Not found" detail="This agent does not exist or belongs to another tenant."
+    action={<Button variant="outline" asChild><Link to="agents"><ArrowLeft />Agents</Link></Button>} />;
   if (!agent.data) return <><ErrorAlert error={agent.error} /><Skeleton className="h-64 w-full" /></>;
   const data = agent.data;
   return (

@@ -41,7 +41,7 @@ async function chatServer(t: Parameters<typeof listen>[0], respond: (body: any, 
 }
 
 const provider = (baseUrl: string, extra: Record<string, unknown> = {}) => ({
-  type: "openai-compatible", baseUrl, apiKey: "sk-custom-secret-1234", headers: { "x-org": "acme" },
+  type: "openai-completions", baseUrl, apiKey: "sk-custom-secret-1234", headers: { "x-org": "acme" },
   models: [{ id: "llama-4-scout", contextWindow: 131072, maxOutputTokens: 4096, pricing: { input: 50, output: 150 } }], ...extra,
 });
 
@@ -70,7 +70,7 @@ test("a tenant's OpenAI-compatible provider: stored sealed, listed with its mode
   assert.deepEqual({ ...listed, key: { ...listed.key, setAt: undefined } }, {
     id: "mine", kind: "model", models: 1, apiKey: true, key: { provider: "mine", source: "tenant", last4: "1234", setAt: undefined },
     custom: {
-      type: "openai-compatible", baseUrl: server.url, headers: ["x-org"],
+      type: "openai-completions", baseUrl: server.url, headers: ["x-org"],
       models: [{ id: "llama-4-scout", contextWindow: 131072, maxOutputTokens: 4096, input: ["text"], reasoning: false, pricing: { input: 50, output: 150, cacheRead: 0, cacheWrite: 0 } }],
     },
   });
@@ -128,7 +128,7 @@ test("a server without usage or finish_reason (so declared) still runs tools; im
     { id: "text-only", contextWindow: 32768, compat: { supportsUsageInStreaming: false, supportsFinishReason: false, maxTokensField: "max_tokens" } },
     { id: "vision", contextWindow: 32768, input: ["text", "image"], compat: { supportsFinishReason: false } },
   ];
-  assert.equal((await r.call("/v1/providers/local", { method: "PUT", body: { type: "openai-compatible", baseUrl: server.url, models } })).status, 200, "a server that takes no key");
+  assert.equal((await r.call("/v1/providers/local", { method: "PUT", body: { type: "openai-completions", baseUrl: server.url, models } })).status, 200, "a server that takes no key");
   const agent = (await r.call("/v1/agents", { body: { model: "local/text-only" } })).json.id;
   const done = await r.prompt(agent, "Compute");
   assert.equal(done.state, "completed", JSON.stringify(done.outcome));
@@ -182,7 +182,7 @@ test("deleting a provider takes its key scopes' entries with it: its agents call
 });
 
 test("a custom model is Pi's openai-completions model with the declared window, output cap, pricing and compat", () => {
-  const custom = { mine: { type: "openai-compatible" as const, baseUrl: "https://llm.example.com/v1", models: [{ id: "org/model:tag", contextWindow: 65536, reasoning: true, input: ["text", "image"] as ("text" | "image")[], pricing: { input: 1, output: 2, cacheRead: 0.1 }, compat: { supportsDeveloperRole: false } }] } };
+  const custom = { mine: { type: "openai-completions" as const, baseUrl: "https://llm.example.com/v1", models: [{ id: "org/model:tag", contextWindow: 65536, reasoning: true, input: ["text", "image"] as ("text" | "image")[], pricing: { input: 1, output: 2, cacheRead: 0.1 }, compat: { supportsDeveloperRole: false } }] } };
   const model = resolveModel("mine/org/model:tag", undefined, custom) as any;
   assert.deepEqual({ ...model }, {
     id: "org/model:tag", name: "org/model:tag", provider: "mine", api: "openai-completions", baseUrl: "https://llm.example.com/v1",
@@ -196,7 +196,7 @@ test("the SDK manages a tenant's custom providers", async t => {
   const server = await chatServer(t, () => ({ text: "ok" }));
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
   const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
-  const saved = await sdk.setProvider("mine", { type: "openai-compatible", baseUrl: server.url, models: [{ id: "m", contextWindow: 8192 }] });
+  const saved = await sdk.setProvider("mine", { type: "openai-completions", baseUrl: server.url, models: [{ id: "m", contextWindow: 8192 }] });
   assert.equal(saved.id, "mine");
   assert.deepEqual((await sdk.providers()).filter(entry => entry.custom).map(entry => entry.id), ["mine"]);
   await sdk.deleteProvider("mine");

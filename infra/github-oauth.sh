@@ -3,7 +3,7 @@
 #
 # Create the app first (organization owners only):
 #   https://github.com/organizations/qaml-ai/settings/applications/new
-#   Application name:            camelAI Agent Runtime
+#   Application name:            camelRun
 #   Homepage URL:                https://agents.camelai.dev
 #   Authorization callback URL:  https://agents.camelai.dev/console/auth/callback
 #

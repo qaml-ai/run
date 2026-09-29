@@ -9,7 +9,11 @@
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_DATABASE_QUERY_TIMEOUT_MS` | how long a query may take before it fails and its connection is replaced (default 30000; 0 for none), so a connection that went dark in a failover cannot hang a request |
 | `AGENT_TOOL_SEARCH` | ranking by meaning for `tools.search` after keywords: `keyword` (default, none), `embeddings`, or `embeddings,jev` (Jev also drops irrelevant tools); with the platform's OpenRouter key or `AGENT_TOOL_SEARCH_API_KEY`, `AGENT_TOOL_SEARCH_URL` (default OpenRouter) and `AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL` / `_JEV_MODEL` (see [Tool search](../guides/tools.md#tool-search)) |
+| `AGENT_PROVIDER`, `AGENT_MODEL` | the default model, for agents that name none (e.g. `anthropic` and `claude-sonnet-5-5`); `AGENT_BASE_URL` overrides its endpoint |
+| `AGENT_MODEL_FALLBACKS` | the defaults after it, as `provider/model` references, comma-separated (default Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock's global profile, then `openrouter/openai/gpt-6-luna`; empty for none): an agent that names no model gets the first its tenant or key scope has a key for |
 | `AGENT_STORAGE` | `file` (default; one node only), `shared-file` (several processes on one filesystem), or `s3` (`AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`) |
+| `AGENT_BROWSER_URL` | where browsers reach the runtime, as browser tokens' `url` says: `AGENT_PUBLIC_URL` unless set; empty for none, for a private runtime browsers read through the application ([Self-hosting](self-host.md#networking)) |
+| `AGENT_S3_ENDPOINT`, `AGENT_S3_FORCE_PATH_STYLE` | an S3-compatible service instead of AWS S3 (R2, SeaweedFS), and `true` for path-style requests; it must support conditional writes (`If-None-Match`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
 | `AGENT_GC_ENABLED`, `AGENT_GC_DRY_RUN` | storage garbage collection: `true` to run it (default off), and `true` to only log what it would delete (see [Storage garbage collection](persistence.md#storage-garbage-collection)) |
@@ -20,6 +24,8 @@
 | `AGENT_RETIRE_MAX_MS` | how long a retiring task keeps protection for running turns (default 21600000, 6 h) |
 | `AGENT_ECS_POLL_MS`, `AGENT_PROTECTION_IDLE_MS` | how often to check the service's deployment (default 30000), and how long without work before task protection is cleared (default 30000) |
 | `AGENT_TENANTS_FILE` | tenants JSON (`{tenants: {<id>: {tokenSha256, apiKeys, github?, maxAgents?, maxWatchers?, maxMonthlyCost?, billing?, modelEndpoints?}}, platformKeys?}`), re-read on SIGHUP; see [Billing](billing.md) for `billing` and `platformKeys`, and [A tenant's own model endpoint](../guides/models-and-keys.md#your-own-model-endpoint) (pass-through) |
+| `AGENT_TENANTS_JSON` | the tenants file's JSON inline, instead of `AGENT_TENANTS_FILE` |
+| `AGENT_TENANT`, `AGENT_OPERATOR_TOKEN`, `AGENT_TENANT_API_KEYS` | instead of a tenants file, one tenant: its id, its operator token (at least 24 characters) and optionally its provider keys as JSON (`{"anthropic": "sk-ant-..."}`); see [Self-hosting](self-host.md) |
 | `AGENT_TENANTS_SECRET_ARN` | instead of a file: a Secrets Manager secret holding the same JSON, read at startup and every minute and on SIGHUP; a bad value is rejected and the last good tenants stay |
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, for development |
 | `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
@@ -62,7 +68,7 @@ export AGENT_TENANTS_FILE="$PWD/tenants.json"
 export AGENT_SESSION_SECRET="$(openssl rand -hex 32)"
 export AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:55432/postgres
 export AGENT_PROVIDER=anthropic
-export AGENT_MODEL=claude-sonnet-4-5
+export AGENT_MODEL=claude-sonnet-5-5
 export AGENT_DATA_DIR=/absolute/path/to/agent-data
 npm start
 ```

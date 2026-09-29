@@ -199,7 +199,7 @@ test("tenants load from a Secrets Manager secret, and a bad refresh keeps the la
   assert.equal(tenants.authenticate("Bearer alice-token"), undefined);
   assert.equal(tenants.authenticate("Bearer bob-token")?.id, "bob");
 
-  await assert.rejects(tenantsFromEnvironment({ AGENT_TENANTS_SECRET_ARN: arn, AGENT_TENANTS_FILE: "/etc/agent-runtime/tenants.json" }), /not both/);
+  await assert.rejects(tenantsFromEnvironment({ AGENT_TENANTS_SECRET_ARN: arn, AGENT_TENANTS_FILE: "/etc/agent-runtime/tenants.json" }), /Set only one of AGENT_TENANTS_FILE, AGENT_TENANTS_SECRET_ARN/);
 });
 
 test("the session secret, secrets key, GitHub OAuth app, Stripe keys and tool search key load once from Secrets Manager ARNs, or from plain values", async t => {

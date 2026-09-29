@@ -233,7 +233,9 @@ export class FileLinks {
     const signed: LinkGrant = { ...rest, expiresAt: Date.now() + (seconds as number) * 1000 };
     const payload = Buffer.from(JSON.stringify(signed)).toString("base64url");
     const name = grant.path.slice(grant.path.lastIndexOf("/") + 1);
-    return { url: `${this.publicUrl}/v1/links/${payload}.${this.mac(payload)}/${encodeURIComponent(name)}`, ...signed };
+    // `urlPath` too, so a proxy in front of a private runtime can serve the link at its own origin.
+    const urlPath = `/v1/links/${payload}.${this.mac(payload)}/${encodeURIComponent(name)}`;
+    return { url: `${this.publicUrl}${urlPath}`, urlPath, ...signed };
   }
 
   /** The grant a link's token carries, if its signature holds and it has not expired. */
