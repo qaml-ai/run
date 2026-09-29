@@ -29,6 +29,22 @@ export interface OutboundPolicy {
   block?: string[];
   /** Resolves host names; the system resolver by default (tests substitute one). */
   resolve?: Resolve;
+  /**
+   * Exact origins (scheme://host:port) reachable despite the built-in blocks, over http too: an operator's own
+   * service on a private network or loopback, such as the application a self-hosted runtime serves. Nothing
+   * else on that host, and no other scheme or port, is. Their addresses are still checked at each connection
+   * against `block`. See `withoutOrigins` for what never gets them.
+   */
+  origins?: string[];
+}
+
+/** `value` as an exact origin: http or https, a host, and a port if not the scheme's, with no path, query or credentials. */
+function exactOrigin(value: string): string {
+  let url: URL;
+  try { url = new URL(value.trim()); } catch { throw new Error(`Invalid origin ${value}`); }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`An allowed origin is http or https: ${value}`);
+  if (url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error(`An allowed origin is an exact origin, scheme://host:port with no path: ${value}`);
+  return url.origin;
 }
 
 // Loopback, unspecified, private (RFC 1918), shared address space (CGNAT), link-local (the
@@ -94,20 +110,28 @@ function embedded(bytes: Uint8Array): Uint8Array | undefined {
 
 export class Outbound {
   readonly allowHttp: boolean;
+  private readonly policy: OutboundPolicy;
   private readonly allow: Cidr[];
   private readonly block: Cidr[];
+  private readonly origins: Set<string>;
   private readonly resolve: Resolve;
+  private bare?: Outbound;
   readonly dispatcher: Agent;
   /** The connection-time lookup the dispatcher uses, for clients that take a node:http agent instead (see `guardedNodeAgents`). */
   readonly lookup: LookupFunction;
+  /** The same for connections to an allowed origin, which may reach its private address. */
+  private readonly originDispatcher: Agent;
+  private readonly originLookup: LookupFunction;
 
   constructor(policy: OutboundPolicy = {}) {
+    this.policy = policy;
     this.allowHttp = !!policy.allowHttp;
     this.allow = (policy.allow ?? []).map(cidr);
     this.block = (policy.block ?? []).map(cidr);
+    this.origins = new Set((policy.origins ?? []).map(exactOrigin));
     this.resolve = policy.resolve ?? (hostname => dnsLookup(hostname, { all: true, verbatim: true }));
-    const lookup: LookupFunction = (hostname, options, callback) => {
-      this.addresses(hostname).then(addresses => {
+    const lookupFor = (origin: boolean): LookupFunction => (hostname, options, callback) => {
+      this.addresses(hostname, origin).then(addresses => {
         const usable = options.family ? addresses.filter(entry => entry.family === options.family) : addresses;
         if (!usable.length) throw Object.assign(new Error(`${hostname} has no ${options.family ? `IPv${options.family} ` : ""}address`), { code: "ENOTFOUND" });
         if (options.all) (callback as (error: null, addresses: { address: string; family: number }[]) => void)(null, usable);
@@ -115,41 +139,57 @@ export class Outbound {
       }, error => callback(error, "", 0));
     };
     // The connection itself resolves, checks and connects in one step: nothing can change in between.
-    this.lookup = lookup;
-    this.dispatcher = new Agent({ connect: { lookup, timeout: 10_000 }, keepAliveTimeout: 30_000, connections: 64 });
+    this.lookup = lookupFor(false);
+    this.dispatcher = new Agent({ connect: { lookup: this.lookup, timeout: 10_000 }, keepAliveTimeout: 30_000, connections: 64 });
+    // Used only for requests to an allowed origin (see `fetch`), so the private address it may reach is that origin's.
+    this.originLookup = lookupFor(true);
+    this.originDispatcher = new Agent({ connect: { lookup: this.originLookup, timeout: 10_000 }, keepAliveTimeout: 30_000, connections: 64 });
   }
 
-  /** Why the runtime may not connect to `address`, or undefined when it may. */
-  blocked(address: string): string | undefined {
+  /**
+   * This policy without its allowed origins: for URLs a model chooses (web_fetch, and the pages a search or
+   * render reads), which never reach the operator's own services however they are allowed for configured ones.
+   */
+  withoutOrigins(): Outbound {
+    if (!this.origins.size) return this;
+    return this.bare ??= new Outbound({ ...this.policy, origins: [] });
+  }
+
+  /** Whether `url` is at one of the allowed origins. */
+  private permits(url: URL) { return this.origins.has(url.origin); }
+
+  /** Why the runtime may not connect to `address`, or undefined when it may; at an allowed origin, only the operator's blocks apply. */
+  blocked(address: string, origin = false): string | undefined {
     const bytes = addressBytes(address);
     if (!bytes) return "not an IP address";
     if (this.block.some(range => within(bytes, range))) return "a blocked network";
-    if (this.allow.some(range => within(bytes, range))) return undefined;
+    if (origin || this.allow.some(range => within(bytes, range))) return undefined;
     if (BUILT_IN.some(range => within(bytes, range))) return "a private, local or reserved address";
     const inner = embedded(bytes);
     return inner ? this.blocked(inner.join(".")) : undefined;
   }
 
-  /** Every address a host resolves to, all of them allowed; one internal address blocks the host. */
-  async addresses(hostname: string) {
+  /** Every address a host resolves to, all of them allowed; one internal address blocks the host (unless it is an allowed origin's). */
+  async addresses(hostname: string, origin = false) {
     const addresses = await this.resolve(hostname);
     for (const { address } of addresses) {
-      const reason = this.blocked(address);
+      const reason = this.blocked(address, origin);
       if (reason) throw new OutboundBlocked(`${hostname} resolves to ${address}, ${reason}`);
     }
     return addresses;
   }
 
-  /** A URL the runtime may call: http(s) only, no credentials in it, and not a literal internal address. */
+  /** A URL the runtime may call: http(s) only (http at an allowed origin), no credentials in it, and not a literal internal address. */
   check(value: string | URL): URL {
     let url: URL;
     try { url = new URL(value); } catch { throw new OutboundBlocked(`Invalid URL: ${String(value).slice(0, 200)}`); }
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && this.allowHttp)) throw new OutboundBlocked(`Only https:// URLs are allowed, not ${url.protocol}//`);
+    const origin = this.permits(url);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && (this.allowHttp || origin))) throw new OutboundBlocked(`Only https:// URLs are allowed, not ${url.protocol}//`);
     if (url.username || url.password) throw new OutboundBlocked("URLs may not carry credentials");
     // The URL parser has already normalized other spellings (decimal, octal, hex, short forms) to dotted or bracketed addresses.
     const host = url.hostname.replace(/^\[(.*)\]$/, "$1");
     if (isIP(host)) {
-      const reason = this.blocked(host);
+      const reason = this.blocked(host, origin);
       if (reason) throw new OutboundBlocked(`${host} is ${reason}`);
     }
     return url;
@@ -159,9 +199,12 @@ export class Outbound {
   async reachable(value: string | URL): Promise<URL> {
     const url = this.check(value);
     const host = url.hostname.replace(/^\[(.*)\]$/, "$1");
-    if (!isIP(host)) await this.addresses(host);
+    if (!isIP(host)) await this.addresses(host, this.permits(url));
     return url;
   }
+
+  /** The node:http connection lookup for `url`: an allowed origin's, which may reach its private address, or the guard's. */
+  lookupFor(url: URL): LookupFunction { return this.permits(url) ? this.originLookup : this.lookup; }
 
   /**
    * Fetch a checked URL. `credentials` are headers sent only to the origin of `url`;
@@ -184,7 +227,7 @@ export class Outbound {
         if (url.origin === origin) for (const [name, value] of Object.entries(secrets ?? {})) headers.set(name, value);
         let response: UndiciResponse;
         try {
-          response = await undiciFetch(url, { ...request, method, headers, body, redirect: "manual", signal: aborted, dispatcher: this.dispatcher } as unknown as UndiciRequestInit);
+          response = await undiciFetch(url, { ...request, method, headers, body, redirect: "manual", signal: aborted, dispatcher: this.permits(url) ? this.originDispatcher : this.dispatcher } as unknown as UndiciRequestInit);
         } catch (error) {
           throw (error as { cause?: unknown }).cause instanceof OutboundBlocked ? (error as { cause: Error }).cause : aborted.aborted && aborted.reason instanceof Error ? aborted.reason : error;
         }
@@ -219,7 +262,7 @@ function capped(response: Response, url: URL, maxBytes: number, done: () => void
 }
 
 /** The operator's outbound policy variables, which an agent's process is given too (it calls tenants' model endpoints). */
-export const OUTBOUND_ENV = ["AGENT_OUTBOUND_ALLOW_HTTP", "AGENT_OUTBOUND_ALLOW_CIDRS", "AGENT_OUTBOUND_BLOCK_CIDRS"];
+export const OUTBOUND_ENV = ["AGENT_OUTBOUND_ALLOW_HTTP", "AGENT_OUTBOUND_ALLOW_CIDRS", "AGENT_OUTBOUND_BLOCK_CIDRS", "AGENT_OUTBOUND_ALLOW_ORIGINS"];
 
 let modelOutbound: Outbound | undefined;
 const outboundForModels = () => modelOutbound ??= outboundFromEnvironment();
@@ -230,8 +273,8 @@ const outboundForModels = () => modelOutbound ??= outboundFromEnvironment();
  */
 export function guardedNodeAgents(url: string) {
   const outbound = outboundForModels();
-  outbound.check(url);
-  return { httpAgent: new HttpAgent({ lookup: outbound.lookup, keepAlive: true }), httpsAgent: new HttpsAgent({ lookup: outbound.lookup, keepAlive: true }) };
+  const lookup = outbound.lookupFor(outbound.check(url));
+  return { httpAgent: new HttpAgent({ lookup, keepAlive: true }), httpsAgent: new HttpsAgent({ lookup, keepAlive: true }) };
 }
 /**
  * The fetch for a model call to an endpoint a tenant gave (a key scope's `baseUrl`, a custom provider's): through the
@@ -242,8 +285,12 @@ export function guardedModelFetch(): typeof fetch {
   return (input, init) => outbound.fetch(String(input), { ...init as RequestInit, stream: true, timeoutMs: 600_000, maxBytes: 1024 * 1024 * 1024 });
 }
 
-/** The policy operators set: AGENT_OUTBOUND_ALLOW_HTTP, AGENT_OUTBOUND_ALLOW_CIDRS and AGENT_OUTBOUND_BLOCK_CIDRS. */
+/** The policy operators set: AGENT_OUTBOUND_ALLOW_HTTP, AGENT_OUTBOUND_ALLOW_CIDRS, AGENT_OUTBOUND_BLOCK_CIDRS and AGENT_OUTBOUND_ALLOW_ORIGINS. */
 export function outboundFromEnvironment(env = process.env): Outbound {
   const list = (value?: string) => (value ?? "").split(",").map(entry => entry.trim()).filter(Boolean);
-  return new Outbound({ allowHttp: env.AGENT_OUTBOUND_ALLOW_HTTP === "true", allow: list(env.AGENT_OUTBOUND_ALLOW_CIDRS), block: list(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
+  try {
+    return new Outbound({
+      allowHttp: env.AGENT_OUTBOUND_ALLOW_HTTP === "true", allow: list(env.AGENT_OUTBOUND_ALLOW_CIDRS), block: list(env.AGENT_OUTBOUND_BLOCK_CIDRS), origins: list(env.AGENT_OUTBOUND_ALLOW_ORIGINS),
+    });
+  } catch (error) { throw new Error(`AGENT_OUTBOUND_*: ${(error as Error).message}`); }
 }

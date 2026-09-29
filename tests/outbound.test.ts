@@ -91,3 +91,27 @@ test("responses are bounded in time and size", async t => {
   assert.equal(await (await outbound.fetch(`${url}/stream`, { timeoutMs: 100, stream: true })).text(), "data: 1\n\ndata: 2\n\n");
   await blocked(async () => (await outbound.fetch(`${url}/stream`, { timeoutMs: 100 })).text(), /No response within 100 ms/);
 });
+
+test("an allowed origin is reachable over http at its exact scheme, host and port, and nothing else on that host is", async t => {
+  const app = await listen(t, (_req, res) => res.writeHead(200, { "Content-Type": "text/plain" }).end("the app"));
+  const admin = await listen(t, (_req, res) => res.writeHead(200, { "Content-Type": "text/plain" }).end("an admin API"));
+  const outbound = new Outbound({ origins: [`${app}/`] });
+  assert.equal(await (await outbound.fetch(`${app}/api`)).text(), "the app");
+  assert.equal((await outbound.reachable(`${app}/v1`)).origin, app);
+  // Another port on the same host, another scheme, another spelling of the host: none of them is the origin.
+  await blocked(() => outbound.fetch(`${admin}/config`), /Only https:\/\/ URLs are allowed/);
+  await blocked(() => outbound.check(app.replace("http:", "https:")), /private, local or reserved/);
+  await blocked(() => outbound.fetch(app.replace("127.0.0.1", "localhost")), /Only https:\/\//);
+  // A redirect from the allowed origin elsewhere on the host is refused like any other hop.
+  const bouncer = await listen(t, (_req, res) => res.writeHead(302, { Location: `${admin}/config` }).end());
+  await blocked(() => new Outbound({ origins: [bouncer] }).fetch(`${bouncer}/`, { maxRedirects: 3 }), /Only https:\/\//);
+  // A name is checked after resolution too: an allowed origin by name reaches only what it resolves to, and a blocked range stays blocked.
+  const port = new URL(app).port;
+  const named = new Outbound({ origins: [`http://chat.internal:${port}`], resolve: resolveTo("127.0.0.1") });
+  assert.equal((await named.reachable(`http://chat.internal:${port}/x`)).hostname, "chat.internal");
+  await blocked(() => new Outbound({ origins: [`http://chat.internal:${port}`], block: ["127.0.0.0/8"], resolve: resolveTo("127.0.0.1") }).reachable(`http://chat.internal:${port}/x`), /blocked network/);
+  // Without origins, the same outbound for web_fetch reaches none of it.
+  await blocked(() => outbound.withoutOrigins().fetch(`${app}/api`), /Only https:\/\//);
+  assert.throws(() => new Outbound({ origins: ["http://app.internal:8080/path"] }), /exact origin/);
+  assert.throws(() => new Outbound({ origins: ["ftp://app.internal"] }), /http or https/);
+});

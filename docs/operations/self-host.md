@@ -103,11 +103,18 @@ since the browser token is their credential.
 
 The runtime refuses to call private and loopback addresses (MCP servers,
 `web_fetch`, tenants' model endpoints), so an agent cannot reach your network.
-A model server or gateway on your network is allowed by naming its range,
-`AGENT_OUTBOUND_ALLOW_CIDRS=10.1.2.0/24`, and, if it has no TLS,
-`AGENT_OUTBOUND_ALLOW_HTTP=true`; both open that range to every agent's tools
-too, so keep it narrow. Tool servers your application runs on the same Docker
-network are such an address too.
+Your own services it must call (your application's tool server, a model server
+or gateway) are allowed by their exact origins:
+`AGENT_OUTBOUND_ALLOW_ORIGINS=http://app:3000,http://10.1.2.3:8000`. Each is
+reachable at that scheme, host and port only, over `http` too, and nothing else
+on the host is (another port, such as an admin API, stays refused). MCP servers,
+HTTP tools, model providers, key scopes' `baseUrl`s and webhooks may use them;
+`web_fetch`, `web_search` and page renders never do, since the model chooses
+their URLs.
+
+`AGENT_OUTBOUND_ALLOW_CIDRS` (with `AGENT_OUTBOUND_ALLOW_HTTP=true` for plain
+`http`) opens whole ranges instead, `web_fetch` included, to every port: use it
+for a test harness, not to reach your application.
 
 ## Local harnesses (evals, end-to-end tests)
 

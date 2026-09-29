@@ -142,10 +142,10 @@ of it, such as a tunnel. Keep it behind a key: anyone with the address can call
 it.
 
 A [self-hosted runtime](../operations/self-host.md#networking) can call servers
-on its own network: its operator names their range in
-`AGENT_OUTBOUND_ALLOW_CIDRS` (e.g. `10.1.2.0/24` for a vLLM or Ollama host), and
-sets `AGENT_OUTBOUND_ALLOW_HTTP=true` if they have no TLS. That opens the range
-to every agent's tools too, so keep it narrow.
+on its own network: its operator names each one's exact origin in
+`AGENT_OUTBOUND_ALLOW_ORIGINS` (e.g. `http://10.1.2.3:8000` for a vLLM or
+Ollama host), which allows that origin alone, over `http` too, and never to
+`web_fetch`.
 
 ## Billing
 
