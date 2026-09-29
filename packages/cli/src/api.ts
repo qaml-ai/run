@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 /** A refused call: the runtime's `error` message, with the HTTP status and its `code` when it gave one. */
 export class ApiError extends Error {
   readonly status: number;
@@ -7,24 +5,38 @@ export class ApiError extends Error {
   constructor(status: number, message: string, code?: string) { super(message); this.status = status; this.code = code; }
 }
 
-export interface Credentials { url: string; apiKey: string }
+export interface Credentials {
+  url: string;
+  /** An API or OAuth token; without one, requests go with `headers` alone (the console's session cookie). */
+  apiKey?: string;
+  /** Sent with every call, e.g. the console's X-Agent-Runtime-Console. */
+  headers?: Record<string, string>;
+}
+
+/** SHA-256 as hex, with Web Crypto: the same in Node and browsers. */
+async function sha256(text: string) {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
 
 /** The runtime's REST API, called with a tenant API key (`art_…`). */
 export class Api {
   readonly url: string;
-  private readonly apiKey: string;
+  private readonly apiKey?: string;
+  private readonly headers: Record<string, string>;
   private readonly fetch: typeof globalThis.fetch;
   private tenant?: Promise<string>;
   constructor(credentials: Credentials, fetch = globalThis.fetch) {
     this.url = credentials.url.replace(/\/+$/, "");
     this.apiKey = credentials.apiKey;
+    this.headers = credentials.headers ?? {};
     this.fetch = fetch;
   }
 
   async call<T = any>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
     const response = await this.fetch(this.url + path, {
       method,
-      headers: { Authorization: `Bearer ${this.apiKey}`, "User-Agent": "camelrun", ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...headers },
+      headers: { ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}), ...this.headers, ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await response.text();
@@ -50,7 +62,7 @@ export class Api {
   async definitionId(keyOrId: string) {
     if (/^def_[a-f0-9]{20}$/.test(keyOrId)) return keyOrId;
     this.tenant ??= this.me().then(me => me.tenant);
-    return `def_${createHash("sha256").update(`${await this.tenant}:${keyOrId}`).digest("hex").slice(0, 20)}`;
+    return `def_${(await sha256(`${await this.tenant}:${keyOrId}`)).slice(0, 20)}`;
   }
 
   /** An agent's id from its key or id (`client_…`). */

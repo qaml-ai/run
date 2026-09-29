@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { Api, ApiError, enc } from "./api.ts";
 import type { Manifest } from "./manifest.ts";
 
@@ -105,7 +104,7 @@ export async function waitFor(api: Api, agentId: string, requestId: string, seco
 export async function run(api: Api, agent: string, text: string, options: { wait?: number; requestId?: string; from?: string; steer?: boolean; allowDisconnected?: boolean; signal?: AbortSignal } = {}) {
   const id = await api.agentId(agent);
   const record = await api.call("POST", `/v1/agents/${enc(id)}/prompt`, {
-    text, requestId: options.requestId ?? `cli_${randomUUID()}`, ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
+    text, requestId: options.requestId ?? `cli_${globalThis.crypto.randomUUID()}`, ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
     ...(options.from ? { from: { id: options.from } } : {}), ...(options.steer ? { whileRunning: "steer" } : {}),
   });
   return options.wait === 0 ? summarize(id, record) : waitFor(api, id, record.id, options.wait ?? Infinity, options.signal);
@@ -174,6 +173,6 @@ export async function upsertAgent(api: Api, key: string, config: { definition?: 
 /** Change one agent's model, prompt or thinking level between its runs, and wait up to `wait` seconds for it to land. */
 export async function configure(api: Api, agent: string, changes: Record<string, unknown>, wait = 30) {
   const id = await api.agentId(agent);
-  const record = await api.call("PATCH", `/v1/agents/${enc(id)}/configuration`, { requestId: `cli_${randomUUID()}`, ...changes });
+  const record = await api.call("PATCH", `/v1/agents/${enc(id)}/configuration`, { requestId: `cli_${globalThis.crypto.randomUUID()}`, ...changes });
   return waitFor(api, id, record.id, wait);
 }

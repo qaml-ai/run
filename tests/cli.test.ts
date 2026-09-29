@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Api } from "../packages/cli/src/api.ts";
 import { main } from "../packages/cli/src/cli.ts";
-import { loadManifests } from "../packages/cli/src/manifest.ts";
+import { loadManifests } from "../packages/cli/src/manifest-files.ts";
 import { createServer } from "../packages/cli/src/mcp.ts";
 import { OPERATOR, lastUser, runtime, toolResults, toolCall, until } from "./runtime-server.ts";
 

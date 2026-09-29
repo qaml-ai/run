@@ -2392,6 +2392,16 @@ The console's API tokens page lists connected apps under **Connected apps**,
 where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 /v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.
 
+## In the browser: WebMCP
+
+The console also offers the tools to the agent built into your browser, through
+[WebMCP](https://webmachinelearning.github.io/webmcp/): while you are signed in
+to the console, a browser with WebMCP (Chrome with the WebMCP testing flag
+turned on, for now) lists them, and they act as you, through the console's own
+session. They are the hosted server's tools: `deploy` takes the manifest's YAML.
+Every tool that changes something is marked consequential, so the browser can
+ask you before it runs one. Signing out removes them.
+
 ## Local MCP server
 
 `camelrun mcp` serves the tools over stdio, with the CLI's credentials (read on

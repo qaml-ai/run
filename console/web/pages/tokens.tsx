@@ -106,7 +106,7 @@ function ConnectedApps() {
   return (
     <section className="mt-10">
       <h2 className="text-lg font-semibold">Connected apps</h2>
-      <p className="text-muted-foreground mb-4 text-sm">Coding agents and assistants connect to Camel Run's MCP server at the URL below and sign in here. Each one you allow acts as your tenant, like an API token, until you revoke it.</p>
+      <p className="text-muted-foreground mb-4 text-sm">Coding agents and assistants connect to Camel Run's MCP server at the URL below and sign in here. Each one you allow acts as your tenant, like an API token, until you revoke it. A browser with WebMCP gets the same tools from this page while you are signed in.</p>
       <CodeBlock code={url} />
       <ErrorAlert error={grants.error ?? error} />
       {!grants.data ? <Skeleton className="mt-4 h-24 w-full" /> : grants.data.length === 0 ? (

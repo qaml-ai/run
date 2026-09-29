@@ -1,4 +1,4 @@
-import { StrictMode, useState, type FormEvent } from "react";
+import { StrictMode, useEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -40,9 +40,21 @@ const NAV = [
   { to: "quickstart", label: "Quickstart", icon: Rocket },
 ];
 
+/** While `tenant` is signed in, offer the Camel Run tools to the browser's agent (WebMCP), where the browser has one. */
+function useWebMcp(tenant: string | undefined) {
+  useEffect(() => {
+    // Loaded only where the browser has an agent to offer tools to: the tools bring zod and yaml with them.
+    if (!tenant || !((document as any).modelContext ?? (navigator as any).modelContext)) return;
+    const controller = new AbortController();
+    void import("@/lib/webmcp").then(({ registerTools }) => registerTools(controller.signal));
+    return () => controller.abort();
+  }, [tenant]);
+}
+
 function App() {
   const me = useApi<Me>("/v1/me");
   const path = usePath();
+  useWebMcp(me.data?.tenant);
   if (me.loading && !me.data) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
   if (!me.data) return <SignIn onSignedIn={() => void me.reload()} />;
   const [section, ...rest] = path.split("/");

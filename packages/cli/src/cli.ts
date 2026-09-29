@@ -3,7 +3,8 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Api, enc } from "./api.ts";
 import { DEFAULT_URL, forget, resolve, save } from "./config.ts";
-import { DEFAULT_FILES, findManifest, loadManifests, template } from "./manifest.ts";
+import { DEFAULT_FILES, template } from "./manifest.ts";
+import { findManifest, loadManifests } from "./manifest-files.ts";
 import * as ops from "./ops.ts";
 import { VERSION } from "./version.ts";
 

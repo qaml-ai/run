@@ -1,5 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
 import { parseAllDocuments, parse as parseYaml } from "yaml";
 
 /**
@@ -7,6 +5,9 @@ import { parseAllDocuments, parse as parseYaml } from "yaml";
  * make from it. Everything but `key`, `agents` and `systemPromptFile` is sent as the definition, so the runtime
  * validates it (see docs/guides/definitions.md). Strings may name environment variables, `${NAME}` or
  * `${NAME:-default}`, to keep credentials out of the file. A file may hold several manifests as YAML documents.
+ *
+ * This module reads no files and no environment of its own, so it runs in browsers and in the hosted MCP server;
+ * manifest-files.ts reads manifests from disk.
  */
 export interface Manifest {
   key: string;
@@ -18,48 +19,54 @@ export interface Manifest {
 export const DEFAULT_FILES = ["agent.yaml", "agent.yml", "agent.json"];
 const KEY = /^[A-Za-z0-9_-]{1,80}$/;
 
-export function findManifest(cwd = process.cwd()) {
-  const found = DEFAULT_FILES.map(name => resolve(cwd, name)).find(path => existsSync(path));
-  if (!found) throw new Error(`No manifest: expected one of ${DEFAULT_FILES.join(", ")} here, or pass a path (camelrun init writes one)`);
-  return found;
-}
+/**
+ * Where a manifest's own files come from, and its environment. Without `readFile`, systemPromptFile and specFile
+ * are refused; without `env`, every `${NAME}` is (`where` then says why).
+ */
+export interface ManifestSource { readFile?: (relativePath: string) => string; env?: Record<string, string | undefined>; noEnv?: string }
 
-export function loadManifests(file: string, env: Record<string, string | undefined> = process.env): Manifest[] {
-  const path = resolve(file);
-  if (!existsSync(path)) throw new Error(`${file}: no such file`);
-  const text = readFileSync(path, "utf8");
-  const documents = extname(path) === ".json" ? [JSON.parse(text)] : parseAllDocuments(text).map(document => {
-    if (document.errors.length) throw new Error(`${file}: ${document.errors[0].message}`);
+/** Manifests from YAML text (several documents are several manifests). */
+export function parseManifests(text: string, where: string, source: ManifestSource = {}): Manifest[] {
+  const documents = parseAllDocuments(text).map(document => {
+    if (document.errors.length) throw new Error(`${where}: ${document.errors[0].message}`);
     return document.toJS();
   }).filter(document => document != null);
-  if (!documents.length) throw new Error(`${file}: empty`);
-  const manifests = documents.map((document, index) => parseManifest(interpolate(document, env, file), path, documents.length > 1 ? `${file} (document ${index + 1})` : file));
+  return fromDocuments(documents, where, where, source);
+}
+
+/** Manifests from parsed documents, checked for keys used twice. */
+export function fromDocuments(documents: unknown[], file: string, where: string, source: ManifestSource = {}): Manifest[] {
+  if (!documents.length) throw new Error(`${where}: empty`);
+  const manifests = documents.map((document, index) => {
+    const at = documents.length > 1 ? `${where} (document ${index + 1})` : where;
+    return parseManifest(interpolate(document, source.env ?? {}, source.env ? at : `${at}${source.noEnv ? ` (${source.noEnv})` : ""}`), file, at, source);
+  });
   const keys = manifests.map(manifest => manifest.key);
   const repeated = keys.find((key, index) => keys.indexOf(key) !== index);
-  if (repeated) throw new Error(`${file}: the key ${repeated} is used twice`);
+  if (repeated) throw new Error(`${where}: the key ${repeated} is used twice`);
   return manifests;
 }
 
-/** A manifest from its parsed document, with files it names read relative to it. */
-export function parseManifest(document: unknown, path: string, where = path, options: { files?: boolean } = {}): Manifest {
+/** A manifest from its parsed document, with the files it names read through `source.readFile`. */
+export function parseManifest(document: unknown, file: string, where = file, source: ManifestSource = {}): Manifest {
   if (!document || typeof document !== "object" || Array.isArray(document)) throw new Error(`${where}: a manifest is a mapping of fields`);
   const { key, agents = [], systemPromptFile, ...definition } = document as Record<string, any>;
   if (typeof key !== "string" || !KEY.test(key)) throw new Error(`${where}: key is required, 1 to 80 letters, digits, _ and - (the same key is the same definition)`);
   if (typeof definition.name !== "string" || !definition.name) definition.name = key;
-  const base = dirname(path);
-  const noFiles = (field: string, instead: string) => { if (options.files === false) throw new Error(`${where}: a hosted deploy reads no files, so ${field} cannot be used; give ${instead}, or deploy with the camelrun CLI`); };
+  const read = (field: string, instead: string, path: string) => {
+    if (!source.readFile) throw new Error(`${where}: a hosted deploy reads no files, so ${field} cannot be used; give ${instead}, or deploy with the camelrun CLI`);
+    return source.readFile(path);
+  };
   if (systemPromptFile !== undefined) {
-    noFiles("systemPromptFile", "systemPrompt");
     if (definition.systemPrompt !== undefined) throw new Error(`${where}: give systemPrompt or systemPromptFile, not both`);
-    definition.systemPrompt = readFileSync(resolve(base, String(systemPromptFile)), "utf8").trim();
+    definition.systemPrompt = read("systemPromptFile", "systemPrompt", String(systemPromptFile)).trim();
   }
   if (Array.isArray(definition.openApi)) {
-    definition.openApi = definition.openApi.map((source: any) => {
-      if (!source || typeof source !== "object" || source.specFile === undefined) return source;
-      noFiles("specFile", "spec");
-      const { specFile, ...rest } = source;
+    definition.openApi = definition.openApi.map((openApi: any) => {
+      if (!openApi || typeof openApi !== "object" || openApi.specFile === undefined) return openApi;
+      const { specFile, ...rest } = openApi;
       if (rest.spec !== undefined) throw new Error(`${where}: an openApi source takes spec or specFile, not both`);
-      const text = readFileSync(resolve(base, String(specFile)), "utf8");
+      const text = read("specFile", "spec", String(specFile));
       return { ...rest, spec: /\.json$/i.test(specFile) ? JSON.parse(text) : parseYaml(text) };
     });
   }
@@ -68,7 +75,7 @@ export function parseManifest(document: unknown, path: string, where = path, opt
     if (!agent || typeof agent !== "object" || typeof agent.key !== "string" || !KEY.test(agent.key)) throw new Error(`${where}: each agent needs a key, 1 to 80 letters, digits, _ and -`);
     if ("definition" in agent) throw new Error(`${where}: agent ${agent.key} is made from this manifest's definition; leave out definition`);
   }
-  return { key, definition, agents, file: path };
+  return { key, definition, agents, file };
 }
 
 /** Replace `${NAME}` and `${NAME:-default}` in every string; `$${…}` is left as `${…}`. */
