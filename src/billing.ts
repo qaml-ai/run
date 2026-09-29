@@ -24,6 +24,7 @@ export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustmen
 export const LEDGER_KINDS: LedgerKind[] = ["grant", "purchase", "usage", "storage", "adjustment", "refund"];
 export interface LedgerEntry { tenant: string; kind: LedgerKind; amount: number; key: string; metadata?: Record<string, unknown> }
 export interface LedgerRow { id: number; kind: LedgerKind; amount: number; metadata: Record<string, unknown>; createdAt: number }
+export interface StartingCredit { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number }
 /** What a usage flush charges a tenant: `amount` micro-USD spent, and its breakdown (numbers, summed over the hour). */
 export interface UsageCharge { tenant: string; amount: number; metadata: Record<string, number> }
 /** What limits a tenant's runs: its balance, what it ever bought (none: on free credit), and its usage charges in the last hour. */
@@ -181,7 +182,7 @@ export class Billing {
     if (await this.mode(tenant) !== "prepaid") return undefined;
     const { balance, purchased, lastHour } = await this.account(tenant);
     const where = `${this.options.publicUrl ?? ""}/console/billing`;
-    if (balance <= 0) return new HttpError(402, `This tenant's prepaid credit is used up (balance ${usd(balance)}); add credit at ${where}`);
+    if (balance <= 0) return new HttpError(402, `Not enough credit to start this run (balance ${usd(balance)}). Add credit at ${where}`);
     const allowance = this.pricing.free.hourlySpend;
     if (purchased <= 0 && lastHour >= allowance) {
       return new HttpError(429, `Free credit allows ${usd(allowance)} of usage per hour, and this tenant has used ${usd(lastHour)} in the last hour; retry later, or buy credit at ${where} to lift the limit`);
@@ -205,6 +206,72 @@ export class Billing {
   /** Forget cached balances after entries were appended in a transaction of the caller's. */
   invalidate(tenants: Iterable<string>) { for (const tenant of tenants) this.accounts.delete(tenant); }
 
+  /** Called inside the signup/support transaction, under the identity's advisory lock. */
+  async recordStartingCredit(sql: Sql, signup: { tenant: string; githubId: number; signupAt: number; created: boolean; githubCreatedAt?: number; minAccountAgeMs?: number }) {
+    const { tenant, githubId, signupAt, created, githubCreatedAt, minAccountAgeMs } = signup;
+    if ((await sql.query("select 1 from starting_credit_decisions where github_id = $1", [githubId])).rowCount) return;
+    // This also covers awards made before the decision table was introduced.
+    const prior = (await sql.query("select id, tenant, amount from credit_ledger where idempotency_key = $1 and kind = 'grant'", [`grant:github:${githubId}`])).rows[0];
+    const amount = created ? this.pricing.startingGrant : prior?.amount ?? 0;
+    if (created && amount > 0 && !prior && (minAccountAgeMs === undefined || !Number.isSafeInteger(minAccountAgeMs) || minAccountAgeMs < 0)) {
+      throw new Error("Starting credit is not configured; contact support");
+    }
+    const eligible = created && amount > 0 && githubCreatedAt !== undefined && signupAt - githubCreatedAt >= minAccountAgeMs!;
+    const decision = prior || !created ? "legacy" : amount === 0 ? "disabled" : eligible ? "eligible" : "ineligible";
+    let entry = !prior && eligible ? (await postLedger(sql, [{
+      tenant, kind: "grant", amount, key: `grant:github:${githubId}`, metadata: { reason: "Starting credit" },
+    }]))[0] : prior;
+    // An older writer may have posted the same key during a rolling deployment.
+    if (!entry && eligible) entry = (await sql.query("select id, tenant, amount from credit_ledger where idempotency_key = $1 and kind = 'grant'", [`grant:github:${githubId}`])).rows[0];
+    await sql.query(`insert into starting_credit_decisions
+      (github_id, tenant, decision, offered_amount, minimum_account_age_ms, github_created_at, signup_at, decided_at, grant_ledger_id)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [githubId, entry?.tenant ?? tenant, decision, amount, created ? minAccountAgeMs ?? null : null,
+      created ? githubCreatedAt ?? null : null, signupAt, Date.now(), entry?.id ?? null]);
+  }
+
+  /** Only the public outcome and the amount actually awarded, never policy inputs or support notes. */
+  async startingCredit(tenant: string): Promise<StartingCredit> {
+    const row = (await this.db.query(`select t.billing, d.decision, l.amount
+      from tenants t left join starting_credit_decisions d on d.github_id = t.github_id and d.tenant = t.id
+      left join credit_ledger l on l.id = d.grant_ledger_id and l.tenant = t.id
+      where t.id = $1`, [tenant])).rows[0];
+    if (!row || row.billing !== "prepaid") return { status: "not_applicable", amount: 0 };
+    if (row.amount > 0) return { status: "granted", amount: row.amount };
+    return { status: row.decision === "ineligible" ? "not_eligible" : "not_granted", amount: 0 };
+  }
+
+  /** An operator-approved exception uses the same identity key as an automatic signup award. */
+  async grantStartingCredit(tenant: string, amount: number, reason: string, by: string): Promise<LedgerRow> {
+    if (!Number.isSafeInteger(amount) || amount <= 0) throw new HttpError(400, "Starting credit must be a positive integer amount in micro-USD");
+    if (!reason.trim()) throw new HttpError(400, "A reason is required");
+    const identity = (await this.db.query("select github_id from tenants where id = $1", [tenant])).rows[0];
+    if (!identity?.github_id) throw new HttpError(400, "This tenant has no GitHub identity for a starting-credit grant");
+    const result = await transaction(this.db, async sql => {
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`starting-credit:${identity.github_id}`]);
+      const account = (await sql.query("select billing, created_at from tenants where id = $1 and github_id = $2 for update", [tenant, identity.github_id])).rows[0];
+      if (!account || account.billing !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
+      await this.recordStartingCredit(sql, { tenant, githubId: identity.github_id, signupAt: account.created_at, created: false });
+      const decision = (await sql.query("select tenant from starting_credit_decisions where github_id = $1", [identity.github_id])).rows[0];
+      if (decision.tenant !== tenant) throw new HttpError(409, "This GitHub identity already has a starting-credit decision for another tenant");
+      const key = `grant:github:${identity.github_id}`;
+      const previous = (await sql.query("select * from credit_ledger where idempotency_key = $1", [key])).rows[0];
+      if (previous && (previous.tenant !== tenant || previous.amount !== amount || previous.kind !== "grant")) {
+        throw new HttpError(409, "This GitHub identity already has a different starting-credit grant");
+      }
+      if (!previous) {
+        const [entry] = await postLedger(sql, [{ tenant, kind: "grant", amount, key, metadata: { reason: "Starting credit" } }]);
+        await sql.query("update starting_credit_decisions set grant_ledger_id = $2, granted_by = $3, support_note = $4 where github_id = $1", [identity.github_id, entry.id, by, reason.trim()]);
+      } else {
+        await sql.query("update starting_credit_decisions set grant_ledger_id = $2 where github_id = $1 and grant_ledger_id is null", [identity.github_id, previous.id]);
+      }
+      const row = (await sql.query("select id, kind, amount, metadata, created_at from credit_ledger where idempotency_key = $1", [key])).rows[0];
+      return { id: row.id, kind: row.kind, amount: row.amount, metadata: row.metadata, createdAt: row.created_at };
+    });
+    this.invalidate([tenant]);
+    return result;
+  }
+
   /** A page of the tenant's ledger, newest first: entries before the id `before`. */
   async ledger(tenant: string, options: { before?: number; limit?: number } = {}): Promise<{ entries: LedgerRow[]; next?: number }> {
     const limit = Math.min(200, Math.max(1, options.limit ?? 50));
@@ -227,6 +294,7 @@ export class Billing {
     const pricing = this.pricing;
     return {
       billing: mode, balance, freeCredit: mode === "prepaid" && purchased <= 0, checkout: !!this.options.stripe,
+      startingCredit: mode === "prepaid" ? await this.startingCredit(tenant) : { status: "not_applicable" as const, amount: 0 },
       month: { since, ...thisMonth },
       recent: (await this.ledger(tenant, { limit: 10 })).entries,
       rates: { agentHour: pricing.agentHour, storageGbMonth: pricing.storageGbMonth, openrouterCreditMultiplier: pricing.openrouterCreditMultiplier, purchaseFeeBps: pricing.purchaseFeeBps, minPurchase: pricing.minPurchase, maxPurchase: pricing.maxPurchase, webSearch: { ...pricing.webSearch }, webRender: pricing.webRender },

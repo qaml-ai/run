@@ -33,7 +33,7 @@
 | `AGENT_STRIPE_SECRET_ARN` | instead: a Secrets Manager secret holding `{secretKey, webhookSecret}`, read at startup; while it has no value, purchases are off |
 | `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
 | `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead (see [Billing](billing.md)) |
-| `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | how old a GitHub account must be for a new tenant's starting credit (default 30) |
+| `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | private signup eligibility policy; required when GitHub starting credit is enabled, supplied through deployment configuration |
 | `AGENT_EMAIL_DOMAIN` | the domain SES receives mail for (e.g. `in.agents.camelai.dev`); set, it offers `email` channels, each with an address on it (see [Email](../guides/channels.md#email)). `infra/terraform/email.tf` sets these four |
 | `AGENT_EMAIL_SNS_TOPICS` | SNS topic ARNs (comma-separated) whose notifications `/channels/email/inbound` accepts; with none, no mail is received |
 | `AGENT_EMAIL_BUCKET` | the bucket an SES S3 receipt action stores mail in (the runtime reads messages and their attachments from it, under the task role); without it, only mail SES puts in the SNS notification itself (up to 150 KB) arrives |

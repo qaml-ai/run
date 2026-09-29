@@ -11,6 +11,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthLayout } from "@/components/auth-layout";
 import { PIXEL_STYLE } from "@/components/brand";
 import { ErrorAlert, PageErrorBoundary } from "@/components/common";
+import { StartingCreditBanner } from "@/components/starting-credit";
 import { api, useApi, type Me } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -111,7 +112,10 @@ function App() {
         </div>
       </aside>
       <main className="min-w-0 flex-1 px-4 py-6 md:px-10 md:py-8">
-        <div className="mx-auto max-w-6xl"><PageErrorBoundary key={path}>{page}</PageErrorBoundary></div>
+        <div className="mx-auto max-w-6xl">
+          {active !== "billing" && active !== "agents" && <StartingCreditBanner />}
+          <PageErrorBoundary key={path}>{page}</PageErrorBoundary>
+        </div>
       </main>
     </div>
   );
@@ -127,7 +131,7 @@ function SignOut() {
 }
 
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const methods = useApi<{ github: boolean; token: boolean; org?: string; open?: boolean; minAccountDays?: number }>("/console/auth/methods");
+  const methods = useApi<{ github: boolean; token: boolean; org?: string; open?: boolean }>("/console/auth/methods");
   const [token, setToken] = useState("");
   const [error, setError] = useState(new URLSearchParams(location.search).get("error") ?? "");
   const [busy, setBusy] = useState(false);
@@ -149,9 +153,9 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />
         {methods.data?.github && (
           <div className="flex flex-col gap-3">
-            <PixelButton href="/console/auth/github" className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>
+            <PixelButton size="hero" href="/console/auth/github" className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>
             <p className="text-muted-foreground text-center text-xs text-balance">{methods.data.open
-              ? `Any GitHub account can sign up. Accounts at least ${methods.data.minAccountDays} days old start with free credit.`
+              ? "Any GitHub account can sign up."
               : `For members of the ${methods.data.org} GitHub organization.`}</p>
           </div>
         )}
@@ -168,7 +172,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <Label htmlFor="token">Operator or API token</Label>
             <Input id="token" type="password" autoComplete="off" placeholder="art_…" value={token} onChange={event => setToken(event.target.value)} />
           </div>
-          <PixelButton type="submit" variant={methods.data?.github ? "secondary" : "primary"} className="w-full" loading={busy} disabled={!token.trim() || busy}>
+          <PixelButton size="hero" type="submit" variant={methods.data?.github ? "secondary" : "primary"} className="w-full" loading={busy} disabled={!token.trim() || busy}>
             Sign in with token
           </PixelButton>
         </form>

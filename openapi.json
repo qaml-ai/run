@@ -2880,6 +2880,28 @@
             "type": "boolean",
             "description": "Whether credit can be bought here (POST /v1/billing/checkout)"
           },
+          "startingCredit": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "granted",
+                  "not_eligible",
+                  "not_granted",
+                  "not_applicable"
+                ]
+              },
+              "amount": {
+                "type": "integer",
+                "description": "The amount of starting credit actually awarded, independent of the current grant setting, in micro-USD (1 USD = 1000000)"
+              }
+            },
+            "required": [
+              "status",
+              "amount"
+            ]
+          },
           "month": {
             "type": "object",
             "properties": {
@@ -3001,6 +3023,7 @@
           "balance",
           "freeCredit",
           "checkout",
+          "startingCredit",
           "month",
           "recent",
           "rates"
@@ -3106,6 +3129,31 @@
         },
         "required": [
           "amountUsd"
+        ]
+      },
+      "StartingCreditGrantInput": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000000000,
+            "description": "Starting credit to award in micro-USD, once per GitHub identity"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Private support audit note; never included in the tenant's ledger"
+          }
+        },
+        "required": [
+          "tenant",
+          "amount",
+          "reason"
         ]
       },
       "AdjustmentInput": {
@@ -7285,6 +7333,54 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Checkout"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/starting-credit/grant": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartingCreditGrantInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The once-per-identity starting-credit grant, or its earlier identical award",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerEntry"
                 }
               }
             }

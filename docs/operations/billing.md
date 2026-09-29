@@ -80,9 +80,13 @@ storage settings, printing each tenant whose total changed.
 profile). A self-serve tenant is tied to the GitHub account's numeric id, so a
 renamed login keeps its tenant (and a new account that takes an old login gets a
 tenant of its own, `<login>-<id>` when the name is taken). Each GitHub account's
-first prepaid tenant gets $5 of starting credit, once per account id, and only if
-the account is at least `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` (30) days old; a newer
-account can still sign in, bring its own key or buy credit. A prepaid tenant that
+first prepaid tenant may receive starting credit, with the amount configured by
+`AGENT_CREDIT_GRANT_USD`. Eligibility is decided only when the account is created,
+and the decision and any grant commit together. Later sign-ins never award credit,
+even if the eligibility policy or grant amount changes. An incomplete profile is
+retried before creating the account. People who do not qualify can add credit or
+contact support@camelai.com if they believe this was a mistake. Running with an
+own provider key still requires credit for agent time. A prepaid tenant that
 has never bought credit (grants and adjustments do not count; a full refund puts it
 back) is on **free credit**, with tighter limits: at most `AGENT_FREE_MAX_AGENTS` (2)
 agents at once per node, unless an admin set its `maxAgents`, and at most
@@ -90,9 +94,25 @@ agents at once per node, unless an admin set its `maxAgents`, and at most
 429 and a running turn ends as above. Both lift with the first purchase.
 
 `GET /v1/billing` has the balance, this month by kind, recent entries and the
-rates; `GET /v1/billing/ledger?before=<id>` pages through the ledger; the console's
+rates and `startingCredit: {status, amount}` (the recorded award, not current
+configuration); `GET /v1/billing/ledger?before=<id>` pages through the ledger; the console's
 Billing page shows both. An operator of a tenant in `AGENT_BILLING_ADMINS` can
 `POST /v1/billing/adjustments` `{tenant, amount (micro-USD), reason, idempotencyKey?}`.
+
+For a support exception to starting-credit eligibility, use
+`POST /v1/billing/starting-credit/grant` with `{tenant, amount (micro-USD), reason}`
+as a billing-admin operator. It uses the signup award's identity-scoped key;
+repeating the same award returns the earlier entry, while a different amount
+returns 409. The reason stays in the private decision record, not the public
+ledger. Ordinary adjustments are separate and must not be used for this purpose.
+
+Before deploying migration 031, set the existing signup eligibility policy in
+deployment configuration: it no longer has a source-code default. Replace/drain
+all older sign-in handlers during the rollout; old versions still re-evaluate
+eligibility. Migration preserves recorded awards and gives existing unawarded
+accounts no automatic catch-up grant. Their status is `not_granted`, without
+guessing why the historical grant is absent. Decision records survive tenant
+deletion to prevent a recreated identity from receiving another award.
 
 **Buying credit.** `POST /v1/billing/checkout {amountUsd}` ($5 to $1000, whole
 cents) creates a Stripe Checkout session (mode `payment`) for the tenant's Stripe

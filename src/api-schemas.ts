@@ -609,6 +609,10 @@ export const Billing = z.object({
   balance: micros("Credit left; at zero or below, runs are refused with 402"),
   freeCredit: z.boolean().openapi({ description: "Whether the tenant has only ever had free credit, which comes with tighter limits" }),
   checkout: z.boolean().openapi({ description: "Whether credit can be bought here (POST /v1/billing/checkout)" }),
+  startingCredit: z.object({
+    status: z.enum(["granted", "not_eligible", "not_granted", "not_applicable"]),
+    amount: micros("The amount of starting credit actually awarded, independent of the current grant setting"),
+  }),
   month: z.object({
     since: z.number(),
     grant: micros("Granted this UTC month"), purchase: micros("Bought"), usage: micros("Spent on model tokens and agent time"),
@@ -631,6 +635,11 @@ export const AdjustmentInput = z.object({
   reason: z.string().trim().min(1).max(500),
   idempotencyKey: z.string().regex(/^[A-Za-z0-9_.:-]{1,120}$/).optional().openapi({ description: "Repeating an adjustment with the same key applies it once" }),
 }).openapi("AdjustmentInput");
+export const StartingCreditGrantInput = z.object({
+  tenant: z.string(),
+  amount: z.number().int().positive().max(1e12).openapi({ description: "Starting credit to award in micro-USD, once per GitHub identity" }),
+  reason: z.string().trim().min(1).max(500).openapi({ description: "Private support audit note; never included in the tenant's ledger" }),
+}).openapi("StartingCreditGrantInput");
 export const CheckoutInput = z.object({
   amountUsd: z.number().openapi({ description: "Credit to buy, in USD with at most two decimals; the fee is added on top", example: 10 }),
 }).openapi("CheckoutInput");

@@ -102,50 +102,55 @@ export class Accounts {
    * The tenant a GitHub user signs in as: an admin tenant linked to that login, else the
    * tenant made for that GitHub account (found by its numeric id, so a renamed login keeps
    * it), else a new tenant named after the login (or, when another account has that name,
-   * the login and the id). New self-serve tenants pay from prepaid credit and start with
-   * `startingGrant`, once per GitHub account, and only for accounts at least
-   * `minAccountAgeMs` old.
+   * the login and the id). Decide starting credit only when creating the tenant,
+   * atomically with its grant. Later sign-ins never reconsider that decision.
    */
   async tenantForGithub(user: GithubUser | string, options: { minAccountAgeMs?: number } = {}): Promise<string> {
     const { login, id: githubId, createdAt } = typeof user === "string" ? { login: user } as GithubUser : user;
     const linked = this.tenants.byGithub(login);
     if (linked) return linked;
-    let row: { id: string; github: string | null; github_id: number | null; billing: string } | undefined;
-    const columns = "id, github, github_id, billing";
-    if (githubId !== undefined) {
-      row = (await this.db.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
-      // A tenant from before ids were recorded is claimed by the account that has its login now.
-      row ??= (await this.db.query(`update tenants set github_id = $2 where lower(github) = lower($1) and github_id is null returning ${columns}`, [login, githubId])).rows[0];
-    } else {
-      row = (await this.db.query(`select ${columns} from tenants where lower(github) = lower($1)`, [login])).rows[0];
-    }
-    if (!row) {
-      const name = login.toLowerCase();
-      const candidates = githubId === undefined ? [name] : [name, `${name.slice(0, 39 - String(githubId).length)}-${githubId}`];
-      for (const candidate of candidates) {
-        if (!validTenant(candidate) || this.tenants.has(candidate)) continue;
-        try {
-          row = (await this.db.query(`insert into tenants (id, github, github_id, created_at) values ($1, $2, $3, $4) on conflict (id) do nothing returning ${columns}`, [candidate, login, githubId ?? null, Date.now()])).rows[0];
-        } catch (error) {
-          // A concurrent first sign-in of the same account made its tenant.
-          if ((error as { code?: string }).code !== "23505") throw error;
-          row = (await this.db.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
-        }
-        if (row) break;
+    if (githubId !== undefined && (!Number.isSafeInteger(githubId) || githubId <= 0)) throw new Error("GitHub did not return a valid account; try signing in again");
+    const tenant = await transaction(this.db, async sql => {
+      // Signup and support awards for an identity take the same lock on every node.
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`starting-credit:${githubId ?? login.toLowerCase()}`]);
+      let row: { id: string; github: string | null; github_id: number | null; billing: string; created_at: number } | undefined;
+      const columns = "id, github, github_id, billing, created_at";
+      if (githubId !== undefined) {
+        row = (await sql.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
+        // Older tenants without an identity are linked, but never treated as new signups.
+        row ??= (await sql.query(`update tenants set github_id = $2 where lower(github) = lower($1) and github_id is null returning ${columns}`, [login, githubId])).rows[0];
+      } else {
+        row = (await sql.query(`select ${columns} from tenants where lower(github) = lower($1)`, [login])).rows[0];
       }
+      let created = false;
+      const now = Date.now();
       if (!row) {
-        if (this.tenants.has(name)) throw new Error(`Tenant ${name} exists but is not linked to GitHub user ${login}; ask an admin to add "github": "${login}" to it`);
-        throw new Error(`GitHub login ${login} cannot be used as a tenant id`);
+        if (githubId === undefined || createdAt === undefined || !Number.isSafeInteger(createdAt) || createdAt < 0 || createdAt > now) {
+          throw new Error("GitHub account details are unavailable; try signing in again");
+        }
+        const name = login.toLowerCase();
+        const candidates = [name, `${name.slice(0, 39 - String(githubId).length)}-${githubId}`];
+        for (const candidate of candidates) {
+          if (!validTenant(candidate) || this.tenants.has(candidate)) continue;
+          row = (await sql.query(`insert into tenants (id, github, github_id, created_at) values ($1, $2, $3, $4) on conflict do nothing returning ${columns}`, [candidate, login, githubId, now])).rows[0];
+          if (row) { created = true; break; }
+          row = (await sql.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
+          if (row) break;
+        }
+        if (!row) throw new Error(`GitHub login ${login} cannot be used as a tenant id; contact support`);
       }
-    }
-    if (githubId === undefined && row.github?.toLowerCase() !== login.toLowerCase()) throw new Error(`Tenant ${row.id} belongs to another account`);
-    if (row.github !== login) await this.db.query("update tenants set github = $2 where id = $1", [row.id, login]);
-    const oldEnough = createdAt !== undefined && Date.now() - createdAt >= (options.minAccountAgeMs ?? 0);
-    // The key makes a repeat (a later sign-in, a retry after a failure here, a second tenant for the account) a no-op.
-    if (row.billing === "prepaid" && githubId !== undefined && oldEnough && this.billing.pricing.startingGrant > 0) {
-      await this.billing.post([{ tenant: row.id, kind: "grant", amount: this.billing.pricing.startingGrant, key: `grant:github:${githubId}`, metadata: { reason: "Starting credit", github: login } }]);
-    }
-    return row.id;
+      if (githubId === undefined && row.github?.toLowerCase() !== login.toLowerCase()) throw new Error(`Tenant ${row.id} belongs to another account`);
+      if (row.github !== login) await sql.query("update tenants set github = $2 where id = $1", [row.id, login]);
+      if (row.billing === "prepaid" && githubId !== undefined) {
+        await this.billing.recordStartingCredit(sql, {
+          tenant: row.id, githubId, signupAt: row.created_at, created,
+          githubCreatedAt: createdAt, minAccountAgeMs: options.minAccountAgeMs,
+        });
+      }
+      return row.id;
+    });
+    this.billing.invalidate([tenant]);
+    return tenant;
   }
 
   // Provider keys -------------------------------------------------------------

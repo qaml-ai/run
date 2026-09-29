@@ -5,7 +5,7 @@ import { Slot } from "radix-ui";
 import { cn } from "@/lib/utils";
 
 type PixelButtonVariant = "primary" | "secondary" | "ghost";
-type PixelButtonSize = "default" | "sm";
+type PixelButtonSize = "default" | "sm" | "lg" | "hero";
 
 type PixelButtonBaseProps = {
   variant?: PixelButtonVariant;
@@ -35,8 +35,10 @@ const variants: Record<PixelButtonVariant, string> = {
 };
 
 const sizes: Record<PixelButtonSize, string> = {
-  default: "",
-  sm: "text-[10px] px-4 py-2.5",
+  sm: "h-6 px-3 text-[10px]",
+  default: "h-7 px-4",
+  lg: "h-8 px-5",
+  hero: "h-10 px-5",
 };
 
 const fontStyle: CSSProperties = {
@@ -55,7 +57,7 @@ export function PixelButton({
   ...props
 }: PixelButtonProps) {
   const classes = cn(
-    "inline-flex items-center justify-center gap-2 uppercase select-none rounded-none transition text-[11px] tracking-[0.22em] px-5 py-3 disabled:opacity-50 disabled:pointer-events-none",
+    "inline-flex shrink-0 items-center justify-center gap-2 uppercase select-none rounded-none transition text-[11px] leading-none tracking-[0.22em] disabled:opacity-50 disabled:pointer-events-none",
     variants[variant],
     sizes[size],
     className,

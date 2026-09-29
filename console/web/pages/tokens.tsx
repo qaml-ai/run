@@ -78,7 +78,7 @@ export function TokensPage() {
       </Alert>
       {!tokens.data ? <Skeleton className="h-32 w-full" /> : tokens.data.length === 0 ? (
         <FirstRunPanel art="aurora" eyebrow="FIRST TOKEN" title="No API tokens"
-          action={<PixelButton onClick={() => setCreating(true)}>New token</PixelButton>}>
+          action={<PixelButton size="hero" onClick={() => setCreating(true)}>New token</PixelButton>}>
           Create one to connect your application.
         </FirstRunPanel>
       ) : (

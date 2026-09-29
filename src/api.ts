@@ -539,6 +539,16 @@ export function api(context: ApiContext) {
     return json(c, 201, await accounts.billing.checkout(c.var.principal.tenant, amount));
   });
   route(createRoute({
+    method: "post", path: "/v1/billing/starting-credit/grant", request: { body: content(schema.StartingCreditGrantInput) },
+    responses: { 201: reply("The once-per-identity starting-credit grant, or its earlier identical award", schema.LedgerEntry) },
+  }), async c => {
+    const principal = c.var.principal;
+    if (principal.via !== "operator" || !context.billingAdmins?.includes(principal.tenant)) throw new HttpError(403, "Only the platform operator can grant starting credit");
+    const body = parse(schema.StartingCreditGrantInput, await readJson(c.req.raw.body, 4096, {}));
+    if (!await accounts.exists(body.tenant)) throw new HttpError(404, `Unknown tenant ${body.tenant}`);
+    return json(c, 201, await accounts.billing.grantStartingCredit(body.tenant, body.amount, body.reason, principal.tenant));
+  });
+  route(createRoute({
     method: "post", path: "/v1/billing/adjustments", request: { body: content(schema.AdjustmentInput) },
     responses: { 201: reply("The entry, or the earlier one with the same idempotency key", schema.LedgerEntry) },
   }), async c => {

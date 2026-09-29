@@ -6,7 +6,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { FirstRunPanel } from "@/components/brand";
 import { ErrorAlert, PageHeader } from "@/components/common";
-import { formatTime, useApi, type AgentSummary } from "@/lib/api";
+import { needsStartingCredit, StartingCreditHelp } from "@/components/starting-credit";
+import { formatMicros, formatTime, useApi, type AgentSummary, type Billing } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
 
 export function AgentStatus({ agent }: { agent: Pick<AgentSummary, "running" | "connected"> }) {
@@ -17,6 +18,9 @@ export function AgentStatus({ agent }: { agent: Pick<AgentSummary, "running" | "
 
 export function AgentsPage() {
   const agents = useApi<AgentSummary[]>("/v1/agents", 10_000);
+  const billing = useApi<Billing>(agents.data?.length === 0 ? "/v1/billing" : undefined, 30_000);
+  const needsCredit = needsStartingCredit(billing.data);
+  const emptyBalance = billing.data?.billing === "prepaid" && billing.data.balance <= 0;
   return (
     <>
       <PageHeader
@@ -28,9 +32,12 @@ export function AgentsPage() {
       {agents.loading && !agents.data ? <Skeleton className="h-40 w-full" />
         : agents.data?.length === 0 ? (
           <FirstRunPanel hero art="liquid" eyebrow="FIRST AGENT" title="No agents yet"
-            action={<PixelButton asChild><Link to="quickstart">Open quickstart</Link></PixelButton>}>
-            Add a model key under <Link className="text-foreground underline underline-offset-4" to="models">Models &amp; keys</Link>, then follow the{" "}
-            <Link className="text-foreground underline underline-offset-4" to="quickstart">Quickstart</Link> to create one from your app.
+            action={<PixelButton size="hero" asChild><Link to={emptyBalance ? "billing" : "quickstart"}>{emptyBalance ? "Add credit" : "Open quickstart"}</Link></PixelButton>}>
+            {needsCredit ? <StartingCreditHelp status={billing.data!.startingCredit.status} />
+              : emptyBalance ? "Add credit to start running agents."
+              : billing.data?.startingCredit?.status === "granted" && billing.data.freeCredit
+                ? <>You started with {formatMicros(billing.data.startingCredit.amount)} of credit. Follow the Quickstart to create your first agent.</>
+                : <>Follow the <Link className="text-foreground underline underline-offset-4" to="quickstart">Quickstart</Link> to create your first agent.</>}
           </FirstRunPanel>
         ) : agents.data && (
           <div className="bg-card border">

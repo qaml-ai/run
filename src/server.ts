@@ -134,10 +134,12 @@ const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).r
 // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
 const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: process.env.AGENT_STRIPE_API_URL });
 const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe });
-// GitHub sign-in admits members of GITHUB_ORG, or with AGENT_OPEN_SIGNUP=true anyone; starting credit needs an account
-// AGENT_SIGNUP_MIN_ACCOUNT_DAYS (default 30) old.
-const minAccountDays = Number(process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS ?? 30);
-if (!Number.isFinite(minAccountDays) || minAccountDays < 0) throw new Error("AGENT_SIGNUP_MIN_ACCOUNT_DAYS must be a non-negative number of days");
+// Keep the production eligibility threshold in deployment configuration, not public defaults.
+const minAccountDays = process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS === undefined ? undefined : Number(process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS);
+if (minAccountDays !== undefined && (!Number.isFinite(minAccountDays) || minAccountDays < 0 || !Number.isSafeInteger(Math.round(minAccountDays * 86_400_000)))) {
+  throw new Error("AGENT_SIGNUP_MIN_ACCOUNT_DAYS must be a non-negative, safely representable number of days");
+}
+if (secrets.github && pricing.startingGrant > 0 && minAccountDays === undefined) throw new Error("Configure AGENT_SIGNUP_MIN_ACCOUNT_DAYS before enabling GitHub starting credit");
 const github = secrets.github && {
   ...secrets.github, org: process.env.GITHUB_ORG ?? "qaml-ai", open: process.env.AGENT_OPEN_SIGNUP === "true", minAccountDays,
   webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL,

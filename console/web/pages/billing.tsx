@@ -11,10 +11,11 @@ import { PixelButton } from "@/components/ui/pixel-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, ErrorAlert, PageHeader, Stats } from "@/components/common";
+import { needsStartingCredit, StartingCreditHelp } from "@/components/starting-credit";
 import { api, formatMicros, formatNumber, formatTime, useApi, type Billing, type LedgerEntry, type LedgerKind } from "@/lib/api";
 
 const KIND_LABELS: Record<LedgerKind, string> = {
-  grant: "Free credit", purchase: "Purchase", usage: "Agent usage", storage: "Storage", adjustment: "Adjustment", refund: "Refund",
+  grant: "Credit grant", purchase: "Purchase", usage: "Agent usage", storage: "Storage", adjustment: "Adjustment", refund: "Refund",
 };
 
 /** What an entry was for, from its metadata. */
@@ -187,18 +188,23 @@ export function BillingPage() {
         <Alert><Receipt /><AlertTitle>Not billed here</AlertTitle><AlertDescription>This tenant is not billed by the runtime: it uses its own or admin-configured provider keys.</AlertDescription></Alert>
       ) : (
         <>
-          {data.balance <= 0 && (
+          {data.balance <= 0 && !needsStartingCredit(data) && (
             <Alert variant="destructive" className="mb-4">
-              <Receipt /><AlertTitle>Your credit is used up</AlertTitle>
+              <Receipt /><AlertTitle>Not enough credit</AlertTitle>
               <AlertDescription>New turns are refused until you add credit.</AlertDescription>
             </Alert>
           )}
           <Stats items={[
-            { label: "Balance", value: formatMicros(data.balance), extra: data.freeCredit && <Badge variant="outline" className="mt-2">Free credit</Badge> },
+            { label: "Balance", value: formatMicros(data.balance), extra: data.freeCredit && data.startingCredit?.status === "granted" && <Badge variant="secondary" className="mt-2">Starting credit</Badge> },
             { label: "Agent usage this month", value: formatMicros(-data.month.usage) },
             { label: "Storage this month", value: formatMicros(-data.month.storage) },
             { label: "Added this month", value: formatMicros(data.month.purchase + data.month.grant + data.month.adjustment + data.month.refund) },
           ]} />
+          {needsStartingCredit(data) && (
+            <div role="status" className="bg-muted text-muted-foreground mb-6 p-4 text-sm">
+              <StartingCreditHelp status={data.startingCredit.status} />
+            </div>
+          )}
           <Card className="mb-6" size="sm">
             <CardHeader>
               <CardTitle className="text-sm">Rates</CardTitle>
@@ -210,7 +216,7 @@ export function BillingPage() {
                 web searches on the platform's keys at {Object.entries(data.rates.webSearch).map(([provider, price]) => `${formatMicros(price)} (${provider})`).join(", ")} each ·
                 rendered pages {formatMicros(data.rates.webRender)} each, all free with your own keys ·
                 tool searches ranked by meaning at cost.
-                {data.freeCredit && " Tenants on free credit have lower agent and hourly spend limits until their first purchase."}
+                {data.freeCredit && " Accounts that haven't purchased credit have lower agent and hourly spend limits."}
               </CardDescription>
             </CardHeader>
           </Card>

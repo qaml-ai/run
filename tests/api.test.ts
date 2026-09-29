@@ -56,7 +56,7 @@ async function runtime(t: { after(fn: () => Promise<void>): void }, github?: str
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "api-test-session-secret-with-32-characters",
       AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), AGENT_VERIFY_KEYS: "false",
       ...env,
-      ...(github ? { GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", GITHUB_ORG: "qaml-ai", AGENT_GITHUB_WEB_URL: github, AGENT_GITHUB_API_URL: github } : {}),
+      ...(github ? { GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", GITHUB_ORG: "qaml-ai", AGENT_SIGNUP_MIN_ACCOUNT_DAYS: "7", AGENT_GITHUB_WEB_URL: github, AGENT_GITHUB_API_URL: github } : {}),
     } as NodeJS.ProcessEnv,
     stdio: ["ignore", "pipe", "inherit"],
   });
