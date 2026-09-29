@@ -1,0 +1,24 @@
+name = "camelrun-billing-email"
+main = "worker.ts"
+account_id = "85bbd288051330fb51ee1c86031a299b"
+compatibility_date = "2026-09-29"
+workers_dev = true
+preview_urls = false
+
+[vars]
+FROM = "billing@mail.camelai.com"
+FEEDBACK_URL = "https://agents.camelai.dev/v1/billing/email/feedback"
+
+[[send_email]]
+name = "EMAIL"
+allowed_sender_addresses = ["billing@mail.camelai.com"]
+
+[[queues.consumers]]
+queue = "camelrun-billing-email-feedback"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 50
+dead_letter_queue = "camelrun-billing-email-feedback-dlq"
+
+[observability]
+enabled = true

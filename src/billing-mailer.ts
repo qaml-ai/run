@@ -5,28 +5,39 @@ import type { BillingAlerts } from "./billing-alerts.ts";
 import { billingEmail, type BillingEmail, type BillingEmailInput } from "./billing-emails.ts";
 import { verifySns } from "./channels-email.ts";
 import { readText } from "./http.ts";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 export interface BillingMailOptions {
-  db: Db; alerts: BillingAlerts; origin: string; from: string; displayName?: string; configurationSet: string; topics: string[]; region?: string;
-  /** Test transport; production uses SES v2, one recipient per call. Must honor the abort signal. */
+  db: Db; alerts: BillingAlerts; origin: string; from: string; displayName?: string; configurationSet?: string; topics?: string[]; region?: string;
+  cloudflare?: { url: string; secret: string };
+  /** Test transport; production uses the configured provider. Must honor the abort signal. */
   send?: (mail: BillingEmail & { to: string; delivery: string }, signal: AbortSignal) => Promise<string | undefined>;
   fetch?: typeof fetch;
 }
-export function billingMailConfig(env = process.env) {
+export function billingMailConfig(env = process.env, cloudflareSecret?: string) {
   if (!env.AGENT_BILLING_EMAIL_FROM) return undefined;
   if (!z.email().safeParse(env.AGENT_BILLING_EMAIL_FROM).success) throw new Error("AGENT_BILLING_EMAIL_FROM must be an email address");
   const displayName = env.AGENT_BILLING_EMAIL_NAME ?? "camelRun Billing";
   if (!displayName.trim() || displayName.length > 80 || /[\r\n]/.test(displayName)) throw new Error("AGENT_BILLING_EMAIL_NAME must be a single display name, at most 80 characters");
   const configurationSet = env.AGENT_BILLING_EMAIL_CONFIGURATION_SET;
   const topics = (env.AGENT_BILLING_EMAIL_SNS_TOPICS ?? "").split(",").map(s => s.trim()).filter(Boolean);
-  if (!configurationSet || !topics.length || topics.some(t => !/^arn:aws(?:-cn|-us-gov)?:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]+$/.test(t))) {
+  const provider = env.AGENT_BILLING_EMAIL_PROVIDER ?? "ses";
+  if (!["ses", "cloudflare"].includes(provider)) throw new Error("Unknown AGENT_BILLING_EMAIL_PROVIDER");
+  let cloudflare: BillingMailOptions["cloudflare"];
+  if (provider === "cloudflare") {
+    const url = new URL(env.AGENT_BILLING_EMAIL_URL ?? "");
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !cloudflareSecret || !/^[a-f0-9]{64}$/.test(cloudflareSecret)) {
+      throw new Error("Cloudflare billing email requires an HTTPS Worker URL and a 32-byte billing-email secret");
+    }
+    cloudflare = { url: url.href, secret: cloudflareSecret };
+  } else if (!configurationSet || !topics.length || topics.some(t => !/^arn:aws(?:-cn|-us-gov)?:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]+$/.test(t))) {
     throw new Error("Billing email requires AGENT_BILLING_EMAIL_CONFIGURATION_SET and AGENT_BILLING_EMAIL_SNS_TOPICS for bounce/complaint feedback");
   }
   const origin = new URL(env.AGENT_PUBLIC_URL ?? "");
   if (origin.username || origin.password || origin.search || origin.hash || (origin.protocol !== "https:" && !(origin.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)))) {
     throw new Error("Billing email requires a public HTTPS origin (HTTP is allowed for loopback development)");
   }
-  return { origin: origin.origin, from: env.AGENT_BILLING_EMAIL_FROM, displayName, configurationSet, topics, region: env.AWS_REGION };
+  return { origin: origin.origin, from: env.AGENT_BILLING_EMAIL_FROM, displayName, configurationSet, topics, region: env.AWS_REGION, cloudflare };
 }
 
 /** Five concurrent sends per node, each bounded to 15s, comfortably inside the 60s outbox lease. */
@@ -61,6 +72,18 @@ export class BillingMailer {
     }));
   }
   private async send(mail: BillingEmail & { to: string; delivery: string }, signal: AbortSignal) {
+    if (this.options.cloudflare) {
+      const { url, secret } = this.options.cloudflare;
+      const response = await (this.options.fetch ?? fetch)(url, { method: "POST", redirect: "error", signal,
+        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ...mail, from: this.options.from, displayName: this.options.displayName ?? "camelRun Billing" }),
+      });
+      if (!response.ok) throw new Error("Cloudflare billing email failed");
+      const result = await response.json() as { messageId?: string; suppressed?: boolean };
+      if (result.suppressed === true) { await this.options.alerts.suppress(mail.to); return undefined; }
+      if (typeof result.messageId !== "string" || !result.messageId || result.messageId.length > 512) throw new Error("Missing Cloudflare message ID");
+      return result.messageId;
+    }
     const { SESv2Client, SendEmailCommand } = await import("@aws-sdk/client-sesv2");
     const { NodeHttpHandler } = await import("@smithy/node-http-handler");
     this.client ??= new SESv2Client({ region: this.options.region, maxAttempts: 1,
@@ -76,9 +99,10 @@ export class BillingMailer {
     return result.MessageId;
   }
 
-  /** Accept only configured, signed SNS notifications tied to one of our tagged deliveries. */
+  /** Accept authenticated provider feedback tied to one of our recorded deliveries. */
   feedback() {
-    const { db, alerts, topics, from } = this.options;
+    if (this.options.cloudflare) return this.cloudflareFeedback();
+    const { db, alerts, topics = [], from } = this.options;
     const fetcher = this.options.fetch ?? fetch;
     return new Hono().post("/v1/billing/email/feedback", async c => {
       let message: Record<string, string>;
@@ -109,6 +133,26 @@ export class BillingMailer {
         : kind === "Bounce" && event.bounce?.bounceType === "Permanent" ? event.bounce?.bouncedRecipients : [];
       if (Array.isArray(rejected) && rejected.some(r => typeof r.emailAddress === "string" && r.emailAddress.toLowerCase() === row.email)) await alerts.suppress(row.email);
       return c.body(null, 200);
+    });
+  }
+
+  /** Private Worker callbacks; authenticate before reading a body, and match a recorded delivery. */
+  private cloudflareFeedback() {
+    const { db, alerts, from, cloudflare } = this.options;
+    const expected = createHash("sha256").update(`Bearer ${cloudflare!.secret}`).digest();
+    return new Hono().post("/v1/billing/email/feedback", async c => {
+      const actual = createHash("sha256").update(c.req.header("authorization") ?? "").digest();
+      if (!timingSafeEqual(expected, actual)) return c.body(null, 401);
+      let event: { sender?: string; recipient?: string; messageId?: string; kind?: string };
+      try { event = JSON.parse(await readText(c.req.raw.body, 4096)); } catch { return c.body(null, 400); }
+      if (!event || event.sender !== from || typeof event.messageId !== "string" || event.messageId.length > 512 ||
+        !z.email().safeParse(event.recipient).success || !["bounce", "complaint", "suppressed"].includes(event.kind ?? "")) return c.body(null, 400);
+      const row = (await db.query(`select r.email from billing_email_outbox o join billing_recipients r on r.id=o.recipient
+        where o.provider_message_id=$1 and r.email=$2 limit 1`, [event.messageId, event.recipient])).rows[0];
+      // Delivery feedback can race the transaction recording the provider ID. Let the queue retry.
+      if (!row) return c.body(null, 503);
+      await alerts.suppress(row.email);
+      return c.body(null, 204);
     });
   }
 }

@@ -138,7 +138,7 @@ const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: process
 const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe });
 accounts.billing.autoTopup?.start();
 const billingAlerts = new BillingAlerts(db, accounts);
-const mailConfig = billingMailConfig();
+const mailConfig = billingMailConfig(process.env, secrets.billingEmailSecret);
 if (mailConfig && !accounts.canStoreKeys) throw new Error("Billing email requires AGENT_SECRETS_KEY for confirmation tokens");
 const billingMailer = mailConfig ? new BillingMailer({ db, alerts: billingAlerts, ...mailConfig }) : undefined;
 billingMailer?.start();
