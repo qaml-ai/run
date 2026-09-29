@@ -136,14 +136,16 @@ export const PROVIDER_ROOTS: Record<string, string> = { openrouter: "https://ope
  * the response's usage as the body streams past: OpenRouter's `usage.cost` (plus the upstream cost
  * of a key brought to OpenRouter), which Pi does not keep. `sink.cost` has it once the body is read.
  */
-function callFetch(sink: { cost?: number }, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; bearer?: string; base?: typeof fetch } = {}): typeof fetch {
+function callFetch(sink: { cost?: number; credits?: number }, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; bearer?: string; base?: typeof fetch } = {}): typeof fetch {
   const read = (line: string) => {
     if (!line.startsWith("data:") && !line.startsWith("{") || !line.includes('"cost"')) return;
     try {
       const data = JSON.parse(line.startsWith("data:") ? line.slice(5) : line);
       const usage = data?.usage ?? data?.response?.usage ?? data?.message?.usage;
-      if (typeof usage?.cost !== "number") return;
-      sink.cost = usage.cost + (usage.is_byok ? Number(usage.cost_details?.upstream_inference_cost) || 0 : 0);
+      if (typeof usage?.cost !== "number" || !Number.isFinite(usage.cost) || usage.cost < 0) return;
+      const upstream = usage.is_byok ? Number(usage.cost_details?.upstream_inference_cost) : 0;
+      sink.credits = usage.cost;
+      sink.cost = usage.cost + (Number.isFinite(upstream) && upstream > 0 ? upstream : 0);
     } catch { /* not JSON */ }
   };
   return async (input, init) => {
@@ -187,7 +189,7 @@ function callFetch(sink: { cost?: number }, plan: { rebase?: { from: string[]; t
  * A key scope's `baseUrl` replaces the provider's root (`PROVIDER_ROOTS`) in each request's URL, or for
  * an API that takes no fetch (Bedrock, Google), the model's base URL. An entry without a key sends none.
  */
-function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: { cost?: number }, modelHeaders?: Record<string, string> | null): [Model<Api>, any] {
+function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: { cost?: number; credits?: number }, modelHeaders?: Record<string, string> | null): [Model<Api>, any] {
   // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
   const floor = asked?.reasoning ? undefined : reasoningFloor(model);
   const options = floor ? { ...asked, reasoning: floor } : asked;
@@ -226,13 +228,13 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent`);
     const call = (credentials: Credentials) => {
-      const sink: { cost?: number } = {};
+      const sink: { cost?: number; credits?: number } = {};
       const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.());
       const stream = streamSimple(target, context, callOptions);
       // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
       const push = stream.push.bind(stream);
       stream.push = event => {
-        if (event.type === "done" && sink.cost !== undefined) (event.message.usage as { providerCost?: number }).providerCost = sink.cost;
+        if (event.type === "done" && sink.cost !== undefined) Object.assign(event.message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
         push(event);
       };
       return stream;
@@ -251,10 +253,10 @@ type ApiKey = string | (() => Promise<Credentials>);
 function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void, modelHeaders?: Record<string, string> | null): Models {
   return {
     completeSimple: async (model: Model<Api>, context: any, options: any) => {
-      const sink: { cost?: number } = {};
+      const sink: { cost?: number; credits?: number } = {};
       const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
       const response = await completeSimple(target, context, callOptions);
-      if (sink.cost !== undefined) (response.usage as { providerCost?: number }).providerCost = sink.cost;
+      if (sink.cost !== undefined) Object.assign(response.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
       if (response.stopReason !== "error") onResponse?.(response);
       return response;
     },

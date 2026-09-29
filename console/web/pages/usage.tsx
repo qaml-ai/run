@@ -12,7 +12,7 @@ export function UsagePage() {
   const totals = usage.data?.totals;
   return (
     <>
-      <PageHeader title="Usage" description="Model responses from your agents. Costs are estimates from list prices; responses on the platform's keys are paid from your credit (see Billing)."
+      <PageHeader title="Usage" description="Model and tool usage from your agents. Model costs use provider reports when available and otherwise list-price estimates. Billing includes applicable provider credit funding costs."
         actions={
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
@@ -31,7 +31,7 @@ export function UsagePage() {
             { label: "Responses", value: formatNumber(totals!.responses) },
             { label: "Input tokens", value: formatNumber(totals!.input + totals!.cacheRead + totals!.cacheWrite) },
             { label: "Output tokens", value: formatNumber(totals!.output) },
-            { label: "Estimated cost", value: formatCost(totals!.cost) },
+            { label: "Usage cost", value: formatCost(totals!.cost) },
           ]} />
           {usage.data.days.length === 0 ? <EmptyState icon={<BarChart3 />} title="No usage in this period" /> : (
             <div className="bg-card border">

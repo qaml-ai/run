@@ -78,7 +78,9 @@ export async function enqueueEvents(sql: Sql, events: WebhookEvent[]) {
 
 /** A model response's cost: the provider's own report when it made one (OpenRouter's), else the catalog price. */
 export function usageCost(usage: any): { usd: number; source: "provider" | "catalog" } {
-  return typeof usage?.providerCost === "number" ? { usd: usage.providerCost, source: "provider" } : { usd: Number(usage?.cost?.total) || 0, source: "catalog" };
+  const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (valid(usage?.providerCost)) return { usd: usage.providerCost, source: "provider" };
+  return { usd: valid(usage?.cost?.total) ? usage.cost.total : 0, source: "catalog" };
 }
 
 /** The `usage.recorded` event for a model response, or undefined for other usage (web searches, renders, tool search). */

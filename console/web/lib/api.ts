@@ -81,7 +81,7 @@ export interface Billing {
   billing: "prepaid" | "none"; balance: number; freeCredit: boolean; checkout: boolean;
   month: { since: number } & Record<LedgerKind, number>;
   recent: LedgerEntry[];
-  rates: { agentHour: number; storageGbMonth: number; purchaseFeeBps: number; minPurchase: number; maxPurchase: number; webSearch: Record<string, number>; webRender: number };
+  rates: { agentHour: number; storageGbMonth: number; openrouterCreditMultiplier?: number; purchaseFeeBps: number; minPurchase: number; maxPurchase: number; webSearch: Record<string, number>; webRender: number };
 }
 /** Micro-USD as dollars: cents, or finer for amounts under a cent. */
 export const formatMicros = (value: number) => {
