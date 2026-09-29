@@ -638,7 +638,8 @@
             "enum": [
               "operator",
               "token",
-              "console"
+              "console",
+              "oauth"
             ]
           },
           "login": {
@@ -2697,6 +2698,46 @@
         },
         "required": [
           "name"
+        ]
+      },
+      "OAuthGrant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "clientName": {
+            "type": "string",
+            "description": "The name the application registered with"
+          },
+          "login": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who consented, when they signed in with GitHub"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "usedAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "When it last got tokens"
+          }
+        },
+        "required": [
+          "id",
+          "clientName",
+          "login",
+          "scope",
+          "createdAt",
+          "usedAt"
         ]
       },
       "Usage": {
@@ -6953,6 +6994,82 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TokenCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/oauth/grants": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The applications the tenant let act for it over OAuth (the hosted MCP endpoint's clients)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OAuthGrant"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/oauth/grants/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The grant is revoked: its tokens stop working within seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ]
                 }
               }
             }

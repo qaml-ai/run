@@ -221,19 +221,23 @@ test("GitHub sign-in admits active org members, links admin tenants, and creates
   const github = await fakeGithub(t, { "Bob-Builder": "active", Carol: "active", Mallory: "pending" });
   const { call } = await runtime(t, github.url);
   assert.equal((await call("/console/auth/methods")).json.github, true);
-  const signIn = async (login: string) => {
+  const signIn = async (login: string, next?: string) => {
     github.signInAs(login);
-    const start = await call("/console/auth/github");
+    const start = await call(`/console/auth/github${next ? `?next=${encodeURIComponent(next)}` : ""}`);
     assert.equal(start.status, 302);
     const authorize = new URL(start.headers.get("location")!);
     assert.equal(authorize.searchParams.get("scope"), "read:org");
-    const stateCookie = start.headers.get("set-cookie")!.split(";")[0];
-    const callback = await call(`/console/auth/callback?code=abc&state=${authorize.searchParams.get("state")}`, { headers: { Cookie: stateCookie } });
+    const stateCookies = start.headers.getSetCookie().map(value => value.split(";")[0]).join("; ");
+    const callback = await call(`/console/auth/callback?code=abc&state=${authorize.searchParams.get("state")}`, { headers: { Cookie: stateCookies } });
     const session = callback.headers.getSetCookie().find(value => value.startsWith("ar_session="))?.split(";")[0];
     return { location: callback.headers.get("location")!, session };
   };
   const bobSession = await signIn("Bob-Builder");
   assert.equal(bobSession.location, "/console/");
+  // Started from the MCP consent page, sign-in returns there; anywhere else is ignored.
+  assert.equal((await signIn("Bob-Builder", "/oauth/authorize?client_id=x&state=y")).location, "/oauth/authorize?client_id=x&state=y");
+  assert.equal((await signIn("Bob-Builder", "https://evil.example/")).location, "/console/");
+  assert.equal((await signIn("Bob-Builder", "//evil.example/oauth/authorize?")).location, "/console/");
   assert.equal((await call("/v1/me", { headers: { Cookie: bobSession.session! } })).json.tenant, "bob");
   const carol = await signIn("Carol");
   assert.deepEqual((await call("/v1/me", { headers: { Cookie: carol.session! } })).json, { tenant: "carol", via: "console", login: "Carol", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });

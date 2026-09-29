@@ -44,7 +44,7 @@ export function useApi<T>(path: string | undefined, intervalMs?: number) {
   return { data, error, loading, reload };
 }
 
-export interface Me { tenant: string; via: "operator" | "token" | "console"; login?: string; canStoreKeys: boolean }
+export interface Me { tenant: string; via: "operator" | "token" | "console" | "oauth"; login?: string; canStoreKeys: boolean }
 export interface KeyStatus { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number }
 export interface Provider { id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
 export interface Model {
@@ -68,6 +68,7 @@ export interface AgentDetail extends AgentSummary {
   tools: { name: string; description: string }[]; toolSources: ToolSource[]; systemPrompt: string; requests: RequestRecord[]; mounts?: Mount[];
 }
 export interface ApiToken { id: string; name: string; prefix: string; createdAt: number }
+export interface OAuthGrant { id: string; clientName: string; login: string | null; scope: string; createdAt: number; usedAt: number | null }
 export interface Usage {
   since: number;
   totals: { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };

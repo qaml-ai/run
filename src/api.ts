@@ -5,6 +5,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Accounts, Principal } from "./accounts.ts";
 import { answerList, type ClientSessions } from "./client-sessions.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
+import type { OAuth } from "./oauth.ts";
 import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
 import { resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
@@ -34,6 +35,8 @@ export interface ApiContext {
   accounts: Accounts;
   clients: ClientSessions;
   consoleAuth: ConsoleAuth;
+  /** OAuth for the hosted MCP endpoint: its access tokens act for their tenant here too. */
+  oauth?: OAuth;
   keyScopes?: KeyScopes;
   webhooks?: Webhooks;
   /** Tenants' own OpenAI-compatible providers (`/v1/providers/{name}`). */
@@ -485,8 +488,20 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "get", path: "/v1/tokens", responses: { 200: reply("The tenant's API tokens", z.array(schema.Token)) } }),
     async c => json(c, 200, await accounts.listTokens(c.var.principal.tenant)));
   route(createRoute({ method: "post", path: "/v1/tokens", request: { body: content(schema.TokenInput) }, responses: { 201: reply("The token, with its secret", schema.TokenCreated) } }), async c => {
+    // An OAuth grant lasts until revoked; a token it made would outlive that.
+    if (c.var.principal.via === "oauth") throw new HttpError(403, "An OAuth access token cannot create API tokens");
     const body = await readJson(c.req.raw.body, 4096, {});
     return json(c, 201, await accounts.createToken(c.var.principal.tenant, body.name));
+  });
+  const oauth = () => {
+    if (!context.oauth) throw new HttpError(404, "OAuth is not enabled on this runtime");
+    return context.oauth;
+  };
+  route(createRoute({ method: "get", path: "/v1/oauth/grants", responses: { 200: reply("The applications the tenant let act for it over OAuth (the hosted MCP endpoint's clients)", z.array(schema.OAuthGrant)) } }),
+    async c => json(c, 200, await oauth().grants(c.var.principal.tenant)));
+  route(createRoute({ method: "delete", path: "/v1/oauth/grants/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The grant is revoked: its tokens stop working within seconds", z.object({ revoked: z.literal(true) })) } }), async c => {
+    if (!await oauth().revoke(c.var.principal.tenant, c.req.param("id")!)) throw new HttpError(404, "Unknown grant");
+    return json(c, 200, { revoked: true });
   });
   route(createRoute({ method: "delete", path: "/v1/tokens/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The token is revoked", z.object({ revoked: z.literal(true) })) } }), async c => {
     const id = c.req.param("id")!;
@@ -666,7 +681,7 @@ async function authenticate(c: Context, context: ApiContext): Promise<Caller> {
     return { tenant: browser.tenant, via: "browser", browser };
   }
   if (authorization) {
-    const principal = await context.accounts.authenticate(authorization);
+    const principal = await context.accounts.authenticate(authorization) ?? await context.oauth?.authenticate(authorization);
     if (!principal) throw new HttpError(401, "Invalid token");
     return principal;
   }
