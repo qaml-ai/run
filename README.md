@@ -49,3 +49,14 @@ To run, develop or deploy the runtime itself, see [Operations](docs/operations/R
 [architecture](docs/operations/architecture.md), [configuration](docs/operations/configuration.md),
 [persistence](docs/operations/persistence.md), [billing](docs/operations/billing.md),
 [tenant isolation](docs/operations/isolation.md), [sandbox](docs/operations/sandbox.md).
+
+## License
+
+The runtime (this repository's server, `src/`, `shared/`, `infra/`, and everything else not listed below) is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
+
+The client SDKs and frontend packages are MIT, so you can use them in any application:
+
+- `clients/` (the TypeScript and Python SDKs) and `sdk/`: [MIT](clients/LICENSE)
+- `packages/` (React, Vue, Svelte, Solid, `create-agent-app`, the CLI): MIT, each with its own `LICENSE`
+- `shared/client-protocol.ts`, which ships inside the SDK: MIT
+- `examples/`: [MIT](examples/LICENSE)
