@@ -36,6 +36,17 @@ async function lockTenant(sql: Sql, tenant: string) {
   await sql.query("select tenant from credit_accounts where tenant = $1 for update", [tenant]);
 }
 
+// Drop resolved/older payment warnings before delivery. Receipt history remains useful.
+const currentProblem = `(o.kind <> 'problems' or o.payload->'data'->>'notice' is null or
+  case when o.payload->'data'->>'attempt' is not null then exists (
+    select 1 from billing_auto_attempts a where a.id::text=o.payload->'data'->>'attempt'
+      and a.tenant=o.tenant and a.generation::text=o.payload->'data'->>'generation'
+      and a.state=case o.payload->'data'->>'notice' when 'declined' then 'paused_declined'
+        when 'no_card' then 'paused_no_card' when 'action_required' then 'action_required' else 'reconcile' end)
+  else exists (select 1 from billing_auto_settings s where s.tenant=o.tenant and s.enabled
+    and s.livemode::text=o.payload->'data'->>'livemode' and s.version::text=o.payload->'data'->>'settingsVersion'
+    and s.status=case o.payload->'data'->>'notice' when 'no_card' then 'paused_no_card' else 'limit_reached' end) end)`;
+
 export class BillingAlerts {
   private readonly db: Db;
   private readonly secrets: SecretStore;
@@ -262,7 +273,8 @@ export class BillingAlerts {
         const allowed = row.kind === "confirmation"
           ? row.status === "pending" && row.confirmation_hash === row.payload.confirmationHash && row.expires_at > now
           : row.status === "verified" && row[row.kind] === true;
-        if (suppressed || !allowed || now >= row.created_at + 3 * DAY) {
+        const current = row.kind !== "problems" || !!(await sql.query(`select 1 from billing_email_outbox o where o.id=$1 and ${currentProblem}`, [row.id])).rowCount;
+        if (suppressed || !allowed || !current || now >= row.created_at + 3 * DAY) {
           await sql.query("update billing_email_outbox set state = 'cancelled', secret = null where id = $1", [row.id]);
           continue;
         }
@@ -282,7 +294,7 @@ export class BillingAlerts {
   /** Re-check after token preparation: it may have waited behind a settings transaction. */
   async deliverable(id: string, lease: string, now = Date.now()) {
     return !!(await this.db.query(`select 1 from billing_email_outbox o join billing_recipients r on r.id=o.recipient
-      where o.id=$1 and o.lease=$2 and o.state='pending' and o.due>$3
+      where o.id=$1 and o.lease=$2 and o.state='pending' and o.due>$3 and ${currentProblem}
       and not exists (select 1 from billing_email_suppressions s where s.email_hash=encode(sha256(convert_to(r.email,'UTF8')),'hex'))
       and case o.kind when 'confirmation' then r.status='pending' and r.confirmation_hash=o.payload->>'confirmationHash' and o.expires_at>$4
         else r.status='verified' and case o.kind when 'low' then r.low when 'depleted' then r.depleted when 'problems' then r.problems when 'receipts' then r.receipts else false end end`,

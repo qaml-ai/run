@@ -54,7 +54,12 @@ export class Stripe {
 
   /** POST to the Stripe API; `idempotencyKey` makes a retried create return the first result. */
   async post<T = any>(path: string, params: Record<string, unknown>, idempotencyKey?: string): Promise<T> {
-    return this.request("POST", path, params, idempotencyKey);
+    try { return await this.request<T>("POST", path, params, idempotencyKey); }
+    catch (error) {
+      if (!idempotencyKey || !(error instanceof StripeError) || error.status !== 409 || error.code !== "idempotency_key_in_use") throw error;
+      await new Promise(resolve => setTimeout(resolve, 250));
+      return this.request<T>("POST", path, params, idempotencyKey);
+    }
   }
 
   private async request<T>(method: "GET" | "POST", path: string, params: Record<string, unknown>, idempotencyKey?: string): Promise<T> {

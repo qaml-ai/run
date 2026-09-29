@@ -136,6 +136,7 @@ const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).r
 // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
 const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: process.env.AGENT_STRIPE_API_URL, portalConfiguration: process.env.AGENT_STRIPE_PORTAL_CONFIGURATION });
 const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe });
+accounts.billing.autoTopup?.start();
 const billingAlerts = new BillingAlerts(db, accounts);
 const mailConfig = billingMailConfig();
 if (mailConfig && !accounts.canStoreKeys) throw new Error("Billing email requires AGENT_SECRETS_KEY for confirmation tokens");
@@ -748,6 +749,7 @@ async function drain(signal: string) {
   await step("volumes", () => volumes.close());
   await step("mcp", () => mcp.close());
   await step("usage", () => accounts.flushUsage());
+  await step("auto top-up", async () => { await accounts.billing.autoTopup?.stop(); });
   await step("billing email", async () => { await billingMailer?.stop(); });
   await step("storage usage", () => storageUsage.flush());
   await step("listen", () => loads.close());

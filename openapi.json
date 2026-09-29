@@ -1096,7 +1096,13 @@
                 "input.resolved",
                 "usage.recorded",
                 "billing.balance.low",
-                "billing.balance.depleted"
+                "billing.balance.depleted",
+                "billing.topup.receipt",
+                "billing.topup.declined",
+                "billing.topup.action_required",
+                "billing.topup.no_card",
+                "billing.topup.limit",
+                "billing.topup.reconcile"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -1135,7 +1141,13 @@
                 "input.resolved",
                 "usage.recorded",
                 "billing.balance.low",
-                "billing.balance.depleted"
+                "billing.balance.depleted",
+                "billing.topup.receipt",
+                "billing.topup.declined",
+                "billing.topup.action_required",
+                "billing.topup.no_card",
+                "billing.topup.limit",
+                "billing.topup.reconcile"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -1171,7 +1183,13 @@
                 "input.resolved",
                 "usage.recorded",
                 "billing.balance.low",
-                "billing.balance.depleted"
+                "billing.balance.depleted",
+                "billing.topup.receipt",
+                "billing.topup.declined",
+                "billing.topup.action_required",
+                "billing.topup.no_card",
+                "billing.topup.limit",
+                "billing.topup.reconcile"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -8394,6 +8412,9 @@
                       "payment_method"
                     ],
                     "default": "manage"
+                  },
+                  "resumeAutoTopup": {
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": false
@@ -8415,6 +8436,964 @@
                   },
                   "required": [
                     "url"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Auto top-up state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/quote": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "thresholdUsd": {
+                    "type": "number"
+                  },
+                  "amountUsd": {
+                    "type": "number"
+                  },
+                  "monthlyLimitUsd": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "thresholdUsd",
+                  "amountUsd",
+                  "monthlyLimitUsd"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Exact terms for confirmation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "card": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "brand": {
+                          "type": "string"
+                        },
+                        "last4": {
+                          "type": "string"
+                        },
+                        "expMonth": {
+                          "type": "number"
+                        },
+                        "expYear": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "brand",
+                        "last4",
+                        "expMonth",
+                        "expYear"
+                      ]
+                    },
+                    "immediate": {
+                      "type": "boolean"
+                    },
+                    "expiresAt": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "card",
+                    "immediate",
+                    "expiresAt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "id",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved draft with current confirmation version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "card": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "brand": {
+                          "type": "string"
+                        },
+                        "last4": {
+                          "type": "string"
+                        },
+                        "expMonth": {
+                          "type": "number"
+                        },
+                        "expYear": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "brand",
+                        "last4",
+                        "expMonth",
+                        "expYear"
+                      ]
+                    },
+                    "immediate": {
+                      "type": "boolean"
+                    },
+                    "expiresAt": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "card",
+                    "immediate",
+                    "expiresAt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/enable": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "quoteId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64
+                  },
+                  "consent": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  }
+                },
+                "required": [
+                  "quoteId",
+                  "version",
+                  "consent"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Auto top-up enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/disable": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Future top-ups disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/retry": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "attemptId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "attemptId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Retry the existing invoice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
                   ]
                 }
               }

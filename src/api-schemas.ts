@@ -654,7 +654,7 @@ export const StartingCreditGrantInput = z.object({
   amountUsd: z.number().min(1).max(100).openapi({ description: "Starting credit to award in USD ($1–$100, whole cents), once per GitHub identity", example: 5 }),
   reason: z.string().trim().min(1).max(500).openapi({ description: "Private support audit note; never included in the tenant's ledger" }),
 }).openapi("StartingCreditGrantInput");
-export const BillingPortalInput = z.object({ flow: z.enum(["manage", "payment_method"]).default("manage") }).strict();
+export const BillingPortalInput = z.object({ flow: z.enum(["manage", "payment_method"]).default("manage"), resumeAutoTopup: z.boolean().optional() }).strict();
 export const BillingPortal = z.object({ url: z.string() });
 export const BillingPaymentMethod = z.object({
   portal: z.boolean(), customer: z.boolean(),
@@ -669,3 +669,12 @@ export const Checkout = z.object({
   url: z.string().openapi({ description: "Send the buyer here to pay" }),
   amount: micros("Credit bought"), fee: micros("Fee"), total: micros("Charged"),
 }).openapi("Checkout");
+
+
+export const AutoTopupTerms = z.object({ thresholdUsd: z.number(), amountUsd: z.number(), monthlyLimitUsd: z.number() }).strict();
+const AutoCard = z.object({ brand: z.string(), last4: z.string(), expMonth: z.number(), expYear: z.number() }).nullable();
+export const AutoTopupQuote = z.object({ id: z.uuid(), version: z.string(), threshold: z.number(), amount: z.number(), fee: z.number(), total: z.number(), monthlyLimit: z.number(), card: AutoCard, immediate: z.boolean(), expiresAt: z.number() });
+export const AutoTopup = z.object({ enabled: z.boolean(), state: z.enum(["off","on","processing","action_required","paused_declined","paused_no_card","limit_reached","reconcile"]), version: z.number(), threshold: z.number(), amount: z.number(), fee: z.number(), total: z.number(), monthlyLimit: z.number(), usedThisPeriod: z.number(), held: z.number(), resetsAt: z.number(),
+  attempt: z.object({ id: z.uuid(), state: z.string(), amount: z.number(), fee: z.number(), total: z.number(), card: AutoCard, invoiceUrl: z.string().nullable(), canRetry: z.boolean(), submitted: z.boolean() }).nullable() });
+export const AutoTopupConsent = z.object({ quoteId: z.uuid(), version: z.string().length(64), consent: z.literal(true) }).strict();
+export const AutoTopupRetry = z.object({ attemptId: z.uuid() }).strict();

@@ -92,7 +92,7 @@ test("fulfillment validates the stored terms and ownership, applies early refund
   assert.deepEqual((await f.db.query("select tenant,balance,purchased from credit_accounts")).rows, [{ tenant: "alice", balance: 0, purchased: 0 }]);
   const row = (await f.db.query("select * from billing_checkouts")).rows[0];
   assert.equal(row.payment_intent, good.payment_intent); assert.equal(row.invoice, good.invoice); assert.ok(row.paid_at);
-  assert.equal((await f.send({ ...good, id: good.invoice, status: "paid", paid_out_of_band: true }, "invoice.paid")).handled, "ignored");
+  assert.equal((await f.send({ ...good, id: good.invoice, status: "paid", paid_out_of_band: true, total: 1055, hosted_invoice_url: "https://invoice.stripe.test/manual" }, "invoice.paid")).handled, "ignored");
   assert.equal((await f.db.query("select count(*) from credit_ledger")).rows[0].count, 2);
   await assert.rejects(f.billing.checkout("alice", 10_000_000, row.request_id), /already paid/);
 });
@@ -114,8 +114,8 @@ test("ambiguous creates older than the safe idempotency window fail closed witho
   await assert.rejects(f.billing.checkout("alice", 5_000_000, requestId), /reconciliation/);
   assert.equal(f.requests.length, before);
   await f.db.query("insert into billing_stripe_customers (tenant,livemode,request_id,created_at) values ('bob',false,$1,0)", [randomUUID()]);
-  await assert.rejects(f.billing.checkout("bob", 5_000_000, randomUUID()), /reconciliation/);
-  assert.equal(f.requests.length, before);
+  assert.ok((await f.billing.checkout("bob", 5_000_000, randomUUID())).id);
+  assert.ok(f.requests.length > before, "an abandoned empty Customer can be replaced safely");
 });
 
 test("portal scopes both flows to the tenant, validates product configuration, and only displays Stripe-owned card details", async t => {
@@ -134,11 +134,12 @@ test("portal scopes both flows to the tenant, validates product configuration, a
   assert.equal(f.requests.at(-1)!.params.get("customer"), customer.id);
   assert.equal(f.requests.at(-1)!.params.get("flow_data[type]"), null);
   await assert.rejects(f.billing.portal("bob", "manage"), /Add credit/);
+  const freshBilling = () => new Billing({ db: f.db, tenants: f.billing.tenants, stripe: f.stripe, publicUrl: "https://agents.example.test" });
   f.config.features.subscription_cancel.enabled = true;
-  await assert.rejects(f.billing.portal("alice", "manage"), /configuration/);
+  await assert.rejects(freshBilling().portal("alice", "manage"), /configuration/);
   f.config.features.subscription_cancel.enabled = false;
   f.config.metadata.purpose = "other-product";
-  await assert.rejects(f.billing.portal("alice", "manage"), /configuration/);
+  await assert.rejects(freshBilling().portal("alice", "manage"), /configuration/);
 });
 
 test("test/live customers are isolated; legacy customer adoption requires ownership and mode", async t => {

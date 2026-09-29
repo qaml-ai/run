@@ -619,8 +619,33 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "get", path: "/v1/billing/payment-method", responses: { 200: reply("Saved card display details from Stripe", schema.BillingPaymentMethod) } }),
     async c => json(c, 200, await accounts.billing.paymentMethod(c.var.principal.tenant)));
   route(createRoute({ method: "post", path: "/v1/billing/portal", request: { body: content(schema.BillingPortalInput) }, responses: { 201: reply("Stripe-hosted billing portal", schema.BillingPortal) } }), async c => {
-    const { flow } = parse(schema.BillingPortalInput, await readJson(c.req.raw.body, 4096, {}));
-    return json(c, 201, await accounts.billing.portal(c.var.principal.tenant, flow));
+    const { flow, resumeAutoTopup } = parse(schema.BillingPortalInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 201, await accounts.billing.portal(c.var.principal.tenant, flow, resumeAutoTopup));
+  });
+  const autoTopup = () => {
+    if (!accounts.billing.autoTopup) throw new HttpError(503, "Stripe billing is not configured");
+    return accounts.billing.autoTopup;
+  };
+  route(createRoute({ method: "get", path: "/v1/billing/auto-topup", responses: { 200: reply("Auto top-up state", schema.AutoTopup) } }),
+    async c => json(c, 200, await autoTopup().get(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/quote", request: { body: content(schema.AutoTopupTerms) }, responses: { 201: reply("Exact terms for confirmation", schema.AutoTopupQuote) } }), async c => {
+    const body = parse(schema.AutoTopupTerms, await readJson(c.req.raw.body, 4096, {}));
+    const micros = (n: number) => { if (Math.abs(n*100-Math.round(n*100)) > 1e-6) throw new HttpError(400, "Use whole cents"); return Math.round(n*100)*10000; };
+    return json(c, 201, await autoTopup().quote(c.var.principal.tenant, { threshold: micros(body.thresholdUsd), amount: micros(body.amountUsd), monthlyLimit: micros(body.monthlyLimitUsd) }));
+  });
+  route(createRoute({ method: "get", path: "/v1/billing/auto-topup/quote", request: { query: z.object({ id: z.uuid().optional() }) }, responses: { 200: reply("Saved draft with current confirmation version", schema.AutoTopupQuote) } }), async c => {
+    const { id } = parse(z.object({ id: z.uuid().optional() }), c.req.query());
+    return json(c, 200, await autoTopup().preview(c.var.principal.tenant, id));
+  });
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/enable", request: { body: content(schema.AutoTopupConsent) }, responses: { 200: reply("Auto top-up enabled", schema.AutoTopup) } }), async c => {
+    const body = parse(schema.AutoTopupConsent, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 200, await autoTopup().enable(c.var.principal.tenant, body.quoteId, body.version, body.consent));
+  });
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/disable", responses: { 200: reply("Future top-ups disabled", schema.AutoTopup) } }),
+    async c => json(c, 200, await autoTopup().disable(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/retry", request: { body: content(schema.AutoTopupRetry) }, responses: { 200: reply("Retry the existing invoice", schema.AutoTopup) } }), async c => {
+    const body = parse(schema.AutoTopupRetry, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 200, await autoTopup().retry(c.var.principal.tenant, body.attemptId));
   });
   route(createRoute({
     method: "post", path: "/v1/billing/starting-credit/grant", request: { body: content(schema.StartingCreditGrantInput) },

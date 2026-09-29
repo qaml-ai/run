@@ -148,7 +148,7 @@ keeps the same ID while retrying an amount in its open purchase dialog. Callers
 that omit the ID create a fresh purchase on each request.
 
 The saved parameters and Stripe idempotency key survive restarts and price changes.
-An ambiguous create is never retried after 23 hours (Stripe can prune keys after 24
+An ambiguous Checkout create is never retried after 23 hours (Stripe can prune keys after 24
 hours). It returns 409 and logs `billing_reconciliation_required`; reconcile the
 existing object in Stripe before taking further action. A known session is
 retrieved, not re-created. Fulfillment checks the recorded customer, environment,
@@ -161,7 +161,7 @@ Migration 036 records a cutover timestamp. **Drain older Checkout creators befor
 migrating, then replace all old billing webhook handlers before accepting new
 purchases.** Only unregistered sessions created at or before cutover use legacy
 metadata fulfillment. Historical sessions remain payable; new unregistered ones
-are rejected. Test and live customers have separate durable rows. Existing
+are rejected. Test and live customers have separate durable rows. An abandoned Customer placeholder older than 23 hours gets a fresh, fenced creation key; an empty duplicate Customer cannot charge anyone. Existing
 customers are adopted only after Stripe confirms their environment and the
 product/tenant tags used by the previous integration.
 
@@ -302,3 +302,85 @@ out of credit; top-up problem and receipt preferences are stored for the payment
 implementation. Mail is multipart HTML/text and uses public assets under
 `/console/email/`. Its table layout and branding follow camelStream's existing
 email design; the animated banner was rendered from the console's `DitherLiquid`.
+
+## Automatic top-up
+
+Migration 037 adds off-by-default automatic top-up. The worker starts only when
+Stripe is configured. An authenticated prepaid account must save a quote and
+explicitly accept its current version before any automatic purchase can be
+reserved. Billing recipients are optional and do not gate activation.
+
+- `POST /v1/billing/auto-topup/quote` takes `{thresholdUsd, amountUsd, monthlyLimitUsd}`.
+  Threshold is $1–$500; credit uses the configured purchase bounds; the monthly
+  limit includes the fee, must cover one purchase, and is capped at $100,000.
+- `GET /v1/billing/auto-topup/quote?id=<uuid>` returns that saved draft, the current
+  default card and a confirmation version. Omitting `id` retrieves the latest
+  draft for the authenticated tenant. Drafts expire after 24 hours.
+- `POST /v1/billing/auto-topup/enable` takes `{quoteId, version, consent:true}`.
+  A changed default card, settings version, month, current reservations, usage of
+  the cap, or immediate-charge condition requires reviewing a fresh preview.
+  Acceptance, settings and an immediately due reservation commit together.
+- `POST /v1/billing/auto-topup/disable` stops new reservations and cancels an
+  unsubmitted reservation. Once invoice creation has begun, the existing top-up
+  can finish; the UI must disclose this when `attempt.submitted` is true.
+- `POST /v1/billing/auto-topup/retry` takes `{attemptId}` and retries a declined
+  payment against the same invoice, using the current default card. It creates
+  neither another invoice nor another cap reservation.
+- `GET /v1/billing/auto-topup` returns settings, effective state, used and held
+  amounts, reset time and any unresolved attempt. OAuth agents cannot mutate
+  these endpoints.
+
+Card setup uses `POST /v1/billing/portal` with
+`{flow:"payment_method", resumeAutoTopup:true}`. Stripe returns to
+`/console/billing?payment_method=updated&resume=auto-topup`. Reopen the saved quote,
+show the current card and exact terms, and obtain consent; returning from Stripe
+is never consent by itself. A card changed in the portal becomes the card for
+future top-ups. The worker snapshots the selected card before each pay operation.
+
+The monthly limit is **all-in automatic purchases initiated in the UTC month**,
+including unresolved holds. Manual purchases do not count. Refunds do not reopen
+the cap. At $20 credit plus a $1.10 fee, a $200 limit permits nine purchases
+($189.90). One unresolved attempt per tenant/environment is enforced by a unique
+index, even across month changes, preventing another charge while a prior result
+is uncertain. Settings changes do not rewrite an existing attempt's quote.
+
+Each durable attempt advances through invoice creation, the explicit credit and
+fee items, finalization, default-card selection, payment, and observation. Each
+mutation has its own stable Stripe idempotency key and saved step start time.
+The worker claims one-minute leases and performs network calls outside database
+transactions. Invoice `auto_advance` is false, pending items are excluded,
+inherited discounts/tax rates are cleared, and each line is attached to the
+specific invoice. The worker owns retries; Stripe's automatic collection is not
+used. The ledger uses one purchase key per automatic attempt.
+
+A paid invoice is not sufficient proof of payment: the worker retrieves its
+Invoice Payment and expanded PaymentIntent and verifies the customer,
+environment, currency, amount, paid allocation, successful status and amount
+received. Fulfillment and any early refunds commit atomically with the paid
+attempt marker and receipt event. Out-of-band, altered, split or otherwise
+unrecognized payments go to `reconcile`; they do not grant credit automatically.
+
+States are `off`, `on`, `processing`, `action_required`, `paused_declined`,
+`paused_no_card`, `limit_reached`, and `reconcile`. Missing cards resume when a
+new default exists; declined cards require an explicit retry. Bank confirmation
+uses the hosted invoice URL. An ambiguous create/item/pay past 23 hours retains
+its hold and emits `billing_reconciliation_required`; a known successful invoice
+can still be reconciled without another charge. Operators must inspect the Stripe
+invoice and the saved attempt before resolving these cases.
+
+Subscribe the existing signed Stripe endpoint to `invoice.paid`,
+`invoice.payment_failed`, `invoice.payment_action_required`, and `invoice.voided`
+as well as the existing Checkout/refund events. Invoice events wake observation;
+periodic polling recovers missed or reordered events. Extend the restricted key
+with Invoice and Invoice Item read/write, Invoice Payment read, PaymentIntent
+read, and PaymentMethod read permissions. Verify hosted flows and these
+permissions in a separate Stripe sandbox before rollout.
+
+Events `billing.topup.receipt`, `.declined`, `.action_required`, `.no_card`,
+`.limit`, and `.reconcile` feed the existing signed webhook and email outboxes.
+Receipts follow the recipient's receipts preference; all other top-up events use
+the problems preference. Resolved and superseded payment warnings are checked
+again before sending. Hosted invoice URLs are stored for Activity links; the
+console does not have to retrieve invoices. Stripe owns the actual invoice and
+card forms. Taxes remain disabled pending applicable registrations and a separate
+tax configuration decision.

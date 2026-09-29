@@ -5,6 +5,7 @@ import type { Storage } from "../shared/storage.ts";
 import { HttpError } from "./http.ts";
 import { DEFAULT_PRICING, MICROS, storageCharge, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
+import { AutoTopup } from "./auto-topup.ts";
 import { BillingPayments, stripeId } from "./billing-payments.ts";
 import type { StorageUsage } from "./storage-usage.ts";
 
@@ -127,6 +128,7 @@ export class Billing {
   readonly pricing: Pricing;
   private readonly options: BillingOptions;
   readonly payments?: BillingPayments;
+  readonly autoTopup?: AutoTopup;
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
@@ -137,7 +139,10 @@ export class Billing {
     this.db = options.db;
     this.tenants = options.tenants;
     this.pricing = options.pricing ?? DEFAULT_PRICING;
-    if (options.stripe) this.payments = new BillingPayments(this.db, options.stripe, this.pricing, options.publicUrl);
+    if (options.stripe) {
+      this.payments = new BillingPayments(this.db, options.stripe, this.pricing, options.publicUrl);
+      this.autoTopup = new AutoTopup(this, options.stripe);
+    }
   }
 
   /** Admin tenants are billed as their entry says (unbilled by default); tenants created by sign-in as their row says. */
@@ -279,8 +284,9 @@ export class Billing {
   async ledger(tenant: string, options: { before?: number; limit?: number } = {}): Promise<{ entries: LedgerRow[]; next?: number }> {
     const limit = Math.min(200, Math.max(1, options.limit ?? 50));
     const { rows } = await this.db.query(`
-      select id, kind, amount, metadata, created_at from credit_ledger
-      where tenant = $1 and ($2::bigint is null or id < $2) order by id desc limit $3`, [tenant, options.before ?? null, limit + 1]);
+      select l.id, l.kind, l.amount, l.metadata || case when c.invoice_url is null then '{}'::jsonb else jsonb_build_object('invoiceUrl',c.invoice_url) end as metadata, l.created_at from credit_ledger l
+      left join billing_checkouts c on l.metadata->>'order'=c.id::text and c.tenant=l.tenant
+      where l.tenant = $1 and ($2::bigint is null or l.id < $2) order by l.id desc limit $3`, [tenant, options.before ?? null, limit + 1]);
     const entries = rows.slice(0, limit).map(row => ({ id: row.id, kind: row.kind, amount: row.amount, metadata: row.metadata, createdAt: row.created_at }));
     return { entries, ...(rows.length > limit ? { next: entries.at(-1)!.id } : {}) };
   }
@@ -321,10 +327,10 @@ export class Billing {
     return this.payments!.checkout(tenant, amount, requestId);
   }
 
-  async portal(tenant: string, flow: "manage" | "payment_method") {
+  async portal(tenant: string, flow: "manage" | "payment_method", resumeAutoTopup = false) {
     if (!this.payments) throw new HttpError(503, "Stripe billing is not configured");
     if (await this.mode(tenant) !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
-    return this.payments.portal(tenant, flow);
+    return this.payments.portal(tenant, flow, resumeAutoTopup);
   }
 
   async paymentMethod(tenant: string) {
@@ -356,17 +362,9 @@ export class Billing {
       if (order && !paymentIntent) throw new HttpError(400, "Paid Checkout has no payment intent");
       const posted = await transaction(this.db, async sql => {
         if (order) await this.payments!.recordPaid(sql, order, object, paymentIntent!);
-        await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-payment:${paymentIntent ?? object.id}`]);
-        const prior = (await sql.query("select tenant, amount, metadata from credit_ledger where idempotency_key=$1", [`purchase:${object.id}`])).rows[0];
-        const samePayment = paymentIntent && (await sql.query("select metadata from credit_ledger where kind='purchase' and metadata->>'paymentIntent'=$1", [paymentIntent])).rows[0];
-        if (samePayment && samePayment.metadata.session !== object.id) throw new HttpError(400, "Payment is already attached to another purchase");
-        if (prior && (prior.tenant !== tenant || prior.amount !== amount || prior.metadata.paymentIntent !== (paymentIntent ?? null))) throw new HttpError(400, "Checkout session conflicts with its recorded purchase");
         const purchase: LedgerEntry = { tenant, kind: "purchase", amount, key: `purchase:${object.id}`,
-          metadata: prior?.metadata ?? { session: object.id, paymentIntent: paymentIntent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null, ...(order ? { order: order.id, invoice: stripeId(object.invoice) ?? null } : {}) } };
-        const refunds = paymentIntent ? await this.refundEntries(sql, purchase, paymentIntent) : [];
-        // Fulfillment and earlier refunds move the balance together. A fully
-        // refunded purchase never exposes temporary credit or a false depletion.
-        const appended = await postLedger(sql, [purchase, ...refunds]);
+          metadata: { session: object.id, paymentIntent: paymentIntent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null, ...(order ? { order: order.id, invoice: stripeId(object.invoice) ?? null } : {}) } };
+        const appended = await this.fulfillPurchase(sql, purchase, paymentIntent ?? object.id);
         if (typeof object.customer === "string") await sql.query("update credit_accounts set stripe_customer = coalesce(stripe_customer, $2) where tenant = $1", [tenant, object.customer]);
         return appended;
       });
@@ -374,14 +372,30 @@ export class Billing {
       console.log(JSON.stringify({ type: "credit_purchased", tenant, amount, session: object.id }));
       return { handled: "purchase" };
     }
+    if (event.type.startsWith("invoice.") && typeof object.id === "string") {
+      await this.autoTopup?.wake(object.id);
+      if (event.type === "invoice.paid") await this.payments?.attachInvoice(object);
+    }
     if (event.type === "charge.refunded") return { handled: await this.refund(object) };
     return { handled: "ignored" };
+  }
+
+  /** Shared settlement for Checkout and automatic invoices. Caller owns the transaction. */
+  async fulfillPurchase(sql: Sql, purchase: LedgerEntry, paymentIntent: string) {
+    await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-payment:${paymentIntent}`]);
+    const prior = (await sql.query("select tenant,amount,metadata from credit_ledger where idempotency_key=$1", [purchase.key])).rows[0];
+    const same = (await sql.query("select idempotency_key from credit_ledger where kind='purchase' and metadata->>'paymentIntent'=$1", [paymentIntent])).rows[0];
+    if (same && same.idempotency_key !== purchase.key) throw new HttpError(400, "Payment is already attached to another purchase");
+    if (prior && (prior.tenant !== purchase.tenant || prior.amount !== purchase.amount || prior.metadata.paymentIntent !== purchase.metadata?.paymentIntent)) throw new HttpError(400, "Purchase conflicts with its recorded payment");
+    if (prior) purchase = { ...purchase, metadata: prior.metadata };
+    const refunds = await this.refundEntries(sql, purchase, paymentIntent);
+    return postLedger(sql, [purchase, ...refunds]);
   }
 
   /** Keep cumulative refunds even when their purchase has not arrived. All writers serialize by payment intent. */
   private async refund(charge: { id: string; payment_intent?: string; amount: number; amount_refunded: number; currency?: string; metadata?: Record<string, string> }) {
     if (typeof charge.payment_intent !== "string" || typeof charge.id !== "string") return "ignored";
-    if (charge.metadata?.purpose && charge.metadata.purpose !== PURPOSE) return "ignored";
+    if (charge.metadata?.purpose && ![PURPOSE, "agent-runtime-auto-topup"].includes(charge.metadata.purpose)) return "ignored";
     if (!Number.isSafeInteger(charge.amount) || charge.amount <= 0 || !Number.isSafeInteger(charge.amount_refunded) || charge.amount_refunded < 0 || charge.amount_refunded > charge.amount) {
       throw new HttpError(400, "Invalid cumulative refund amount");
     }

@@ -23,6 +23,7 @@ export class BillingPayments {
   private readonly stripe: Stripe;
   private readonly pricing: Pricing;
   private readonly page: string;
+  private portalCheckedUntil = 0;
   constructor(db: Db, stripe: Stripe, pricing: Pricing, publicUrl?: string) {
     this.db = db; this.stripe = stripe; this.pricing = pricing;
     this.page = `${publicUrl ?? ""}/console/billing`;
@@ -55,11 +56,19 @@ export class BillingPayments {
     await this.db.query(`insert into billing_stripe_customers (tenant,livemode,request_id,created_at) values ($1,$2,$3,$4) on conflict do nothing`, [tenant, this.stripe.live, randomUUID(), Date.now()]);
     row = (await this.db.query("select * from billing_stripe_customers where tenant=$1 and livemode=$2", [tenant, this.stripe.live])).rows[0];
     if (row.customer) return row.customer;
-    if (Date.now() - row.created_at >= SAFE_RETRY_MS) return this.reconcile("customer", row.request_id);
+    if (Date.now() - row.created_at >= SAFE_RETRY_MS) {
+      // A duplicate empty Customer cannot charge anyone. Rotate an abandoned
+      // create instead of permanently blocking purchases. Fence late responses.
+      await this.db.query(`update billing_stripe_customers set request_id=$3,created_at=$4
+        where tenant=$1 and livemode=$2 and customer is null and request_id=$5`,
+      [tenant, this.stripe.live, randomUUID(), Date.now(), row.request_id]);
+      return this.customer(tenant, create);
+    }
     const customer = await this.stripe.post("/v1/customers", { name: tenant, metadata: { purpose: PURPOSE, tenant } }, `camelrun:customer:${row.request_id}`);
     if (!/^cus_[A-Za-z0-9_]+$/.test(customer.id) || customer.livemode !== this.stripe.live) throw new HttpError(502, "Unexpected Stripe customer");
     const saved = (await this.db.query(`update billing_stripe_customers set customer=coalesce(customer,$3)
-      where tenant=$1 and livemode=$2 returning customer`, [tenant, this.stripe.live, customer.id])).rows[0];
+      where tenant=$1 and livemode=$2 and request_id=$4 returning customer`, [tenant, this.stripe.live, customer.id, row.request_id])).rows[0];
+    if (!saved) return this.customer(tenant, create);
     if (saved.customer !== customer.id) return this.reconcile("customer_conflict", row.request_id);
     return saved.customer;
   }
@@ -138,24 +147,66 @@ export class BillingPayments {
   }
 
   /** Redirect-only card entry. The portal sets the Customer's default payment method itself. */
-  async portal(tenant: string, flow: "manage" | "payment_method" = "manage") {
+  async portal(tenant: string, flow: "manage" | "payment_method" = "manage", resumeAutoTopup = false) {
     this.requirePage();
     const configuration = this.stripe.portalConfiguration;
     if (!configuration) throw new HttpError(503, "The billing portal is not configured");
-    const config = await this.stripe.get(`/v1/billing_portal/configurations/${configuration}`);
-    if (!config.active || config.livemode !== this.stripe.live || config.metadata?.purpose !== PURPOSE
+    if (Date.now() >= this.portalCheckedUntil) {
+      const config = await this.stripe.get(`/v1/billing_portal/configurations/${configuration}`);
+      if (!config.active || config.livemode !== this.stripe.live || config.metadata?.purpose !== PURPOSE
       || !config.features?.payment_method_update?.enabled || !config.features?.invoice_history?.enabled
       || config.features?.subscription_update?.enabled || config.features?.subscription_cancel?.enabled) {
-      throw new HttpError(503, "The billing portal configuration does not match this product");
+        throw new HttpError(503, "The billing portal configuration does not match this product");
+      }
+      this.portalCheckedUntil = Date.now()+3*60_000;
     }
     const customer = await this.customer(tenant, flow === "payment_method");
     if (!customer) throw new HttpError(409, "Add credit or set up a payment method first");
     const result = await this.stripe.post("/v1/billing_portal/sessions", {
       customer, configuration, return_url: this.page,
-      ...(flow === "payment_method" ? { flow_data: { type: "payment_method_update", after_completion: { type: "redirect", redirect: { return_url: `${this.page}?payment_method=updated` } } } } : {}),
+      ...(flow === "payment_method" ? { flow_data: { type: "payment_method_update", after_completion: { type: "redirect", redirect: { return_url: `${this.page}?payment_method=updated${resumeAutoTopup ? "&resume=auto-topup" : ""}` } } } } : {}),
     });
     if (typeof result.url !== "string" || !result.url.startsWith("https://")) throw new HttpError(502, "Unexpected billing portal response");
     return { url: result.url as string };
+  }
+
+  async attachInvoice(invoice: any) {
+    if (typeof invoice.id !== "string") return;
+    const order = (await this.db.query("select * from billing_checkouts where invoice=$1", [invoice.id])).rows[0];
+    if (!order) return;
+    if (invoice.status !== "paid" || stripeId(invoice.customer) !== order.customer || invoice.livemode !== order.livemode
+      || invoice.currency !== order.currency || invoice.total !== (order.amount+order.fee)/CENT) throw new HttpError(400, "Invoice does not match its purchase");
+    if (typeof invoice.hosted_invoice_url === "string" && invoice.hosted_invoice_url.startsWith("https://")) {
+      await this.db.query("update billing_checkouts set invoice_url=$2 where id=$1", [order.id, invoice.hosted_invoice_url]);
+    }
+  }
+
+  async refreshInvoices() {
+    const orders = (await this.db.query("select * from billing_checkouts where livemode=$1 and paid_at is not null and invoice_url is null order by paid_at desc limit 5", [this.stripe.live])).rows;
+    for (const order of orders) {
+      try {
+        let id = order.invoice;
+        if (!id) {
+          const session = await this.stripe.get(`/v1/checkout/sessions/${encodeURIComponent(order.session)}`);
+          this.validate(order, session);
+          id = stripeId(session.invoice);
+          if (!id) continue;
+          await this.db.query("update billing_checkouts set invoice=$2 where id=$1 and invoice is null", [order.id, id]);
+        }
+        await this.attachInvoice(await this.stripe.get(`/v1/invoices/${encodeURIComponent(id)}`));
+      } catch { console.error(JSON.stringify({ type: "billing_invoice_refresh_failed", order: order.id })); }
+    }
+  }
+
+  async defaultCard(tenant: string) {
+    const customer = await this.customer(tenant, false);
+    if (!customer) return null;
+    const row = await this.stripe.get(`/v1/customers/${encodeURIComponent(customer)}`, { expand: ["invoice_settings.default_payment_method"] });
+    if (row.deleted || row.id !== customer || row.livemode !== this.stripe.live) throw new HttpError(409, "The billing customer needs reconciliation");
+    const method = row.invoice_settings?.default_payment_method;
+    if (method?.type !== "card" || stripeId(method.customer) !== customer) return null;
+    return { customer, id: method.id as string, brand: method.card.brand as string, last4: method.card.last4 as string,
+      expMonth: method.card.exp_month as number, expYear: method.card.exp_year as number };
   }
 
   async paymentMethod(tenant: string) {

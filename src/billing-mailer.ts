@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Db } from "./db.ts";
 import type { BillingAlerts } from "./billing-alerts.ts";
-import { billingEmail, type BillingEmail } from "./billing-emails.ts";
+import { billingEmail, type BillingEmail, type BillingEmailInput } from "./billing-emails.ts";
 import { verifySns } from "./channels-email.ts";
 import { readText } from "./http.ts";
 
@@ -44,10 +44,10 @@ export class BillingMailer {
     const rows = await alerts.claim(Date.now(), 5);
     await Promise.all(rows.map(async row => {
       try {
-        if (!["confirmation", "low", "depleted"].includes(row.kind)) throw new Error("Unsupported billing email type");
-        const mail = billingEmail({ kind: row.kind as "confirmation" | "low" | "depleted", tenant: row.tenant, email: row.email,
+        if (!["confirmation", "low", "depleted", "problems", "receipts"].includes(row.kind)) throw new Error("Unsupported billing email type");
+        const mail = billingEmail({ kind: row.kind as BillingEmailInput["kind"], tenant: row.tenant, email: row.email,
           origin: this.options.origin, token: row.token, unsubscribeToken: await alerts.unsubscribeToken(row.tenant, row.recipient),
-          balance: row.payload.data?.balance, threshold: row.payload.data?.threshold });
+          payment: row.payload.data, balance: row.payload.data?.balance, threshold: row.payload.data?.threshold });
         if (!await alerts.deliverable(row.id, row.lease)) { await alerts.retry(row.id, row.lease); return; }
         const signal = AbortSignal.timeout(15_000);
         const message = { ...mail, to: row.email, delivery: row.id };
