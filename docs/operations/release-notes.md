@@ -25,3 +25,19 @@ refunds that arrive before a purchase. The new handler persists those refunds an
 applies them atomically when the purchase arrives. Previously ignored refunds
 are not recreated by migration; replay their signed Stripe events through the
 updated handler or reconcile them through the existing audited correction flow.
+
+Migrations 036–039 add durable Stripe purchases, hosted billing, automatic top-up
+and recovery pauses. Drain older billing and automatic top-up workers before
+cutover: an older worker does not honor expired-confirmation pauses. Apply all
+migrations in order, then start the updated API, webhook and worker code together.
+The runtime applies pending migrations at startup; do not run older binaries
+against the upgraded billing schema. Automatic top-up stays off until a customer
+explicitly consents. An expired bank confirmation now voids the unpaid invoice
+and stays paused until fresh consent; it cannot generate daily charge attempts.
+
+Before rollout, exercise the full Stripe flow in a separate sandbox using the
+pinned API version and restricted key. Check decline/retry with a changed default
+card (including InvoicePayment allocation count), 3DS confirmation, invoices,
+portal configuration and refunds. Configure and test billing SES/SNS feedback and
+route `billing_reconciliation_required` to the operations pager. See
+[billing operations](billing.md) for exact configuration and recovery procedures.

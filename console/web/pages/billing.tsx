@@ -28,8 +28,8 @@ function Activity({ entries }: { entries: LedgerEntry[] }) {
 
 function AutoSection({ state }: { state: BillingState }) {
   const a = state.auto.data, card = state.payment.data?.card;
-  const label = !a ? "" : a.state === "cancelling" ? "Turning off" : a.state === "processing" ? "Topping up" : a.state === "action_required" ? "Action needed" : a.state === "on" ? "On" : a.state === "off" ? "Off" : "Paused";
-  const danger = a && ["action_required", "paused_declined", "paused_no_card"].includes(a.state);
+  const label = !a ? "" : a.state === "cancelling" ? "Cancelling" : a.state === "processing" ? "Topping up" : a.state === "action_required" ? "Action needed" : a.state === "on" ? "On" : a.state === "off" ? "Off" : "Paused";
+  const danger = a && ["action_required", "paused_declined", "paused_no_card", "paused_expired"].includes(a.state);
   return <section className="border-y py-5">
     <div className="flex items-center gap-3"><h2 className="text-sm font-semibold">Auto top-up</h2>{a && <Badge variant={danger ? "destructive" : a.state === "on" ? "info" : a.state === "processing" ? "live" : "secondary"}>{label}</Badge>}<Button variant="outline" size="sm" className="ml-auto" disabled={!a} onClick={() => state.setDialog("auto")}>{a?.enabled ? "Edit" : "Set up"}</Button></div>
     <ErrorAlert error={state.auto.error} />
@@ -37,6 +37,7 @@ function AutoSection({ state }: { state: BillingState }) {
       <p className="mt-2 text-sm">{a.enabled ? <>Below {formatMicros(a.threshold)}, add {formatMicros(a.amount)}{card && <> · {cardLabel(card)}</>}</> : "Refill automatically when your balance runs low."}</p>
       {(a.enabled || a.held > 0 || a.usedThisPeriod > 0) && <div className="text-muted-foreground mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs"><div role="meter" aria-label="Monthly automatic top-up spending" aria-valuemin={0} aria-valuemax={a.monthlyLimit} aria-valuenow={Math.min(a.usedThisPeriod, a.monthlyLimit)} aria-valuetext={`${formatMicros(a.usedThisPeriod)} of ${formatMicros(a.monthlyLimit)}`} className="bg-muted h-1 w-32"><div className={`h-full ${a.state === "limit_reached" ? "bg-destructive" : "bg-foreground"}`} style={{ width: `${Math.min(100, a.usedThisPeriod / a.monthlyLimit * 100)}%` }} /></div><span>{formatMicros(a.usedThisPeriod)} of {formatMicros(a.monthlyLimit)} this month{a.held > 0 && <> · {formatMicros(a.held)} pending</>}</span></div>}
       {a.state === "limit_reached" && <p className="bg-muted mt-3 px-3 py-2 text-sm">This month's limit is reached. Auto top-up resumes {new Date(a.resetsAt).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} (UTC). <button className="underline underline-offset-4" onClick={() => state.setDialog("auto")}>Raise limit</button></p>}
+      {a.state === "paused_expired" && <p className="bg-muted mt-3 px-3 py-2 text-sm">Paused: bank confirmation expired. Retry to review and authorize a new top-up.</p>}
       {a.state === "reconcile" && <p className="bg-muted mt-3 px-3 py-2 text-sm">We're checking a recent top-up, so auto top-up is paused for now. Questions? <a className="underline" href="mailto:support@camelai.com">support@camelai.com</a>.</p>}
       {!a.enabled && a.attempt && <p className="text-muted-foreground mt-2 text-xs">New top-ups are off. The pending {formatMicros(a.attempt.total)} top-up may still finish.</p>}
     </>}

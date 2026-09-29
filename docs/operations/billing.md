@@ -297,9 +297,8 @@ No AWS resources are provisioned by this application change.
 
 The worker polls every five seconds, claims at most five deliveries, and sends
 them concurrently with a 15-second request deadline and no SDK retries. The outbox
-owns retries. The currently implemented emails are confirmation, low balance and
-out of credit; top-up problem and receipt preferences are stored for the payment
-implementation. Mail is multipart HTML/text and uses public assets under
+owns retries. Emails include recipient confirmation, low balance, out of credit,
+automatic top-up problems and receipts. Mail is multipart HTML/text and uses public assets under
 `/console/email/`. Its table layout and branding follow camelStream's existing
 email design; the animated banner was rendered from the console's `DitherLiquid`.
 
@@ -325,8 +324,10 @@ reserved. Billing recipients are optional and do not gate activation.
   the worker checks Stripe, voids the unpaid invoice, then releases the hold.
   A payment already settling is fulfilled if successful. Bank confirmation stays
   available for 24 hours from its first action-required observation, then the
-  worker voids it if still unpaid. The UI discloses that an in-progress payment
-  may finish.
+  worker voids it if still unpaid and enters `paused_expired`. The pause persists
+  until the customer accepts a fresh quote; the console’s Retry top-up action
+  reviews current terms and authorizes a new invoice. A portal return alone
+  never resumes it. The UI discloses that an in-progress payment may finish.
 - `POST /v1/billing/auto-topup/retry` takes `{attemptId}` and retries a declined
   payment against the same invoice, using the current default card. It creates
   neither another invoice nor another cap reservation.
@@ -356,7 +357,9 @@ mutation has its own stable Stripe idempotency key and saved step start time.
 The worker claims one-minute leases, renews each ready step, and advances without
 waiting for the next timer tick. Network calls stay outside database transactions.
 Enabled tenant scans are claimed across nodes; healthy balances make no Stripe
-requests. A committed usage flush wakes low-balance scanning. Waiting declined,
+requests. Migration 039 also checks the monthly cap before reading a card;
+capped accounts skip scans until their UTC reset or newly consented terms. A
+committed usage flush wakes eligible low-balance scanning. Waiting declined,
 missing-card and bank-confirmation attempts are checked hourly; invoice webhooks,
 explicit retry and authenticated portal returns can wake them sooner. Invoice `auto_advance` is false, pending items are excluded,
 inherited discounts/tax rates are cleared, and each line is attached to the
@@ -371,9 +374,12 @@ attempt marker and receipt event. Out-of-band, altered, split or otherwise
 unrecognized payments go to `reconcile`; they do not grant credit automatically.
 
 States are `off`, `on`, `processing`, `cancelling`, `action_required`, `paused_declined`,
-`paused_no_card`, `limit_reached`, and `reconcile`. Missing cards resume when a
+`paused_no_card`, `paused_expired`, `limit_reached`, and `reconcile`. Missing cards resume when a
 new default exists; declined cards require an explicit retry. Bank confirmation
-uses the hosted invoice URL. An ambiguous create/item/pay past 23 hours retains
+uses the hosted invoice URL. Expiry cancellation persists its reason before
+calling Stripe and pauses settings atomically with releasing the verified void
+hold. A settling payment retains the hold and is fulfilled if successful.
+An ambiguous create/item/pay past 23 hours retains
 its hold and emits `billing_reconciliation_required`; a known successful invoice
 can still be reconciled without another charge. Operators must inspect the Stripe
 invoice and the saved attempt before resolving these cases.

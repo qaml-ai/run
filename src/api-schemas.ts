@@ -674,7 +674,7 @@ export const Checkout = z.object({
 export const AutoTopupTerms = z.object({ thresholdUsd: z.number(), amountUsd: z.number(), monthlyLimitUsd: z.number() }).strict();
 const AutoCard = z.object({ brand: z.string(), last4: z.string(), expMonth: z.number(), expYear: z.number() }).nullable();
 export const AutoTopupQuote = z.object({ id: z.uuid(), version: z.string(), threshold: z.number(), amount: z.number(), fee: z.number(), total: z.number(), monthlyLimit: z.number(), card: AutoCard, immediate: z.boolean(), expiresAt: z.number() });
-export const AutoTopup = z.object({ enabled: z.boolean(), state: z.enum(["off","on","processing","cancelling","action_required","paused_declined","paused_no_card","limit_reached","reconcile"]), version: z.number(), threshold: z.number(), amount: z.number(), fee: z.number(), total: z.number(), monthlyLimit: z.number(), usedThisPeriod: z.number(), held: z.number(), resetsAt: z.number(),
+export const AutoTopup = z.object({ enabled: z.boolean(), state: z.enum(["off","on","processing","cancelling","action_required","paused_declined","paused_no_card","paused_expired","limit_reached","reconcile"]), version: z.number(), threshold: z.number(), amount: z.number(), fee: z.number(), total: z.number(), monthlyLimit: z.number(), usedThisPeriod: z.number(), held: z.number(), resetsAt: z.number(),
   attempt: z.object({ id: z.uuid(), state: z.string(), amount: z.number(), fee: z.number(), total: z.number(), card: AutoCard, invoiceUrl: z.string().nullable(), canRetry: z.boolean(), submitted: z.boolean() }).nullable() });
 export const AutoTopupConsent = z.object({ quoteId: z.uuid(), version: z.string().length(64), consent: z.literal(true) }).strict();
 export const AutoTopupRetry = z.object({ attemptId: z.uuid() }).strict();

@@ -276,3 +276,52 @@ test("a lost void response retains the hold until Stripe confirms the invoice is
   assert.equal((await f.auto.get("alice")).held, 21.1e6); f.advance(); await f.pump(1);
   assert.equal((await f.auto.get("alice")).held, 0); assert.equal(f.calls.filter(c => c.path.endsWith("/void")).length, 1);
 });
+
+test("capped accounts make no provider requests until reset or new consent raises the cap", async t => {
+  for (const resume of ["month", "terms"]) {
+    const f = await fixture(t); await f.enable({ threshold: 5e6, amount: 20e6, monthlyLimit: 21.1e6 }); await f.pump(1);
+    await f.billing.post([{ tenant: "alice", kind: "usage", amount: -20e6, key: "drain" }]);
+    const before = f.calls.length;
+    f.advance(); await f.auto.balanceChanged(["alice"]); await f.pump(1);
+    assert.equal((await f.auto.get("alice")).state, "limit_reached");
+    for (let i=0;i<3;i++) { f.advance(); await f.auto.balanceChanged(["alice"]); await f.auto.refresh("alice"); await f.restart().pump(); }
+    assert.equal(f.calls.length, before, "even the first cap check, spending and portal returns must not call Stripe");
+    assert.equal((await f.db.query("select count(*) from billing_events where type='billing.topup.limit'")).rows[0].count, 1);
+    if (resume === "month") f.advance(3*86_400_000);
+    else await f.enable({ threshold: 5e6, amount: 20e6, monthlyLimit: 42.2e6 });
+    await f.pump(1); assert.equal(f.invoices.size, 2); assert.equal(await f.balance(), 20e6);
+  }
+});
+
+test("an expired bank confirmation stays paused across scans, portal returns and months until fresh consent", async t => {
+  const f = await fixture(t); f.setOutcome("action"); await f.enable(); await f.pump(1);
+  f.advance(23*3_600_000); const stale = await f.quote();
+  f.advance(2*3_600_000); await f.pump(1);
+  let state = await f.auto.get("alice"); assert.equal(state.state, "paused_expired"); assert.equal(state.enabled, true); assert.equal(state.held, 0); assert.equal(state.attempt, null);
+  await assert.rejects(f.auto.enable("alice", stale.id, stale.version, true), /changed/);
+  const before = f.calls.length;
+  for (let i=0;i<4;i++) { f.advance(86_400_000); await f.auto.balanceChanged(["alice"]); await f.auto.refresh("alice"); await f.restart().pump(); }
+  assert.equal(f.calls.length, before); assert.equal(f.invoices.size, 1);
+  assert.equal((await f.db.query("select count(*) from billing_events where type='billing.topup.action_required'")).rows[0].count, 1);
+  f.setOutcome("success"); const reviewed = await f.quote(); assert.equal(reviewed.immediate, true);
+  await Promise.all([f.auto.enable("alice", reviewed.id, reviewed.version, true), f.auto.enable("alice", reviewed.id, reviewed.version, true)]);
+  await f.pump(1); state = await f.auto.get("alice"); assert.equal(state.state, "on"); assert.equal(f.invoices.size, 2); assert.equal(await f.balance(), 20e6);
+});
+
+test("confirmation expiry persists its pause intent across a lost void response", async t => {
+  const f = await fixture(t); f.setOutcome("action"); await f.enable(); await f.pump(1);
+  const invoice = [...f.invoices.values()][0]; f.advance(25*3_600_000); f.lose(`/v1/invoices/${invoice.id}/void`); await f.pump(1);
+  assert.equal((await f.auto.get("alice")).state, "cancelling"); assert.equal((await f.auto.get("alice")).held, 21.1e6);
+  f.advance(); await f.restart().pump();
+  assert.equal((await f.auto.get("alice")).state, "paused_expired"); assert.equal((await f.auto.get("alice")).held, 0);
+  assert.equal(f.calls.filter(c => c.path.endsWith("/void")).length, 1);
+});
+
+test("expiry never voids a settling payment and fulfills success without pausing", async t => {
+  const f = await fixture(t); f.setOutcome("action"); await f.enable(); await f.pump(1);
+  const pi = [...f.payments.values()][0]; pi.status = "processing";
+  f.advance(25*3_600_000); await f.pump(1);
+  assert.equal((await f.auto.get("alice")).held, 21.1e6); assert.equal(f.calls.filter(c => c.path.endsWith("/void")).length, 0);
+  f.approve(); f.advance(); await f.restart().pump();
+  assert.equal((await f.auto.get("alice")).state, "on"); assert.equal(await f.balance(), 20e6);
+});

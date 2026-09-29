@@ -91,7 +91,7 @@ export class AutoTopup {
       if (!card || fresh.expires_at <= this.now() || (await this.review(sql, fresh, card)).version !== version) throw new HttpError(409, "Auto top-up details changed. Review the quote and confirm again.");
       const s = (await sql.query(`insert into billing_auto_settings (tenant,livemode,enabled,version,threshold,amount,fee,monthly_limit,consent_at)
         values ($1,$2,true,1,$3,$4,$5,$6,$7) on conflict (tenant,livemode) do update set enabled=true,version=billing_auto_settings.version+1,
-        threshold=excluded.threshold,amount=excluded.amount,fee=excluded.fee,monthly_limit=excluded.monthly_limit,consent_at=excluded.consent_at,status='on' returning *`,
+        threshold=excluded.threshold,amount=excluded.amount,fee=excluded.fee,monthly_limit=excluded.monthly_limit,consent_at=excluded.consent_at,status='on',limit_resets_at=null returning *`,
       [tenant, this.stripe.live, q.threshold, q.amount, q.fee, q.monthly_limit, this.now()])).rows[0];
       await sql.query("update billing_auto_quotes set accepted_at=$2,consent_version=$3,consent_card=$4 where id=$1", [q.id, this.now(), version, displayCard(card)]);
       await this.reserve(sql, tenant, s, card);
@@ -104,7 +104,7 @@ export class AutoTopup {
       await this.lock(sql, tenant);
       await sql.query("update billing_auto_settings set enabled=false,version=version+1 where tenant=$1 and livemode=$2", [tenant, this.stripe.live]);
       await sql.query(`update billing_auto_attempts set state='cancelled',lease=null where tenant=$1 and livemode=$2 and ${active} and submitted_at is null`, [tenant, this.stripe.live]);
-      await sql.query(`update billing_auto_attempts set cancel_requested=true,due=$3 where tenant=$1 and livemode=$2 and state in ('paused_declined','paused_no_card')`, [tenant, this.stripe.live, this.now()]);
+      await sql.query(`update billing_auto_attempts set cancel_requested=true,cancel_reason=coalesce(cancel_reason,'disabled'),due=$3 where tenant=$1 and livemode=$2 and state in ('paused_declined','paused_no_card')`, [tenant, this.stripe.live, this.now()]);
     });
     return this.get(tenant);
   }
@@ -124,8 +124,21 @@ export class AutoTopup {
   private async emit(sql: Sql, tenant: string, notice: string, data: any, key: string) {
     await sql.query("select billing_emit_event($1,$2,$3,$4,$5)", [tenant, `billing.topup.${notice}`, { ...data, notice, livemode: this.stripe.live }, key, notice === "receipt" ? "receipts" : "problems"]);
   }
+  /** Called with the balance lock, both before a provider lookup and at reservation. */
+  private async eligible(sql: Sql, tenant: string, s: any) {
+    if (!s.enabled || s.status === "paused_expired" || (await sql.query(`select 1 from billing_auto_attempts where tenant=$1 and livemode=$2 and ${active}`, [tenant, this.stripe.live])).rowCount) return false;
+    const balance = (await sql.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0].balance;
+    if (balance >= s.threshold) return s.status === "paused_no_card";
+    const sums = await this.amounts(sql, tenant);
+    if (sums.used + s.amount+s.fee > s.monthly_limit) {
+      await sql.query("update billing_auto_settings set status='limit_reached',limit_resets_at=$3 where tenant=$1 and livemode=$2", [tenant, this.stripe.live, resetsAt(this.now())]);
+      await this.emit(sql, tenant, "limit", { settingsVersion: s.version, used: sums.used, monthlyLimit: s.monthly_limit, total: s.amount+s.fee, resetsAt: resetsAt(this.now()) }, `${s.version}:${sums.period}`);
+      return false;
+    }
+    return true;
+  }
   private async reserve(sql: Sql, tenant: string, s: any, card: Card | null) {
-    if (!s.enabled || (await sql.query(`select 1 from billing_auto_attempts where tenant=$1 and livemode=$2 and ${active}`, [tenant, this.stripe.live])).rowCount) return;
+    if (!await this.eligible(sql, tenant, s)) return;
     if (!card) {
       if (s.status !== "paused_no_card") await this.emit(sql, tenant, "no_card", { settingsVersion: s.version }, randomUUID());
       await sql.query("update billing_auto_settings set status='paused_no_card' where tenant=$1 and livemode=$2", [tenant, this.stripe.live]);
@@ -133,13 +146,8 @@ export class AutoTopup {
     }
     const balance = (await sql.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0].balance;
     const sums = await this.amounts(sql, tenant);
-    const limited = sums.used + s.amount+s.fee > s.monthly_limit;
-    await sql.query("update billing_auto_settings set status=$3 where tenant=$1 and livemode=$2", [tenant, this.stripe.live, limited ? "limit_reached" : "on"]);
+    await sql.query("update billing_auto_settings set status='on',limit_resets_at=null where tenant=$1 and livemode=$2", [tenant, this.stripe.live]);
     if (balance >= s.threshold) return;
-    if (limited) {
-      await this.emit(sql, tenant, "limit", { settingsVersion: s.version, used: sums.used, monthlyLimit: s.monthly_limit, total: s.amount+s.fee, resetsAt: resetsAt(this.now()) }, `${s.version}:${sums.period}`);
-      return;
-    }
     await sql.query(`insert into billing_auto_attempts (id,tenant,livemode,settings_version,period,customer,amount,fee,monthly_limit,threshold,card,api_version,state,step,due,created_at)
       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'processing','create',$13,$13)`,
     [randomUUID(), tenant, this.stripe.live, s.version, sums.period, card.customer, s.amount, s.fee, s.monthly_limit, s.threshold, card, STRIPE_API_VERSION, this.now()]);
@@ -150,6 +158,7 @@ export class AutoTopup {
     const rows = (await this.db.query(`with picked as (
       select s.tenant,s.livemode from billing_auto_settings s join credit_accounts c on c.tenant=s.tenant
       where s.enabled and s.livemode=$1 and s.checked_at<=$2::bigint-30000
+      and s.status<>'paused_expired' and (s.status<>'limit_reached' or coalesce(s.limit_resets_at,0)<=$2)
       and (c.balance<s.threshold or s.status='paused_no_card')
       and (s.status<>'paused_no_card' or s.checked_at<=$2::bigint-3600000)
       and not exists (select 1 from billing_auto_attempts a where a.tenant=s.tenant and a.livemode=s.livemode and a.state not in ('paid','cancelled'))
@@ -158,6 +167,7 @@ export class AutoTopup {
     await Promise.all(rows.map(async ({ tenant }) => {
       try {
         if (await this.billing.mode(tenant) !== "prepaid") return;
+        if (!await transaction(this.db, async sql => { await this.lock(sql, tenant); return this.eligible(sql, tenant, await this.settings(sql, tenant)); })) return;
         const card = await this.billing.payments!.defaultCard(tenant);
         await transaction(this.db, async sql => { await this.lock(sql, tenant); await this.reserve(sql, tenant, await this.settings(sql, tenant), card); });
       } catch { console.error(JSON.stringify({ type: "auto_topup_account_check_failed", tenant })); }
@@ -178,7 +188,12 @@ export class AutoTopup {
   private async process(a: any): Promise<void> {
     if (!(await this.db.query(`update billing_auto_attempts set lease_until=$3 where id=$1 and lease=$2 and ${active} returning id`, [a.id, a.lease, this.now()+60_000])).rowCount) return;
     if (a.api_version !== STRIPE_API_VERSION) return this.transition(a, "reconcile");
-    if (a.cancel_requested || (a.state === "action_required" && a.action_expires_at != null && a.action_expires_at <= this.now())) return this.cancelInvoice(a);
+    if (!a.cancel_requested && a.state === "action_required" && a.action_expires_at != null && a.action_expires_at <= this.now()) {
+      // Persist the reason before touching Stripe: recovery must still pause after a lost void response or a settling payment.
+      a = (await this.db.query(`update billing_auto_attempts set cancel_requested=true,cancel_reason='expired' where id=$1 and lease=$2 and ${active} returning *`, [a.id, a.lease])).rows[0];
+      if (!a) return;
+    }
+    if (a.cancel_requested) return this.cancelInvoice(a);
     if (!a.submitted_at) {
       const ok = await transaction(this.db, async sql => {
         await this.lock(sql, a.tenant);
@@ -322,13 +337,17 @@ export class AutoTopup {
     }
     await transaction(this.db, async sql => {
       await this.lock(sql, a.tenant);
-      await sql.query(`update billing_auto_attempts set state='cancelled',lease=null,lease_until=0 where id=$1 and lease=$2 and ${active}`, [a.id, a.lease]);
+      const cancelled = await sql.query(`update billing_auto_attempts set state='cancelled',lease=null,lease_until=0 where id=$1 and lease=$2 and ${active} returning id`, [a.id, a.lease]);
+      if (cancelled.rowCount && a.cancel_reason === "expired") {
+        await sql.query("update billing_auto_settings set status='paused_expired',version=version+1 where tenant=$1 and livemode=$2", [a.tenant, this.stripe.live]);
+      }
     });
   }
   /** Called after a committed usage flush; only the database is on its critical path. */
   async balanceChanged(tenants: Iterable<string>) {
     const ids = [...tenants]; if (!ids.length) return;
-    await this.db.query(`update billing_auto_settings s set checked_at=0 from credit_accounts c where s.tenant=c.tenant and s.tenant=any($1::text[]) and s.livemode=$2 and s.enabled and s.status<>'paused_no_card' and c.balance<s.threshold`, [ids, this.stripe.live]);
+    await this.db.query(`update billing_auto_settings s set checked_at=0 from credit_accounts c where s.tenant=c.tenant and s.tenant=any($1::text[]) and s.livemode=$2 and s.enabled
+      and s.status not in ('paused_no_card','paused_expired') and (s.status<>'limit_reached' or coalesce(s.limit_resets_at,0)<=$3) and c.balance<s.threshold`, [ids, this.stripe.live, this.now()]);
     if (this.timer) void this.pump().catch(() => console.error(JSON.stringify({ type: "auto_topup_poll_failed" })));
   }
   /** An authenticated portal return wakes paused work without authorizing a new retry. */

@@ -8477,6 +8477,7 @@
                         "action_required",
                         "paused_declined",
                         "paused_no_card",
+                        "paused_expired",
                         "limit_reached",
                         "reconcile"
                       ]
@@ -8917,6 +8918,7 @@
                         "action_required",
                         "paused_declined",
                         "paused_no_card",
+                        "paused_expired",
                         "limit_reached",
                         "reconcile"
                       ]
@@ -9089,6 +9091,7 @@
                         "action_required",
                         "paused_declined",
                         "paused_no_card",
+                        "paused_expired",
                         "limit_reached",
                         "reconcile"
                       ]
@@ -9261,6 +9264,7 @@
                         "action_required",
                         "paused_declined",
                         "paused_no_card",
+                        "paused_expired",
                         "limit_reached",
                         "reconcile"
                       ]
@@ -9452,6 +9456,7 @@
                         "action_required",
                         "paused_declined",
                         "paused_no_card",
+                        "paused_expired",
                         "limit_reached",
                         "reconcile"
                       ]
