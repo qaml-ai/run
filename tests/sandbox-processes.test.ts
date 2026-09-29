@@ -104,7 +104,7 @@ test("js_exec runs end to end through a sandbox process, tool calls included", a
   });
   assert.deepEqual(result, { output: ["start", "42"], truncated: false, returned: { index: 1, json: true, truncated: false } });
   assert.deepEqual(events, [{ type: "output", text: "start" }, { type: "output", text: "42" }]);
-  await assert.rejects(executeCode({ code: "return await tools.nope({})", bridge: echo, pool: sandbox }), /not a function/);
+  await assert.rejects(executeCode({ code: "return await tools.nope({})", bridge: echo, pool: sandbox }), /tools\.nope is not a tool/);
   // Arguments are still validated here, whatever the sandbox forwards.
   const strict: ToolBridge = { definitions: [{ name: "strict", description: "", parameters: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } }], call: async () => 1 };
   await assert.rejects(executeCode({ code: 'return await tools.strict({ n: "x" })', bridge: strict, pool: sandbox }), /Invalid arguments for tool: strict/);
@@ -120,7 +120,7 @@ test("timeouts and aborts cancel the execution in the sandbox process, which kee
     call: (_name, _args, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => { aborted++; reject(new Error("aborted")); }, { once: true })),
   };
   // Long enough for the call to reach the tool however slow the machine (under load, 300 ms once timed out before it had).
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool: sandbox, timeoutMs: 2000 }), /timed out after 2000ms;/);
+  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool: sandbox, timeoutMs: 2000 }), /timed out after 2000ms while tools\.hang was still running;/);
   const controller = new AbortController();
   const spinning = executeCode({ code: "while (true) {}", bridge: hang, pool: sandbox, signal: controller.signal, timeoutMs: 60_000 });
   await sleep(200);

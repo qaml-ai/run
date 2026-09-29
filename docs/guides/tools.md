@@ -354,3 +354,7 @@ URLs, and no private, loopback, link-local or otherwise internal address, checke
 on every connection (so DNS rebinding cannot slip past). MCP servers and API
 calls get no redirects; where redirects are followed (`web_fetch`, spec
 downloads) each hop is checked, and credentials never go to another origin.
+
+A self-hosted runtime's operator can allow exact origins of their own
+(`AGENT_OUTBOUND_ALLOW_ORIGINS`) for MCP servers, APIs and model providers on
+their network; `web_fetch` never reaches them.

@@ -54,6 +54,7 @@
 | `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers, `web_fetch` and tenants' model endpoints (key scopes' `baseUrl`) use `http://` URLs (tests and development only) |
 | `AGENT_OUTBOUND_BLOCK_CIDRS` | ranges no tool source may reach, on top of the built-in private and reserved ranges, e.g. the VPC's CIDR (see [Outbound calls](../guides/tools.md#outbound-calls)) |
 | `AGENT_OUTBOUND_ALLOW_CIDRS` | exceptions to the built-in ranges, e.g. `127.0.0.1/32` for a local test server; never set in production |
+| `AGENT_OUTBOUND_ALLOW_ORIGINS` | exact origins (`scheme://host:port`, comma-separated) reachable despite the built-in ranges, over `http` too: an operator's own services, e.g. `http://app:3000` for a self-hosted runtime's application. Only that scheme, host and port; checked at each connection, and `AGENT_OUTBOUND_BLOCK_CIDRS` still applies. MCP servers, HTTP tools, model providers and webhooks may use them; `web_fetch`, `web_search` and renders never do ([Self-hosting](self-host.md#networking)) |
 | `AGENT_SANDBOX_SOCKETS` | set by `agent-launcher`: the sandbox processes' sockets. Without it, js_exec runs on worker threads in the runtime process, as in development on macOS; the `listening` log line's `sandbox` field says which |
 
 Start a runtime on a VM using a trusted terminal. It always reads its tenants

@@ -410,7 +410,12 @@ export async function executeCode(options: {
   options.signal?.throwIfAborted();
   const pool = options.pool ?? sandboxProcesses() ?? codePool();
   const started = performance.now();
-  const timedOut = `Codemode timed out after ${timeoutMs}ms; external side effects may have completed`;
+  // Tool calls still running, by name: a timeout while one runs names it and says timeoutMs can be raised.
+  const pending = new Map<string, number>();
+  const timedOut = () => {
+    const waiting = [...pending.keys()].map(name => `tools.${name}`);
+    return `Codemode timed out after ${timeoutMs}ms${waiting.length ? ` while ${waiting.slice(0, 3).join(", ")} ${waiting.length === 1 ? "was" : "were"} still running` : ""}; external side effects may have completed${waiting.length ? `. Pass a larger timeoutMs (at most ${SANDBOX_LIMITS.maxTimeoutMs}) for slow tools` : ""}`;
+  };
   const controller = new AbortController();
   let guest: Guest | undefined;
   let rpc: Rpc | undefined;
@@ -424,7 +429,7 @@ export async function executeCode(options: {
   };
   const abort = () => stop("Codemode aborted; any external tool side effects may already have completed");
   const waiting = () => `Codemode timed out after ${timeoutMs}ms waiting for a sandbox worker${pool instanceof CodePool ? ` (${pool.saturation()})` : ""}`;
-  const timer = setTimeout(() => stop(guest?.dispatched ? timedOut : waiting()), timeoutMs);
+  const timer = setTimeout(() => stop(guest?.dispatched ? timedOut() : waiting()), timeoutMs);
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
     guest = pool instanceof CodePool ? await localGuest(pool, controller.signal) : pool.open();
@@ -469,6 +474,8 @@ export async function executeCode(options: {
       if (transferred > SANDBOX_LIMITS.totalToolBytes) throw new Error("Codemode transfer limit exceeded");
       controller.signal.throwIfAborted();
       inflight++;
+      const name = fs ? params.name : checked.tool.name;
+      pending.set(name, (pending.get(name) ?? 0) + 1);
       try {
         const result = fs ? await options.bridge.fs!(params.name.slice(3), checked.args, controller.signal) : await options.bridge.call(checked.tool.name, checked.args, controller.signal);
         controller.signal.throwIfAborted();
@@ -476,7 +483,11 @@ export async function executeCode(options: {
         transferred += Buffer.byteLength(json);
         if (transferred > SANDBOX_LIMITS.totalToolBytes) throw new Error("Codemode transfer limit exceeded");
         return json;
-      } finally { inflight--; }
+      } finally {
+        inflight--;
+        const left = (pending.get(name) ?? 1) - 1;
+        if (left > 0) pending.set(name, left); else pending.delete(name);
+      }
     };
     // Rounded up, so the guest's own deadline never falls before this side's timer: its
     // answer at that moment is a wall-clock failure, which should read as the timeout.
@@ -490,7 +501,7 @@ export async function executeCode(options: {
   } catch (error) {
     if (controller.signal.aborted) throw controller.signal.reason;
     // The guest's own deadline can report just before this side's timer fires.
-    if (performance.now() - started >= timeoutMs) throw new Error(timedOut);
+    if (performance.now() - started >= timeoutMs) throw new Error(timedOut());
     throw error;
   } finally {
     clearTimeout(timer);

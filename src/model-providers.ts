@@ -18,7 +18,9 @@ import { CUSTOM_APIS, type CustomModel, type CustomProvider, type CustomProvider
  * changed key or address applies at once; the address is called only through the outbound guard. Calls
  * are the tenant's own (never the platform's credit), costing what the models' declared pricing says.
  */
-export type ProviderInput = { type: CustomProvider["type"]; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; models: CustomModel[] };
+export type ProviderInput = { type: CustomProvider["type"]; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; auth?: ProviderAuth; models: CustomModel[] };
+/** How the key goes: `x-api-key` (Anthropic's own way), or `Authorization: Bearer` (OpenAI's, and some Anthropic gateways'). */
+export type ProviderAuth = "x-api-key" | "bearer";
 
 /** A tenant's providers reach other nodes within this long; the writing node's at once. */
 const CACHE_MS = 5_000;
@@ -76,11 +78,13 @@ function model(value: any, index: number): CustomModel {
 /** A provider as a tenant sends it, checked: `apiKey` and `headers` left out keep what is stored, null removes them. */
 export function providerInput(value: any): ProviderInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid(`Body must be {type: ${CUSTOM_APIS.join(" | ")}, baseUrl, apiKey?, headers?, models}`);
-  for (const key of Object.keys(value)) if (!["type", "baseUrl", "apiKey", "headers", "models"].includes(key)) invalid(`Unknown field ${key}`);
-  const { baseUrl, apiKey, headers, models } = value;
+  for (const key of Object.keys(value)) if (!["type", "baseUrl", "apiKey", "headers", "auth", "models"].includes(key)) invalid(`Unknown field ${key}`);
+  const { baseUrl, apiKey, headers, auth, models } = value;
   // openai-compatible, the one type there was, is Chat Completions.
   const type = value.type === "openai-compatible" ? "openai-completions" : value.type;
   if (!CUSTOM_APIS.includes(type)) invalid(`type must be one of ${CUSTOM_APIS.join(", ")}: the API the server speaks`);
+  if (auth !== undefined && auth !== "x-api-key" && auth !== "bearer") invalid('auth must be "x-api-key" or "bearer": how the key is sent');
+  if (auth === "x-api-key" && type !== "anthropic-messages") invalid('auth "x-api-key" is for anthropic-messages; OpenAI\'s APIs take the key as a bearer token');
   if (apiKey !== undefined && apiKey !== null && (typeof apiKey !== "string" || !apiKey.trim() || apiKey.length > 4096 || /\s/.test(apiKey))) invalid("apiKey must be a non-empty string without spaces, or null for a server that takes none");
   if (headers !== undefined && headers !== null) {
     if (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.keys(headers).length > 20) invalid("headers must be an object of at most 20 header names and string values");
@@ -93,7 +97,7 @@ export function providerInput(value: any): ProviderInput {
   const checked: CustomModel[] = models.map(model);
   const twice = checked.find((entry, index) => checked.findIndex(other => other.id === entry.id) !== index);
   if (twice) invalid(`models lists ${twice.id} twice`);
-  return { type, baseUrl: endpoint(baseUrl), ...(apiKey !== undefined ? { apiKey } : {}), ...(headers !== undefined ? { headers } : {}), models: checked };
+  return { type, baseUrl: endpoint(baseUrl), ...(apiKey !== undefined ? { apiKey } : {}), ...(headers !== undefined ? { headers } : {}), ...(auth === "bearer" && type === "anthropic-messages" ? { auth } : {}), models: checked };
 }
 
 /** A declared model as listings show it, its defaults filled in. */
@@ -104,8 +108,10 @@ const shownModel = (entry: CustomModel) => ({
   ...(entry.compat ? { compat: entry.compat } : {}),
 });
 
-type Row = { scope: string; name: string; config: CustomProvider & { headers?: string[] }; sealed: Sealed; last4: string; set_at: string | number };
-export type ProviderCredentials = { apiKey?: string; baseUrl: string; headers?: Record<string, string> };
+type Row = { scope: string; name: string; config: CustomProvider & { headers?: string[]; auth?: ProviderAuth }; sealed: Sealed; last4: string; set_at: string | number };
+export type ProviderCredentials = { apiKey?: string; baseUrl: string; headers?: Record<string, string>; bearer?: true };
+/** How a provider's key goes: bearer for OpenAI's APIs; for Anthropic Messages, x-api-key unless it says bearer. */
+const authOf = (config: Row["config"]): ProviderAuth => typeOf(config) === "anthropic-messages" && config.auth !== "bearer" ? "x-api-key" : "bearer";
 /** Rows stored before there were three APIs say openai-compatible: Chat Completions. */
 const typeOf = (config: Row["config"]) => (config.type as string) === "openai-compatible" ? "openai-completions" : config.type;
 
@@ -132,7 +138,7 @@ export class ModelProviders {
     const kept = current ? JSON.parse(this.accounts.unseal(aad(tenant, name, scope), current.sealed)) as { apiKey?: string; headers?: Record<string, string> } : {};
     const apiKey = input.apiKey === undefined ? kept.apiKey : input.apiKey ?? undefined;
     const headers = input.headers === undefined ? kept.headers : input.headers && Object.keys(input.headers).length ? input.headers : undefined;
-    const config = { type: input.type, baseUrl: input.baseUrl, models: input.models, ...(headers ? { headers: Object.keys(headers) } : {}) };
+    const config = { type: input.type, baseUrl: input.baseUrl, models: input.models, ...(headers ? { headers: Object.keys(headers) } : {}), ...(input.auth ? { auth: input.auth } : {}) };
     await this.db.query(`
       insert into model_providers (tenant, scope, name, config, sealed, last4, set_at) values ($1, $2, $3, $4, $5, $6, $7)
       on conflict (tenant, scope, name) do update set config = excluded.config, sealed = excluded.sealed, last4 = excluded.last4, set_at = excluded.set_at`,
@@ -166,7 +172,7 @@ export class ModelProviders {
     return (await this.rows(tenant, scope, true)).filter(row => row.scope === scope).map(row => ({
       id: row.name, kind: "model" as const, models: row.config.models.length, apiKey: true,
       key: row.last4 ? { provider: row.name, source: "tenant" as const, last4: row.last4, setAt: Number(row.set_at) } : null,
-      custom: { type: typeOf(row.config), baseUrl: row.config.baseUrl, ...(row.config.headers?.length ? { headers: row.config.headers } : {}), models: row.config.models.map(shownModel) },
+      custom: { type: typeOf(row.config), baseUrl: row.config.baseUrl, auth: authOf(row.config), ...(row.config.headers?.length ? { headers: row.config.headers } : {}), models: row.config.models.map(shownModel) },
     }));
   }
 
@@ -183,7 +189,8 @@ export class ModelProviders {
     const row = this.visible(await this.rows(tenant, scope ?? ""), scope).find(entry => entry.name === name);
     if (!row) return undefined;
     const { apiKey, headers } = JSON.parse(this.accounts.unseal(aad(tenant, name, row.scope), row.sealed)) as { apiKey?: string; headers?: Record<string, string> };
-    return { baseUrl: row.config.baseUrl, ...(apiKey ? { apiKey } : {}), ...(headers ? { headers } : {}) };
+    // Anthropic Messages sends x-api-key; a provider that says bearer takes it as Authorization instead.
+    return { baseUrl: row.config.baseUrl, ...(apiKey ? { apiKey } : {}), ...(headers ? { headers } : {}), ...(typeOf(row.config) === "anthropic-messages" && authOf(row.config) === "bearer" ? { bearer: true as const } : {}) };
   }
 
   /** The providers a scope sees, by name: its own, then the tenant's it has none of that name for. */

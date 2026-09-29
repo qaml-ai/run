@@ -407,7 +407,8 @@ export class ToolSources {
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}) };
         const callFiles = files(name, runId);
         if (builtins.includes(name)) {
-          const services = { outbound: this.outbound, scheduler: this.options.scheduler, search: this.options.search, render: this.options.render };
+          // web_fetch reads URLs the model chooses: never the operator's own services, however they are allowed for configured ones.
+          const services = { outbound: this.outbound.withoutOrigins(), scheduler: this.options.scheduler, search: this.options.search, render: this.options.render };
           return runBuiltin(services, { ...context, ...(sources?.webSearch ? { searchProviders: sources.webSearch.providers } : {}), ...(callFiles ? { files: callFiles } : {}) }, name, args, signal);
         }
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));

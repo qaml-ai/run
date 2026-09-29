@@ -142,7 +142,8 @@ const github = secrets.github && {
 const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 
-// Every call to a URL a tenant configured (MCP servers, web_fetch) goes through one guard: public addresses only.
+// Every call to a URL a tenant configured (MCP servers, web_fetch) goes through one guard: public addresses only, but for
+// origins the operator allows (AGENT_OUTBOUND_ALLOW_ORIGINS), which web_fetch, search and render never reach (`withoutOrigins`).
 const outbound = outboundFromEnvironment();
 const mcp = new McpConnections({ outbound });
 // Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
@@ -151,17 +152,18 @@ const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
 // platform's, whose calls are charged to credit at that provider's price.
 const webKey = async (tenant: string, provider: string) => {
   const resolved = await accounts.providerKey(tenant, provider);
-  return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
+  // Only the platform's own key is the platform's: an admin's key for the tenant (its apiKeys) is the tenant's to account for.
+  return resolved && { key: resolved.key, platform: resolved.source === "platform" };
 };
 const searchTimeoutMs = Number(process.env.AGENT_WEB_SEARCH_TIMEOUT_MS ?? 5_000);
 if (!Number.isInteger(searchTimeoutMs) || searchTimeoutMs < 100 || searchTimeoutMs > 60_000) throw new Error("AGENT_WEB_SEARCH_TIMEOUT_MS must be an integer between 100 and 60000");
 const search = new WebSearch({
-  outbound, ...searchProvidersFromEnvironment(), key: webKey, timeoutMs: searchTimeoutMs,
+  outbound: outbound.withoutOrigins(), ...searchProvidersFromEnvironment(), key: webKey, timeoutMs: searchTimeoutMs,
   price: provider => accounts.billing.pricing.webSearch[provider],
   onSearch: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
 });
 const render = new WebRender({
-  outbound, key: webKey, price: accounts.billing.pricing.webRender, endpoint: process.env.AGENT_FIRECRAWL_SCRAPE_URL,
+  outbound: outbound.withoutOrigins(), key: webKey, price: accounts.billing.pricing.webRender, endpoint: process.env.AGENT_FIRECRAWL_SCRAPE_URL,
   onRender: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
 });
 const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; }, get volumes() { return volumes; }, get links() { return links; } });

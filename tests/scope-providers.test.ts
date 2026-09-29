@@ -79,3 +79,28 @@ test("a key scope's providers serve only its agents: each scope its own, shadowi
   assert.equal((await r.call("/v1/key-scopes/org_a/model-providers/custom", { method: "DELETE" })).status, 200);
   assert.equal((await r.call("/v1/key-scopes/org_a/model-providers/custom", { method: "DELETE" })).status, 404);
 });
+
+test("an Anthropic Messages provider can take its key as a bearer token, as some gateways do; Authorization stays the runtime's", async t => {
+  const provider = await gateway(t, () => anthropic([{ type: "text", text: "Bearer ok." }], "end_turn"));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  const body = (auth?: string) => ({ type: "anthropic-messages", baseUrl: `${provider.url}/proxy`, apiKey: "sk-gateway", ...(auth ? { auth } : {}), models: [{ id: "claude-house", contextWindow: 200_000 }] });
+  const set = await r.call("/v1/key-scopes/org_p/model-providers/proxy", { method: "PUT", body: body("bearer") });
+  assert.equal(set.status, 200, set.text);
+  assert.equal(set.json.custom.auth, "bearer");
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "org_p", model: "proxy/claude-house" } })).json.id;
+  assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Bearer ok.");
+  assert.equal(provider.requests.at(-1)!.headers.authorization, "Bearer sk-gateway");
+  assert.equal(provider.requests.at(-1)!.headers["x-api-key"], undefined);
+
+  // Saved again without auth: x-api-key, Anthropic's own way.
+  assert.equal((await r.call("/v1/key-scopes/org_p/model-providers/proxy", { method: "PUT", body: body() })).json.custom.auth, "x-api-key");
+  const plain = (await r.call("/v1/agents", { body: { keyScope: "org_p", model: "proxy/claude-house" } })).json.id;
+  assert.equal((await r.prompt(plain, "Hi")).outcome.result.reply, "Bearer ok.");
+  assert.equal(provider.requests.at(-1)!.headers["x-api-key"], "sk-gateway");
+  assert.equal(provider.requests.at(-1)!.headers.authorization, undefined);
+
+  // OpenAI's APIs take bearer only, and no header can stand in for the key.
+  assert.match((await r.call("/v1/providers/other", { method: "PUT", body: { type: "openai-responses", baseUrl: `${provider.url}/v1`, auth: "x-api-key", models: [{ id: "m", contextWindow: 8192 }] } })).json.error, /auth "x-api-key" is for anthropic-messages/);
+  assert.match((await r.call("/v1/providers/other", { method: "PUT", body: { ...body(), headers: { Authorization: "Bearer sk-gateway" } } })).json.error, /headers cannot set Authorization/);
+  assert.match((await r.call("/v1/providers/other", { method: "PUT", body: body("basic") })).json.error, /auth must be "x-api-key" or "bearer"/);
+});

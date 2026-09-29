@@ -704,6 +704,14 @@
               "baseUrl": {
                 "type": "string"
               },
+              "auth": {
+                "type": "string",
+                "enum": [
+                  "x-api-key",
+                  "bearer"
+                ],
+                "description": "How the key is sent"
+              },
               "headers": {
                 "type": "array",
                 "items": {
@@ -721,6 +729,7 @@
             "required": [
               "type",
               "baseUrl",
+              "auth",
               "models"
             ],
             "description": "A provider of the tenant's own (PUT /v1/providers/{name}) or of a key scope (PUT /v1/key-scopes/{scope}/model-providers/{name}): its API, where it is, and the models it declares"
@@ -893,6 +902,14 @@
               "type": "string"
             },
             "description": "Headers for each call, sealed like the key; left out keeps the stored ones, null removes them"
+          },
+          "auth": {
+            "type": "string",
+            "enum": [
+              "x-api-key",
+              "bearer"
+            ],
+            "description": "anthropic-messages only: \"bearer\" sends the key as Authorization: Bearer, as some gateways and proxies take it, instead of x-api-key (the default). Saved again without it, x-api-key"
           },
           "models": {
             "type": "array",

@@ -136,7 +136,7 @@ export const PROVIDER_ROOTS: Record<string, string> = { openrouter: "https://ope
  * the response's usage as the body streams past: OpenRouter's `usage.cost` (plus the upstream cost
  * of a key brought to OpenRouter), which Pi does not keep. `sink.cost` has it once the body is read.
  */
-function callFetch(sink: { cost?: number }, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; base?: typeof fetch } = {}): typeof fetch {
+function callFetch(sink: { cost?: number }, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; bearer?: string; base?: typeof fetch } = {}): typeof fetch {
   const read = (line: string) => {
     if (!line.startsWith("data:") && !line.startsWith("{") || !line.includes('"cost"')) return;
     try {
@@ -158,6 +158,11 @@ function callFetch(sink: { cost?: number }, plan: { rebase?: { from: string[]; t
       const without = new Headers(headers);
       for (const name of ["authorization", "x-api-key"]) without.delete(name);
       headers = without;
+    } else if (plan.bearer) {
+      const bearer = new Headers(headers);
+      bearer.delete("x-api-key");
+      bearer.set("authorization", `Bearer ${plan.bearer}`);
+      headers = bearer;
     }
     const response = await (plan.base ?? fetch)(url, { ...init, headers });
     if (!response.body) return response;
@@ -191,7 +196,7 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
     const callOptions = identityOptions(model, { ...options, headers: { ...options?.headers, ...modelHeaders } }, credentials.apiKey);
     return [target, callOptions.fetch || !FETCH_APIS.includes(target.api) ? callOptions : { ...callOptions, fetch: callFetch(sink) }];
   }
-  const { apiKey, baseUrl, headers, region } = credentials;
+  const { apiKey, baseUrl, headers, region, bearer } = credentials;
   const fetchable = FETCH_APIS.includes(model.api);
   if (!apiKey && !fetchable) throw new Error(`A key scope entry without an apiKey cannot call ${model.provider}'s ${model.api} API`);
   const callOptions = {
@@ -206,7 +211,7 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
   // An endpoint the tenant gave is called through the outbound guard, as every URL a tenant gives is: a key scope's
   // baseUrl, and whatever a model not of Pi's providers (a tenant's own provider's) was made with.
   const tenantGiven = !!baseUrl || !getProviders().includes(model.provider as never);
-  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl } } : {}), ...(tenantGiven ? { base: guardedModelFetch() } : {}), keyless: !apiKey }) }];
+  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl } } : {}), ...(tenantGiven ? { base: guardedModelFetch() } : {}), keyless: !apiKey, ...(bearer && apiKey ? { bearer: apiKey } : {}) }) }];
 }
 
 /**

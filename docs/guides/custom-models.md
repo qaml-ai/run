@@ -29,6 +29,7 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
 | `type` | the API it speaks: `"openai-completions"`, OpenAI Chat Completions (`POST <baseUrl>/chat/completions`); `"openai-responses"`, OpenAI Responses (`POST <baseUrl>/responses`); `"anthropic-messages"`, Anthropic Messages (`POST <baseUrl>/v1/messages`). All stream |
 | `baseUrl` | the API root, public and `https` (see [Where the server can be](#where-the-server-can-be)): with `/v1` for OpenAI's APIs (`https://api.example.com/v1`), without for Anthropic's (`https://api.example.com`) |
 | `apiKey` | sent as `Authorization: Bearer <apiKey>` (`x-api-key` for Anthropic Messages). Leave it out when you save again to keep the stored key; `null` removes it, for a server that takes none |
+| `auth` | Anthropic Messages only: `"bearer"` sends the key as `Authorization: Bearer <apiKey>`, as some Anthropic-compatible gateways and proxies take it, instead of `x-api-key` (the default). Saved again without it, `x-api-key` |
 | `headers` | more headers for each call, e.g. `{"api-key": "…"}` for a server that takes its key that way. Stored sealed like the key; left out keeps them, `null` removes them. The runtime sets `Authorization` itself |
 | `models` | the models to use, 1 to 200 (below) |
 
@@ -141,10 +142,10 @@ of it, such as a tunnel. Keep it behind a key: anyone with the address can call
 it.
 
 A [self-hosted runtime](../operations/self-host.md#networking) can call servers
-on its own network: its operator names their range in
-`AGENT_OUTBOUND_ALLOW_CIDRS` (e.g. `10.1.2.0/24` for a vLLM or Ollama host), and
-sets `AGENT_OUTBOUND_ALLOW_HTTP=true` if they have no TLS. That opens the range
-to every agent's tools too, so keep it narrow.
+on its own network: its operator names each one's exact origin in
+`AGENT_OUTBOUND_ALLOW_ORIGINS` (e.g. `http://10.1.2.3:8000` for a vLLM or
+Ollama host), which allows that origin alone, over `http` too, and never to
+`web_fetch`.
 
 ## Billing
 
