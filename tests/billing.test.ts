@@ -16,6 +16,7 @@ import { postgresTail } from "../src/log-tail.ts";
 import { testDatabase } from "./database.ts";
 import { attachSilently, listen, runtime, toolCall, until } from "./runtime-server.ts";
 import { formEncode, signWebhook, Stripe } from "../src/stripe.ts";
+import { usageCost } from "../src/webhooks.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const PAYG = "payg-operator-token-at-least-24-chars";
@@ -46,17 +47,65 @@ async function assertLedgerMatchesBalances(db: Db) {
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
 /** A response of `cost` USD that ran on the platform's key (or the tenant's own). */
-const response = (cost: number, platform = true) => ({ provider: "openrouter", model: "m", usage: { input: 10, output: 1, cost: { total: cost } }, platform });
+const response = (cost: number, platform = true) => ({ provider: "anthropic", model: "m", usage: { input: 10, output: 1, cost: { total: cost } }, platform });
 
 test("pricing: defaults, environment overrides in USD, and the purchase fee in whole cents", () => {
   assert.equal(DEFAULT_PRICING.agentHour, 10_000);
   assert.equal(DEFAULT_PRICING.storageGbMonth, 100_000);
+  assert.equal(DEFAULT_PRICING.openrouterCreditMultiplier, 1.055);
+  assert.equal(pricingFromEnvironment({ AGENT_OPENROUTER_CREDIT_MULTIPLIER: "1" }).openrouterCreditMultiplier, 1);
+  assert.equal(pricingFromEnvironment({ AGENT_OPENROUTER_CREDIT_MULTIPLIER: "1.1246" }).openrouterCreditMultiplier, 1.1246);
+  for (const value of ["-1", "NaN", "Infinity", "no"]) assert.throws(() => pricingFromEnvironment({ AGENT_OPENROUTER_CREDIT_MULTIPLIER: value }), /non-negative/);
   assert.equal(purchaseFee(DEFAULT_PRICING, micros(10)), micros(0.55));
   assert.equal(purchaseFee(DEFAULT_PRICING, micros(5)), micros(0.28), "27.5 cents rounds to 28");
   const custom = pricingFromEnvironment({ AGENT_PRICE_AGENT_HOUR_USD: "0.02", AGENT_CREDIT_FEE_PERCENT: "3", AGENT_FREE_MAX_AGENTS: "1" });
   assert.deepEqual([custom.agentHour, custom.purchaseFeeBps, custom.free.maxAgents, custom.storageGbMonth], [20_000, 300, 1, 100_000]);
   assert.throws(() => pricingFromEnvironment({ AGENT_PRICE_AGENT_HOUR_USD: "-1" }), /non-negative/);
   assert.throws(() => pricingFromEnvironment({ AGENT_CREDIT_MIN_PURCHASE_USD: "0.1" }), /at least 0.50/);
+});
+
+test("provider-reported cost wins over the catalog, including zero; invalid amounts cannot poison billing", () => {
+  assert.deepEqual(usageCost({ providerCost: 0.02, cost: { total: 0.15 } }), { usd: 0.02, source: "provider" });
+  assert.deepEqual(usageCost({ providerCost: 0, cost: { total: 0.15 } }), { usd: 0, source: "provider" });
+  for (const providerCost of [-1, NaN, Infinity, "0.01", undefined]) {
+    assert.deepEqual(usageCost({ providerCost, cost: { total: 0.15 } }), { usd: 0.15, source: "catalog" });
+  }
+  assert.deepEqual(usageCost({ cost: { total: -1 } }), { usd: 0, source: "catalog" });
+});
+
+test("platform model usage passes through actual cost and funding, including compaction, without charging customer-owned keys", async () => {
+  const { db } = await testDatabase();
+  const accounts = await accountsOn(db);
+  await accounts.billing.post([{ tenant: "payg", kind: "grant", amount: micros(1), key: "actual-cost-grant" }]);
+  const actual = (providerCost: number, platform = true) => ({ ...response(0.15, platform), provider: "openrouter", usage: { cost: { total: 0.15 }, providerCost } });
+  accounts.recordUsage("payg", "a", actual(0.004));
+  accounts.recordUsage("payg", "a", { ...actual(0.01), kind: "compaction" });
+  accounts.recordUsage("payg", "a", actual(0));
+  accounts.recordUsage("payg", "a", actual(0.3, false));
+  accounts.recordUsage("payg", "a", { ...actual(0.02), provider: "anthropic" });
+  // BYOK through our OpenRouter account: $0.10 is paid directly upstream, only $0.005 uses OpenRouter credits.
+  accounts.recordUsage("payg", "a", { ...actual(0.105), usage: { cost: { total: 1 }, providerCost: 0.105, providerCreditCost: 0.005 } });
+  const charged = micros(0.004 * 1.055 + 0.01 * 1.055 + 0.02 + 0.1 + 0.005 * 1.055);
+  assert.equal(accounts.pendingCharges("payg"), charged);
+  await accounts.flushUsage();
+  assert.equal(await balance(db, "payg"), micros(1) - charged);
+  const entries = (await accounts.billing.ledger("payg")).entries.filter(row => row.kind === "usage");
+  assert.equal(entries.reduce((sum, row) => sum + Number(row.metadata.tokens), 0), micros(0.139));
+  assert.equal(entries.reduce((sum, row) => sum + Number(row.metadata.funding ?? 0), 0), micros(0.019 * 0.055));
+  const usage = await accounts.usage("payg", Date.now() - DAY);
+  assert.ok(Math.abs(usage.totals.cost - 0.439) < 1e-12);
+  assert.ok(Math.abs(usage.totals.platformCost - charged / 1e6) < 1e-12);
+  assert.ok(Math.abs(usage.days.filter(row => row.kind === "compaction")[0].platformCost - 0.01 * 1.055) < 1e-12);
+  await assertLedgerMatchesBalances(db);
+});
+
+test("a waived funding fee charges exactly the reported usage amount", async () => {
+  const { db } = await testDatabase();
+  const accounts = await accountsOn(db, { ...DEFAULT_PRICING, openrouterCreditMultiplier: 1 });
+  accounts.recordUsage("payg", "a", { ...response(0.15), provider: "openrouter", usage: { providerCost: 0.0123 } });
+  await accounts.flushUsage();
+  assert.equal(await balance(db, "payg"), -micros(0.0123));
+  assert.equal((await accounts.billing.ledger("payg")).entries[0].metadata.funding, undefined);
 });
 
 test("the ledger posts each idempotency key once and keeps the balance equal to its entries", async () => {
@@ -327,7 +376,7 @@ test("tracked storage: concurrent nodes add up, dedup holds across nodes, purged
   assert.deepEqual((await db.query("select kind, owner, bytes from storage_usage order by kind, owner")).rows.map(row => [row.kind, row.owner, Number(row.bytes)]), [["tenant", "carol", chunkBytes]]);
 });
 
-test("a prepaid tenant pays list price for tokens on the platform's key; the turn that spends the last credit ends, and new runs get 402", async t => {
+test("a prepaid tenant pays the catalog fallback plus funding when actual cost is absent; spent credit stops runs", async t => {
   const { call, prompt, model } = await runtime(t, (_body, index) => ({
     // Each response costs $0.15: 5000 input tokens of openai/gpt-5.5-pro.
     ...(index < 2 ? toolCall("js_exec", { code: `return ${index}` }, `call_${index}`) : { role: "assistant", content: "finished" }),
@@ -359,8 +408,8 @@ test("a prepaid tenant pays list price for tokens on the platform's key; the tur
 
   const billing = (await call("/v1/billing", { token: PAYG })).json;
   assert.equal(billing.billing, "prepaid");
-  assert.equal(billing.balance, 200_000 - 300_000);
-  assert.equal(billing.month.usage, -300_000);
+  assert.equal(billing.balance, 200_000 - 316_500);
+  assert.equal(billing.month.usage, -316_500);
   assert.equal(billing.month.adjustment, 200_000);
   assert.equal(billing.rates.agentHour, 0);
   const usage = (await call("/v1/usage", { token: PAYG })).json;
@@ -373,6 +422,30 @@ test("a prepaid tenant pays list price for tokens on the platform's key; the tur
   assert.equal([...page.entries, ...rest.entries].reduce((sum: number, entry: any) => sum + entry.amount, 0), billing.balance);
   // Unbilled tenants see their mode and no balance.
   assert.equal((await call("/v1/billing", { token: OPS })).json.billing, "none");
+});
+
+test("streamed OpenRouter actual cost reaches the credit ledger instead of the catalog estimate", async t => {
+  const costs = [
+    { cost: 0.02 },
+    { cost: 0.005, is_byok: true, cost_details: { upstream_inference_cost: 0.1 } },
+    { cost: 0 },
+  ];
+  const r = await runtime(t, (_body, index) => ({ role: "assistant", content: "done", usage: { prompt_tokens: 5000, completion_tokens: 0, ...costs[index] } }),
+    { AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0" }, tenantsFile);
+  await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: micros(1), reason: "test" }, token: OPS });
+  const agent = (await r.call("/v1/agents", { body: {}, token: PAYG })).json;
+  assert.equal((await r.prompt(agent.id, "go", PAYG)).outcome.result.reply, "done");
+  const summary = (await r.call("/v1/billing", { token: PAYG })).json;
+  assert.equal(summary.balance, micros(1 - 0.02 * 1.055));
+  assert.equal(summary.rates.openrouterCreditMultiplier, 1.055);
+  const usage = (await r.call("/v1/usage", { token: PAYG })).json;
+  assert.equal(usage.totals.cost, 0.02);
+  assert.ok(Math.abs(usage.totals.platformCost - 0.02 * 1.055) < 1e-12);
+  assert.equal((await r.prompt(agent.id, "again", PAYG)).outcome.result.reply, "done");
+  const afterByok = (await r.call("/v1/billing", { token: PAYG })).json;
+  assert.equal(afterByok.balance, micros(1 - 0.025 * 1.055 - 0.1), "funding applies only to OpenRouter's portion of a BYOK response");
+  assert.equal((await r.prompt(agent.id, "free response", PAYG)).outcome.result.reply, "done");
+  assert.equal((await r.call("/v1/billing", { token: PAYG })).json.balance, afterByok.balance, "reported zero must not fall back to the catalog estimate");
 });
 
 test("responses on the tenant's own key cost no credit for tokens, but time in turns is charged", async t => {

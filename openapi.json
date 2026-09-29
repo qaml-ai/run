@@ -2765,7 +2765,8 @@
                 "type": "number"
               },
               "cost": {
-                "type": "number"
+                "type": "number",
+                "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
               },
               "platformResponses": {
                 "type": "number",
@@ -2773,7 +2774,7 @@
               },
               "platformCost": {
                 "type": "number",
-                "description": "Their cost (USD, list prices); prepaid tenants pay it from credit"
+                "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
               }
             },
             "required": [
@@ -2808,7 +2809,8 @@
                   "type": "number"
                 },
                 "cost": {
-                  "type": "number"
+                  "type": "number",
+                  "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
                 },
                 "platformResponses": {
                   "type": "number",
@@ -2816,7 +2818,7 @@
                 },
                 "platformCost": {
                   "type": "number",
-                  "description": "Their cost (USD, list prices); prepaid tenants pay it from credit"
+                  "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
                 },
                 "day": {
                   "type": "string"
@@ -2936,6 +2938,11 @@
                 "type": "integer",
                 "description": "Per GB-month stored, charged daily, in micro-USD (1 USD = 1000000)"
               },
+              "openrouterCreditMultiplier": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Dollars paid per dollar of OpenRouter credit; applied to platform model calls and OpenRouter tool ranking, separately from the checkout fee"
+              },
               "purchaseFeeBps": {
                 "type": "integer",
                 "description": "Fee on credit purchases, in basis points"
@@ -2979,13 +2986,14 @@
             "required": [
               "agentHour",
               "storageGbMonth",
+              "openrouterCreditMultiplier",
               "purchaseFeeBps",
               "minPurchase",
               "maxPurchase",
               "webSearch",
               "webRender"
             ],
-            "description": "Model tokens are charged at the provider's list price when they run on the platform's keys; tools.search's ranking by meaning at what its providers charge"
+            "description": "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost"
           }
         },
         "required": [
@@ -3022,7 +3030,7 @@
           "metadata": {
             "type": "object",
             "additionalProperties": {},
-            "description": "usage: one entry per UTC hour (`hour`, its start), updated until the hour ends, with the hour's tokens (micro-USD on platform keys) and activeMs; storage: day and bytes"
+            "description": "usage: one entry per UTC hour (`hour`, its start), updated until the hour ends, with tokens (micro-USD on platform keys), funding (provider credit funding adjustment in micro-USD) and activeMs; storage: day and bytes"
           },
           "createdAt": {
             "type": "number"

@@ -389,9 +389,9 @@ export const OAuthGrant = z.object({
 export const TokenCreated = Token.extend({ token: z.string().openapi({ description: "The secret; shown only once" }) }).openapi("TokenCreated");
 
 const Totals = z.object({
-  responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), cost: z.number(),
+  responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), cost: z.number().openapi({ description: "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding" }),
   platformResponses: z.number().openapi({ description: "Responses that ran on a key that is not the tenant's own" }),
-  platformCost: z.number().openapi({ description: "Their cost (USD, list prices); prepaid tenants pay it from credit" }),
+  platformCost: z.number().openapi({ description: "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit" }),
 });
 export const Usage = z.object({
   since: z.number(),
@@ -597,7 +597,7 @@ export const LedgerEntry = z.object({
   id: z.number().int(),
   kind: z.enum(["grant", "purchase", "usage", "storage", "adjustment", "refund"]),
   amount: micros("Positive adds credit, negative spends it"),
-  metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: one entry per UTC hour (`hour`, its start), updated until the hour ends, with the hour's tokens (micro-USD on platform keys) and activeMs; storage: day and bytes" }),
+  metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: one entry per UTC hour (`hour`, its start), updated until the hour ends, with tokens (micro-USD on platform keys), funding (provider credit funding adjustment in micro-USD) and activeMs; storage: day and bytes" }),
   createdAt: z.number(),
 }).openapi("LedgerEntry");
 export const Ledger = z.object({
@@ -618,11 +618,12 @@ export const Billing = z.object({
   rates: z.object({
     agentHour: micros("Per hour an agent spends in a turn, metered continuously"),
     storageGbMonth: micros("Per GB-month stored, charged daily"),
+    openrouterCreditMultiplier: z.number().nonnegative().openapi({ description: "Dollars paid per dollar of OpenRouter credit; applied to platform model calls and OpenRouter tool ranking, separately from the checkout fee" }),
     purchaseFeeBps: z.number().int().openapi({ description: "Fee on credit purchases, in basis points" }),
     minPurchase: micros("Smallest purchase"), maxPurchase: micros("Largest purchase"),
     webSearch: z.object({ exa: micros("Per search Exa answers"), brave: micros("Per search Brave answers"), parallel: micros("Per search Parallel answers") }).openapi({ description: "Per web_search on the platform's key for the provider that answered" }),
     webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
-  }).openapi({ description: "Model tokens are charged at the provider's list price when they run on the platform's keys; tools.search's ranking by meaning at what its providers charge" }),
+  }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost" }),
 }).openapi("Billing");
 export const AdjustmentInput = z.object({
   tenant: z.string(),

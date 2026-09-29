@@ -223,6 +223,38 @@ test("rerank stages come from AGENT_TOOL_SEARCH", () => {
   assert.throws(() => rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev,jev", AGENT_TOOL_SEARCH_API_KEY: "k" }), /twice/);
 });
 
+test("OpenRouter ranking passes through funding costs once, including warm-up and BYOK, while custom endpoints stay at reported cost", async t => {
+  let usage: any = { cost: 0.02 };
+  const urls: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string, init: RequestInit) => {
+    urls.push(input);
+    const body = JSON.parse(String(init.body));
+    const result = body.input
+      ? { data: body.input.map((_: string, index: number) => ({ index, embedding: [1, 0] })) }
+      : { answers: Object.fromEntries(Object.keys(body.questions).map(key => [key, { type: "noul", noul: 0.9 }])) };
+    return new Response(JSON.stringify({ ...result, usage }), { headers: { "Content-Type": "application/json" } });
+  });
+  const stages = rerankersFromEnv({ AGENT_TOOL_SEARCH: "embeddings,jev" }, "fixture", 1.055);
+  const tools = catalog.slice(0, 2);
+  const warmed: number[] = [];
+  stages[0].warm!(tools, usd => warmed.push(usd));
+  await until(() => warmed.length === 1, "warm-up metered");
+  assert.ok(Math.abs(warmed[0] - 0.0211) < 1e-12);
+  let charged = 0;
+  await searchTools(tools, { query: "refund" }, { rerankers: stages, onRanked: ({ cost }) => charged = cost });
+  assert.ok(Math.abs(charged - 0.0422) < 1e-12, "one query embedding and one Jev call, with funding exactly once");
+  assert.ok(urls.every(url => url.startsWith("https://openrouter.ai/api/v1/")));
+
+  usage = { cost: 0.005, is_byok: true, cost_details: { upstream_inference_cost: 0.1 } };
+  await searchTools(tools, { query: "refund" }, { rerankers: [stages[1]], onRanked: ({ cost }) => charged = cost });
+  assert.ok(Math.abs(charged - 0.105275) < 1e-12, "only the OpenRouter credit part gets the funding multiplier");
+
+  usage = { cost: 0.02 };
+  const custom = rerankersFromEnv({ AGENT_TOOL_SEARCH: "jev", AGENT_TOOL_SEARCH_URL: "https://openrouter.ai.example/v1" }, "fixture", 1.055);
+  await searchTools(tools, { query: "refund" }, { rerankers: custom, onRanked: ({ cost }) => charged = cost });
+  assert.equal(charged, 0.02, "a different endpoint gets no OpenRouter funding fee");
+});
+
 test("a search while the catalog is still warming waits for those embeddings instead of repeating them", async t => {
   const inputs: number[] = [];
   let release!: () => void;

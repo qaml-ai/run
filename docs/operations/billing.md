@@ -8,9 +8,12 @@ runs on the platform's keys, the tenants file's top-level `platformKeys`
 (`{"anthropic": "...", "openrouter": "..."}`, like a tenant's `apiKeys`: one key
 per provider, never a `*` wildcard), and pays for:
 
-- **Model tokens** on the platform's keys, at the provider's list price from the
-  model catalog (no markup), turns and compaction alike. Responses on the tenant's
-  own key cost no credit. `/v1/usage` reports `platformResponses` and `platformCost`.
+- **Model usage** on the platform's keys, at the provider's reported cost, or the
+  model catalog's estimate when no cost is reported, turns and compaction alike.
+  Provider credit funding costs are passed through too, with no runtime markup.
+  Responses on the tenant's own key cost no credit. For model calls, `/v1/usage`
+  reports raw usage `cost` and `platformCost` including provider credit funding
+  costs. Tool-ranking costs already include their funding in both totals.
 - **Agent time**, $0.01 per hour an agent spends in a run (model calls and tool
   execution, not idle loaded time), metered continuously, with or without its own key.
 - **Web searches and page renders** on the platform's keys (`platformKeys.exa`,
@@ -23,6 +26,21 @@ per provider, never a `*` wildcard), and pays for:
   (transcripts, journals, volume trees and snapshots, file chunks, each chunk once
   however many files share it), charged once a UTC day, on one node, for that day.
 
+**OpenRouter funding.** OpenRouter reports usage in provider credits; buying those
+credits is a separate expense. `AGENT_OPENROUTER_CREDIT_MULTIPLIER` is the dollars
+we pay per dollar of provider credit. Its default, `1.055`, matches the published
+Standard card funding fee of 5.5%. Set it to the platform account's actual effective
+cost: `1` when funding fees are waived, `1.05` for standard crypto funding, or the
+actual amount paid divided by credits received when minimum fees, discounts, or
+non-recoverable taxes change that ratio. Do not apply the $0.80 minimum to each
+model call: it applies to our credit purchases. The multiplier applies only to
+platform OpenRouter model usage and tool ranking through OpenRouter. On OpenRouter
+BYOK calls, funding applies only to OpenRouter credits, not to the separately paid
+upstream inference. Other model providers and customer-owned keys get no OpenRouter
+funding adjustment. The multiplier is independent of our checkout processing fee.
+See [OpenRouter's fees](https://openrouter.ai/docs/faq#what-are-the-fees-for-using-openrouter)
+and [usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting).
+
 Every movement is an entry in `credit_ledger` (grant, purchase, usage, storage,
 adjustment, refund), in integer micro-USD, under an idempotency key naming its
 cause; the same statement moves the balance in `credit_accounts`, so the ledger
@@ -31,7 +49,7 @@ seconds after a response), each batch in one transaction that a retry after a lo
 commit skips. They debit the balance at once but accrue into **one usage entry per
 tenant per UTC hour** (key `usage:<tenant>:<hour>`), which each flush in that hour
 updates in place, adding to its amount and to its breakdown in `metadata` (`tokens`,
-`activeMs`, and any other counts); from the next hour on it no longer changes. An hour
+`funding`, `activeMs`, and any other counts); from the next hour on it no longer changes. An hour
 keeps the ledger to 24 usage rows per tenant a day (instead of one per flush per node)
 while a row is still a useful line of history; spend is also kept by minute for an
 hour (`credit_spend_minutes`), for the free-credit limit below. Usage entries from

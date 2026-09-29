@@ -6,7 +6,7 @@ import { accrueUsage, Billing, type UsageCharge } from "./billing.ts";
 import { activeCharge, MICROS, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
 import type { HttpError } from "./http.ts";
-import { enqueueEvents, usageEvent, type WebhookEvent } from "./webhooks.ts";
+import { enqueueEvents, usageCost, usageEvent, type WebhookEvent } from "./webhooks.ts";
 
 /**
  * Tenant state that tenants manage themselves: provider keys (encrypted at rest),
@@ -29,7 +29,7 @@ type Totals = { responses: number; input: number; output: number; cacheRead: num
  * (USD, with their counts), tool search's ranking by meaning (at cost, with the searches' count), and
  * active agent time.
  */
-type Charge = { platformCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number };
+type Charge = { platformCost: number; fundingCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number };
 /**
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
  * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
@@ -262,10 +262,20 @@ export class Accounts {
     const model = `${message.provider ?? "unknown"}/${message.model ?? "unknown"}`;
     const key = JSON.stringify([tenant, day, message.kind === "compaction" ? `${COMPACTION}${model}` : model]);
     const totals = this.pending.usage.get(key) ?? zero();
-    const cost = usage.cost?.total ?? 0;
+    const cost = usageCost(usage).usd;
+    // OpenRouter's response cost is in provider credits. Funding those credits is
+    // a separate cost, applied only to model calls on our own OpenRouter key.
+    // Tool-search costs already include funding at the reranker's endpoint.
+    const multiplier = message.platform && message.provider === "openrouter" && !message.toolSearch && !message.searches && !message.renders
+      ? this.billing.pricing.openrouterCreditMultiplier : 1;
+    // On OpenRouter BYOK, providerCost also includes the separately paid upstream
+    // invoice. Only providerCreditCost was paid from OpenRouter credits.
+    const credits = typeof usage.providerCreditCost === "number" && Number.isFinite(usage.providerCreditCost) && usage.providerCreditCost >= 0
+      ? Math.min(cost, usage.providerCreditCost) : cost;
+    const fundedCost = cost + credits * (multiplier - 1);
     add(totals, {
       responses: 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost,
-      platformResponses: message.platform ? 1 : 0, platformCost: message.platform ? cost : 0,
+      platformResponses: message.platform ? 1 : 0, platformCost: message.platform ? fundedCost : 0,
     });
     this.pending.usage.set(key, totals);
     if (message.platform) {
@@ -278,7 +288,10 @@ export class Accounts {
         charge.toolCost += cost;
         charge.searches += message.searches ?? 0;
         charge.renders += message.renders ?? 0;
-      } else charge.platformCost += cost;
+      } else {
+        charge.platformCost += cost;
+        charge.fundingCost += fundedCost - cost;
+      }
     }
     const spent = this.spend.get(tenant);
     if (spent?.month === day.slice(0, 7)) spent.cost += cost;
@@ -296,7 +309,7 @@ export class Accounts {
 
   private charge(tenant: string) {
     let charge = this.pending.charges.get(tenant);
-    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0 });
+    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0 });
     return charge;
   }
 
@@ -307,7 +320,7 @@ export class Accounts {
 
   /** What `charges` come to in micro-USD. */
   private amount(charge: Charge) {
-    return Math.round(charge.platformCost * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.toolSearchCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
+    return Math.round((charge.platformCost + charge.fundingCost) * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.toolSearchCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
   }
 
   /** What this node has recorded for `tenant` and not yet written, in micro-USD, as if the tenant were prepaid. */
@@ -361,6 +374,7 @@ export class Accounts {
       if (amount > 0 && await this.billing.mode(tenant) === "prepaid") {
         billed.push({ tenant, amount, metadata: {
           tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs),
+          ...(charge.fundingCost ? { funding: Math.round((charge.platformCost + charge.fundingCost) * MICROS) - Math.round(charge.platformCost * MICROS) } : {}),
           ...(charge.searches || charge.renders ? { web: Math.round(charge.toolCost * MICROS), searches: charge.searches, renders: charge.renders } : {}),
           ...(charge.toolSearchCost ? { toolSearch: Math.round(charge.toolSearchCost * MICROS), toolSearches: charge.toolSearches } : {}),
         } });

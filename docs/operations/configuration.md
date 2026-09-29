@@ -39,6 +39,7 @@
 | `AGENT_EMAIL_BUCKET` | the bucket an SES S3 receipt action stores mail in (the runtime reads messages and their attachments from it, under the task role); without it, only mail SES puts in the SNS notification itself (up to 150 KB) arrives |
 | `AGENT_EMAIL_REGION` | SES and S3's region (default `AWS_REGION`) |
 | `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
+| `AGENT_OPENROUTER_CREDIT_MULTIPLIER` | actual dollars paid per dollar of platform OpenRouter credits (default `1.055`, Standard card funding); use `1` for a fee waiver, or the effective ratio from purchases when discounts, minimum fees or non-recoverable taxes apply. Independent of the checkout fee. |
 | `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |
 | `AGENT_PRICE_WEB_SEARCH_EXA_USD`, `AGENT_PRICE_WEB_SEARCH_BRAVE_USD`, `AGENT_PRICE_WEB_SEARCH_PARALLEL_USD`, `AGENT_PRICE_WEB_RENDER_USD` | per platform-key `web_search` by the provider that answered, and per page `web_fetch` has Firecrawl render (defaults 0.007, 0.005, 0.001, 0.00083); `AGENT_PRICE_WEB_SEARCH_USD` sets all three search prices at once |
 | `AGENT_WEB_SEARCH_PROVIDERS` | the providers `web_search` tries, in order (default `exa,brave,parallel`) |

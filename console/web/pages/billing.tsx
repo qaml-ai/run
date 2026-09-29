@@ -25,6 +25,7 @@ function detail(entry: LedgerEntry) {
     // Usage accrues into one entry per UTC hour (older entries are one per flush).
     if (meta.hour) parts.push(Date.now() < entry.createdAt + 3_600_000 ? "This hour so far" : "Hour total");
     if (meta.tokens) parts.push(`${formatMicros(meta.tokens)} model tokens`);
+    if (meta.funding) parts.push(`${formatMicros(meta.funding)} provider credit funding`);
     if (meta.activeMs) parts.push(`${formatNumber(Math.round(meta.activeMs / 1000))} s of agent time`);
     if (meta.searches) parts.push(`${formatNumber(meta.searches)} web search${meta.searches === 1 ? "" : "es"}`);
     if (meta.renders) parts.push(`${formatNumber(meta.renders)} page render${meta.renders === 1 ? "" : "s"}`);
@@ -160,7 +161,7 @@ export function BillingPage() {
 
   return (
     <>
-      <PageHeader title="Billing" description="Prepaid credit pays for model tokens on the platform's keys (at the provider's list price), time your agents spend in turns, and storage."
+      <PageHeader title="Billing" description="Prepaid credit pays for model usage on the platform's keys at cost, time your agents spend in turns, and storage."
         actions={data?.billing === "prepaid" && data.checkout && <Button onClick={() => setAdding(true)}><Plus />Add credit</Button>} />
       <ErrorAlert error={billing.error ?? error} />
       {returned === "success" && data?.billing !== "none" && (
@@ -204,7 +205,8 @@ export function BillingPage() {
               <CardDescription>
                 Agent time {formatMicros(data.rates.agentHour)} per active hour, metered continuously ·
                 storage {formatMicros(data.rates.storageGbMonth)} per GB-month, charged daily ·
-                model tokens at list price on the platform's keys ·
+                model usage on the platform's keys at provider-reported cost (estimated from list prices when unavailable) ·
+                {data.rates.openrouterCreditMultiplier !== undefined && `OpenRouter credits billed at $${data.rates.openrouterCreditMultiplier} per $1 of provider credits, including funding costs · `}
                 web searches on the platform's keys at {Object.entries(data.rates.webSearch).map(([provider, price]) => `${formatMicros(price)} (${provider})`).join(", ")} each ·
                 rendered pages {formatMicros(data.rates.webRender)} each, all free with your own keys ·
                 tool searches ranked by meaning at cost.

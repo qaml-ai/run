@@ -87,7 +87,8 @@ const sandbox = await checkSandbox();
 // The key: a dedicated one if set (AGENT_TOOL_SEARCH_API_KEY, or the tool-search secret), else the
 // platform's OpenRouter key from the tenants file, read at each search so a reload takes effect.
 const platformOpenRouter = () => tenants.platformKey("openrouter");
-const rerankers = rerankersFromEnv(process.env, secrets.toolSearchKey || platformOpenRouter);
+const pricing = pricingFromEnvironment();
+const rerankers = rerankersFromEnv(process.env, secrets.toolSearchKey || platformOpenRouter, pricing.openrouterCreditMultiplier);
 if (rerankers.length && !secrets.toolSearchKey && !platformOpenRouter()) {
   console.error(JSON.stringify({ type: "tool_search_not_configured", reason: "no platformKeys.openrouter in the tenants file and no AGENT_TOOL_SEARCH_API_KEY; tools.search ranks by keywords until one is set" }));
 }
@@ -132,7 +133,7 @@ const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).r
 // Prepaid tenants pay from credit at the rates in src/pricing.ts, which the environment may override.
 // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
 const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: process.env.AGENT_STRIPE_API_URL });
-const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing: pricingFromEnvironment(), publicUrl, stripe });
+const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe });
 // GitHub sign-in admits members of GITHUB_ORG, or with AGENT_OPEN_SIGNUP=true anyone; starting credit needs an account
 // AGENT_SIGNUP_MIN_ACCOUNT_DAYS (default 30) old.
 const minAccountDays = Number(process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS ?? 30);

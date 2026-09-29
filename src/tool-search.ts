@@ -277,10 +277,14 @@ class Lru<V> {
  * What a call cost: the provider's own figure where it reports one (OpenRouter does, as `usage.cost`),
  * else the tokens it counted at a list price per million.
  */
-function callCost(json: any, tokens: unknown, usdPerMillion: number) {
-  const reported = json?.usage?.cost;
-  if (typeof reported === "number" && Number.isFinite(reported)) return reported;
-  return typeof tokens === "number" && Number.isFinite(tokens) ? tokens * usdPerMillion / 1_000_000 : 0;
+function callCost(json: any, tokens: unknown, usdPerMillion: number, creditMultiplier = 1) {
+  const usage = json?.usage;
+  const reported = usage?.cost;
+  if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) {
+    const upstream = usage.is_byok ? Number(usage.cost_details?.upstream_inference_cost) : 0;
+    return reported * creditMultiplier + (Number.isFinite(upstream) && upstream > 0 ? upstream : 0);
+  }
+  return typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0 ? tokens * usdPerMillion / 1_000_000 * creditMultiplier : 0;
 }
 
 /** A key, or where to read the current one (the platform's, which the tenants file can change). */
@@ -299,7 +303,7 @@ async function post(url: string, key: KeySource, body: unknown, signal: AbortSig
  * Embeddings from an OpenAI-compatible `/embeddings` endpoint (OpenRouter, OpenAI, a local server).
  * Tool texts are embedded once and cached by content, so a search usually embeds only its query.
  */
-export function embeddingReranker(options: { url: string; apiKey: KeySource; model: string; cacheSize?: number; usdPerMillionTokens?: number }): Reranker {
+export function embeddingReranker(options: { url: string; apiKey: KeySource; model: string; cacheSize?: number; usdPerMillionTokens?: number; creditMultiplier?: number }): Reranker {
   const cache = new Lru<number[]>(options.cacheSize ?? 20_000);
   // Texts being embedded now, so a search that arrives while a catalog warms waits for it instead of embedding it again.
   const inflight = new Map<string, Promise<void>>();
@@ -331,7 +335,7 @@ export function embeddingReranker(options: { url: string; apiKey: KeySource; mod
   async function embedBatch(batch: string[], signal: AbortSignal, meter?: Meter) {
     const json = await post(endpoint(options.url, "embeddings"), options.apiKey, { model: options.model, input: batch }, signal);
     // text-embedding-3-small's list price where the API reports no cost.
-    meter?.(callCost(json, json?.usage?.prompt_tokens ?? json?.usage?.total_tokens, options.usdPerMillionTokens ?? 0.02));
+    meter?.(callCost(json, json?.usage?.prompt_tokens ?? json?.usage?.total_tokens, options.usdPerMillionTokens ?? 0.02, options.creditMultiplier));
     const data = json?.data;
     if (!Array.isArray(data) || data.length !== batch.length) throw new Error("The embeddings endpoint returned an unexpected shape");
     for (const entry of data) {
@@ -359,7 +363,7 @@ const endpoint = (base: string, path: string) => `${base.replace(/\/$/, "")}/${p
  * answer is an independent probability, so it both orders the candidates and says which are
  * irrelevant (below 0.5).
  */
-export function jevReranker(options: { url: string; apiKey: KeySource; model: string; usdPerMillionTokens?: number }): Reranker {
+export function jevReranker(options: { url: string; apiKey: KeySource; model: string; usdPerMillionTokens?: number; creditMultiplier?: number }): Reranker {
   return {
     kind: "jev", maxCandidates: STAGE_CANDIDATES, relevantAt: 0.5,
     async rerank(query, candidates, signal, meter) {
@@ -370,7 +374,7 @@ export function jevReranker(options: { url: string; apiKey: KeySource; model: st
       }]));
       const json = await post(endpoint(options.url, "systemone"), options.apiKey, { model: options.model, state: query, questions }, signal);
       // Jev bills input tokens only ($0.042 per million at list price) where the API reports no cost.
-      meter?.(callCost(json, json?.usage?.input_tokens, options.usdPerMillionTokens ?? 0.042));
+      meter?.(callCost(json, json?.usage?.input_tokens, options.usdPerMillionTokens ?? 0.042, options.creditMultiplier));
       return candidates.map((_, index) => {
         const answer = json?.answers?.[`t${index}`]?.noul;
         if (typeof answer !== "number") throw new Error("Jev returned no answer for a candidate");
@@ -393,15 +397,17 @@ const DEFAULT_MODELS: Record<string, string> = { embeddings: "openai/text-embedd
  * AGENT_TOOL_SEARCH_EMBEDDINGS_MODEL and AGENT_TOOL_SEARCH_JEV_MODEL override the defaults
  * (openai/text-embedding-3-small, typesafe/jev-1.13).
  */
-export function rerankersFromEnv(env: Record<string, string | undefined> = process.env, apiKey: KeySource | undefined = env.AGENT_TOOL_SEARCH_API_KEY): Reranker[] {
+export function rerankersFromEnv(env: Record<string, string | undefined> = process.env, apiKey: KeySource | undefined = env.AGENT_TOOL_SEARCH_API_KEY, openrouterCreditMultiplier = 1): Reranker[] {
   const kinds = (env.AGENT_TOOL_SEARCH?.trim() || "keyword").split(",").map(kind => kind.trim()).filter(Boolean);
   if (kinds.length === 1 && kinds[0] === "keyword") return [];
   for (const kind of kinds) if (!(kind in DEFAULT_MODELS)) throw new Error(`AGENT_TOOL_SEARCH must be keyword, embeddings, jev or embeddings,jev; not ${kind}`);
   if (new Set(kinds).size !== kinds.length) throw new Error("AGENT_TOOL_SEARCH names a stage twice");
   if (!apiKey) throw new Error(`AGENT_TOOL_SEARCH=${kinds.join(",")} needs AGENT_TOOL_SEARCH_API_KEY`);
   const url = env.AGENT_TOOL_SEARCH_URL || "https://openrouter.ai/api/v1";
+  // A custom endpoint may bill differently; never apply OpenRouter's funding cost to it.
+  const creditMultiplier = new URL(url).hostname === "openrouter.ai" ? openrouterCreditMultiplier : 1;
   return kinds.map(kind => {
-    const settings = { url, apiKey, model: env[`AGENT_TOOL_SEARCH_${kind.toUpperCase()}_MODEL`] || DEFAULT_MODELS[kind] };
+    const settings = { url, apiKey, creditMultiplier, model: env[`AGENT_TOOL_SEARCH_${kind.toUpperCase()}_MODEL`] || DEFAULT_MODELS[kind] };
     return kind === "embeddings" ? embeddingReranker(settings) : jevReranker(settings);
   });
 }
