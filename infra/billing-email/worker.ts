@@ -3,8 +3,17 @@ export interface MailEnv {
   MAIL_SECRET: string;
   FROM: string;
   FEEDBACK_URL: string;
-  EMAIL: { send(mail: { from: { email: string; name: string }; to: string; subject: string; html: string; text: string; headers: Record<string, string> }): Promise<{ messageId: string }> };
+  /**
+   * Get Help mail (src/help.ts), sent as SUPPORT_FROM. Every such message goes to the SUPPORT_TO inbox,
+   * with at most one other address (the user, in the shared thread); its Reply-To can only be SUPPORT_TO.
+   * Unset (or the same as FROM): refused.
+   */
+  SUPPORT_FROM?: string;
+  SUPPORT_TO?: string;
+  EMAIL: { send(mail: { from: { email: string; name: string }; to: string; cc?: string; replyTo?: string; subject: string; html: string; text: string; headers: Record<string, string> }): Promise<{ messageId: string }> };
 }
+const address = (value: unknown): value is string => typeof value === "string" && value.length <= 254 && /^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(value);
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 type QueueMessage = { body: any; ack(): void; retry(options: { delaySeconds: number }): void };
 
 async function authorized(request: Request, secret: string) {
@@ -42,7 +51,12 @@ export default {
     if (!await authorized(request, env.MAIL_SECRET)) return new Response(null, { status: 401 });
     let mail: any;
     try { mail = await readBody(request); } catch { return new Response(null, { status: 400 }); }
-    if (!mail || mail.from !== env.FROM || typeof mail.to !== "string" || mail.to.length > 254 || !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(mail.to) ||
+    const support = !!env.SUPPORT_FROM && !!env.SUPPORT_TO && env.SUPPORT_FROM !== env.FROM && mail?.from === env.SUPPORT_FROM;
+    // Billing mail: one recipient and nothing else. Support mail always reaches the support inbox, and replies go there.
+    if (!mail || (mail.from !== env.FROM && !support) || !address(mail.to) ||
+      (support ? (mail.cc !== undefined && !address(mail.cc)) || (mail.replyTo !== undefined && !(address(mail.replyTo) && same(mail.replyTo, env.SUPPORT_TO!))) ||
+        !(same(mail.to, env.SUPPORT_TO!) || (mail.cc !== undefined && same(mail.cc, env.SUPPORT_TO!))) || mail.headers?.length !== 0
+        : mail.cc !== undefined || mail.replyTo !== undefined) ||
       typeof mail.subject !== "string" || !mail.subject || mail.subject.length > 256 || /[\r\n]/.test(mail.subject) ||
       typeof mail.html !== "string" || typeof mail.text !== "string" || typeof mail.displayName !== "string" ||
       !mail.displayName.trim() || mail.displayName.length > 80 || /[\r\n]/.test(mail.displayName) ||
@@ -51,7 +65,8 @@ export default {
       return new Response(null, { status: 400 });
     }
     try {
-      const result = await env.EMAIL.send({ from: { email: env.FROM, name: mail.displayName }, to: mail.to,
+      const result = await env.EMAIL.send({ from: { email: mail.from, name: mail.displayName }, to: mail.to,
+        ...(support && mail.cc ? { cc: mail.cc } : {}), ...(support && mail.replyTo ? { replyTo: mail.replyTo } : {}),
         subject: mail.subject, html: mail.html, text: mail.text,
         headers: Object.fromEntries(mail.headers.map((h: { Name: string; Value: string }) => [h.Name, h.Value])),
       });

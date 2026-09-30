@@ -26,6 +26,7 @@ import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
 import { declaredType, fileResponse, type FileLinks } from "./files.ts";
 import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
+import type { Help } from "./help.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -65,6 +66,8 @@ export interface ApiContext {
   browserUrl?: string;
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
+  /** Get Help from the console (`/v1/help`); without it the console hides the button. */
+  help?: Help;
 }
 /** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
 type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
@@ -219,6 +222,23 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {
     const principal = c.var.principal;
     return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
+  });
+
+  // Get Help is the console's, so it is not part of the documented API: a script has no one to reply to.
+  // Replies go to a verified billing address when the tenant has one, so the console offers only those.
+  app.get("/v1/help", async c => {
+    const help = c.var.principal.via === "console" ? context.help : undefined;
+    return json(c, 200, { enabled: !!help, replyEmails: help ? await help.replyEmails(c.var.principal.tenant) : [] });
+  });
+  app.post("/v1/help", async c => {
+    if (!context.help) throw new HttpError(404, "Get Help is not enabled on this runtime");
+    const principal = c.var.principal;
+    if (principal.via !== "console") throw new HttpError(403, "Get Help is sent from the console");
+    const body = await readJson(c.req.raw.body, 64 * 1024);
+    const reply = await context.help.submit({ tenant: principal.tenant, ...(principal.login ? { login: principal.login } : {}) }, body,
+      { userAgent: c.req.header("user-agent"), source: clientAddress(c) });
+    if (reply.retryAfter) c.header("Retry-After", String(reply.retryAfter));
+    return json(c, reply.status, reply.body);
   });
 
   route(createRoute({ method: "get", path: "/v1/providers", responses: { 200: reply("Key status per provider, and the tenant's own providers", z.array(schema.Provider)) } }), async c => {
@@ -812,6 +832,12 @@ function promptRequest(body: z.infer<typeof schema.PromptInput>, fallbackId?: st
   const { requestId, text, whileRunning, ...rest } = body;
   const given = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
   return { id: requestId ?? fallbackId ?? randomUUID(), method: "prompt", params: { text, ...given, ...(whileRunning === "steer" ? { whileRunning } : {}) } };
+}
+
+/** The caller's address: the load balancer's last X-Forwarded-For entry (earlier ones are the client's to write), else the socket's. */
+function clientAddress(c: Context) {
+  const forwarded = c.req.header("x-forwarded-for")?.split(",").map(value => value.trim()).filter(Boolean).at(-1);
+  return forwarded ?? (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
 }
 
 async function authenticate(c: Context, context: ApiContext): Promise<Caller> {

@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState, type FormEvent } from "react";
+import { StrictMode, useEffect, useLayoutEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,8 @@ import { ErrorAlert, PageErrorBoundary } from "@/components/common";
 import { BillingBanner, BillingBalance } from "@/components/billing-banner";
 import { BillingDialogs } from "@/components/billing-controls";
 import { useBillingState } from "@/components/billing-state";
+import { GetHelp } from "@/components/get-help";
+import { setHelpTenant } from "@/lib/help-context";
 import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -63,6 +65,7 @@ function useWebMcp(tenant: string | undefined) {
 
 function App() {
   const me = useApi<Me>("/v1/me");
+  useLayoutEffect(() => { setHelpTenant(me.data?.tenant); return () => setHelpTenant(undefined); }, [me.data?.tenant]);
   const path = usePath();
   const [section, ...rest] = path.split("/");
   const isAgentsList = !section || (section === "agents" && !rest[0]);
@@ -104,6 +107,7 @@ function App() {
               <Icon className="size-4" />{label}
             </Link>
           ))}
+          <GetHelp key={me.data.tenant} tenant={me.data.tenant} agentId={section === "agents" ? rest[0] : undefined} />
         </nav>
         <div className="mt-auto hidden md:block">
           <Separator />

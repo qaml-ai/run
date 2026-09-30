@@ -17,6 +17,12 @@ variable "signup_min_account_days" {
   default     = null
 }
 
+variable "support_email" {
+  type        = string
+  description = "Support inbox for the console's Get Help (support@camelai.com), or empty to hide it. Deploy the mail Worker's support sender first; see infra/billing-email/README.md."
+  default     = ""
+}
+
 locals {
   billing_environment = merge(var.billing_stripe_portal_configuration == "" ? {} : {
     AGENT_STRIPE_PORTAL_CONFIGURATION = var.billing_stripe_portal_configuration
@@ -28,6 +34,13 @@ locals {
     AGENT_BILLING_EMAIL_NAME       = "camelRun Billing"
     AGENT_BILLING_EMAIL_URL        = var.billing_email_worker_url
     AGENT_BILLING_EMAIL_SECRET_ARN = aws_secretsmanager_secret.runtime["billing-email"].arn
+    }, var.support_email == "" || var.billing_email_worker_url == "" ? {} : {
+    # Get Help sends through the same Worker, as its SUPPORT_FROM, to its SUPPORT_TO (this inbox).
+    AGENT_SUPPORT_EMAIL      = var.support_email
+    AGENT_SUPPORT_EMAIL_FROM = "no-reply@mail.camelai.com"
+    AGENT_SUPPORT_EMAIL_NAME = "camelRun"
+    AGENT_SUPPORT_LOG_GROUP  = aws_cloudwatch_log_group.runtime.name
+    AGENT_RELEASE            = var.runtime_image_tag
   })
 }
 

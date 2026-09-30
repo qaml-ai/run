@@ -45,6 +45,44 @@ Only a successful runtime response acknowledges a relevant event. The source
 subscription covers the domain, but the consumer ignores other senders and does
 not modify camelStream's recipients.
 
+## Get Help (support mail)
+
+The console's Get Help (`src/help.ts`) sends through this Worker too, as
+`SUPPORT_FROM` (`no-reply@mail.camelai.com`, display name `camelRun`, as
+camelStream sends its support mail). The Worker accepts such mail only
+when the `SUPPORT_TO` inbox (`support@camelai.com`) is a recipient, with at most
+one other address (the user, copied on the shared thread) and a Reply-To of that
+inbox only. Billing mail keeps its single recipient, and bounce feedback for the
+support sender is ignored: the runtime only suppresses billing recipients.
+
+To turn it on, in this order:
+
+1. Confirm `no-reply@mail.camelai.com` can send from this Worker in Cloudflare
+   Email Sending (camelStream already sends as it on the `mail.camelai.com` domain).
+2. Deploy this Worker (`npx --yes wrangler@4.144.0 deploy`): `wrangler.toml` adds
+   the sender to `allowed_sender_addresses` and sets `SUPPORT_FROM`/`SUPPORT_TO`.
+   Billing mail is unaffected.
+3. Deploy a runtime image containing the Get Help implementation and
+   `migrations/041_help_requests.sql`. The runtime applies migrations at startup;
+   the button stays hidden while the support settings are unset.
+4. Set the Terraform variable `support_email = "support@camelai.com"` and apply
+   with the intended image tag. The runtime then shows Get Help in the console.
+   Until step 2, sends fail and the console asks the user to retry.
+5. Accept delivery once from the console: both messages reach the inbox with the
+   same reference, the thread copies the submitting address, and replying all
+   from the inbox reaches the user.
+
+Cloudflare takes a single Reply-To address, so replies go to the support inbox;
+support answers the user with **Reply all** on the shared thread.
+
+Only verified, unsuppressed billing-alert addresses count as emails on file.
+Users choose among those addresses when any exist; a typed reply address is
+allowed only when none exist. A typed address is not promoted to an account
+email. Delivery is at least once: retries skip each message once its acceptance
+is recorded, but a provider acceptance followed by a crash before that write
+can still produce a duplicate. The console retains a pending submission in
+memory while the page stays open; it does not recover that draft after reload.
+
 ## Launch order
 
 1. Prepare the Cloudflare Worker/queues and secrets, the dedicated Stripe portal,

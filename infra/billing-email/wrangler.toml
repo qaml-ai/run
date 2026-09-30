@@ -8,10 +8,13 @@ preview_urls = false
 [vars]
 FROM = "billing@mail.camelai.com"
 FEEDBACK_URL = "https://agents.camelai.dev/v1/billing/email/feedback"
+# Get Help: mail from SUPPORT_FROM (as camelStream sends support mail) must include SUPPORT_TO and reply there (worker.ts).
+SUPPORT_FROM = "no-reply@mail.camelai.com"
+SUPPORT_TO = "support@camelai.com"
 
 [[send_email]]
 name = "EMAIL"
-allowed_sender_addresses = ["billing@mail.camelai.com"]
+allowed_sender_addresses = ["billing@mail.camelai.com", "no-reply@mail.camelai.com"]
 
 [[queues.consumers]]
 queue = "camelrun-billing-email-feedback"

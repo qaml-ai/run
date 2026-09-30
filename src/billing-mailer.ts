@@ -5,6 +5,7 @@ import type { BillingAlerts } from "./billing-alerts.ts";
 import { billingEmail, type BillingEmail, type BillingEmailInput } from "./billing-emails.ts";
 import { verifySns } from "./channels-email.ts";
 import { readText } from "./http.ts";
+import { MailTransport } from "./mail-transport.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 
 export interface BillingMailOptions {
@@ -45,10 +46,10 @@ export class BillingMailer {
   private readonly options: BillingMailOptions;
   private timer?: ReturnType<typeof setInterval>;
   private active?: Promise<void>;
-  private client?: import("@aws-sdk/client-sesv2").SESv2Client;
+  private transport?: MailTransport;
   constructor(options: BillingMailOptions) { this.options = options; }
   start() { if (!this.timer) { this.timer = setInterval(() => void this.pump().catch(() => console.error(JSON.stringify({ type: "billing_mail_poll_failed" }))), 5_000); this.timer.unref(); } }
-  async stop() { clearInterval(this.timer); this.timer = undefined; await this.active; this.client?.destroy(); }
+  async stop() { clearInterval(this.timer); this.timer = undefined; await this.active; this.transport?.destroy(); }
   pump(): Promise<void> { return this.active ??= this.deliver().finally(() => { this.active = undefined; }); }
   private async deliver() {
     const { alerts } = this.options;
@@ -72,31 +73,12 @@ export class BillingMailer {
     }));
   }
   private async send(mail: BillingEmail & { to: string; delivery: string }, signal: AbortSignal) {
-    if (this.options.cloudflare) {
-      const { url, secret } = this.options.cloudflare;
-      const response = await (this.options.fetch ?? fetch)(url, { method: "POST", redirect: "error", signal,
-        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ ...mail, from: this.options.from, displayName: this.options.displayName ?? "camelRun Billing" }),
-      });
-      if (!response.ok) throw new Error("Cloudflare billing email failed");
-      const result = await response.json() as { messageId?: string; suppressed?: boolean };
-      if (result.suppressed === true) { await this.options.alerts.suppress(mail.to); return undefined; }
-      if (typeof result.messageId !== "string" || !result.messageId || result.messageId.length > 512) throw new Error("Missing Cloudflare message ID");
-      return result.messageId;
-    }
-    const { SESv2Client, SendEmailCommand } = await import("@aws-sdk/client-sesv2");
-    const { NodeHttpHandler } = await import("@smithy/node-http-handler");
-    this.client ??= new SESv2Client({ region: this.options.region, maxAttempts: 1,
-      requestHandler: new NodeHttpHandler({ connectionTimeout: 5_000, requestTimeout: 15_000 }) });
-    const result = await this.client.send(new SendEmailCommand({
-      FromEmailAddress: `=?UTF-8?B?${Buffer.from(this.options.displayName ?? "camelRun Billing").toString("base64")}?= <${this.options.from}>`, Destination: { ToAddresses: [mail.to] },
-      ConfigurationSetName: this.options.configurationSet,
-      EmailTags: [{ Name: "product", Value: "camelrun-billing" }, { Name: "billing_delivery", Value: mail.delivery }],
-      Content: { Simple: { Subject: { Data: mail.subject, Charset: "UTF-8" }, Headers: mail.headers, Body: {
-        Html: { Data: mail.html, Charset: "UTF-8" }, Text: { Data: mail.text, Charset: "UTF-8" },
-      } } },
-    }), { abortSignal: signal });
-    return result.MessageId;
+    const { from, displayName = "camelRun Billing", region, configurationSet, cloudflare } = this.options;
+    this.transport ??= new MailTransport({ from, displayName, region, configurationSet, cloudflare, fetch: this.options.fetch });
+    const result = await this.transport.send({ to: mail.to, subject: mail.subject, html: mail.html, text: mail.text, headers: mail.headers,
+      tags: [{ Name: "product", Value: "camelrun-billing" }, { Name: "billing_delivery", Value: mail.delivery }] }, signal);
+    if ("suppressed" in result) { await this.options.alerts.suppress(mail.to); return undefined; }
+    return result.messageId;
   }
 
   /** Accept authenticated provider feedback tied to one of our recorded deliveries. */
