@@ -52,15 +52,22 @@ not modify camelStream's recipients.
    events listed in the billing runbook. Keep the old webhook active until cutover.
 2. Review the infrastructure plan. Configure the billing Slack destination and
    verify a test alarm is delivered. Configure the new runtime environment/secrets.
-3. Stop old application workers and prevent autoscaling from restarting them.
+3. Arrange an explicit maintenance window before a cutover that stops the whole
+   service. Do not put all console/API traffic behind a blanket 503 for a billing
+   change. Keep the ALB's default forwarding action associated with the ECS
+   target group; use narrowly scoped routing gates where possible. Stop old
+   application workers and prevent autoscaling from restarting them.
    Apply the new migrations and start the new image without old sign-in, mail,
    checkout or automatic payment handlers running alongside it. This is a
    one-time billing migration cutover, not a normal overlapping ECS rollout.
 4. Disable the old Stripe webhook and enable the new one matching the runtime's
    signing secret. Restore traffic and the normal service scaling bounds.
-5. Verify health, confirmed-recipient delivery and unsubscribe, provider feedback,
-   a small live purchase and refund, then confirm the final ledger and Stripe
-   amounts. Do not turn on automatic refill for a real account without its consent.
+5. Verify production health, confirmed-recipient delivery and unsubscribe, and
+   provider feedback without making real-money test payments. Run purchase,
+   automatic refill, recovery and refund acceptance in staging with Stripe test
+   mode or a sandbox, and reconcile its ledger against Stripe's test amounts.
+   Do not use live cards for acceptance tests or turn on automatic refill for a
+   real account without its consent.
 
 The dedicated billing CloudWatch alarms report new reconciliation failures and
 repeated mail/refill worker failures to Slack. An alarm returning to OK only
