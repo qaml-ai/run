@@ -74,6 +74,9 @@ export async function supersession(env = process.env, describe?: (cluster: strin
  * work runs, renewed well before it expires, and cleared only after `idleMs`
  * without work, so short gaps between turns do not flap it. A no-op off ECS.
  */
+const BLOCKED_RETRY_MS = 5_000;
+const BLOCKED_RETRY_MAX_MS = 5 * 60_000;
+
 export class TaskProtection {
   private readonly uri?: string;
   private readonly idleMs: number;
@@ -82,6 +85,9 @@ export class TaskProtection {
   private enabledAt?: number;
   private lastBusy = -Infinity;
   private writing = false;
+  /** ECS refuses protection to a task a deployment is replacing (DEPLOYMENT_BLOCKED): asks again only after this, backing off. */
+  private blockedUntil = -Infinity;
+  private blockedMs = 0;
 
   constructor(options: { uri?: string; idleMs?: number; expiresMinutes?: number; now?: () => number }) {
     this.uri = options.uri?.replace(/\/+$/, "");
@@ -98,7 +104,7 @@ export class TaskProtection {
     const now = this.now();
     if (busy) this.lastBusy = now;
     const renew = this.enabledAt !== undefined && now - this.enabledAt >= this.expiresMinutes * 60_000 / 4;
-    if (busy && (this.enabledAt === undefined || renew)) await this.write(true, now);
+    if (busy && (this.enabledAt === undefined || renew)) { if (now >= this.blockedUntil) await this.write(true, now); }
     else if (!busy && this.enabledAt !== undefined && (renew || now - this.lastBusy >= this.idleMs)) await this.write(now - this.lastBusy < this.idleMs, now);
   }
 
@@ -110,6 +116,13 @@ export class TaskProtection {
         body: JSON.stringify(enabled ? { ProtectionEnabled: true, ExpiresInMinutes: this.expiresMinutes } : { ProtectionEnabled: false }),
       });
       const body = await response.json().catch(() => ({})) as { failure?: { Reason?: string } };
+      // Expected while a deployment drains this task: not a failure, logged once, asked again with backoff.
+      if (enabled && body.failure?.Reason === "DEPLOYMENT_BLOCKED") {
+        if (!this.blockedMs) console.log(JSON.stringify({ type: "task_protection_blocked", reason: "DEPLOYMENT_BLOCKED" }));
+        this.blockedMs = Math.min(Math.max(this.blockedMs * 2, BLOCKED_RETRY_MS), BLOCKED_RETRY_MAX_MS);
+        this.blockedUntil = now + this.blockedMs;
+        return;
+      }
       if (!response.ok || body.failure) throw new Error(body.failure?.Reason ?? `HTTP ${response.status}`);
       this.enabledAt = enabled ? now : undefined;
       console.log(JSON.stringify({ type: "task_protection", enabled }));
