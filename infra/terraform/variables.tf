@@ -153,10 +153,10 @@ variable "runtime_env" {
 }
 
 
-variable "github_subject" {
-  description = "OIDC subject prefix of the repository whose production environment may deploy. The repository uses immutable subjects: gh api repos/<owner>/<repo>/actions/oidc/customization/sub shows sub_claim_prefix."
-  type        = string
-  default     = "qaml-ai@151090534/agent-runtime@1384214784"
+variable "github_subjects" {
+  description = "OIDC subject prefixes of the repository whose production environment may deploy. The repository uses immutable subjects: gh api repos/<owner>/<repo>/actions/oidc/customization/sub shows sub_claim_prefix. The prefix carries the repository's name, so a rename changes it: both names are listed while qaml-ai/agent-runtime becomes qaml-ai/run, and the old one is dropped once a deploy from the new name has succeeded."
+  type        = list(string)
+  default     = ["qaml-ai@151090534/agent-runtime@1384214784", "qaml-ai@151090534/run@1384214784"]
 }
 
 variable "email_domain" {
