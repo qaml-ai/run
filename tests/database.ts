@@ -27,12 +27,23 @@ export async function testDatabase(options: { migrate?: boolean } = {}) {
   catch (error) { throw new Error(`The tests need Postgres at ${TEST_DATABASE_URL} (set AGENT_TEST_DATABASE_URL): ${(error as Error).message}`); }
   const schema = `test_${randomBytes(6).toString("hex")}`;
   await admin.query(`create schema ${schema}`);
-  const url = inSchema(TEST_DATABASE_URL, schema);
+  // Every connection to the schema, the test's and any runtime process's, is named after it in pg_stat_activity.
+  const named = new URL(inSchema(TEST_DATABASE_URL, schema));
+  named.searchParams.set("application_name", schema);
+  const url = named.toString();
   const db = new pg.Pool({ connectionString: url, max: 5 });
   cleanups.push(async () => {
-    await db.end();
-    await admin.query(`drop schema ${schema} cascade`);
-    await admin.end();
+    // A file that hangs after its tests (the 120 s per-file timeout) is usually stuck here, on a
+    // connection never released or a lock the drop waits for: after 10 s, log which.
+    const stuck = setTimeout(() => void admin.query(`
+      select pid, state, wait_event_type, wait_event, extract(epoch from now() - state_change)::int as seconds, left(query, 200) as query
+      from pg_stat_activity where application_name = $1`, [schema]).then(result => result.rows, error => String(error)).then(activity =>
+      console.error(JSON.stringify({ type: "test_database_cleanup_stuck", schema, pool: { total: db.totalCount, idle: db.idleCount, waiting: db.waitingCount }, activity }))), 10_000);
+    try {
+      await db.end();
+      await admin.query(`drop schema ${schema} cascade`);
+      await admin.end();
+    } finally { clearTimeout(stuck); }
   });
   if (options.migrate !== false) await migrate(db);
   return { db, url, schema };
