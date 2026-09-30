@@ -61,7 +61,7 @@ its agents only: each customer's own endpoint, under the same name in every
 scope.
 
 ```bash
-curl -X PUT https://agents.camelai.dev/v1/key-scopes/org_42/model-providers/custom \
+curl -X PUT https://run.camelai.com/v1/key-scopes/org_42/model-providers/custom \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
   -d '{"type": "openai-responses", "baseUrl": "https://bedrock-mantle.us-west-2.api.aws/openai/v1",
        "apiKey": "'"$ORG_42_BEDROCK_API_KEY"'", "models": [{"id": "openai.gpt-5.6-terra", "contextWindow": 200000, "reasoning": true}]}'
@@ -163,7 +163,7 @@ Groq is a built-in provider: set its key (`PUT /v1/providers/groq/key`) and use
 add Groq's API under a name of your own:
 
 ```bash
-curl -X PUT https://agents.camelai.dev/v1/providers/groq-preview \
+curl -X PUT https://run.camelai.com/v1/providers/groq-preview \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
   -d '{"type": "openai-completions", "baseUrl": "https://api.groq.com/openai/v1", "apiKey": "'"$GROQ_API_KEY"'",
        "models": [{"id": "new-model-preview", "contextWindow": 131072, "maxOutputTokens": 8192,

@@ -22,7 +22,7 @@ const env = (name: string): string | undefined => (globalThis as { process?: { e
 export interface AgentsOptions {
   /** Your API key (the console's). Default: the CAMELAI_API_KEY environment variable. */
   apiKey?: string;
-  /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://agents.camelai.dev. */
+  /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://run.camelai.com. */
   url?: string;
   fetch?: typeof globalThis.fetch;
   /** Opens a local file to attach by its path; the Node entry sets it. */
@@ -194,7 +194,7 @@ export class Agents {
    * as long as you keep it (until `agent.delete()`); any number of processes may upsert it.
    */
   async upsert(key: string, config: AgentConfig = {}): Promise<Agent> {
-    if (!this.runtime.options.apiKey) throw new AgentError("Set apiKey (or the CAMELAI_API_KEY environment variable): create a key in the console at https://agents.camelai.dev");
+    if (!this.runtime.options.apiKey) throw new AgentError("Set apiKey (or the CAMELAI_API_KEY environment variable): create a key in the console at https://run.camelai.com");
     const options = createOptions(config);
     const { session } = await this.runtime.upsertAgent(key, options);
     // The upsert declared these tools already (between the agent's turns, if it runs).

@@ -1,4 +1,4 @@
-<!-- https://agents.camelai.dev/docs/quickstart.md -->
+<!-- https://run.camelai.com/docs/quickstart.md -->
 
 # Quickstart
 
@@ -9,7 +9,7 @@ credentials.
 
 ## 1. Get an API key
 
-Sign in to the console at <https://agents.camelai.dev/console>, then:
+Sign in to the console at <https://run.camelai.com/console>, then:
 
 - under **Models & keys**, check that a model is marked *Usable*. New accounts
   start with credit for the platform's models. Or you can add your own provider
@@ -99,7 +99,7 @@ curl (the agent has no tools of yours here: tools that run in your process need 
 SDK, or a server of your own, see [Tools](guides/tools.md)):
 
 ```sh
-BASE=https://agents.camelai.dev; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
+BASE=https://run.camelai.com; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
 # The Idempotency-Key is the agent's key: the same key is the same agent.
 AGENT=$(curl -s $BASE/v1/agents -H "$AUTH" -H "Content-Type: application/json" -H "Idempotency-Key: quickstart" \
   -d '{"model": "anthropic/claude-sonnet-5-5", "systemPrompt": "You are a concise assistant."}' | jq -r .id)
@@ -158,7 +158,7 @@ Before you ship, read the [production checklist](production.md).
 
 ---
 
-<!-- https://agents.camelai.dev/docs/concepts.md -->
+<!-- https://run.camelai.com/docs/concepts.md -->
 
 # Concepts
 
@@ -329,7 +329,7 @@ A **definition** is a reusable configuration: model, instructions, tool sources
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/tools.md -->
+<!-- https://run.camelai.com/docs/guides/tools.md -->
 
 # Tools
 
@@ -436,7 +436,7 @@ import { serveTools } from "@camelai/run/server";
 
 // A fetch handler: Cloudflare Workers, Bun and Deno serve it as is.
 // tenant: your tenant's id (GET /v1/me, or `await agents.runtime.me()`): tokens for other tenants' agents are refused.
-export default { fetch: serveTools({ refund }, { runtime: "https://agents.camelai.dev", tenant: "acme" }) };
+export default { fetch: serveTools({ refund }, { runtime: "https://run.camelai.com", tenant: "acme" }) };
 ```
 
 On Node, wrap it: `createServer(nodeListener(handler, { origin: "https://tools.example.com" }))`
@@ -451,7 +451,7 @@ are checked against.
 ```python
 from camelai_run import serve_tools
 
-app = serve_tools([refund], runtime="https://agents.camelai.dev", tenant="acme")  # ASGI: uvicorn, or mount in FastAPI
+app = serve_tools([refund], runtime="https://run.camelai.com", tenant="acme")  # ASGI: uvicorn, or mount in FastAPI
 ```
 
 Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
@@ -526,10 +526,13 @@ The token itself (for servers that verify it by hand, e.g. with `jose`):
 ```
 
 ```ts
-const jwks = createRemoteJWKSet(new URL("https://agents.camelai.dev/.well-known/jwks.json"));
+const jwks = createRemoteJWKSet(new URL("https://run.camelai.com/.well-known/jwks.json"));
 const { payload } = await jwtVerify(token, jwks, { issuer: "https://agents.camelai.dev", audience: "https://tools.example.com/mcp", algorithms: ["EdDSA"] });
 ```
 
+- `iss` is the hosted runtime's first address, `https://agents.camelai.dev`,
+  at either of its URLs (a self-hosted runtime's is its `AGENT_ISSUER`, else its
+  `AGENT_PUBLIC_URL`). The SDKs expect it for either hosted URL.
 - `aud` is the server's URL (or the source's `audience`, for a server that knows
   itself by another URL), so a token cannot be replayed against another server.
   Tokens live two minutes, and each request gets its own `jti`.
@@ -694,7 +697,7 @@ their network; `web_fetch` never reaches them.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/human-input.md -->
+<!-- https://run.camelai.com/docs/guides/human-input.md -->
 
 # Human input
 
@@ -828,7 +831,7 @@ anything else is a new message. See [Channels](channels.md).
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/browser.md -->
+<!-- https://run.camelai.com/docs/guides/browser.md -->
 
 # Showing an agent in a browser
 
@@ -928,7 +931,7 @@ talks to, which keeps your API key on the server and lets each user reach only t
 (`agent-route`). Add one to your app with its URL:
 
 ```bash
-npx shadcn@latest add https://agents.camelai.dev/r/agent-chat.json
+npx shadcn@latest add https://run.camelai.com/r/agent-chat.json
 ```
 
 `/r/registry.json` lists them. The registry is public and cacheable; a self-hosted runtime serves
@@ -943,7 +946,7 @@ API key. See the [event reference](../reference/events.md).
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/files.md -->
+<!-- https://run.camelai.com/docs/guides/files.md -->
 
 # Files
 
@@ -1077,7 +1080,7 @@ returns the link again.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/multi-user.md -->
+<!-- https://run.camelai.com/docs/guides/multi-user.md -->
 
 # Agents for many users
 
@@ -1123,7 +1126,7 @@ const tools = {
   }),
 };
 // tenant: yours (GET /v1/me). Other tenants' agents can reach this URL too, claiming any user: their tokens are refused.
-export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev", tenant: "acme" }) };
+export default { fetch: serveTools(tools, { runtime: "https://run.camelai.com", tenant: "acme" }) };
 ```
 
 ```ts
@@ -1196,7 +1199,7 @@ images as files first to keep them out of those 16 MB.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/webhooks.md -->
+<!-- https://run.camelai.com/docs/guides/webhooks.md -->
 
 # Webhooks
 
@@ -1300,7 +1303,7 @@ new integrations should register an endpoint for `usage.recorded` instead.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/models-and-keys.md -->
+<!-- https://run.camelai.com/docs/guides/models-and-keys.md -->
 
 # Models and keys
 
@@ -1319,7 +1322,7 @@ you add its server as a provider, your account's or a key scope's: see
 [Custom models](custom-models.md).
 
 An agent that names no model (and whose definition names none) gets the
-runtime's default: Claude Sonnet 5.5 on agents.camelai.dev, on the first of
+runtime's default: Claude Sonnet 5.5 on run.camelai.com, on the first of
 Anthropic (`anthropic/claude-sonnet-5-5`), OpenRouter
 (`openrouter/anthropic/claude-sonnet-5.5`) and Bedrock
 (`amazon-bedrock/global.anthropic.claude-sonnet-5-5`) you have a key for (its
@@ -1505,7 +1508,7 @@ send it with the prompt instead of reconfiguring the agent.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/custom-models.md -->
+<!-- https://run.camelai.com/docs/guides/custom-models.md -->
 
 # Custom models
 
@@ -1570,7 +1573,7 @@ its agents only: each customer's own endpoint, under the same name in every
 scope.
 
 ```bash
-curl -X PUT https://agents.camelai.dev/v1/key-scopes/org_42/model-providers/custom \
+curl -X PUT https://run.camelai.com/v1/key-scopes/org_42/model-providers/custom \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
   -d '{"type": "openai-responses", "baseUrl": "https://bedrock-mantle.us-west-2.api.aws/openai/v1",
        "apiKey": "'"$ORG_42_BEDROCK_API_KEY"'", "models": [{"id": "openai.gpt-5.6-terra", "contextWindow": 200000, "reasoning": true}]}'
@@ -1672,7 +1675,7 @@ Groq is a built-in provider: set its key (`PUT /v1/providers/groq/key`) and use
 add Groq's API under a name of your own:
 
 ```bash
-curl -X PUT https://agents.camelai.dev/v1/providers/groq-preview \
+curl -X PUT https://run.camelai.com/v1/providers/groq-preview \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
   -d '{"type": "openai-completions", "baseUrl": "https://api.groq.com/openai/v1", "apiKey": "'"$GROQ_API_KEY"'",
        "models": [{"id": "new-model-preview", "contextWindow": 131072, "maxOutputTokens": 8192,
@@ -1705,7 +1708,7 @@ If the tunnel's address changes, save the provider again with the new
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/definitions.md -->
+<!-- https://run.camelai.com/docs/guides/definitions.md -->
 
 # Definitions
 
@@ -1797,7 +1800,7 @@ takes the change when it next starts.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/channels.md -->
+<!-- https://run.camelai.com/docs/guides/channels.md -->
 
 # Channels
 
@@ -1809,7 +1812,7 @@ Linear, Stripe, your own) start agents; see [Generic webhooks](#generic-webhooks
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"type":"telegram","credentials":{"botToken":"<from @BotFather>"},
        "definition":"def_…","access":{"allow":["@ada","123456789"]}}' \
-  https://agents.camelai.dev/v1/channels
+  https://run.camelai.com/v1/channels
 ```
 
 Each conversation's agent is made from the channel's `definition`. A channel
@@ -1828,7 +1831,7 @@ the channel.
 Creating a channel checks its credentials with the service. Credentials and a
 random webhook secret are stored encrypted; the API returns only masked values.
 
-- **Telegram.** `https://agents.camelai.dev/channels/telegram/<id>` is registered as the
+- **Telegram.** `https://run.camelai.com/channels/telegram/<id>` is registered as the
   bot's webhook with the random secret, which each delivery must echo (compared
   in constant time). Deleting the channel removes the webhook. `/start` gets the
   channel's `greeting` without a model call.
@@ -1942,7 +1945,7 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
                    "key":"sentry-{{data.issue.id}}",
                    "filter":[{"path":"action","in":["created"]}],
                    "prompt":"Sentry issue {{data.issue.title}} ({{data.issue.web_url}}) was created. Triage it."}}' \
-  https://agents.camelai.dev/v1/channels
+  https://run.camelai.com/v1/channels
 ```
 
 - **`signature`** is how a delivery proves itself; unsigned or wrongly signed
@@ -1999,7 +2002,7 @@ mail for through Amazon SES (on a runtime with `AGENT_EMAIL_DOMAIN`; see
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"type":"email","settings":{"address":"support","fromName":"Acme Support"},
        "definition":"def_…","access":{"allow":["ada@example.com","@acme.com"]}}' \
-  https://agents.camelai.dev/v1/channels
+  https://run.camelai.com/v1/channels
 ```
 
 - **Address.** `settings.address` is the part before the `@` (or the whole
@@ -2038,11 +2041,11 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 
 ---
 
-<!-- https://agents.camelai.dev/docs/guides/mcp-server.md -->
+<!-- https://run.camelai.com/docs/guides/mcp-server.md -->
 
 # Agents as MCP servers
 
-Every agent is also an MCP server, at `https://agents.camelai.dev/v1/agents/<agent id>/mcp`
+Every agent is also an MCP server, at `https://run.camelai.com/v1/agents/<agent id>/mcp`
 (Streamable HTTP). Connect Claude, Cursor or any MCP client to it, and the model
 there can talk to your agent. It has one tool, `message`: it sends the agent a
 message and returns the agent's reply. The agent's own tools stay its own.
@@ -2050,16 +2053,16 @@ message and returns the agent's reply. The agent's own tools stay its own.
 Claude Code:
 
 ```sh
-claude mcp add --transport http support https://agents.camelai.dev/v1/agents/client_…/mcp
+claude mcp add --transport http support https://run.camelai.com/v1/agents/client_…/mcp
 # then /mcp in Claude Code to sign in; or skip signing in with a token:
-claude mcp add --transport http support https://agents.camelai.dev/v1/agents/client_…/mcp --header "Authorization: Bearer art_..."
+claude mcp add --transport http support https://run.camelai.com/v1/agents/client_…/mcp --header "Authorization: Bearer art_..."
 ```
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the agent's URL. Cursor and other clients configured with JSON:
 
 ```json
-{ "mcpServers": { "support": { "url": "https://agents.camelai.dev/v1/agents/client_…/mcp" } } }
+{ "mcpServers": { "support": { "url": "https://run.camelai.com/v1/agents/client_…/mcp" } } }
 ```
 
 - **One conversation.** A message joins the agent's history exactly as a prompt
@@ -2100,7 +2103,7 @@ connector, with the agent's URL. Cursor and other clients configured with JSON:
 
 ---
 
-<!-- https://agents.camelai.dev/docs/production.md -->
+<!-- https://run.camelai.com/docs/production.md -->
 
 # Production checklist
 
@@ -2185,7 +2188,7 @@ Before you ship an application on the runtime, check each of these.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/reference/sdk.md -->
+<!-- https://run.camelai.com/docs/reference/sdk.md -->
 
 # SDKs
 
@@ -2221,7 +2224,7 @@ async with Agents(api_key, url=url) as agents: ...
 ```
 
 - `apiKey` defaults to the `CAMELAI_API_KEY` environment variable, `url` to
-  `CAMELAI_BASE_URL`, else `https://agents.camelai.dev`.
+  `CAMELAI_BASE_URL`, else `https://run.camelai.com`.
 - `agents.close()` closes every agent's connection so the process can exit;
   their runs go on in the runtime.
 - `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
@@ -2472,6 +2475,10 @@ application keeps serving its tools.
   `https://run.camelai.com` or `https://agents.camelai.dev`, expect the issuer
   `https://agents.camelai.dev`, which the hosted runtime's identity tokens name
   at both. Pass `issuer` to expect another.
+- The default `url` (and the CLI's) is `https://run.camelai.com`, the hosted
+  runtime's new address. `https://agents.camelai.dev` keeps working, with the
+  same agents, tokens and OAuth grants, so an earlier version or a configured
+  URL needs no change.
 - `close()` stops `onEvent` (`on_event`): events still queued when it is called
   are dropped instead of handed over, and `close()` waits only for the call in
   progress. Before, a slow handler kept being called for the whole backlog after
@@ -2530,14 +2537,14 @@ temporary local runtime with scripted code, calling no model.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/reference/cli.md -->
+<!-- https://run.camelai.com/docs/reference/cli.md -->
 
 # camelRun CLI and MCP server
 
 `camelrun` deploys and manages agents from a terminal, a script or CI. Coding
 agents (Claude Code, Cursor, Codex…) get the same operations over MCP, so they can
 write an agent's manifest, deploy it, talk to the agent and read what it did:
-from the hosted MCP server at `https://agents.camelai.dev/mcp`, with nothing to
+from the hosted MCP server at `https://run.camelai.com/mcp`, with nothing to
 install ([below](#hosted-mcp-server)), or from `camelrun mcp` on your machine,
 which can also deploy the manifests in your repository.
 
@@ -2675,7 +2682,7 @@ agent's tool servers. A result longer than 100,000 characters is cut, saying so.
 
 ## Hosted MCP server
 
-`https://agents.camelai.dev/mcp` serves the tools over Streamable HTTP. Add it
+`https://run.camelai.com/mcp` serves the tools over Streamable HTTP. Add it
 by URL and sign in when your client asks: the runtime's sign-in page (GitHub,
 or an API token) asks you to allow the client, which then acts for your
 account until you revoke it.
@@ -2683,16 +2690,16 @@ account until you revoke it.
 Claude Code:
 
 ```sh
-claude mcp add --transport http camelrun https://agents.camelai.dev/mcp
+claude mcp add --transport http camelrun https://run.camelai.com/mcp
 # then /mcp in Claude Code to sign in; or skip signing in with a key:
-claude mcp add --transport http camelrun https://agents.camelai.dev/mcp --header "Authorization: Bearer art_..."
+claude mcp add --transport http camelrun https://run.camelai.com/mcp --header "Authorization: Bearer art_..."
 ```
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the URL above. Cursor and other clients configured with JSON:
 
 ```json
-{ "mcpServers": { "camelrun": { "url": "https://agents.camelai.dev/mcp" } } }
+{ "mcpServers": { "camelrun": { "url": "https://run.camelai.com/mcp" } } }
 ```
 
 How it differs from `camelrun mcp`:
@@ -2767,7 +2774,7 @@ alone.
 
 ---
 
-<!-- https://agents.camelai.dev/docs/reference/events.md -->
+<!-- https://run.camelai.com/docs/reference/events.md -->
 
 # Events
 
@@ -3038,7 +3045,7 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 
 ---
 
-<!-- https://agents.camelai.dev/docs/reference/limits.md -->
+<!-- https://run.camelai.com/docs/reference/limits.md -->
 
 # Limits
 
@@ -3172,7 +3179,7 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 
 ---
 
-<!-- https://agents.camelai.dev/docs/reference/errors.md -->
+<!-- https://run.camelai.com/docs/reference/errors.md -->
 
 # Errors
 

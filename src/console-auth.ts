@@ -12,7 +12,7 @@ import { readText } from "./http.ts";
 export interface ConsoleAuthOptions {
   accounts: Accounts;
   secret: string;
-  /** Public origin, e.g. https://agents.camelai.dev. Cookies are Secure when it is https. */
+  /** Public origin, e.g. https://run.camelai.com. Cookies are Secure when it is https. */
   publicUrl: string;
   /**
    * GitHub sign-in: for members of `org`, or with `open`, for anyone with a GitHub

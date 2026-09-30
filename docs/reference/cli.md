@@ -3,7 +3,7 @@
 `camelrun` deploys and manages agents from a terminal, a script or CI. Coding
 agents (Claude Code, Cursor, Codex…) get the same operations over MCP, so they can
 write an agent's manifest, deploy it, talk to the agent and read what it did:
-from the hosted MCP server at `https://agents.camelai.dev/mcp`, with nothing to
+from the hosted MCP server at `https://run.camelai.com/mcp`, with nothing to
 install ([below](#hosted-mcp-server)), or from `camelrun mcp` on your machine,
 which can also deploy the manifests in your repository.
 
@@ -141,7 +141,7 @@ agent's tool servers. A result longer than 100,000 characters is cut, saying so.
 
 ## Hosted MCP server
 
-`https://agents.camelai.dev/mcp` serves the tools over Streamable HTTP. Add it
+`https://run.camelai.com/mcp` serves the tools over Streamable HTTP. Add it
 by URL and sign in when your client asks: the runtime's sign-in page (GitHub,
 or an API token) asks you to allow the client, which then acts for your
 account until you revoke it.
@@ -149,16 +149,16 @@ account until you revoke it.
 Claude Code:
 
 ```sh
-claude mcp add --transport http camelrun https://agents.camelai.dev/mcp
+claude mcp add --transport http camelrun https://run.camelai.com/mcp
 # then /mcp in Claude Code to sign in; or skip signing in with a key:
-claude mcp add --transport http camelrun https://agents.camelai.dev/mcp --header "Authorization: Bearer art_..."
+claude mcp add --transport http camelrun https://run.camelai.com/mcp --header "Authorization: Bearer art_..."
 ```
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the URL above. Cursor and other clients configured with JSON:
 
 ```json
-{ "mcpServers": { "camelrun": { "url": "https://agents.camelai.dev/mcp" } } }
+{ "mcpServers": { "camelrun": { "url": "https://run.camelai.com/mcp" } } }
 ```
 
 How it differs from `camelrun mcp`:

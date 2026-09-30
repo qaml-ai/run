@@ -27,7 +27,7 @@ import httpx
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
 _DEFAULT = object()
 # The hosted runtime; `url` points elsewhere (a self-hosted runtime, or http://127.0.0.1:8790 in development).
-DEFAULT_URL = "https://agents.camelai.dev"
+DEFAULT_URL = "https://run.camelai.com"
 # Requests one client may wait on at once, and events waiting for a slow on_event (past it, streamed deltas are dropped).
 _MAX_PENDING = 1000
 _MAX_QUEUED_EVENTS = 10_000
@@ -416,7 +416,7 @@ async def _transfer(client, method, url, **options):
 
 class AgentRuntime:
     """The lower-level client: provision agents, definitions, volumes and mounts. `url` defaults to CAMELAI_BASE_URL,
-    else https://agents.camelai.dev; `api_key` to CAMELAI_API_KEY."""
+    else https://run.camelai.com; `api_key` to CAMELAI_API_KEY."""
 
     def __init__(self, url=None, api_key=None):
         self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
@@ -454,7 +454,7 @@ class AgentRuntime:
         `prompt` (the prompt call's body, {"text", "requestId", ...}) is sent once the agent is made: the answer's "prompt" is
         its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once."""
         if not self.api_key:
-            raise AgentError("Set api_key (or the CAMELAI_API_KEY environment variable): create a key in the console at https://agents.camelai.dev")
+            raise AgentError("Set api_key (or the CAMELAI_API_KEY environment variable): create a key in the console at https://run.camelai.com")
         import re
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
             raise AgentError(f"An agent's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
@@ -1560,7 +1560,7 @@ class Agents:
             agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5-5", instructions="...")
             print((await agent.run("Hello")).text)
 
-    api_key defaults to CAMELAI_API_KEY; url to CAMELAI_BASE_URL, else https://agents.camelai.dev."""
+    api_key defaults to CAMELAI_API_KEY; url to CAMELAI_BASE_URL, else https://run.camelai.com."""
 
     def __init__(self, api_key=None, *, url=None):
         self.runtime = AgentRuntime(url=url, api_key=api_key)

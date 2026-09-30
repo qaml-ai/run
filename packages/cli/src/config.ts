@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Credentials } from "./api.ts";
 
-export const DEFAULT_URL = "https://agents.camelai.dev";
+export const DEFAULT_URL = "https://run.camelai.com";
 
 /** Where `camelrun login` keeps the key: $CAMELRUN_CONFIG, else $XDG_CONFIG_HOME/camelrun, else ~/.config/camelrun. */
 export function configPath(env = process.env) {
@@ -36,6 +36,6 @@ export function forget(env = process.env) {
 export function resolve(flags: { apiKey?: string; url?: string }, env = process.env): Credentials {
   const saved = readSaved(env);
   const apiKey = flags.apiKey || env.CAMELAI_API_KEY || saved.apiKey;
-  if (!apiKey) throw new Error("No API key: run `camelrun login`, or set CAMELAI_API_KEY (create one under API tokens at https://agents.camelai.dev/console)");
+  if (!apiKey) throw new Error("No API key: run `camelrun login`, or set CAMELAI_API_KEY (create one under API tokens at https://run.camelai.com/console)");
   return { apiKey, url: flags.url || env.CAMELAI_URL || saved.url || DEFAULT_URL };
 }

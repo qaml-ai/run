@@ -225,9 +225,9 @@ export function toolServer(tools: Tools): ToolServer {
   };
 }
 /** The hosted runtime; `url` points elsewhere (a self-hosted runtime, or http://127.0.0.1:8790 in development). */
-export const DEFAULT_URL = "https://agents.camelai.dev";
+export const DEFAULT_URL = "https://run.camelai.com";
 export interface RuntimeOptions {
-  /** The runtime's origin. Default https://agents.camelai.dev. */
+  /** The runtime's origin. Default https://run.camelai.com. */
   url?: string;
   apiKey?: string;
   /** Injectable for tests, observability, or an application's HTTP stack. */

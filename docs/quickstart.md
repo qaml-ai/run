@@ -7,7 +7,7 @@ credentials.
 
 ## 1. Get an API key
 
-Sign in to the console at <https://agents.camelai.dev/console>, then:
+Sign in to the console at <https://run.camelai.com/console>, then:
 
 - under **Models & keys**, check that a model is marked *Usable*. New accounts
   start with credit for the platform's models. Or you can add your own provider
@@ -97,7 +97,7 @@ curl (the agent has no tools of yours here: tools that run in your process need 
 SDK, or a server of your own, see [Tools](guides/tools.md)):
 
 ```sh
-BASE=https://agents.camelai.dev; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
+BASE=https://run.camelai.com; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
 # The Idempotency-Key is the agent's key: the same key is the same agent.
 AGENT=$(curl -s $BASE/v1/agents -H "$AUTH" -H "Content-Type: application/json" -H "Idempotency-Key: quickstart" \
   -d '{"model": "anthropic/claude-sonnet-5-5", "systemPrompt": "You are a concise assistant."}' | jq -r .id)

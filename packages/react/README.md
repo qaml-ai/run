@@ -1,7 +1,7 @@
 # @camelai/run-react
 
 React hooks and components for a streaming chat with an agent on the
-[camelRun](https://agents.camelai.dev). Your server has one route
+[camelRun](https://run.camelai.com). Your server has one route
 (`createAgentHandler` from `@camelai/run/server`); these talk to it.
 
 ```sh

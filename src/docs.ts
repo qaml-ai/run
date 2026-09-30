@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 /** The origin the docs are written for; a runtime elsewhere serves them pointing at itself. */
-const DOCS_ORIGIN = "https://agents.camelai.dev";
+const DOCS_ORIGIN = "https://run.camelai.com";
 
 /**
  * The public docs, read once at startup from `directory` (docs/ in the image): `/llms.txt` and

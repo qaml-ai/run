@@ -165,7 +165,7 @@ test("Agents defaults to the hosted runtime, and needs an API key to make agents
   const seen: string[] = [];
   const agents = new Agents({ apiKey: "k".repeat(32), fetch: async input => { seen.push(String(input)); return Response.json({ error: "stop here" }, { status: 400 }); } });
   await assert.rejects(agents.upsert("demo"), /stop here/);
-  assert.ok(seen[0].startsWith("https://agents.camelai.dev/"), seen[0]);
+  assert.ok(seen[0].startsWith("https://run.camelai.com/"), seen[0]);
   const saved = process.env.CAMELAI_API_KEY;
   delete process.env.CAMELAI_API_KEY;
   try { await assert.rejects(new Agents({ url: "http://127.0.0.1:1" }).upsert("demo"), /CAMELAI_API_KEY/); }

@@ -59,7 +59,7 @@ const relative = options.directory ?? "agent-app";
 console.log(`
 Created ${relative}.
 
-  cd ${relative}${options.install ? "" : `\n  ${manager} install`}${options.apiKey ? "" : "\n  # add your API key to .env.local (https://agents.camelai.dev/console)"}
+  cd ${relative}${options.install ? "" : `\n  ${manager} install`}${options.apiKey ? "" : "\n  # add your API key to .env.local (https://run.camelai.com/console)"}
   ${manager === "npm" ? "npm run" : manager} dev
 
 Then open http://localhost:3000.`);

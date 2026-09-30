@@ -6,7 +6,7 @@ the model loop, keeps each agent's history and files (with compaction), executes
 model-written code in a QuickJS/WebAssembly sandbox, and wakes agents when there
 is work. Most agents are asleep at any time, and any node can load one.
 
-Live at <https://agents.camelai.dev> (REST API under `/v1`, described by
+Live at <https://run.camelai.com> (REST API under `/v1`, described by
 `/v1/openapi.json` and the committed [`openapi.json`](openapi.json); console at
 `/console`).
 
@@ -33,7 +33,7 @@ await agents.close();
   [errors](docs/reference/errors.md), [SDKs](docs/reference/sdk.md), [CLI and MCP server](docs/reference/cli.md),
   [REST API](openapi.json)
 
-The same pages are served as Markdown at <https://agents.camelai.dev/llms.txt>,
+The same pages are served as Markdown at <https://run.camelai.com/llms.txt>,
 for agents and tools that read documentation.
 
 ## Repository

@@ -39,7 +39,7 @@ const tools = {
 };
 
 // Serve them, trusting only the runtime's tokens for this server's URL, made for this tenant's agents.
-const runtimeUrl = process.env.CAMELAI_BASE_URL ?? "https://agents.camelai.dev";
+const runtimeUrl = process.env.CAMELAI_BASE_URL ?? "https://run.camelai.com";
 const publicUrl = process.env.PUBLIC_URL ?? "http://127.0.0.1:8788";
 const agents = new Agents({ url: runtimeUrl });
 const { tenant } = await agents.runtime.me(); // in a server of your own, a constant: your tenant's id
