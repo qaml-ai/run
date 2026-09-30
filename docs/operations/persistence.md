@@ -122,10 +122,11 @@ refers to any more, so they stop being stored and billed:
   agent drops its pins.
 - **Only chunks written since.** A chunk is collectable once a write has stored it
   (`chunk_touches`); bytes stored before collection began and never written again
-  are left alone. Accepted in the closed alpha: a chunk stored before collection
-  began and written again since is collectable even if a FileRef from before
-  (which has no pin) still refers to it, so such a file can go once its volume
-  no longer holds it.
+  are left alone. A chunk stored before collection began and written again since is
+  collectable even if a FileRef from before pins existed (migration 026) still refers
+  to it, so a runtime with agents from then runs `scripts/backfill-pins.ts` once
+  before enabling collection: it pins every FileRef each live agent holds (header,
+  transcript, journal and history pages), counts with `--dry-run`, and is idempotent.
 - **Two passes.** A pass marks what is referred to; a chunk it finds unreferenced
   becomes a candidate, and a later pass at least `AGENT_GC_GRACE_MS` (a day) on
   deletes it if it is still unreferenced and nothing touched it since. Writes, pins,
@@ -144,7 +145,8 @@ refers to any more, so they stop being stored and billed:
 - **Switches.** Off unless `AGENT_GC_ENABLED=true`; `AGENT_GC_DRY_RUN=true` marks and
   logs what it would delete (`storage_gc_dry_run`) without deleting. Pins and which
   chunks writes created are recorded either way. To roll it out: deploy with it off,
-  enable it with the dry run and watch the logs for a few intervals, then unset the dry run.
+  run `scripts/backfill-pins.ts` (in the image, so it can run as a one-off task), enable
+  it with the dry run and watch the logs for a few intervals, then unset the dry run.
 - **Accepted gap.** A collector that crashes after deleting a chunk and before putting
   it back for a writer that touched it meanwhile loses that chunk. The window is one
   delete and one query long, and needs a writer storing the same bytes at that moment.

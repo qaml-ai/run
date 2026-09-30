@@ -21,6 +21,8 @@ COPY shared ./shared
 COPY packages/cli/package.json ./packages/cli/package.json
 COPY packages/cli/src ./packages/cli/src
 COPY migrations ./migrations
+# Run once as a one-off task before enabling storage collection (docs/operations/persistence.md).
+COPY scripts/backfill-pins.ts ./scripts/backfill-pins.ts
 # Served at /docs/, /llms.txt and /llms-full.txt, and the UI registry at /r/ (src/docs.ts).
 COPY docs ./docs
 COPY packages/registry/public/r ./packages/registry/public/r
