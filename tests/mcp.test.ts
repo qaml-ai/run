@@ -133,7 +133,8 @@ test("an agent shows every tool source and what its model gets, connecting to MC
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id, mcp: { tools } } })).json.id;
   const byName = (sources: any[]) => Object.fromEntries(sources.map(source => [source.name, source]));
 
-  // The agent started when it was made: its sources show what its tools were built from.
+  // The agent starts once it is made: its sources then show what its tools were built from.
+  await until(async () => (await r.call(`/v1/agents/${agent}`)).json.running, "the agent to start");
   let requests = mcp.seen.requests;
   const detail = (await r.call(`/v1/agents/${agent}`)).json;
   let sources = byName(detail.toolSources);
