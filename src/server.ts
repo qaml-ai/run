@@ -507,6 +507,9 @@ const app = new Hono<Env>();
 // node stays healthy (ECS replaces tasks that fail it, protected or not) and hands new work to its peers instead.
 // The runtime's public signing keys: tool servers verify its identity tokens with them.
 app.get("/.well-known/jwks.json", async c => c.json(await signer.jwks(), 200, { "Cache-Control": "public, max-age=300" }));
+// ChatGPT's plugin directory checks that whoever submits the plugin controls this host: the token it issues, as plain text.
+const openAiAppsChallenge = process.env.AGENT_OPENAI_APPS_CHALLENGE?.trim();
+app.get("/.well-known/openai-apps-challenge", c => openAiAppsChallenge ? c.text(openAiAppsChallenge, 200, { "Cache-Control": "no-store" }) : c.body(null, 404));
 // OAuth authorization server metadata (RFC 8414), as MCP's authorization spec reads it. It serves two purposes: the
 // issuer of identity tokens and where its keys are, so a tool server that names the runtime in its protected-resource
 // metadata can verify them with standard OAuth tooling; and the endpoints MCP clients of the hosted /mcp sign in

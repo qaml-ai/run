@@ -30,6 +30,7 @@ test("the hosted MCP endpoint runs the CLI's tools as the caller, and reads no f
   process.env.HOSTED_TEST_SECRET = "must-not-leak";
   t.after(() => { delete process.env.HOSTED_TEST_SECRET; });
 
+  assert.equal((await fetch(`${r.base}/.well-known/openai-apps-challenge`)).status, 404, "no domain challenge unless one is set");
   const anonymous = await fetch(`${r.base}/mcp`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   assert.equal(anonymous.status, 401);
   assert.match(anonymous.headers.get("www-authenticate")!, new RegExp(`^Bearer resource_metadata="${PUBLIC}/\\.well-known/oauth-protected-resource/mcp"`));
@@ -218,4 +219,12 @@ test("a tool's result is cut at MAX_RESULT characters, saying so", async () => {
   const result: any = await client.callTool({ name: "read_docs", arguments: {} });
   assert.equal(result.content[0].text.startsWith("x".repeat(MAX_RESULT) + "\n\n[Cut at"), true);
   await client.close();
+});
+
+test("the OpenAI apps domain challenge is served as plain text from AGENT_OPENAI_APPS_CHALLENGE", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "hi" }), { AGENT_OPENAI_APPS_CHALLENGE: " challenge-token-123\n" });
+  const response = await fetch(`${r.base}/.well-known/openai-apps-challenge`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type")!, /^text\/plain/);
+  assert.equal(await response.text(), "challenge-token-123");
 });

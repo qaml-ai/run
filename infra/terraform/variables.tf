@@ -156,6 +156,12 @@ variable "runtime_env" {
 }
 
 
+variable "openai_apps_challenge" {
+  description = "The domain-verification token the OpenAI Plugins dashboard shows for the ChatGPT plugin, served at https://<hostname>/.well-known/openai-apps-challenge. Not a secret. Empty serves nothing."
+  type        = string
+  default     = ""
+}
+
 variable "github_subjects" {
   description = "OIDC subject prefixes of the repository whose production environment may deploy. The repository uses immutable subjects: gh api repos/<owner>/<repo>/actions/oidc/customization/sub shows sub_claim_prefix. The prefix carries the repository's name, so a rename changes it: list both names until a deploy from the new one has succeeded."
   type        = list(string)

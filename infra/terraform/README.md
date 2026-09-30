@@ -92,6 +92,8 @@ and the RDS instance also have deletion protection in AWS.
     `AGENT_STRIPE_SECRET_ARN` (credit purchases stay off until `infra/stripe.sh` stores its value);
   - `AGENT_TOOL_SEARCH=embeddings,jev` and `AGENT_TOOL_SEARCH_SECRET_ARN` (tools.search uses the
     platform's OpenRouter key from the tenants secret; `infra/tool-search.sh` stores a dedicated one instead).
+  - `AGENT_OPENAI_APPS_CHALLENGE` from `openai_apps_challenge`, when set: the ChatGPT plugin's domain-verification
+    token (`plugins/chatgpt/README.md`).
 
   The task definition has no `secrets`: the runtime reads every secret itself,
   through the task role, so no secret value is in its environment, where a
