@@ -64,6 +64,7 @@ import { builtinsInput } from "./builtins.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
+import { publicOrigins } from "./origins.ts";
 
 // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
@@ -134,6 +135,8 @@ if (!Number.isInteger(idleMs) || idleMs < 1000) throw new Error("AGENT_IDLE_MS m
 // Endpoints beyond the default model's and Pi's published ones that may receive a provider key.
 const allowedBaseUrls = (process.env.AGENT_ALLOWED_BASE_URLS ?? "").split(",").map(value => value.trim()).filter(Boolean);
 const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
+// Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
+const origins = publicOrigins(process.env, `http://127.0.0.1:${port}`);
 // Tenant-set provider keys are encrypted with AGENT_SECRETS_KEY; without it tenants cannot store keys.
 // Prepaid tenants pay from credit at the rates in src/pricing.ts, which the environment may override.
 // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
@@ -172,9 +175,9 @@ const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new UR
 const outbound = outboundFromEnvironment();
 const mcp = new McpConnections({ outbound });
 // Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
-const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
-// OAuth for the hosted MCP endpoint; the issuer follows the signer's, which is the public URL once it is known.
-const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, publicUrl: () => signer.issuer, github: !!github, google: !!google });
+const signer = new RuntimeSigner({ db, accounts, issuer: origins.issuer });
+// OAuth for the hosted MCP endpoints, under the same issuer.
+const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, origins, github: !!github, google: !!google });
 // web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else (prepaid) the
 // platform's, whose calls are charged to credit at that provider's price. js_exec can make many calls between two
 // model requests, so spent or rate-limited credit refuses the platform's key at each call, not only at the next request.
@@ -382,7 +385,9 @@ const FORWARDED = "x-agent-runtime-forwarded";
 function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor?: string) {
   const target = new URL(req.url ?? "/", owner);
   const via = req.headers[FORWARDED];
-  const upstream = httpRequest(target, { method: req.method, headers: { ...req.headers, host: target.host, [FORWARDED]: typeof via === "string" ? `${via},${node}` : node } }, answer => {
+  // The host it was sent to goes along, so the owner answers as that origin (origins.of).
+  const headers = { ...req.headers, host: target.host, "x-forwarded-host": req.headers["x-forwarded-host"] ?? req.headers.host, [FORWARDED]: typeof via === "string" ? `${via},${node}` : node };
+  const upstream = httpRequest(target, { method: req.method, headers }, answer => {
     // The node no longer serves the actor (it moved, or the node is draining): look it up afresh next time.
     if (answer.statusCode === 503) ownership.forget(actor);
     res.writeHead(answer.statusCode ?? 502, answer.headers);
@@ -508,6 +513,14 @@ channels.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
+// On an alias, the pages people use move to the public URL, whose host their sign-in cookies and OAuth callbacks belong to.
+// Everything else (the API, MCP, OAuth's token endpoint, webhooks, links) is served on every origin alike.
+const BROWSER_PAGES = /^\/(?:$|console(?:\/|$)|oauth\/authorize$)/;
+app.use(async (c, next) => {
+  if ((c.req.method !== "GET" && c.req.method !== "HEAD") || !BROWSER_PAGES.test(c.req.path) || !origins.alias(c.req.raw.headers)) return next();
+  const url = new URL(c.req.url);
+  return c.redirect(`${origins.canonical}${url.pathname}${url.search}`, 302);
+});
 // The load balancer's health check: failing it while draining stops new requests arriving here. A retiring
 // node stays healthy (ECS replaces tasks that fail it, protected or not) and hands new work to its peers instead.
 // The runtime's public signing keys: tool servers verify its identity tokens with them.
@@ -520,7 +533,7 @@ app.get("/.well-known/openai-apps-challenge", c => openAiAppsChallenge ? c.text(
 // metadata can verify them with standard OAuth tooling; and the endpoints MCP clients of the hosted /mcp sign in
 // with (src/oauth.ts), whose access tokens are opaque and never signed with those keys.
 app.get("/.well-known/oauth-authorization-server", c => c.json({
-  issuer: signer.issuer, jwks_uri: `${signer.issuer}/.well-known/jwks.json`, ...oauth.metadata(),
+  issuer: origins.issuer, jwks_uri: `${origins.issuer}/.well-known/jwks.json`, ...oauth.metadata(),
 }, 200, { "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" }));
 // The public docs (docs/ in the image), for people and for models: cacheable, and readable from any page.
 const docs = loadDocs(resolve(process.env.AGENT_DOCS_DIR ?? fileURLToPath(new URL("../docs", import.meta.url))), publicUrl);
@@ -597,7 +610,7 @@ app.route("/", oauth.app);
 const loopbackHost = !process.env.HOST || ["0.0.0.0", "::", "127.0.0.1", "localhost"].includes(process.env.HOST) ? "127.0.0.1" : process.env.HOST.includes(":") ? `[${process.env.HOST}]` : process.env.HOST;
 const mcpOptions = {
   authenticate: async (authorization: string | undefined) => await accounts.authenticate(authorization) ?? await oauth.authenticate(authorization),
-  publicUrl: () => signer.issuer,
+  origins,
   loopback: () => `http://${loopbackHost}:${(server.address() as { port: number }).port}`,
 };
 app.route("/", hostedMcp(mcpOptions));
@@ -651,7 +664,7 @@ server.on("request", (req: IncomingMessage) => {
 });
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
-  if (!process.env.AGENT_PUBLIC_URL) signer.issuer = links.publicUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  if (!process.env.AGENT_PUBLIC_URL) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
 });
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.

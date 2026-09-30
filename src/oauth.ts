@@ -4,6 +4,7 @@ import type { Accounts, Principal } from "./accounts.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
 import type { Db } from "./db.ts";
 import { readText } from "./http.ts";
+import type { PublicOrigins } from "./origins.ts";
 
 /**
  * The runtime as an OAuth 2.1 authorization server for its hosted MCP endpoints (/mcp, and each agent's), as MCP's authorization spec
@@ -22,8 +23,8 @@ export interface OAuthOptions {
   consoleAuth: ConsoleAuth;
   /** Signs client ids and derives client secrets. */
   secret: string;
-  /** The issuer and the MCP resource's origin: the runtime's public URL. */
-  publicUrl: () => string;
+  /** The issuer; the public URL, where the endpoints and pages are; and the aliases, where MCP endpoints are too. */
+  origins: PublicOrigins;
   /** Whether the console signs in with GitHub and with Google (the sign-in page always takes an API token too). */
   github: boolean;
   google?: boolean;
@@ -79,14 +80,14 @@ export class OAuth {
   private swept = 0;
   constructor(options: OAuthOptions) { this.options = options; }
 
-  get issuer() { return this.options.publicUrl(); }
-  get resource() { return `${this.issuer}/mcp`; }
+  get issuer() { return this.options.origins.issuer; }
+  private get base() { return this.options.origins.canonical; }
 
   /** The authorization server's metadata (RFC 8414), merged into the runtime's /.well-known/oauth-authorization-server. */
   metadata() {
     return {
-      authorization_endpoint: `${this.issuer}/oauth/authorize`, token_endpoint: `${this.issuer}/oauth/token`,
-      registration_endpoint: `${this.issuer}/oauth/register`, revocation_endpoint: `${this.issuer}/oauth/revoke`,
+      authorization_endpoint: `${this.base}/oauth/authorize`, token_endpoint: `${this.base}/oauth/token`,
+      registration_endpoint: `${this.base}/oauth/register`, revocation_endpoint: `${this.base}/oauth/revoke`,
       scopes_supported: [SCOPE], response_types_supported: ["code"], response_modes_supported: ["query"],
       grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: [...AUTH_METHODS], revocation_endpoint_auth_methods_supported: [...AUTH_METHODS],
@@ -94,9 +95,12 @@ export class OAuth {
     };
   }
 
-  /** An MCP endpoint's metadata (RFC 9728), the hosted one's or an agent's (agent-mcp.ts): where its tokens come from. */
-  protectedResource(resource = this.resource, documentation = "reference/cli.md") {
-    return { resource, authorization_servers: [this.issuer], scopes_supported: [SCOPE], bearer_methods_supported: ["header"], resource_name: "camelRun", resource_documentation: `${this.issuer}/docs/${documentation}` };
+  /**
+   * An MCP endpoint's metadata (RFC 9728), the hosted one's or an agent's (agent-mcp.ts): where its tokens come from.
+   * `resource` is the endpoint at the origin the client reached, which clients check; the issuer is the same at every one.
+   */
+  protectedResource(resource: string, documentation = "reference/cli.md") {
+    return { resource, authorization_servers: [this.issuer], scopes_supported: [SCOPE], bearer_methods_supported: ["header"], resource_name: "camelRun", resource_documentation: `${this.base}/docs/${documentation}` };
   }
 
   /** The tenant an OAuth access token acts for, while it is unexpired and its grant stands. */
@@ -177,9 +181,10 @@ export class OAuth {
     const challenge = params.get("code_challenge") ?? "";
     if (params.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge)) throw fail("invalid_request", "PKCE is required: code_challenge with code_challenge_method S256");
     const resource = params.get("resource");
-    // The hosted endpoint, or an agent's: a token acts for the tenant at either.
-    const agent = resource?.startsWith(`${this.issuer}/v1/agents/`) && AGENT_RESOURCE.test(resource.slice(this.issuer.length));
-    if (resource !== null && !agent && ![this.resource, `${this.resource}/`, this.issuer, `${this.issuer}/`].includes(resource)) throw fail("invalid_target", `The resource is ${this.resource}`);
+    // The hosted endpoint, or an agent's, at any origin the runtime answers at: a token acts for the tenant at each.
+    const ours = (origin: string) => resource !== null && ([`${origin}/mcp`, `${origin}/mcp/`, origin, `${origin}/`].includes(resource)
+      || (resource.startsWith(`${origin}/v1/agents/`) && AGENT_RESOURCE.test(resource.slice(origin.length))));
+    if (resource !== null && !this.options.origins.all.some(ours)) throw fail("invalid_target", `The resource is ${this.base}/mcp`);
     if ((request.state?.length ?? 0) > 2000) throw fail("invalid_request", "state is too long");
     return { ...request, challenge };
   }
@@ -297,10 +302,11 @@ export class OAuth {
       return new URLSearchParams(text);
     };
 
-    for (const path of publicPaths.slice(0, 2)) app.get(path, c => c.json(this.protectedResource(), 200, { ...open, "Cache-Control": "public, max-age=300" }));
+    const reached = (c: Context) => this.options.origins.of(c.req.raw.headers);
+    for (const path of publicPaths.slice(0, 2)) app.get(path, c => c.json(this.protectedResource(`${reached(c)}/mcp`), 200, { ...open, "Cache-Control": "public, max-age=300" }));
     const agentMetadata = "/.well-known/oauth-protected-resource/v1/agents/:id{client_[a-f0-9]{40}}/mcp";
     app.options(agentMetadata, c => c.body(null, 204, { ...open, "Access-Control-Max-Age": "86400" }));
-    app.get(agentMetadata, c => c.json(this.protectedResource(`${this.issuer}/v1/agents/${c.req.param("id")}/mcp`, "guides/mcp-server.md"), 200, { ...open, "Cache-Control": "public, max-age=300" }));
+    app.get(agentMetadata, c => c.json(this.protectedResource(`${reached(c)}/v1/agents/${c.req.param("id")}/mcp`, "guides/mcp-server.md"), 200, { ...open, "Cache-Control": "public, max-age=300" }));
 
     app.post("/oauth/register", async c => {
       try {
@@ -338,7 +344,7 @@ export class OAuth {
     };
     const sameOrigin = (c: Context) => {
       const origin = c.req.header("origin");
-      if (origin === undefined || origin === new URL(this.issuer).origin) return true;
+      if (origin === undefined || origin === this.base) return true;
       try { return new URL(origin).host === c.req.header("host"); } catch { return false; }
     };
 

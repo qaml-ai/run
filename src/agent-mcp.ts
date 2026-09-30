@@ -10,6 +10,7 @@ import type { Principal } from "./accounts.ts";
 import { resumeId, type ClientSessions } from "./client-sessions.ts";
 import type { Definitions } from "./definitions.ts";
 import { MCP_CORS, mcpBody, mcpPreflight, mcpSignIn, serveMcp } from "./hosted-mcp.ts";
+import type { PublicOrigins } from "./origins.ts";
 
 /**
  * Every agent as an MCP server, at /v1/agents/:id/mcp: one tool, `message`, that sends the agent a message and gives
@@ -33,7 +34,8 @@ export interface AgentMcpOptions {
   definitions?: Pick<Definitions, "get">;
   /** The tenant an API or OAuth token acts for. */
   authenticate(authorization: string): Promise<Principal | undefined>;
-  publicUrl: () => string;
+  /** Where the agent's page is (the public URL), and the origins its MCP endpoint answers at. */
+  origins: PublicOrigins;
   /** Where this node's REST API answers locally. */
   loopback: () => string;
 }
@@ -69,7 +71,7 @@ export function agentMcp(options: AgentMcpOptions) {
   app.options(path, mcpPreflight);
   app.on(["GET", "POST", "DELETE"], path, async c => {
     const id = c.req.param("id")!, authorization = c.req.header("authorization");
-    const signIn = () => mcpSignIn(c, authorization, `${options.publicUrl()}/.well-known/oauth-protected-resource/v1/agents/${id}/mcp`);
+    const signIn = () => mcpSignIn(c, authorization, `${options.origins.of(c.req.raw.headers)}/.well-known/oauth-protected-resource/v1/agents/${id}/mcp`);
     if (!authorization) return signIn();
     const agent = await options.agents.mcpView(id, authorization);
     const principal = agent?.own ? undefined : await options.authenticate(authorization);
@@ -102,7 +104,7 @@ export function agentMcp(options: AgentMcpOptions) {
     const definition = agent.definition ? await options.definitions?.get(agent.tenant, agent.definition).catch(() => undefined) : undefined;
     const server = new McpServer({ name: "camelrun-agent", title: agent.name ?? "camelRun agent", version: VERSION });
     const call: Call = {
-      agent: id, api, own: agent.own, authorization, events: `${base}/events?watch=1&snapshot=0`, publicUrl: options.publicUrl(),
+      agent: id, api, own: agent.own, authorization, events: `${base}/events?watch=1&snapshot=0`, publicUrl: options.origins.canonical,
       form: can.includes("f"), url: can.includes("u"), waiting,
       elicit: (elicitId, params, extra) => server.server.transport!.send({ jsonrpc: "2.0", id: elicitId, method: "elicitation/create", params }, { relatedRequestId: extra.requestId }),
     };

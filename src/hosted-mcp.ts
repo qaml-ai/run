@@ -5,6 +5,7 @@ import { Api } from "../packages/cli/src/api.ts";
 import { createServer } from "../packages/cli/src/mcp.ts";
 import type { Principal } from "./accounts.ts";
 import { readText } from "./http.ts";
+import type { PublicOrigins } from "./origins.ts";
 
 /** A message's largest body: room for a manifest with an OpenAPI spec inline. */
 const MAX_BODY = 8 * 1024 * 1024;
@@ -18,8 +19,8 @@ const MAX_BODY = 8 * 1024 * 1024;
  */
 export interface HostedMcpOptions {
   authenticate(authorization: string | undefined): Promise<Principal | undefined>;
-  /** The runtime's public URL: the resource's origin, and the URL tools show. */
-  publicUrl: () => string;
+  /** The runtime's origins: the public URL is the one tools show; the resource is at whichever the client reached. */
+  origins: PublicOrigins;
   /** Where this node's REST API answers locally, e.g. http://127.0.0.1:8790. */
   loopback: () => string;
 }
@@ -90,10 +91,10 @@ export function hostedMcp(options: HostedMcpOptions) {
   app.on(["GET", "POST", "DELETE"], "/mcp", async c => {
     const authorization = c.req.header("authorization");
     const principal = authorization ? await options.authenticate(authorization) : undefined;
-    if (!principal) return mcpSignIn(c, authorization, `${options.publicUrl()}/.well-known/oauth-protected-resource/mcp`);
+    if (!principal) return mcpSignIn(c, authorization, `${options.origins.of(c.req.raw.headers)}/.well-known/oauth-protected-resource/mcp`);
     const body = await mcpBody(c);
     if (body instanceof Response) return body;
-    const publicUrl = options.publicUrl(), loopback = options.loopback();
+    const publicUrl = options.origins.canonical, loopback = options.loopback();
     const local: typeof fetch = (input, init) => { const url = String(input); return fetch(url.startsWith(publicUrl) ? loopback + url.slice(publicUrl.length) : url, init); };
     return serveMcp(c, createServer(() => new Api({ url: publicUrl, apiKey: authorization!.slice(7) }, local)), body);
   });

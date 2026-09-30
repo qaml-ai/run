@@ -1,5 +1,15 @@
 # Release notes
 
+## Unreleased — public URL aliases
+
+`AGENT_PUBLIC_ALIASES` lists other origins the runtime answers at, such as an
+earlier domain kept working after `AGENT_PUBLIC_URL` moves, and `AGENT_ISSUER`
+keeps identity tokens' `iss` and the OAuth issuer where they were. On an alias,
+MCP protected-resource metadata and `WWW-Authenticate` challenges name the
+origin the client reached; the console, `/` and `/oauth/authorize` redirect to
+`AGENT_PUBLIC_URL`. Existing OAuth grants and tokens work at every origin. See
+[configuration](configuration.md).
+
 ## Unreleased — usage and billing
 
 GitHub starting-credit eligibility is decided once, at signup. Before deploying

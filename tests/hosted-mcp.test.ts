@@ -237,3 +237,61 @@ test("the OpenAI apps domain challenge is served as plain text from AGENT_OPENAI
   assert.match(response.headers.get("content-type")!, /^text\/plain/);
   assert.equal(await response.text(), "challenge-token-123");
 });
+
+test("an alias serves everything, names MCP resources as reached, keeps the issuer, and sends browser pages to the public URL", async t => {
+  const RUN = "https://run.example.test", OLD = "https://agents.example.test";
+  const r = await runtime(t, () => ({ role: "assistant", content: "hi" }), { AGENT_PUBLIC_URL: RUN, AGENT_PUBLIC_ALIASES: OLD, AGENT_ISSUER: OLD });
+  // As the load balancer hands it on: the Host header. A request another node forwarded carries it in X-Forwarded-Host.
+  const at = (host: string, path: string, init: { headers?: Record<string, string>; method?: string } = {}) => new Promise<{ status: number; headers: IncomingMessage["headers"]; body: string }>((resolve, reject) => {
+    const req = request(`${r.base}${path}`, { method: init.method ?? "GET", headers: { Host: host, ...init.headers } }, res => {
+      let body = "";
+      res.setEncoding("utf8").on("data", chunk => { body += chunk; }).on("end", () => resolve({ status: res.statusCode!, headers: res.headers, body }));
+    });
+    req.on("error", reject).end();
+  });
+  const json = async (host: string, path: string) => JSON.parse((await at(host, path)).body);
+
+  for (const [host, origin] of [["agents.example.test", OLD], ["run.example.test", RUN], [`127.0.0.1:${new URL(r.base).port}`, RUN]]) {
+    assert.deepEqual(await json(host, "/.well-known/oauth-protected-resource/mcp"), {
+      resource: `${origin}/mcp`, authorization_servers: [OLD], scopes_supported: ["agents"], bearer_methods_supported: ["header"], resource_name: "camelRun", resource_documentation: `${RUN}/docs/reference/cli.md`,
+    }, host);
+    const agentResource = await json(host, `/.well-known/oauth-protected-resource/v1/agents/client_${"a".repeat(40)}/mcp`);
+    assert.equal(agentResource.resource, `${origin}/v1/agents/client_${"a".repeat(40)}/mcp`, host);
+    const challenge = await at(host, "/mcp", { method: "POST" });
+    assert.equal(challenge.status, 401);
+    assert.match(challenge.headers["www-authenticate"]!, new RegExp(`^Bearer resource_metadata="${origin}/\\.well-known/oauth-protected-resource/mcp"`), host);
+    const server = await json(host, "/.well-known/oauth-authorization-server");
+    assert.deepEqual([server.issuer, server.jwks_uri, server.authorization_endpoint, server.token_endpoint], [OLD, `${OLD}/.well-known/jwks.json`, `${RUN}/oauth/authorize`, `${RUN}/oauth/token`], host);
+    assert.equal((await at(host, "/healthz")).status, 200);
+    assert.equal(JSON.parse((await at(host, "/v1/me", { headers: { Authorization: `Bearer ${OPERATOR}` } })).body).tenant, "alice", host);
+  }
+  assert.equal((await json("10.0.0.7:8790", "/.well-known/oauth-protected-resource/mcp")).resource, `${RUN}/mcp`, "an unknown host is answered as the public URL");
+  assert.equal(JSON.parse((await at("10.0.0.7:8790", "/.well-known/oauth-protected-resource/mcp", { headers: { "X-Forwarded-Host": "agents.example.test" } })).body).resource, `${OLD}/mcp`);
+
+  // Pages people open move to the public URL, where sign-in cookies and OAuth callbacks are; the API does not.
+  for (const path of ["/", "/console", "/console/billing?x=1", `/oauth/authorize?client_id=c&resource=${encodeURIComponent(`${OLD}/mcp`)}`]) {
+    const moved = await at("agents.example.test", path);
+    assert.deepEqual([moved.status, moved.headers.location], [302, `${RUN}${path}`], path);
+  }
+  assert.notEqual((await at("run.example.test", "/console/")).status, 302, "not on the public URL itself");
+  assert.equal((await at("agents.example.test", "/oauth/token", { method: "POST" })).headers.location, undefined);
+
+  // Authorization accepts the MCP resource at any of the runtime's origins, and no other.
+  const client = (await (await fetch(`${r.base}/oauth/register`, { method: "POST", body: JSON.stringify({ client_name: "Aliased", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" }) })).json()).client_id;
+  const authorize = (resource: string) => new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: REDIRECT, code_challenge: "x".repeat(43), code_challenge_method: "S256", resource });
+  for (const resource of [`${OLD}/mcp`, `${RUN}/mcp`, `${OLD}/v1/agents/client_${"b".repeat(40)}/mcp`]) {
+    assert.equal((await fetch(`${r.base}/oauth/authorize?${authorize(resource)}`, { redirect: "manual" })).status, 200, resource);
+  }
+  const refused = await fetch(`${r.base}/oauth/authorize?${authorize("https://evil.example/mcp")}`, { redirect: "manual" });
+  const error = new URL(refused.headers.get("location")!);
+  assert.deepEqual([error.searchParams.get("error"), error.searchParams.get("iss")], ["invalid_target", OLD]);
+});
+
+test("AGENT_ISSUER must be one of the origins served", async () => {
+  const { publicOrigins } = await import("../src/origins.ts");
+  assert.throws(() => publicOrigins({ AGENT_PUBLIC_URL: "https://run.example.test", AGENT_ISSUER: "https://other.example.test" }, "http://127.0.0.1:1"), /AGENT_ISSUER must be/);
+  assert.throws(() => publicOrigins({ AGENT_PUBLIC_URL: "https://run.example.test", AGENT_PUBLIC_ALIASES: "https://agents.example.test/path" }, "http://127.0.0.1:1"), /AGENT_PUBLIC_ALIASES must be an http\(s\) origin/);
+  assert.throws(() => publicOrigins({ AGENT_PUBLIC_ALIASES: "https://agents.example.test" }, "http://127.0.0.1:1"), /need AGENT_PUBLIC_URL/);
+  const origins = publicOrigins({ AGENT_PUBLIC_URL: "https://run.example.test/", AGENT_PUBLIC_ALIASES: " https://agents.example.test , https://run.example.test" }, "http://127.0.0.1:1");
+  assert.deepEqual([origins.canonical, origins.aliases, origins.issuer], ["https://run.example.test", ["https://agents.example.test"], "https://run.example.test"]);
+});
