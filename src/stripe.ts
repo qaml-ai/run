@@ -52,6 +52,11 @@ export class Stripe {
     return this.request("GET", path, params);
   }
 
+  /** DELETE an object, e.g. a customer, which Stripe cannot restore. */
+  delete<T = any>(path: string): Promise<T> {
+    return this.request("DELETE", path, {});
+  }
+
   /** POST to the Stripe API; `idempotencyKey` makes a retried create return the first result. */
   async post<T = any>(path: string, params: Record<string, unknown>, idempotencyKey?: string): Promise<T> {
     try { return await this.request<T>("POST", path, params, idempotencyKey); }
@@ -62,7 +67,7 @@ export class Stripe {
     }
   }
 
-  private async request<T>(method: "GET" | "POST", path: string, params: Record<string, unknown>, idempotencyKey?: string): Promise<T> {
+  private async request<T>(method: "GET" | "POST" | "DELETE", path: string, params: Record<string, unknown>, idempotencyKey?: string): Promise<T> {
     if (!path.startsWith("/v1/") || path.includes("?") || path.includes("#")) throw new Error("Expected a Stripe API path");
     const url = new URL(path, this.options.apiUrl ?? "https://api.stripe.com");
     const form = formEncode(params);

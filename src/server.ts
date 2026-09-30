@@ -65,6 +65,7 @@ import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
 import { publicOrigins } from "./origins.ts";
+import { AccountDeletions } from "./account-deletion.ts";
 
 // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
@@ -361,6 +362,17 @@ async function submitAnywhere(agent: string, tenant: string, request: { id: stri
   return response.json();
 }
 
+/** Delete an agent wherever it is served: here, or on the node that owns it. */
+async function deleteAnywhere(agent: string, tenant: string) {
+  const owner = await clients.ownerElsewhere(agent);
+  if (!owner) return clients.destroyAgent(agent, tenant);
+  const response = await signedPost(owner, `/internal/agents/${agent}/delete`, { tenant }).catch(error => { ownership.forget(agent); throw error; });
+  if (!response.ok) {
+    ownership.forget(agent);
+    throw new HttpError(response.status, `Owner could not delete the agent: HTTP ${response.status}`);
+  }
+}
+
 const volumes = new VolumeService({
   db, storage, ownership, idleMs,
   // Volume operations on another node keep their status (and a conflict's current version).
@@ -510,6 +522,12 @@ const channels = new Channels({
   ...(process.env.AGENT_CHANNEL_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_CHANNEL_RETRY_MS) } : {}),
 });
 channels.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
+// Accounts being deleted, continued by whichever node claims each (and started at once on a request).
+const accountDeletions = new AccountDeletions({
+  db, accounts, storage, volumes, channels, stripe, deleteAgent: deleteAnywhere,
+  purgeAgents: () => clients.sweep(), flushStorageUsage: () => storageUsage.flush(),
+});
+accountDeletions.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
@@ -592,6 +610,17 @@ app.post("/internal/agents/:id{client_[a-f0-9]{40}}/requests", async c => {
     return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode);
   }
 });
+app.post("/internal/agents/:id{client_[a-f0-9]{40}}/delete", async c => {
+  let body: string | undefined;
+  try { body = await signedBody(c); } catch { return c.body(null, 413); }
+  if (body === undefined) return c.body(null, 401);
+  try {
+    await clients.destroyAgent(c.req.param("id"), JSON.parse(body).tenant);
+    return c.body(null, 204);
+  } catch (error) {
+    return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode);
+  }
+});
 app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
   let body: string | undefined;
   try { body = await signedBody(c); } catch { return c.body(null, 413); }
@@ -622,7 +651,7 @@ app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
 if (billingMailer) app.route("/", billingMailer.feedback());
-app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
@@ -783,6 +812,7 @@ async function drain(signal: string) {
   scheduler.stop();
   channels.stop();
   webhooks.stop();
+  accountDeletions.stop();
   storageGc.stop();
   clearInterval(tenantsTimer);
   clearInterval(loadTimer);

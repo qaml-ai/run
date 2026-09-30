@@ -1,5 +1,18 @@
 # Release notes
 
+## Unreleased — account export and deletion
+
+`GET /v1/account/export` streams a zip of everything an account stores, and the console's
+Account page offers it and **Delete account** (`DELETE /v1/account`, console sessions only).
+Platform operators (`AGENT_BILLING_ADMINS`) look tenants up, export and delete them with
+`GET /v1/tenants?login=`, `GET /v1/tenants/{id}/export`, `DELETE /v1/tenants/{id}` and
+`GET /v1/tenants/{id}/deletion`. See [account data](privacy.md).
+
+Migration 043 adds `account_deletions`, reduces existing purged agents' tombstones to their id,
+and deletes email thread metadata left by agents and channels deleted before. Older nodes still
+authenticate a tenant being deleted until they are replaced, and purge agents into the old,
+fuller tombstone: finish the rollout before acting on a deletion request.
+
 ## Unreleased — public URL aliases
 
 `AGENT_PUBLIC_ALIASES` lists other origins the runtime answers at, such as an

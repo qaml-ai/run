@@ -10,6 +10,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Self-hosting](self-host.md): the image, Docker Compose, storage, networking
 - [Persistence](persistence.md): transcripts, history chunks, journals, retries, idle unload, limits per node and tenant
 - [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe
+- [Account data](privacy.md): export, deletion, what is kept and for how long; handling requests by email
 - [Tenant isolation](isolation.md)
 - [Sandbox](sandbox.md): the codemode sandbox's layers and limits
 - [Integration seam](integration.md)

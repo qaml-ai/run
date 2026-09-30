@@ -692,3 +692,19 @@ export const AutoTopup = z.object({ enabled: z.boolean(), state: z.enum(["off","
   attempt: z.object({ id: z.uuid(), state: z.string(), amount: z.number(), fee: z.number(), total: z.number(), card: AutoCard, invoiceUrl: z.string().nullable(), canRetry: z.boolean(), submitted: z.boolean() }).nullable() });
 export const AutoTopupConsent = z.object({ quoteId: z.uuid(), version: z.string().length(64), consent: z.literal(true) }).strict();
 export const AutoTopupRetry = z.object({ attemptId: z.uuid() }).strict();
+export const AccountDeletionInput = z.object({
+  confirm: z.string().openapi({ description: "The account's tenant id, as GET /v1/me gives it, to confirm deleting that account" }),
+}).openapi("AccountDeletionInput");
+export const AccountDeletion = z.object({
+  tenant: z.string(),
+  state: z.enum(["deleting", "deleted"]).openapi({ description: "deleting: the account no longer signs in or authenticates, and its data is being deleted; deleted: all of it is gone but the ledger, usage and payment records kept for accounting" }),
+  requestedAt: z.number(),
+  completedAt: z.number().nullable(),
+  agents: z.number().int().optional().openapi({ description: "While deleting: agents not yet purged" }),
+}).openapi("AccountDeletion");
+export const TenantLookup = z.object({
+  tenant: z.string(),
+  github: z.string().nullable(),
+  googleEmail: z.string().nullable(),
+  createdAt: z.number(),
+}).openapi("TenantLookup");

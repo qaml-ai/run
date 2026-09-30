@@ -3316,6 +3316,82 @@
           "reason"
         ]
       },
+      "AccountDeletion": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "deleting",
+              "deleted"
+            ],
+            "description": "deleting: the account no longer signs in or authenticates, and its data is being deleted; deleted: all of it is gone but the ledger, usage and payment records kept for accounting"
+          },
+          "requestedAt": {
+            "type": "number"
+          },
+          "completedAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "agents": {
+            "type": "integer",
+            "description": "While deleting: agents not yet purged"
+          }
+        },
+        "required": [
+          "tenant",
+          "state",
+          "requestedAt",
+          "completedAt"
+        ]
+      },
+      "AccountDeletionInput": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The account's tenant id, as GET /v1/me gives it, to confirm deleting that account"
+          }
+        },
+        "required": [
+          "confirm"
+        ]
+      },
+      "TenantLookup": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "string"
+          },
+          "github": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "googleEmail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "tenant",
+          "github",
+          "googleEmail",
+          "createdAt"
+        ]
+      },
       "Channel": {
         "type": "object",
         "properties": {
@@ -9883,6 +9959,218 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LedgerEntry"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account/export": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Everything the account stores, as a zip streamed as it is read: agents' configuration and history, definitions, channels, webhooks, volumes' files, and the credit ledger and usage (see its README.txt). Secrets and keys are left out",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account": {
+      "delete": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountDeletionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The account is being deleted: it stops signing in and authenticating now, and its data goes within minutes. Its credit ledger, usage and payment records are kept for accounting; remaining credit is forfeited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletion"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tenants": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "A tenant id, GitHub login or Google address"
+            },
+            "required": true,
+            "description": "A tenant id, GitHub login or Google address",
+            "name": "login",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenants signed in to with that login (platform operator only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TenantLookup"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tenants/{id}/export": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tenant's export, as GET /v1/account/export gives it (platform operator only)",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tenants/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The tenant is being deleted, as DELETE /v1/account does (platform operator only); again, its progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletion"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tenants/{id}/deletion": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A deletion's progress (platform operator only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletion"
                 }
               }
             }

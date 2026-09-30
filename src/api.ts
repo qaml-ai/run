@@ -27,6 +27,9 @@ import { declaredType, fileResponse, type FileLinks } from "./files.ts";
 import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 import type { Help } from "./help.ts";
+import type { AccountDeletions } from "./account-deletion.ts";
+import { exportAccount } from "./account-export.ts";
+import { Readable } from "node:stream";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -68,6 +71,8 @@ export interface ApiContext {
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
   /** Get Help from the console (`/v1/help`); without it the console hides the button. */
   help?: Help;
+  /** Deleting accounts (`DELETE /v1/account`, and the operator's `DELETE /v1/tenants/{id}`). */
+  accountDeletions?: AccountDeletions;
 }
 /** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
 type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
@@ -721,6 +726,65 @@ export function api(context: ApiContext) {
     const row = (await accounts.db.query("select id, tenant, kind, amount, metadata, created_at from credit_ledger where idempotency_key = $1", [key])).rows[0];
     if (row.tenant !== body.tenant || row.amount !== body.amount) throw new HttpError(409, "Idempotency key reused with a different adjustment");
     return json(c, 201, { id: row.id, kind: row.kind, amount: row.amount, metadata: row.metadata, createdAt: row.created_at });
+  });
+
+  // Export and deletion: the tenant's own, and the platform operator's for any tenant (requests by email).
+  const operatorOnly = (c: Context<Env>) => {
+    const principal = c.var.principal;
+    if (principal.via !== "operator" || !context.billingAdmins?.includes(principal.tenant)) throw new HttpError(403, "Only the platform operator can act on other tenants");
+    return principal.tenant;
+  };
+  const deletions = () => {
+    if (!context.accountDeletions) throw new HttpError(404, "Account deletion is not enabled on this runtime");
+    return context.accountDeletions;
+  };
+  const exported = (tenant: string) => {
+    const zip = exportAccount({ accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, webhooks: context.webhooks, oauth: context.oauth }, tenant);
+    return new Response(Readable.toWeb(Readable.from(zip)) as ReadableStream, { headers: {
+      "Content-Type": "application/zip", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+      "Content-Disposition": `attachment; filename="camelrun-${tenant}-${new Date().toISOString().slice(0, 10)}.zip"`,
+    } });
+  };
+  const zipped = (description: string) => ({ description, content: { "application/zip": { schema: z.string().openapi({ format: "binary" }) } } });
+  const tenantId = z.object({ id: z.string() });
+  route(createRoute({ method: "get", path: "/v1/account/export", responses: { 200: zipped("Everything the account stores, as a zip streamed as it is read: agents' configuration and history, definitions, channels, webhooks, volumes' files, and the credit ledger and usage (see its README.txt). Secrets and keys are left out") } }),
+    c => exported(c.var.principal.tenant));
+  route(createRoute({
+    method: "delete", path: "/v1/account", request: { body: content(schema.AccountDeletionInput) },
+    responses: { 202: reply("The account is being deleted: it stops signing in and authenticating now, and its data goes within minutes. Its credit ledger, usage and payment records are kept for accounting; remaining credit is forfeited", schema.AccountDeletion) },
+  }), async c => {
+    const principal = c.var.principal;
+    // A token that leaked could otherwise end the account: only a person signed in to the console deletes it.
+    if (principal.via !== "console") throw new HttpError(403, "An account is deleted from the console, signed in");
+    const { confirm } = parse(schema.AccountDeletionInput, await readJson(c.req.raw.body, 4096, {}));
+    if (confirm !== principal.tenant) throw new HttpError(400, "confirm must be this account's tenant id");
+    return json(c, 202, await deletions().request(principal.tenant, "self"));
+  });
+  route(createRoute({
+    method: "get", path: "/v1/tenants", request: { query: z.object({ login: z.string().openapi({ description: "A tenant id, GitHub login or Google address" }) }) },
+    responses: { 200: reply("Tenants signed in to with that login (platform operator only)", z.array(schema.TenantLookup)) },
+  }), async c => {
+    operatorOnly(c);
+    const login = c.req.query("login") ?? invalid("login is required");
+    const { rows } = await accounts.db.query(`
+      select id, github, google_email, created_at from tenants where id = lower($1) or lower(github) = lower($1) or lower(google_email) = lower($1) order by created_at`, [login]);
+    return json(c, 200, rows.map(row => ({ tenant: row.id, github: row.github, googleEmail: row.google_email, createdAt: Number(row.created_at) })));
+  });
+  route(createRoute({ method: "get", path: "/v1/tenants/{id}/export", request: { params: tenantId }, responses: { 200: zipped("The tenant's export, as GET /v1/account/export gives it (platform operator only)") } }), async c => {
+    operatorOnly(c);
+    const tenant = c.req.param("id")!;
+    if (!await accounts.exists(tenant)) throw new HttpError(404, `Unknown tenant ${tenant}`);
+    return exported(tenant);
+  });
+  route(createRoute({ method: "delete", path: "/v1/tenants/{id}", request: { params: tenantId }, responses: { 202: reply("The tenant is being deleted, as DELETE /v1/account does (platform operator only); again, its progress", schema.AccountDeletion) } }), async c => {
+    const by = operatorOnly(c);
+    return json(c, 202, await deletions().request(c.req.param("id")!, `operator:${by}`));
+  });
+  route(createRoute({ method: "get", path: "/v1/tenants/{id}/deletion", request: { params: tenantId }, responses: { 200: reply("A deletion's progress (platform operator only)", schema.AccountDeletion) } }), async c => {
+    operatorOnly(c);
+    const status = await deletions().status(c.req.param("id")!);
+    if (!status) throw new HttpError(404, "No deletion of this tenant");
+    return json(c, 200, status);
   });
 
   channelRoutes(route, () => context.channels);

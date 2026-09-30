@@ -80,9 +80,10 @@ export class Accounts {
     }
   }
 
-  /** Admin-defined tenants and tenants created by console sign-in. */
+  /** Admin-defined tenants and tenants created by console sign-in, but for one being deleted (account-deletion.ts). */
   async exists(tenant: string) {
-    return this.tenants.has(tenant) || (validTenant(tenant) && !!(await this.db.query("select 1 from tenants where id = $1", [tenant])).rowCount);
+    return this.tenants.has(tenant) || (validTenant(tenant) && !!(await this.db.query(
+      "select 1 from tenants t where id = $1 and not exists (select 1 from account_deletions d where d.tenant = t.id)", [tenant])).rowCount);
   }
 
   /**
@@ -107,6 +108,11 @@ export class Accounts {
     const principal: Principal = { tenant: entry.tenant, via: "token", tokenId: entry.id };
     this.tokenCache.set(hash, { principal, until: Date.now() + TOKEN_CACHE_MS });
     return principal;
+  }
+
+  /** Stop honoring `tenant`'s cached tokens here at once (a deleted account); other nodes' caches lapse within seconds. */
+  forget(tenant: string) {
+    for (const [hash, cached] of this.tokenCache) if (cached.principal.tenant === tenant) this.tokenCache.delete(hash);
   }
 
   /**
@@ -140,10 +146,11 @@ export class Accounts {
           throw new Error("GitHub account details are unavailable; try signing in again");
         }
         const name = login.toLowerCase();
-        const candidates = [name, `${name.slice(0, 39 - String(githubId).length)}-${githubId}`];
+        // A deleted tenant's id is never given out again: its kept ledger rows are under it.
+        const candidates = [name, `${name.slice(0, 39 - String(githubId).length)}-${githubId}`, `${name.slice(0, 30)}-${randomBytes(4).toString("hex")}`];
         for (const candidate of candidates) {
           if (!validTenant(candidate) || this.tenants.has(candidate)) continue;
-          row = (await sql.query(`insert into tenants (id, github, github_id, created_at) values ($1, $2, $3, $4) on conflict do nothing returning ${columns}`, [candidate, login, githubId, now])).rows[0];
+          row = (await sql.query(`insert into tenants (id, github, github_id, created_at) select $1, $2, $3, $4 where not exists (select 1 from account_deletions where tenant = $1) on conflict do nothing returning ${columns}`, [candidate, login, githubId, now])).rows[0];
           if (row) { created = true; break; }
           row = (await sql.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
           if (row) break;
@@ -166,8 +173,8 @@ export class Accounts {
 
   /**
    * The tenant a Google user signs in as: the one made for that Google account (by its `sub`),
-   * else a new one with a neutral id derived from the `sub` (`u-<16 hex>`, longer if that is
-   * taken), so no part of the address shows in it. Google tenants are never linked to GitHub ones or admin tenants,
+   * else a new one with a neutral id derived from the `sub` (`u-<16 hex>`, longer if that is taken or was deleted,
+   * else random), so no part of the address shows in it. Google tenants are never linked to GitHub ones or admin tenants,
    * and get no automatic starting credit: a card check unlocks it (src/card-credit.ts).
    */
   async tenantForGoogle({ sub, email }: GoogleUser): Promise<string> {
@@ -177,9 +184,9 @@ export class Accounts {
       let row: { id: string; google_email: string | null } | undefined = (await sql.query("select id, google_email from tenants where google_sub = $1", [sub])).rows[0];
       if (!row) {
         const hash = sha256(`google:${sub}`);
-        for (const candidate of [`u-${hash.slice(0, 16)}`, `u-${hash.slice(0, 32)}`]) {
+        for (const candidate of [`u-${hash.slice(0, 16)}`, `u-${hash.slice(0, 32)}`, `u-${randomBytes(16).toString("hex")}`]) {
           if (!validTenant(candidate) || this.tenants.has(candidate)) continue;
-          row = (await sql.query("insert into tenants (id, google_sub, google_email, created_at) values ($1, $2, $3, $4) on conflict do nothing returning id, google_email", [candidate, sub, email, Date.now()])).rows[0];
+          row = (await sql.query("insert into tenants (id, google_sub, google_email, created_at) select $1, $2, $3, $4 where not exists (select 1 from account_deletions where tenant = $1) on conflict do nothing returning id, google_email", [candidate, sub, email, Date.now()])).rows[0];
           if (row) break;
         }
         if (!row) throw new Error("This Google account cannot be given a tenant; contact support");

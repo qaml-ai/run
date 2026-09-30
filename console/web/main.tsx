@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useLayoutEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Bot, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
+import { BarChart3, Bot, CircleUser, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +21,7 @@ import { setHelpTenant } from "@/lib/help-context";
 import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { AccountPage } from "@/pages/account";
 import { AgentsPage } from "@/pages/agents";
 import { AgentPage } from "@/pages/agent";
 import { ChannelsPage } from "@/pages/channels";
@@ -50,6 +52,7 @@ const NAV = [
   { to: "tokens", label: "API tokens", icon: KeyRound },
   { to: "usage", label: "Usage", icon: BarChart3 },
   { to: "billing", label: "Billing", icon: Wallet },
+  { to: "account", label: "Account", icon: CircleUser },
   { to: "quickstart", label: "Quickstart", icon: Rocket },
 ];
 
@@ -84,6 +87,7 @@ function App() {
     : section === "tokens" ? <TokensPage tenant={me.data.tenant} />
     : section === "usage" ? <UsagePage />
     : section === "billing" ? <BillingPage state={billingState} />
+    : section === "account" ? <AccountPage me={me.data} />
     : section === "quickstart" ? <QuickstartPage />
     : <AgentsPage agents={agents} billing={billing} />;
   const active = section || "agents";
@@ -150,6 +154,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const providers = !!(methods.data?.github || methods.data?.google);
   const [token, setToken] = useState("");
   const [error, setError] = useState(new URLSearchParams(location.search).get("error") ?? "");
+  const deleted = new URLSearchParams(location.search).get("deleted") === "1";
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -166,6 +171,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
           <h1 className="text-xl font-semibold tracking-tight">camelRun</h1>
           <p className="text-muted-foreground text-sm text-balance">Sign in to manage your agents, model keys and API tokens.</p>
         </div>
+        {deleted && <Alert className="mb-0"><AlertTitle>Your account is deleted</AlertTitle><AlertDescription>Its data is being removed now. Signing in again makes a new, empty account.</AlertDescription></Alert>}
         <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />
         {providers && (
           <div className="flex flex-col gap-3">
