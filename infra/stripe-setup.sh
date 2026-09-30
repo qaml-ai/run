@@ -12,6 +12,7 @@ set -euo pipefail
 mode=${1:-test}
 [[ $mode == test || $mode == live ]] || { echo "usage: $0 [test|live]"; exit 2; }
 here=${0:A:h}
+# Stays on the first address (served for good): one endpoint, so each event is delivered once.
 url=https://agents.camelai.dev/v1/billing/stripe/webhook
 # The CLI takes --live after the subcommand.
 live=(); [[ $mode == live ]] && live=(--live)

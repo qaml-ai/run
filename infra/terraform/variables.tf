@@ -37,7 +37,7 @@ variable "primary_zone" {
 variable "public_hostname" {
   description = "Which of hostname and primary_hostname is AGENT_PUBLIC_URL, where people are sent (console, links, emails, OAuth pages). The other is served as an alias (AGENT_PUBLIC_ALIASES)."
   type        = string
-  default     = "agents.camelai.dev"
+  default     = "run.camelai.com"
 }
 
 variable "cloudflare_zone_id" {
