@@ -32,8 +32,7 @@ codex mcp login camelrun
 
 ## Submitting it
 
-The package is ready except for two fields that need you: a support URL (none exists yet, see step 1) and the demo
-video's URL. The build warns about both.
+The package is ready except for the demo video's URL, which needs you. The build warns about it.
 
 1. **Public pages.** The listing needs four HTTPS URLs from the same publisher:
    - website: `https://camelai.com/run` (exists);
@@ -43,9 +42,7 @@ video's URL. The build warns about both.
      camelRun (agent transcripts, files and tool results stored for the agent's lifetime, deleted with it) and
      concrete retention periods;
    - terms: `https://camelai.com/terms` (exists);
-   - **support: missing.** `camelai.com/support` is a 404 and `camelai.com/contact` is a sales form. Publish a support
-     page (for example one that gives support@camelai.com and the console's Get Help), then set
-     `interface.supportURL` in `plugin/plugin.json` and rebuild.
+   - support: `https://camelai.com/support` (exists; set as `interface.supportURL`).
 2. **Identity.** In [organization settings](https://platform.openai.com/settings/organization/general), complete
    business verification for CamelQA, Inc. (dba camelAI). The directory shows the verified name, whatever
    `developerName` says. Use a project with global (not EU) data residency.

@@ -37,6 +37,7 @@
           "Delete agents and definitions"
         ],
         "websiteURL": "https://camelai.com/run",
+        "supportURL": "https://camelai.com/support",
         "privacyPolicyURL": "https://camelai.com/privacy-policy",
         "termsOfServiceURL": "https://camelai.com/terms",
         "defaultPrompt": [
