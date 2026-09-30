@@ -7,6 +7,7 @@ import { DEFAULT_PRICING, MICROS, storageCharge, type Pricing } from "./pricing.
 import type { Stripe } from "./stripe.ts";
 import { AutoTopup } from "./auto-topup.ts";
 import { BillingPayments, stripeId } from "./billing-payments.ts";
+import { CardCredit, CARD_CHECK } from "./card-credit.ts";
 import type { StorageUsage } from "./storage-usage.ts";
 
 /**
@@ -26,7 +27,8 @@ export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustmen
 export const LEDGER_KINDS: LedgerKind[] = ["grant", "purchase", "usage", "storage", "adjustment", "refund"];
 export interface LedgerEntry { tenant: string; kind: LedgerKind; amount: number; key: string; metadata?: Record<string, unknown> }
 export interface LedgerRow { id: number; kind: LedgerKind; amount: number; metadata: Record<string, unknown>; createdAt: number }
-export interface StartingCredit { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number }
+/** `cardCheck`: verifying a card would unlock this much starting credit (src/card-credit.ts). */
+export interface StartingCredit { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number; cardCheck?: { amount: number } }
 /** What a usage flush charges a tenant: `amount` micro-USD spent, and its breakdown (numbers, summed over the hour). */
 export interface UsageCharge { tenant: string; amount: number; metadata: Record<string, number> }
 /** What limits a tenant's runs: its balance, what it ever bought (none: on free credit), and its usage charges in the last hour. */
@@ -129,6 +131,7 @@ export class Billing {
   private readonly options: BillingOptions;
   readonly payments?: BillingPayments;
   readonly autoTopup?: AutoTopup;
+  readonly cardCredit?: CardCredit;
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
@@ -142,6 +145,7 @@ export class Billing {
     if (options.stripe) {
       this.payments = new BillingPayments(this.db, options.stripe, this.pricing, options.publicUrl);
       this.autoTopup = new AutoTopup(this, options.stripe);
+      this.cardCredit = new CardCredit(this, options.stripe, options.publicUrl);
     }
   }
 
@@ -242,13 +246,16 @@ export class Billing {
 
   /** Only the public outcome and the amount actually awarded, never policy inputs or support notes. */
   async startingCredit(tenant: string): Promise<StartingCredit> {
-    const row = (await this.db.query(`select t.billing, d.decision, l.amount
+    const row = (await this.db.query(`select t.billing, d.decision, coalesce(l.amount, card.amount) as amount
       from tenants t left join starting_credit_decisions d on d.github_id = t.github_id and d.tenant = t.id
       left join credit_ledger l on l.id = d.grant_ledger_id and l.tenant = t.id
+      left join card_checks c on c.tenant = t.id and c.granted
+      left join credit_ledger card on card.id = c.grant_ledger_id and card.tenant = t.id
       where t.id = $1`, [tenant])).rows[0];
     if (!row || row.billing !== "prepaid") return { status: "not_applicable", amount: 0 };
     if (row.amount > 0) return { status: "granted", amount: row.amount };
-    return { status: row.decision === "disabled" ? "not_applicable" : row.decision === "ineligible" ? "not_eligible" : "not_granted", amount: 0 };
+    const cardCheck = await this.cardCredit?.available(tenant) ? { cardCheck: { amount: this.pricing.startingGrant } } : {};
+    return { status: row.decision === "disabled" ? "not_applicable" : row.decision === "ineligible" ? "not_eligible" : "not_granted", amount: 0, ...cardCheck };
   }
 
   /** An operator-approved exception uses the same identity key as an automatic signup award. */
@@ -261,6 +268,7 @@ export class Billing {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`starting-credit:${identity.github_id}`]);
       const account = (await sql.query("select billing, created_at from tenants where id = $1 and github_id = $2 for update", [tenant, identity.github_id])).rows[0];
       if (!account || account.billing !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
+      if ((await sql.query("select 1 from card_checks where tenant = $1 and granted", [tenant])).rowCount) throw new HttpError(409, "This tenant already unlocked starting credit with a card check");
       await this.recordStartingCredit(sql, { tenant, githubId: identity.github_id, signupAt: account.created_at, created: false });
       const decision = (await sql.query("select tenant from starting_credit_decisions where github_id = $1", [identity.github_id])).rows[0];
       if (decision.tenant !== tenant) throw new HttpError(409, "This GitHub identity already has a starting-credit decision for another tenant");
@@ -353,6 +361,10 @@ export class Billing {
     if (!event) throw new HttpError(400, "Invalid Stripe signature");
     if (event.livemode !== undefined && event.livemode !== stripe.live) return { handled: "ignored" };
     const object = event.data?.object ?? {};
+    if (event.type === "checkout.session.completed" && object.mode === "setup" && object.metadata?.purpose === CARD_CHECK) {
+      await this.cardCredit!.settle(object);
+      return { handled: "card check" };
+    }
     if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
       if (object.metadata?.purpose !== PURPOSE) return { handled: "ignored" };
       if (object.payment_status !== "paid") return { handled: "awaiting payment" };

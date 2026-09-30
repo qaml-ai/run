@@ -75,6 +75,15 @@ export function BillingPage({ state }: { state: BillingState }) {
   const [rates, setRates] = useState(false);
   const [returned, setReturned] = useState(() => new URLSearchParams(location.search).get("checkout"));
   const [session] = useState(() => new URLSearchParams(location.search).get("session"));
+  // Back from a card check: `card_check` is the Checkout session, settled here in case Stripe's webhook has not arrived.
+  const [cardCheck, setCardCheck] = useState(() => new URLSearchParams(location.search).get("card_check"));
+  const [cardOutcome, setCardOutcome] = useState<{ status: "granted" | "not_granted" | "pending"; amount: number }>();
+  useEffect(() => {
+    if (!cardCheck?.startsWith("cs_") || cardOutcome) return;
+    api<{ status: "granted" | "not_granted" | "pending"; amount: number }>("/v1/billing/card-check/confirm", { body: { session: cardCheck } })
+      .then(outcome => { setCardOutcome(outcome); void billing.reload(); }, () => setCardOutcome({ status: "pending", amount: 0 }));
+  }, [cardCheck, cardOutcome, billing.reload]);
+  const dismissCard = () => { const q = new URLSearchParams(location.search); q.delete("card_check"); history.replaceState(null, "", location.pathname + (q.size ? `?${q}` : "")); setCardCheck(null); };
   const [gaveUp, setGaveUp] = useState(false), [arrived, setArrived] = useState(false);
   const [older, setOlder] = useState<LedgerEntry[]>([]);
   const [next, setNext] = useState<number | null>();
@@ -101,9 +110,14 @@ export function BillingPage({ state }: { state: BillingState }) {
     <ErrorAlert error={billing.error ?? state.error ?? state.payment.error ?? error} />
     {state.notice && <p role="status" className="bg-muted mb-5 p-3 text-sm">{state.notice} <button className="underline" onClick={() => state.setNotice(undefined)}>Dismiss</button></p>}
     {returned && <p role="status" className="bg-muted mb-5 p-3 text-sm">{returned === "cancelled" ? "Checkout cancelled. Nothing was charged." : arrived ? "Credit added. Your new balance is below." : gaveUp ? "Stripe hasn't confirmed the payment yet. Your credit will appear when it does." : "Confirming payment. Your credit appears as soon as Stripe confirms it."} <button className="underline" onClick={dismiss}>Dismiss</button></p>}
+    {cardCheck && <p role="status" className="bg-muted mb-5 p-3 text-sm">{cardCheck === "cancelled" ? "Card check cancelled. Nothing was charged."
+      : !cardOutcome ? "Checking your card…"
+      : cardOutcome.status === "granted" ? `Card verified. ${formatMicros(cardOutcome.amount)} of starting credit added.`
+      : cardOutcome.status === "pending" ? "Stripe is still checking your card. Starting credit appears here once it's verified."
+      : "We couldn't add starting credit with this card. Add credit to start running agents."} <button className="underline" onClick={dismissCard}>Dismiss</button></p>}
     {rates && data && <RatesDialog data={data} close={() => setRates(false)} />}
     {!data ? <Skeleton className="h-64 w-full" /> : data.billing === "none" ? <p className="bg-muted p-4 text-sm">This account isn't billed by the runtime. It uses its own or admin-configured provider keys.</p> : <>
-      <section className="pb-7"><h2 className="text-muted-foreground text-xs">Balance</h2><p className="mt-1 font-mono text-[44px] leading-tight font-medium tracking-tight">{formatMicros(data.balance)}</p><p className="text-muted-foreground mt-2 text-sm">{formatMicros(-data.month.usage - data.month.storage)} spent this month</p>{data.freeCredit && data.startingCredit.status === "granted" && <Badge variant="secondary" className="mt-3">Starting credit</Badge>}{needsStartingCredit(data) && <div role="status" className="bg-muted text-muted-foreground mt-4 max-w-xl p-3 text-sm"><StartingCreditHelp status={data.startingCredit.status} /></div>}</section>
+      <section className="pb-7"><h2 className="text-muted-foreground text-xs">Balance</h2><p className="mt-1 font-mono text-[44px] leading-tight font-medium tracking-tight">{formatMicros(data.balance)}</p><p className="text-muted-foreground mt-2 text-sm">{formatMicros(-data.month.usage - data.month.storage)} spent this month</p>{data.freeCredit && data.startingCredit.status === "granted" && <Badge variant="secondary" className="mt-3">Starting credit</Badge>}{needsStartingCredit(data) && <div role="status" className="bg-muted text-muted-foreground mt-4 max-w-xl p-3 text-sm"><StartingCreditHelp credit={data.startingCredit} action /></div>}</section>
       {data.checkout && <AutoSection state={state} />}
       <BillingAlertsSection alerts={state.alerts} />
       <section className="mt-9"><div className="mb-2 flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-semibold">Activity</h2><p className="text-muted-foreground text-xs">This month: {formatMicros(data.month.purchase + data.month.grant + data.month.adjustment + data.month.refund)} added, {formatMicros(-data.month.usage - data.month.storage)} spent</p></div>{entries.length ? <Activity entries={entries} /> : <p className="text-muted-foreground border-b py-4 text-sm">No credit movements yet.</p>}{cursor != null && entries.length >= 10 && <Button className="mt-3" variant="outline" size="sm" disabled={loading} onClick={() => void loadMore()}>{loading && <Loader2 className="animate-spin" />}Show older</Button>}</section>

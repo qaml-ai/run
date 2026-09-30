@@ -647,6 +647,21 @@ export function api(context: ApiContext) {
     if (Math.abs(amountUsd * 100 - Math.round(amountUsd * 100)) > 1e-6) throw new HttpError(400, "amountUsd must be in whole cents");
     return json(c, 201, await accounts.billing.checkout(c.var.principal.tenant, amount, requestId));
   });
+  const cardCredit = () => {
+    if (!accounts.billing.cardCredit) throw new HttpError(503, "Stripe billing is not configured");
+    return accounts.billing.cardCredit;
+  };
+  route(createRoute({
+    method: "post", path: "/v1/billing/card-check",
+    responses: { 201: reply("A Stripe Checkout session that verifies a card, with no charge, to unlock starting credit", schema.CardCheck) },
+  }), async c => json(c, 201, await cardCredit().start(c.var.principal.tenant)));
+  route(createRoute({
+    method: "post", path: "/v1/billing/card-check/confirm", request: { body: content(schema.CardCheckConfirmInput) },
+    responses: { 200: reply("The card check's outcome, settled now if Stripe's webhook has not arrived yet", schema.CardCheckOutcome) },
+  }), async c => {
+    const { session } = parse(schema.CardCheckConfirmInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 200, await cardCredit().confirm(c.var.principal.tenant, session));
+  });
   route(createRoute({ method: "get", path: "/v1/billing/payment-method", responses: { 200: reply("Saved card display details from Stripe", schema.BillingPaymentMethod) } }),
     async c => json(c, 200, await accounts.billing.paymentMethod(c.var.principal.tenant)));
   route(createRoute({ method: "post", path: "/v1/billing/portal", request: { body: content(schema.BillingPortalInput) }, responses: { 201: reply("Stripe-hosted billing portal", schema.BillingPortal) } }), async c => {

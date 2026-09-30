@@ -146,8 +146,14 @@ function SignOut() {
   );
 }
 
+/** Google's "G", in the button's color: the console is monochrome. */
+function GoogleMark({ className }: { className?: string }) {
+  return <svg viewBox="0 0 24 24" className={className} aria-hidden="true" fill="currentColor"><path d="M12 10.2v3.9h5.5c-.2 1.3-1.6 3.9-5.5 3.9-3.3 0-6-2.7-6-6.1s2.7-6.1 6-6.1c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.8 3.3 14.6 2.3 12 2.3 6.6 2.3 2.3 6.6 2.3 12s4.3 9.7 9.7 9.7c5.6 0 9.3-3.9 9.3-9.5 0-.6-.1-1.1-.2-1.6H12z" /></svg>;
+}
+
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const methods = useApi<{ github: boolean; token: boolean; org?: string; open?: boolean }>("/console/auth/methods");
+  const methods = useApi<{ github: boolean; google?: boolean; token: boolean; org?: string; open?: boolean }>("/console/auth/methods");
+  const providers = !!(methods.data?.github || methods.data?.google);
   const [token, setToken] = useState("");
   const [error, setError] = useState(new URLSearchParams(location.search).get("error") ?? "");
   const [busy, setBusy] = useState(false);
@@ -167,15 +173,18 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
           <p className="text-muted-foreground text-sm text-balance">Sign in to manage your agents, model keys and API tokens.</p>
         </div>
         <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />
-        {methods.data?.github && (
+        {providers && (
           <div className="flex flex-col gap-3">
-            <PixelButton size="hero" href="/console/auth/github" className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>
-            <p className="text-muted-foreground text-center text-xs text-balance">{methods.data.open
-              ? "Any GitHub account can sign up."
-              : `For members of the ${methods.data.org} GitHub organization.`}</p>
+            {methods.data!.github && <PixelButton size="hero" href="/console/auth/github" className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>}
+            {methods.data!.google && <PixelButton size="hero" href="/console/auth/google" className="w-full"><GoogleMark className="size-3.5" />Continue with Google</PixelButton>}
+            <p className="text-muted-foreground text-center text-xs text-balance">{!methods.data!.github
+              ? "Any Google account can sign up."
+              : methods.data!.open
+                ? `Any GitHub${methods.data!.google ? " or Google" : ""} account can sign up.`
+                : `For members of the ${methods.data!.org} GitHub organization${methods.data!.google ? ", or anyone with a Google account" : ""}.`}</p>
           </div>
         )}
-        {methods.data?.github && (
+        {providers && (
           <div className="relative">
             <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
             <div className="relative flex justify-center">
@@ -188,7 +197,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <Label htmlFor="token">Operator or API token</Label>
             <Input id="token" type="password" autoComplete="off" placeholder="art_…" value={token} onChange={event => setToken(event.target.value)} />
           </div>
-          <PixelButton size="hero" type="submit" variant={methods.data?.github ? "secondary" : "primary"} className="w-full" loading={busy} disabled={!token.trim() || busy}>
+          <PixelButton size="hero" type="submit" variant={providers ? "secondary" : "primary"} className="w-full" loading={busy} disabled={!token.trim() || busy}>
             Sign in with token
           </PixelButton>
         </form>

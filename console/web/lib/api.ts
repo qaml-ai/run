@@ -97,7 +97,8 @@ export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustmen
 export interface LedgerEntry { id: number; kind: LedgerKind; amount: number; metadata: Record<string, any>; createdAt: number }
 export interface Billing {
   billing: "prepaid" | "none"; balance: number; freeCredit: boolean; checkout: boolean;
-  startingCredit: { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number };
+  /** `cardCheck`: verifying a card (POST /v1/billing/card-check) would add this much starting credit. */
+  startingCredit: { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number; cardCheck?: { amount: number } };
   month: { since: number } & Record<LedgerKind, number>;
   recent: LedgerEntry[];
   rates: { agentHour: number; storageGbMonth: number; openrouterCreditMultiplier?: number; purchaseFeeBps: number; minPurchase: number; maxPurchase: number; webSearch: Record<string, number>; webRender: number };

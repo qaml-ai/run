@@ -617,6 +617,8 @@ export const Billing = z.object({
   startingCredit: z.object({
     status: z.enum(["granted", "not_eligible", "not_granted", "not_applicable"]),
     amount: micros("The amount of starting credit actually awarded, independent of the current grant setting"),
+    cardCheck: z.object({ amount: micros("Starting credit a card check would add") }).optional()
+      .openapi({ description: "Present when verifying a card (POST /v1/billing/card-check) would unlock starting credit" }),
   }),
   month: z.object({
     since: z.number(),
@@ -669,6 +671,12 @@ export const CheckoutInput = z.object({
   requestId: z.uuid().optional().openapi({ description: "Reuse this UUID when retrying the same purchase; a different amount needs a new UUID" }),
   amountUsd: z.number().openapi({ description: "Credit to buy, in USD with at most two decimals; the fee is added on top", example: 10 }),
 }).openapi("CheckoutInput");
+export const CardCheck = z.object({ url: z.string().openapi({ description: "Send the account holder here to verify a card; nothing is charged" }) }).openapi("CardCheck");
+export const CardCheckConfirmInput = z.object({ session: z.string().openapi({ description: "The Checkout session id Stripe returned to the console" }) }).strict().openapi("CardCheckConfirmInput");
+export const CardCheckOutcome = z.object({
+  status: z.enum(["granted", "not_granted", "pending"]).openapi({ description: "granted: starting credit was added; not_granted: this card check added none; pending: Stripe has not finished the check" }),
+  amount: micros("Starting credit added"),
+}).openapi("CardCheckOutcome");
 export const Checkout = z.object({
   id: z.string().openapi({ description: "The Stripe Checkout session" }),
   url: z.string().openapi({ description: "Send the buyer here to pay" }),

@@ -33,7 +33,9 @@
 | `AGENT_STRIPE_PORTAL_CONFIGURATION` | Product-specific `bpc_` configuration for Stripe-hosted cards and invoices; see [Billing](billing.md) |
 | `AGENT_STRIPE_SECRET_ARN` | instead: a Secrets Manager secret holding `{secretKey, webhookSecret}`, read at startup; while it has no value, purchases are off |
 | `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
-| `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead (see [Billing](billing.md)) |
+| `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead, and allows Google sign-in (see [Billing](billing.md)) |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | optional: console sign-in with Google (a Google Cloud OAuth client of type Web application, redirect URI `<AGENT_PUBLIC_URL>/console/auth/google/callback`, scopes `openid email profile`). Off unless set; needs `AGENT_OPEN_SIGNUP=true`, since it admits any Google account with a verified address. Development values |
+| `AGENT_GOOGLE_OAUTH_SECRET_ARN` | instead: a Secrets Manager secret holding `{clientId, clientSecret}`, read at startup; while it has no value, Google sign-in is off |
 | `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | private signup eligibility policy; required when GitHub starting credit is enabled, supplied through deployment configuration |
 | `AGENT_EMAIL_DOMAIN` | the domain SES receives mail for (e.g. `in.agents.camelai.dev`); set, it offers `email` channels, each with an address on it (see [Email](../guides/channels.md#email)). `infra/terraform/email.tf` sets these four |
 | `AGENT_EMAIL_SNS_TOPICS` | SNS topic ARNs (comma-separated) whose notifications `/channels/email/inbound` accepts; with none, no mail is received |

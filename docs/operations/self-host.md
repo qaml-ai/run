@@ -64,6 +64,7 @@ every setting. The ones a self-hosted runtime needs:
 | `AGENT_PUBLIC_URL` | the URL your application and tool servers reach the runtime at (`http://runtime:8790` on the Compose network): signed links and identity tokens name it |
 | `AGENT_BROWSER_URL` | where browsers reach it, as browser tokens say; `AGENT_PUBLIC_URL` unless set, and empty for none, when browsers read through your application |
 | `AGENT_DATABASE_URL` | Postgres (the Compose file sets it for its own) |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | optional, for console sign-in with Google (with `AGENT_OPEN_SIGNUP=true`; see [Configuration](configuration.md)). Off unless both are set |
 | `AGENT_PROVIDER`, `AGENT_MODEL` | the default model for agents that name none (default Claude Sonnet 5.5 on Anthropic, then on OpenRouter and Bedrock, whichever the tenant has a key for) |
 
 ## Storage

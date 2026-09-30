@@ -9,6 +9,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { checkProviderKey } from "../src/key-check.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
@@ -39,6 +40,43 @@ async function fakeGithub(t: { after(fn: () => Promise<void>): void }, members: 
   await once(server, "listening");
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
   return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, signInAs(login: string) { nextLogin = login; } };
+}
+
+/**
+ * An OpenID provider like Google's: discovery, an authorization code exchange that checks the PKCE
+ * verifier, and ID tokens signed with its published key. `nextSignIn` sets the claims (and how to
+ * spoil the token) for the next code; the test reads the nonce and challenge from the authorize URL.
+ */
+async function fakeGoogle(t: { after(fn: () => Promise<void>): void }) {
+  const { privateKey, publicKey } = await generateKeyPair("RS256");
+  const stranger = (await generateKeyPair("RS256")).privateKey;
+  const jwk = { ...await exportJWK(publicKey), kid: "k1", alg: "RS256", use: "sig" };
+  let next: { claims: Record<string, unknown>; challenge: string; nonce: string; key?: CryptoKey; expired?: boolean } | undefined;
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const path = new URL(req.url!, "http://google.test").pathname;
+    const send = (status: number, value: unknown) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(value));
+    if (path === "/.well-known/openid-configuration") return send(200, { issuer: url, authorization_endpoint: `${url}/o/oauth2/v2/auth`, token_endpoint: `${url}/token`, jwks_uri: `${url}/oauth2/v3/certs` });
+    if (path === "/oauth2/v3/certs") return send(200, { keys: [jwk] });
+    if (path === "/token") {
+      const form = new URLSearchParams(body);
+      if (!next || form.get("client_id") !== "google-client" || form.get("client_secret") !== "google-secret" || form.get("grant_type") !== "authorization_code"
+        || createHash("sha256").update(form.get("code_verifier") ?? "").digest("base64url") !== next.challenge) return send(400, { error: "invalid_grant" });
+      const now = Math.floor(Date.now() / 1000) - (next.expired ? 7200 : 0);
+      const token = await new SignJWT({ iss: url, aud: "google-client", nonce: next.nonce, ...next.claims }).setProtectedHeader({ alg: "RS256", kid: "k1" })
+        .setIssuedAt(now).setExpirationTime(now + 3600).sign(next.key ?? privateKey);
+      return send(200, { access_token: "ya29.fixture", id_token: token, token_type: "Bearer" });
+    }
+    res.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  return { url, stranger, nextSignIn(authorize: URL, claims: Record<string, unknown>, spoil: { key?: CryptoKey; expired?: boolean; nonce?: string } = {}) {
+    next = { claims, challenge: authorize.searchParams.get("code_challenge")!, nonce: spoil.nonce ?? authorize.searchParams.get("nonce")!, key: spoil.key, expired: spoil.expired };
+  } };
 }
 
 const defaultTenants = {
@@ -200,7 +238,8 @@ test("tenants mint and revoke their own API tokens", async t => {
 
 test("console sessions require same-origin mutations; token sign-in sets a session", async t => {
   const { call, base } = await runtime(t);
-  assert.deepEqual((await call("/console/auth/methods")).json, { github: false, token: true });
+  assert.deepEqual((await call("/console/auth/methods")).json, { github: false, google: false, token: true });
+  assert.match(decodeURIComponent((await call("/console/auth/google")).headers.get("location")!), /Google sign-in is not configured/);
   assert.equal((await call("/console/auth/token", { body: { token: alice } })).status, 403, "the console header is required");
   assert.equal((await call("/console/auth/token", { body: { token: "wrong" }, headers: { "X-Agent-Runtime-Console": "1" } })).status, 401);
   const signIn = await call("/console/auth/token", { body: { token: alice }, headers: { "X-Agent-Runtime-Console": "1" } });
@@ -247,6 +286,64 @@ test("GitHub sign-in admits active org members, links admin tenants, and creates
   // A forged state is rejected.
   const forged = await call("/console/auth/callback?code=abc&state=forged", { headers: { Cookie: "ar_oauth_state=other" } });
   assert.match(decodeURIComponent(forged.headers.get("location")!), /expired or was tampered/);
+});
+
+test("Google sign-in verifies the ID token, creates separate tenants, and returns to the consent page", async t => {
+  const google = await fakeGoogle(t);
+  const { call, db, base } = await runtime(t, undefined, { GOOGLE_CLIENT_ID: "google-client", GOOGLE_CLIENT_SECRET: "google-secret", AGENT_GOOGLE_ISSUER: google.url, AGENT_OPEN_SIGNUP: "true" });
+  assert.deepEqual((await call("/console/auth/methods")).json, { github: false, google: true, token: true });
+  const signIn = async (claims: Record<string, unknown>, options: { next?: string; spoil?: Parameters<typeof google.nextSignIn>[2]; state?: string } = {}) => {
+    const start = await call(`/console/auth/google${options.next ? `?next=${encodeURIComponent(options.next)}` : ""}`);
+    assert.equal(start.status, 302);
+    const authorize = new URL(start.headers.get("location")!);
+    assert.equal(authorize.origin + authorize.pathname, `${google.url}/o/oauth2/v2/auth`);
+    assert.equal(authorize.searchParams.get("scope"), "openid email profile");
+    assert.equal(authorize.searchParams.get("code_challenge_method"), "S256");
+    assert.equal(authorize.searchParams.get("response_type"), "code");
+    assert.match(authorize.searchParams.get("redirect_uri")!, /\/console\/auth\/google\/callback$/);
+    google.nextSignIn(authorize, claims, options.spoil);
+    const cookies = start.headers.getSetCookie().map(value => value.split(";")[0]).join("; ");
+    const callback = await call(`/console/auth/google/callback?code=fixture&state=${options.state ?? authorize.searchParams.get("state")}`, { headers: { Cookie: cookies } });
+    const session = callback.headers.getSetCookie().find(value => value.startsWith("ar_session="))?.split(";")[0];
+    return { location: decodeURIComponent(callback.headers.get("location")!), session };
+  };
+  const ada = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true });
+  assert.equal(ada.location, "/console/");
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: "ada", via: "console", login: "ada@example.com", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
+  // No automatic starting credit: the account starts at zero.
+  const billing = (await call("/v1/billing", { headers: { Cookie: ada.session! } })).json;
+  assert.equal(billing.balance, 0);
+  assert.equal(billing.startingCredit.status, "not_granted");
+  // The same Google account keeps its tenant; another account with a similar address, or an admin tenant's name, gets its own.
+  assert.equal((await signIn({ sub: "1001", email: "ada.renamed@example.com", email_verified: true })).location, "/console/");
+  const other = await signIn({ sub: "1002", email: "ada@example.org", email_verified: true });
+  assert.match((await call("/v1/me", { headers: { Cookie: other.session! } })).json.tenant, /^ada-[0-9a-f]{8}$/);
+  const admin = await signIn({ sub: "1003", email: "alice@example.com", email_verified: true });
+  assert.match((await call("/v1/me", { headers: { Cookie: admin.session! } })).json.tenant, /^alice-[0-9a-f]{8}$/);
+  // The MCP consent page offers Google, and sign-in started there returns there, signed in.
+  const client = (await call("/oauth/register", { body: { client_name: "Test Agent", redirect_uris: ["http://127.0.0.1:43210/cb"], token_endpoint_auth_method: "none" } })).json;
+  const consent = `/oauth/authorize?${new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: "http://127.0.0.1:43210/cb", code_challenge: "x".repeat(43), code_challenge_method: "S256", state: "s-1", resource: `${base}/mcp` })}`;
+  assert.ok(String((await call(consent)).json).includes(`href="/console/auth/google?next=${encodeURIComponent(consent)}"`));
+  const returned = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true }, { next: consent });
+  assert.equal(returned.location, decodeURIComponent(consent));
+  assert.match(String((await call(consent, { headers: { Cookie: returned.session! } })).json), /Connect Test Agent\?[\s\S]*ada@example\.com/);
+  // Unverified addresses, and tokens with the wrong nonce, signer or lifetime, never sign in or create a tenant.
+  const refused = [
+    [await signIn({ sub: "2001", email: "eve@example.com", email_verified: false }), /email address is verified/],
+    [await signIn({ sub: "2002", email: "eve@example.com", email_verified: true }, { spoil: { nonce: "replayed" } }), /did not verify/],
+    [await signIn({ sub: "2003", email: "eve@example.com", email_verified: true }, { spoil: { key: google.stranger } }), /did not verify/],
+    [await signIn({ sub: "2004", email: "eve@example.com", email_verified: true }, { spoil: { expired: true } }), /did not verify/],
+    [await signIn({ sub: "2005", email: "eve@example.com", email_verified: true, aud: "someone-else" }), /did not verify/],
+    [await signIn({ sub: "2006", email: "eve@example.com", email_verified: true, iss: "https://evil.example" }), /did not verify/],
+    [await signIn({ sub: "2007", email: "eve@example.com", email_verified: true }, { state: "forged" }), /expired or was tampered/],
+  ] as const;
+  for (const [result, message] of refused) { assert.equal(result.session, undefined); assert.match(result.location, message); }
+  assert.equal((await db.query("select count(*) as n from tenants where google_sub like '2%'")).rows[0].n, 0);
+  assert.equal((await db.query("select count(*) as n from tenants")).rows[0].n, 3);
+});
+
+test("Google sign-in needs open sign-up", async t => {
+  await assert.rejects(runtime(t, undefined, { GOOGLE_CLIENT_ID: "google-client", GOOGLE_CLIENT_SECRET: "google-secret" }), /Server exited/);
 });
 
 test("key checks treat only 401/403 as invalid and send each API's auth header", async () => {

@@ -238,6 +238,7 @@ test("runtime credentials including billing email load once from Secrets Manager
     [arn("session-secret")]: "s".repeat(64),
     [arn("secrets-key")]: "k".repeat(64),
     [arn("github-oauth")]: JSON.stringify({ clientId: "Iv1.fixture", clientSecret: "github-fixture-secret" }),
+    [arn("google-oauth")]: JSON.stringify({ clientId: "123-fixture.apps.googleusercontent.com", clientSecret: "GOCSPX-fixture" }),
     [arn("stripe")]: JSON.stringify({ secretKey: "sk_test_fixture", webhookSecret: "whsec_fixture" }),
     [arn("tool-search")]: "sk-or-fixture\n",
     [arn("billing-email")]: "ab".repeat(32) + "\n",
@@ -250,18 +251,19 @@ test("runtime credentials including billing email load once from Secrets Manager
     res.writeHead(200, { "Content-Type": "application/x-amz-json-1.1" }).end(JSON.stringify({ ARN: SecretId, Name: "x", VersionId: "v1", SecretString: values[SecretId] }));
   });
   Object.assign(process.env, { AWS_ENDPOINT_URL_SECRETS_MANAGER: endpoint, AWS_ACCESS_KEY_ID: "AKIDEXAMPLE", AWS_SECRET_ACCESS_KEY: "fixture-secret", AWS_REGION: "us-west-2" });
-  const env = { AGENT_SESSION_SECRET_ARN: arn("session-secret"), AGENT_SECRETS_KEY_ARN: arn("secrets-key"), AGENT_GITHUB_OAUTH_SECRET_ARN: arn("github-oauth"), AGENT_STRIPE_SECRET_ARN: arn("stripe"), AGENT_TOOL_SEARCH_SECRET_ARN: arn("tool-search"), AGENT_BILLING_EMAIL_SECRET_ARN: arn("billing-email"), AWS_REGION: "us-west-2" };
+  const env = { AGENT_SESSION_SECRET_ARN: arn("session-secret"), AGENT_SECRETS_KEY_ARN: arn("secrets-key"), AGENT_GITHUB_OAUTH_SECRET_ARN: arn("github-oauth"), AGENT_GOOGLE_OAUTH_SECRET_ARN: arn("google-oauth"), AGENT_STRIPE_SECRET_ARN: arn("stripe"), AGENT_TOOL_SEARCH_SECRET_ARN: arn("tool-search"), AGENT_BILLING_EMAIL_SECRET_ARN: arn("billing-email"), AWS_REGION: "us-west-2" };
 
   assert.deepEqual(await runtimeSecrets(env), {
     sessionSecret: "s".repeat(64), secretsKey: "k".repeat(64), github: { clientId: "Iv1.fixture", clientSecret: "github-fixture-secret" },
+    google: { clientId: "123-fixture.apps.googleusercontent.com", clientSecret: "GOCSPX-fixture" },
     stripe: { secretKey: "sk_test_fixture", webhookSecret: "whsec_fixture" }, toolSearchKey: "sk-or-fixture", billingEmailSecret: "ab".repeat(32),
   });
   assert.deepEqual(requested.sort(), Object.keys(values).sort(), "Each secret is read once");
 
-  assert.deepEqual(await runtimeSecrets({ AGENT_SESSION_SECRET: "plain-session", AGENT_SECRETS_KEY: "plain-key", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret", STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x", AGENT_TOOL_SEARCH_API_KEY: "sk-or-plain", AGENT_BILLING_EMAIL_SECRET: "cd".repeat(32) }), {
-    sessionSecret: "plain-session", secretsKey: "plain-key", github: { clientId: "id", clientSecret: "secret" }, stripe: { secretKey: "sk_test_x", webhookSecret: "whsec_x" }, toolSearchKey: "sk-or-plain", billingEmailSecret: "cd".repeat(32),
+  assert.deepEqual(await runtimeSecrets({ AGENT_SESSION_SECRET: "plain-session", AGENT_SECRETS_KEY: "plain-key", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret", GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gsecret", STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x", AGENT_TOOL_SEARCH_API_KEY: "sk-or-plain", AGENT_BILLING_EMAIL_SECRET: "cd".repeat(32) }), {
+    sessionSecret: "plain-session", secretsKey: "plain-key", github: { clientId: "id", clientSecret: "secret" }, google: { clientId: "gid", clientSecret: "gsecret" }, stripe: { secretKey: "sk_test_x", webhookSecret: "whsec_x" }, toolSearchKey: "sk-or-plain", billingEmailSecret: "cd".repeat(32),
   });
-  assert.deepEqual(await runtimeSecrets({}), { sessionSecret: undefined, secretsKey: undefined, github: undefined, stripe: undefined, toolSearchKey: undefined, billingEmailSecret: undefined });
+  assert.deepEqual(await runtimeSecrets({}), { sessionSecret: undefined, secretsKey: undefined, github: undefined, google: undefined, stripe: undefined, toolSearchKey: undefined, billingEmailSecret: undefined });
   await assert.rejects(runtimeSecrets({ ...env, AGENT_BILLING_EMAIL_SECRET: "ab".repeat(32) }), /AGENT_BILLING_EMAIL_SECRET or AGENT_BILLING_EMAIL_SECRET_ARN, not both/);
   await assert.rejects(runtimeSecrets({ ...env, AGENT_BILLING_EMAIL_SECRET_ARN: arn("billing-email-unset") }), /can't find the specified secret/);
   // So may the tool search key: search then uses the platform's OpenRouter key.
@@ -269,6 +271,9 @@ test("runtime credentials including billing email load once from Secrets Manager
   await assert.rejects(runtimeSecrets({ ...env, AGENT_TOOL_SEARCH_API_KEY: "x" }), /AGENT_TOOL_SEARCH_API_KEY or AGENT_TOOL_SEARCH_SECRET_ARN, not both/);
   // The Stripe secret exists before anyone stores its value: purchases stay off rather than the runtime failing to start.
   assert.equal((await runtimeSecrets({ ...env, AGENT_STRIPE_SECRET_ARN: arn("stripe-unset") })).stripe, undefined);
+  // Google sign-in likewise stays off until its client is stored.
+  assert.equal((await runtimeSecrets({ ...env, AGENT_GOOGLE_OAUTH_SECRET_ARN: arn("google-unset") })).google, undefined);
+  await assert.rejects(runtimeSecrets({ ...env, GOOGLE_CLIENT_ID: "x" }), /GOOGLE_CLIENT_ID\/GOOGLE_CLIENT_SECRET or AGENT_GOOGLE_OAUTH_SECRET_ARN, not both/);
   await assert.rejects(runtimeSecrets({ ...env, STRIPE_SECRET_KEY: "sk_test_x" }), /STRIPE_SECRET_KEY\/STRIPE_WEBHOOK_SECRET or AGENT_STRIPE_SECRET_ARN, not both/);
 
   await assert.rejects(runtimeSecrets({ ...env, AGENT_SESSION_SECRET: "x".repeat(32) }), /AGENT_SESSION_SECRET or AGENT_SESSION_SECRET_ARN, not both/);

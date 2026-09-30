@@ -23,8 +23,9 @@ export interface OAuthOptions {
   secret: string;
   /** The issuer and the MCP resource's origin: the runtime's public URL. */
   publicUrl: () => string;
-  /** Whether the console signs in with GitHub (else the sign-in page takes an API token). */
+  /** Whether the console signs in with GitHub and with Google (the sign-in page always takes an API token too). */
   github: boolean;
+  google?: boolean;
 }
 
 export const SCOPE = "agents";
@@ -320,12 +321,13 @@ export class OAuth {
       try { request = this.authorization(params); } catch (error) { return shown(c, error); }
       const principal = await this.options.consoleAuth.principal(c.req.raw);
       const here = `/oauth/authorize?${params}`;
+      const providers = this.options.github || this.options.google;
       if (!principal) {
         return page(c, 200, "Sign in", `<h1>Sign in to camelRun</h1>
 <p><strong>${escape(request.client.name)}</strong> wants to connect to your camelRun account. Sign in first.</p>
-${this.options.github ? `<p><a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a></p><p class="muted">Or sign in with an API token:</p>` : ""}
+${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a>` : ""}${this.options.github && this.options.google ? " " : ""}${this.options.google ? `<a class="button" href="/console/auth/google?next=${encodeURIComponent(here)}">Sign in with Google</a>` : ""}</p><p class="muted">Or sign in with an API token:</p>` : ""}
 <form method="post" action="/oauth/login"><input type="hidden" name="next" value="${escape(here)}">
-<input type="password" name="token" placeholder="art_…" autocomplete="off" required aria-label="API token"><button type="submit"${this.options.github ? " class=\"secondary\"" : ""}>Sign in</button></form>`);
+<input type="password" name="token" placeholder="art_…" autocomplete="off" required aria-label="API token"><button type="submit"${providers ? " class=\"secondary\"" : ""}>Sign in</button></form>`);
       }
       const redirect = new URL(request.redirectUri);
       return page(c, 200, "Connect", `<h1>Connect ${escape(request.client.name)}?</h1>

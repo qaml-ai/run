@@ -25,6 +25,19 @@ export async function runtimeSecrets(env = process.env) {
     if (typeof clientId !== "string" || !clientId || typeof clientSecret !== "string" || !clientSecret) throw new Error("AGENT_GITHUB_OAUTH_SECRET_ARN must hold {clientId, clientSecret}");
     github = { clientId, clientSecret };
   } else if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) github = { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET };
+  // Google sign-in. Like Stripe's, the secret may exist before anyone stores its value: until then Google sign-in is off.
+  const googleArn = exclusive(["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"], "AGENT_GOOGLE_OAUTH_SECRET_ARN");
+  let google: { clientId: string; clientSecret: string } | undefined;
+  if (googleArn) {
+    let text = "";
+    try { text = await read(googleArn); }
+    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; }
+    if (text) {
+      const { clientId, clientSecret } = JSON.parse(text);
+      if (typeof clientId !== "string" || !clientId || typeof clientSecret !== "string" || !clientSecret) throw new Error("AGENT_GOOGLE_OAUTH_SECRET_ARN must hold {clientId, clientSecret}");
+      google = { clientId, clientSecret };
+    }
+  } else if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) google = { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET };
   // Stripe, for credit purchases. The secret may exist before anyone stores its value: until then purchases are off.
   const stripeArn = exclusive(["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"], "AGENT_STRIPE_SECRET_ARN");
   let stripe: { secretKey: string; webhookSecret: string } | undefined;
@@ -53,6 +66,7 @@ export async function runtimeSecrets(env = process.env) {
     sessionSecret: sessionArn ? await read(sessionArn) : env.AGENT_SESSION_SECRET,
     secretsKey: keyArn ? await read(keyArn) : env.AGENT_SECRETS_KEY,
     github,
+    google,
     stripe,
   };
 }

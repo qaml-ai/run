@@ -23,6 +23,8 @@ export interface ApiToken { id: string; name: string; sha256: string; prefix: st
 export type Sealed = { iv: string; tag: string; ciphertext: string };
 /** A GitHub account at sign-in: its login, numeric id and creation time (ms). */
 export interface GithubUser { login: string; id?: number; createdAt?: number }
+/** A Google account at sign-in, from a verified ID token: its stable `sub` and its verified address. */
+export interface GoogleUser { sub: string; email: string }
 type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
 /**
  * What a tenant owes from a batch: model tokens, and web searches and renders, on the platform's keys
@@ -151,6 +153,34 @@ export class Accounts {
     });
     this.billing.invalidate([tenant]);
     return tenant;
+  }
+
+  /**
+   * The tenant a Google user signs in as: the one made for that Google account (by its `sub`),
+   * else a new one named after the address's local part (or, when that is taken, the local part
+   * and a suffix from the `sub`). Google tenants are never linked to GitHub ones or admin tenants,
+   * and get no automatic starting credit: a card check unlocks it (src/card-credit.ts).
+   */
+  async tenantForGoogle({ sub, email }: GoogleUser): Promise<string> {
+    if (!/^[\x21-\x7e]{1,255}$/.test(sub) || !email.includes("@")) throw new Error("Google did not return a valid account; try signing in again");
+    return transaction(this.db, async sql => {
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`google:${sub}`]);
+      let row: { id: string; google_email: string | null } | undefined = (await sql.query("select id, google_email from tenants where google_sub = $1", [sub])).rows[0];
+      if (!row) {
+        const name = email.slice(0, email.lastIndexOf("@")).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30).replace(/-+$/, "");
+        const suffix = sha256(`google:${sub}`).slice(0, 8);
+        for (const candidate of [name, `${name || "google"}-${suffix}`, `google-${sha256(`google:${sub}`).slice(0, 16)}`]) {
+          if (!validTenant(candidate) || this.tenants.has(candidate)) continue;
+          row = (await sql.query("insert into tenants (id, google_sub, google_email, created_at) values ($1, $2, $3, $4) on conflict do nothing returning id, google_email", [candidate, sub, email, Date.now()])).rows[0];
+          if (row) break;
+        }
+        if (!row) throw new Error("This Google account cannot be given a tenant; contact support");
+      }
+      // An admin tenant is never reachable by sign-in, even if one is added later under this id.
+      if (this.tenants.has(row.id)) throw new Error("This Google account cannot sign in here; contact support");
+      if (row.google_email !== email) await sql.query("update tenants set google_email = $2 where id = $1", [row.id, email]);
+      return row.id;
+    });
   }
 
   // Provider keys -------------------------------------------------------------

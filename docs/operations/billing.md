@@ -90,7 +90,22 @@ first prepaid tenant may receive starting credit, with the amount configured by
 and the decision and any grant commit together. Later sign-ins never award credit,
 even if the eligibility policy or grant amount changes. An incomplete profile is
 retried before creating the account. People who do not qualify can add credit or
-contact support@camelai.com if they believe this was a mistake. Running with an
+contact support@camelai.com if they believe this was a mistake.
+
+With Google sign-in configured (`GOOGLE_CLIENT_ID`, or `AGENT_GOOGLE_OAUTH_SECRET_ARN`),
+anyone with a verified Google address can sign up too. A Google tenant is tied to
+the account's `sub`, named after the address's local part (with a suffix when that is
+taken), and never merged with a GitHub tenant, even with the same address. Google
+tenants get no starting credit at signup. Instead, any prepaid tenant made by sign-in
+that has no starting credit (Google tenants, and GitHub accounts that did not qualify)
+can unlock it once by verifying a card: `POST /v1/billing/card-check` returns a Stripe
+Checkout session in setup mode, which saves the card without charging it, and the
+grant posts when its SetupIntent succeeds (from the `checkout.session.completed`
+webhook, or `POST /v1/billing/card-check/confirm` `{session}` when the console
+returns first). A card, by its Stripe fingerprint, unlocks credit once across all
+tenants; prepaid cards unlock none. Each completed check is recorded in `card_checks`,
+so webhook retries and races settle once. `startingCredit.cardCheck: {amount}` in
+`GET /v1/billing` says when a check is available. Running with an
 own provider key still requires credit for agent time. A prepaid tenant that
 has never bought credit (grants and adjustments do not count; a full refund puts it
 back) is on **free credit**, with tighter limits: at most `AGENT_FREE_MAX_AGENTS` (2)
@@ -99,14 +114,14 @@ agents at once per node, unless an admin set its `maxAgents`, and at most
 429 and a running turn ends as above. Both lift with the first purchase.
 
 `GET /v1/billing` has the balance, this month by kind, recent entries and the
-rates and `startingCredit: {status, amount}` (the recorded award, not current
+rates and `startingCredit: {status, amount, cardCheck?}` (the recorded award, not current
 configuration); `GET /v1/billing/ledger?before=<id>` pages through the ledger; the console's
 Billing page shows both. An operator of a tenant in `AGENT_BILLING_ADMINS` can
 `POST /v1/billing/adjustments` `{tenant, amount (micro-USD), reason, idempotencyKey?}`.
 
 For a support exception to starting-credit eligibility, use
 `POST /v1/billing/starting-credit/grant` with `{tenant, amountUsd, reason}` ($1–$100, whole cents)
-as a billing-admin operator. It uses the signup award's identity-scoped key;
+as a billing-admin operator (not for a tenant that unlocked starting credit with a card check). It uses the signup award's identity-scoped key;
 repeating the same award returns the earlier entry, while a different amount
 returns 409. The reason stays in the private decision record, not the public
 ledger. Ordinary adjustments are separate and must not be used for the initial

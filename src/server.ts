@@ -155,11 +155,16 @@ if (minAccountDays !== undefined && (!Number.isFinite(minAccountDays) || minAcco
   throw new Error("AGENT_SIGNUP_MIN_ACCOUNT_DAYS must be a non-negative, safely representable number of days");
 }
 if (secrets.github && pricing.startingGrant > 0 && minAccountDays === undefined) throw new Error("Configure AGENT_SIGNUP_MIN_ACCOUNT_DAYS before enabling GitHub starting credit");
+const openSignup = process.env.AGENT_OPEN_SIGNUP === "true";
 const github = secrets.github && {
-  ...secrets.github, org: process.env.GITHUB_ORG ?? "qaml-ai", open: process.env.AGENT_OPEN_SIGNUP === "true", minAccountDays,
+  ...secrets.github, org: process.env.GITHUB_ORG ?? "qaml-ai", open: openSignup, minAccountDays,
   webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL,
 };
-const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github });
+// Google sign-in admits any verified Google address, so it is sign-up for anyone: only with open sign-up.
+// Its tenants get starting credit only by verifying a card (src/card-credit.ts).
+if (secrets.google && !openSignup) throw new Error("Google sign-in lets anyone sign up; set AGENT_OPEN_SIGNUP=true to enable it, or remove its client");
+const google = secrets.google && { ...secrets.google, issuer: process.env.AGENT_GOOGLE_ISSUER || undefined };
+const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github, google });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 
 // Every call to a URL a tenant configured (MCP servers, web_fetch) goes through one guard: public addresses only, but for
@@ -169,7 +174,7 @@ const mcp = new McpConnections({ outbound });
 // Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
 const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
 // OAuth for the hosted MCP endpoint; the issuer follows the signer's, which is the public URL once it is known.
-const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, publicUrl: () => signer.issuer, github: !!github });
+const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, publicUrl: () => signer.issuer, github: !!github, google: !!google });
 // web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else (prepaid) the
 // platform's, whose calls are charged to credit at that provider's price. js_exec can make many calls between two
 // model requests, so spent or rate-limited credit refuses the platform's key at each call, not only at the next request.
@@ -647,7 +652,7 @@ server.on("request", (req: IncomingMessage) => {
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
   if (!process.env.AGENT_PUBLIC_URL) signer.issuer = links.publicUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
 });
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
 const reloadTenants = (announce: boolean) => tenants.reload().then(

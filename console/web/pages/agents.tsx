@@ -22,6 +22,7 @@ export function AgentsPage({ agents, billing }: {
 }) {
   const needsCredit = needsStartingCredit(billing.data);
   const emptyBalance = billing.data?.billing === "prepaid" && billing.data.balance <= 0;
+  const cardCheck = needsCredit && !!billing.data!.startingCredit.cardCheck;
   return (
     <>
       <PageHeader
@@ -34,8 +35,8 @@ export function AgentsPage({ agents, billing }: {
       {(agents.loading && !agents.data) || (agents.data?.length === 0 && !billing.data && !billing.error) ? <Skeleton className="h-40 w-full" />
         : agents.data?.length === 0 && billing.data ? (
           <FirstRunPanel hero art="liquid" eyebrow="FIRST AGENT" title="No agents yet"
-            action={<PixelButton size="hero" asChild><Link to={emptyBalance ? "billing" : "quickstart"}>{emptyBalance ? "Add credit" : "Open quickstart"}</Link></PixelButton>}>
-            {needsCredit ? <StartingCreditHelp status={billing.data!.startingCredit.status} />
+            action={<PixelButton size="hero" asChild><Link to={emptyBalance ? "billing" : "quickstart"}>{cardCheck ? "Get starting credit" : emptyBalance ? "Add credit" : "Open quickstart"}</Link></PixelButton>}>
+            {needsCredit ? <StartingCreditHelp credit={billing.data!.startingCredit} />
               : emptyBalance ? "Add credit to start running agents."
               : billing.data?.startingCredit?.status === "granted" && billing.data.freeCredit
                 ? <>You started with {formatMicros(billing.data.startingCredit.amount)} of credit. Follow the Quickstart to create your first agent.</>

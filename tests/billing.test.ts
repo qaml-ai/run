@@ -623,7 +623,7 @@ test("open sign-up admits any GitHub account; starting credit is once per accoun
   const { call, base } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {
     ...githubEnv(github.url), AGENT_VERIFY_KEYS: "false", STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: stripeApi.url,
   }, tenantsFile);
-  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, token: true, open: true });
+  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, google: false, token: true, open: true });
 
   // Not eligible at signup, but can sign in and buy credit.
   github.account(2001, "Newbie", 5);
@@ -634,7 +634,7 @@ test("open sign-up admits any GitHub account; starting credit is once per accoun
   assert.equal((await asNewbie("/v1/me")).json.tenant, "newbie");
   const newbieBilling = (await asNewbie("/v1/billing")).json;
   assert.deepEqual([newbieBilling.billing, newbieBilling.balance, newbieBilling.freeCredit], ["prepaid", 0, true]);
-  assert.deepEqual(newbieBilling.startingCredit, { status: "not_eligible", amount: 0 });
+  assert.deepEqual(newbieBilling.startingCredit, { status: "not_eligible", amount: 0, cardCheck: { amount: 5_000_000 } }, "a young account can still unlock credit with a card check");
   assert.equal((await asNewbie("/v1/providers/anthropic/key", { method: "PUT", body: { apiKey: "sk-ant-newbie-1234" } })).status, 200);
   assert.equal((await asNewbie("/v1/billing/checkout", { body: { amountUsd: 5 } })).status, 201);
 

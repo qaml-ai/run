@@ -2958,6 +2958,19 @@
               "amount": {
                 "type": "integer",
                 "description": "The amount of starting credit actually awarded, independent of the current grant setting, in micro-USD (1 USD = 1000000)"
+              },
+              "cardCheck": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "description": "Starting credit a card check would add, in micro-USD (1 USD = 1000000)"
+                  }
+                },
+                "required": [
+                  "amount"
+                ],
+                "description": "Present when verifying a card (POST /v1/billing/card-check) would unlock starting credit"
               }
             },
             "required": [
@@ -3198,6 +3211,53 @@
         "required": [
           "amountUsd"
         ]
+      },
+      "CardCheck": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Send the account holder here to verify a card; nothing is charged"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      },
+      "CardCheckOutcome": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "granted",
+              "not_granted",
+              "pending"
+            ],
+            "description": "granted: starting credit was added; not_granted: this card check added none; pending: Stripe has not finished the check"
+          },
+          "amount": {
+            "type": "integer",
+            "description": "Starting credit added, in micro-USD (1 USD = 1000000)"
+          }
+        },
+        "required": [
+          "status",
+          "amount"
+        ]
+      },
+      "CardCheckConfirmInput": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "description": "The Checkout session id Stripe returned to the console"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
       },
       "StartingCreditGrantInput": {
         "type": "object",
@@ -8362,6 +8422,93 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Checkout"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/card-check": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "A Stripe Checkout session that verifies a card, with no charge, to unlock starting credit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardCheck"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/card-check/confirm": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CardCheckConfirmInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The card check's outcome, settled now if Stripe's webhook has not arrived yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardCheckOutcome"
                 }
               }
             }
