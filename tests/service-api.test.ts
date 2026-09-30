@@ -72,11 +72,13 @@ test('scoped configuration persists allowed fields and rejects provider credenti
   const params = { systemPrompt: 'You inspect test fixtures.', thinkingLevel: 'high', mcp: { tools: [inspect] } };
   assert.equal((await f.post(path + '/requests', { id: 'config', method: 'configure', params }, session.token)).status, 202);
   let record: any;
-  for (let i = 0; i < 100; i++) {
+  // Configuration waits for the agent to start, which on a loaded CI runner takes more than a second.
+  for (let i = 0; i < 1000; i++) {
     record = await (await f.get(path + '/requests/config', session.token)).json();
     if (record.state !== 'running') break;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+  assert.notEqual(record.state, 'running', 'configuration finished');
   assert.equal(record.outcome.error, undefined);
   const saved = await f.header(session.id);
   assert.equal(saved.config.systemPrompt, params.systemPrompt);
