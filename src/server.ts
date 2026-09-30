@@ -24,6 +24,7 @@ import { BillingMailer, billingMailConfig } from "./billing-mailer.ts";
 import { ConsoleAuth } from "./console-auth.ts";
 import { OAuth } from "./oauth.ts";
 import { hostedMcp } from "./hosted-mcp.ts";
+import { agentMcp } from "./agent-mcp.ts";
 import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
@@ -578,13 +579,16 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
 app.route("/", oauth.app);
-// The hosted MCP endpoint: its tools call this node's REST API locally, as the caller.
+// The hosted MCP endpoints: their tools call this node's REST API locally, as the caller.
 const loopbackHost = !process.env.HOST || ["0.0.0.0", "::", "127.0.0.1", "localhost"].includes(process.env.HOST) ? "127.0.0.1" : process.env.HOST.includes(":") ? `[${process.env.HOST}]` : process.env.HOST;
-app.route("/", hostedMcp({
-  authenticate: async authorization => await accounts.authenticate(authorization) ?? await oauth.authenticate(authorization),
+const mcpOptions = {
+  authenticate: async (authorization: string | undefined) => await accounts.authenticate(authorization) ?? await oauth.authenticate(authorization),
   publicUrl: () => signer.issuer,
   loopback: () => `http://${loopbackHost}:${(server.address() as { port: number }).port}`,
-}));
+};
+app.route("/", hostedMcp(mcpOptions));
+// Each agent as an MCP server of its own: one tool that messages it. Before api, whose /v1/agents/:id/* it is in.
+app.route("/", agentMcp({ ...mcpOptions, agents: clients }));
 // Before channels.app, whose /channels/:type/:id would take /channels/email/inbound.
 if (emailOptions) app.route("/", emailReceiver(channels, emailOptions));
 app.route("/", channels.app);

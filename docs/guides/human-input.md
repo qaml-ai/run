@@ -92,6 +92,8 @@ Inputs outlive your process: answer later from anywhere.
   input is answered): poll it like a prompt.
 - `onInput` (`on_input`) on `upsert` hears each input as it is asked: return an
   answer to give it at once, or nothing to answer later.
+- An MCP client talking to the agent through its [MCP endpoint](mcp-server.md)
+  is asked through elicitation, when it supports it.
 - The agent's events include `input_required` and `input_resolved`, and
   [webhooks](webhooks.md) `input.requested` and `input.resolved`.
 

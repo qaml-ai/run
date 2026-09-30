@@ -173,6 +173,9 @@ The console's API tokens page lists connected apps under **Connected apps**,
 where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 /v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.
 
+Each agent is also an MCP server of its own, with one tool that messages it:
+see [Agents as MCP servers](../guides/mcp-server.md).
+
 ## In the browser: WebMCP
 
 The console also offers the tools to the agent built into your browser, through

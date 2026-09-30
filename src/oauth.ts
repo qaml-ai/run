@@ -6,7 +6,7 @@ import type { Db } from "./db.ts";
 import { readText } from "./http.ts";
 
 /**
- * The runtime as an OAuth 2.1 authorization server for its hosted MCP endpoint (/mcp), as MCP's authorization spec
+ * The runtime as an OAuth 2.1 authorization server for its hosted MCP endpoints (/mcp, and each agent's), as MCP's authorization spec
  * asks: protected-resource metadata (RFC 9728), dynamic client registration (RFC 7591), the authorization code
  * flow with PKCE (S256 only), refresh tokens that rotate (a reused one revokes its grant), and revocation (RFC
  * 7009). People sign in with the console's session and consent on a page of ours. Access tokens are opaque and act
@@ -42,6 +42,8 @@ export type OAuthPrincipal = Principal & { via: "oauth"; grantId: string; login?
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+/** An agent's MCP endpoint (agent-mcp.ts), as a path. */
+const AGENT_RESOURCE = /^\/v1\/agents\/client_[a-f0-9]{40}\/mcp\/?$/;
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const escape = (value: string) => value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char]!);
 
@@ -72,9 +74,9 @@ export class OAuth {
     };
   }
 
-  /** The hosted MCP endpoint's metadata (RFC 9728): where its tokens come from. */
-  protectedResource() {
-    return { resource: this.resource, authorization_servers: [this.issuer], scopes_supported: [SCOPE], bearer_methods_supported: ["header"], resource_name: "Camel Run", resource_documentation: `${this.issuer}/docs/reference/cli.md` };
+  /** An MCP endpoint's metadata (RFC 9728), the hosted one's or an agent's (agent-mcp.ts): where its tokens come from. */
+  protectedResource(resource = this.resource, documentation = "reference/cli.md") {
+    return { resource, authorization_servers: [this.issuer], scopes_supported: [SCOPE], bearer_methods_supported: ["header"], resource_name: "Camel Run", resource_documentation: `${this.issuer}/docs/${documentation}` };
   }
 
   /** The tenant an OAuth access token acts for, while it is unexpired and its grant stands. */
@@ -155,7 +157,9 @@ export class OAuth {
     const challenge = params.get("code_challenge") ?? "";
     if (params.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge)) throw fail("invalid_request", "PKCE is required: code_challenge with code_challenge_method S256");
     const resource = params.get("resource");
-    if (resource !== null && ![this.resource, `${this.resource}/`, this.issuer, `${this.issuer}/`].includes(resource)) throw fail("invalid_target", `The resource is ${this.resource}`);
+    // The hosted endpoint, or an agent's: a token acts for the tenant at either.
+    const agent = resource?.startsWith(`${this.issuer}/v1/agents/`) && AGENT_RESOURCE.test(resource.slice(this.issuer.length));
+    if (resource !== null && !agent && ![this.resource, `${this.resource}/`, this.issuer, `${this.issuer}/`].includes(resource)) throw fail("invalid_target", `The resource is ${this.resource}`);
     if ((request.state?.length ?? 0) > 2000) throw fail("invalid_request", "state is too long");
     return { ...request, challenge };
   }
@@ -266,6 +270,9 @@ export class OAuth {
     };
 
     for (const path of publicPaths.slice(0, 2)) app.get(path, c => c.json(this.protectedResource(), 200, { ...open, "Cache-Control": "public, max-age=300" }));
+    const agentMetadata = "/.well-known/oauth-protected-resource/v1/agents/:id{client_[a-f0-9]{40}}/mcp";
+    app.options(agentMetadata, c => c.body(null, 204, { ...open, "Access-Control-Max-Age": "86400" }));
+    app.get(agentMetadata, c => c.json(this.protectedResource(`${this.issuer}/v1/agents/${c.req.param("id")}/mcp`, "guides/mcp-server.md"), 200, { ...open, "Cache-Control": "public, max-age=300" }));
 
     app.post("/oauth/register", async c => {
       try {

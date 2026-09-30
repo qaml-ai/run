@@ -192,7 +192,7 @@ export const answerList = (body: any) => {
   return body.answers.map(({ id, ...answer }: any) => ({ id: String(id), body: answer }));
 };
 /** The id of the run that resumes a suspension: one per suspension, so every path that resumes it makes the same request. */
-const resumeId = (suspension: string) => `resume_${hash(suspension).slice(0, 40)}`;
+export const resumeId = (suspension: string) => `resume_${hash(suspension).slice(0, 40)}`;
 /** Settled records kept for idempotent retries once the journal is folded. */
 const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
@@ -1631,6 +1631,17 @@ export class ClientSessions {
     const header = (await this.owns(id, tenant)) ? this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value : undefined;
     if (!header || header.purged) throw new HttpError(404, "Unknown agent");
     return this.watchAgent(c as Context<ClientEnv>, header, c.req.query("poll") === "1" ? "poll" : "watch", reader);
+  }
+
+  /**
+   * An agent as its MCP endpoint (agent-mcp.ts) shows it, while it lives: its tenant, what it is called and its prompt,
+   * and whether `authorization` carries its own token, as its `/clients/:id` routes check. Read without loading it.
+   */
+  async mcpView(id: string, authorization: string) {
+    const header = this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value;
+    if (!header || header.revoked || header.purged || expired(header.expiresAt)) return undefined;
+    const own = authorization.startsWith("Bearer ") && timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"));
+    return { tenant: header.tenant, own, name: header.metadata?.name ?? header.key, systemPrompt: header.config.systemPrompt };
   }
 
   /** A tenant's view of one agent's request state and stream cursor (`/clients/:id/state`). */

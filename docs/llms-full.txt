@@ -790,6 +790,8 @@ Inputs outlive your process: answer later from anywhere.
   input is answered): poll it like a prompt.
 - `onInput` (`on_input`) on `upsert` hears each input as it is asked: return an
   answer to give it at once, or nothing to answer later.
+- An MCP client talking to the agent through its [MCP endpoint](mcp-server.md)
+  is asked through elicitation, when it supports it.
 - The agent's events include `input_required` and `input_resolved`, and
   [webhooks](webhooks.md) `input.requested` and `input.resolved`.
 
@@ -2033,6 +2035,66 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 
 ---
 
+<!-- https://agents.camelai.dev/docs/guides/mcp-server.md -->
+
+# Agents as MCP servers
+
+Every agent is also an MCP server, at `https://agents.camelai.dev/v1/agents/<agent id>/mcp`
+(Streamable HTTP). Connect Claude, Cursor or any MCP client to it, and the model
+there can talk to your agent. It has one tool, `message`: it sends the agent a
+message and returns the agent's reply. The agent's own tools stay its own.
+
+Claude Code:
+
+```sh
+claude mcp add --transport http support https://agents.camelai.dev/v1/agents/client_…/mcp
+# then /mcp in Claude Code to sign in; or skip signing in with a token:
+claude mcp add --transport http support https://agents.camelai.dev/v1/agents/client_…/mcp --header "Authorization: Bearer art_..."
+```
+
+Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
+connector, with the agent's URL. Cursor and other clients configured with JSON:
+
+```json
+{ "mcpServers": { "support": { "url": "https://agents.camelai.dev/v1/agents/client_…/mcp" } } }
+```
+
+- **One conversation.** A message joins the agent's history exactly as a prompt
+  (`POST /v1/agents/:id/prompt`) does, next to messages from the API, the
+  console and channels. There are no threads per caller; to give each caller a
+  conversation of its own, give each an agent. Each message is a run, limited
+  and billed as a prompt is.
+- **Who may call it.** Whatever may prompt the agent: its own token (the
+  `token` it was created with), an API token of its tenant, or an OAuth sign-in.
+  A `401` names the agent's protected-resource metadata
+  (`/.well-known/oauth-protected-resource/v1/agents/<id>/mcp`), so clients sign
+  in [as with the hosted MCP server](../reference/cli.md#hosted-mcp-server).
+  Other tenants' tokens get `404`.
+- **The tool's description** says what the agent is: its name and the first
+  paragraph of its system prompt.
+- **Long turns.** A call lasts as long as the turn. It sends progress
+  notifications as the agent works (its text as it streams, each tool it uses,
+  and a heartbeat every 20 seconds), so clients that reset their timeout on
+  progress keep waiting. A caller that goes away does not stop the turn.
+- **Retries.** Pass `requestId`: sending the same text with the same id again is
+  the same message, never sent twice, and the call returns its reply (waiting
+  for it if it is still running). A call your client sends again in the same
+  session is recognized without one.
+- **A busy agent.** A message to an agent that is working queues behind its
+  current turn, as a prompt does. Once 32 requests are open, the call fails:
+  `The agent is busy: …`.
+- **Human input.** When the turn [waits on a person](human-input.md) and the
+  client supports elicitation, the question, approval, form or page comes up in
+  the client, and the answer resumes the turn. Otherwise the call ends with a
+  result listing what the agent waits on (`structuredContent.status` is
+  `input_required`) and how to answer it; once answered, the same call again
+  (same text and `requestId`) returns the reply. A new message instead sets the
+  inputs aside.
+- **Errors** (a failed run, a spend limit, a model error, a refused request)
+  come back as tool errors carrying the runtime's message.
+
+---
+
 <!-- https://agents.camelai.dev/docs/production.md -->
 
 # Production checklist
@@ -2622,6 +2684,9 @@ days and rotate on each use, and a refresh token used twice revokes its grant.
 The console's API tokens page lists connected apps under **Connected apps**,
 where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 /v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.
+
+Each agent is also an MCP server of its own, with one tool that messages it:
+see [Agents as MCP servers](../guides/mcp-server.md).
 
 ## In the browser: WebMCP
 

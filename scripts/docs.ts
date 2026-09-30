@@ -22,6 +22,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/custom-models.md", about: "any server that speaks OpenAI's or Anthropic's APIs as a provider of your own or of a key scope: hosted APIs, gateways, vLLM, Ollama" },
   { section: "Guides", path: "guides/definitions.md", about: "reusable configurations, and rolling changes out to their agents" },
   { section: "Guides", path: "guides/channels.md", about: "Slack, Telegram, Discord, GitHub, email and any service that sends webhooks" },
+  { section: "Guides", path: "guides/mcp-server.md", about: "every agent as an MCP server with one tool, message: connecting Claude or Cursor to an agent" },
   { section: "Guides", path: "production.md", about: "the checklist before shipping" },
   { section: "Reference", path: "reference/sdk.md", about: "the TypeScript and Python SDKs" },
   { section: "Reference", path: "reference/cli.md", about: "the Camel Run CLI (camelrun) and MCP servers, hosted at /mcp and local: deploying agent.yaml manifests, running and managing agents from a terminal or a coding agent" },

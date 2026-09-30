@@ -24,6 +24,7 @@ error). Install `@camelai/agent-runtime` (npm) or `camelai-agent-runtime` (PyPI)
 - [Custom models](https://agents.camelai.dev/docs/guides/custom-models.md): any server that speaks OpenAI's or Anthropic's APIs as a provider of your own or of a key scope: hosted APIs, gateways, vLLM, Ollama
 - [Definitions](https://agents.camelai.dev/docs/guides/definitions.md): reusable configurations, and rolling changes out to their agents
 - [Channels](https://agents.camelai.dev/docs/guides/channels.md): Slack, Telegram, Discord, GitHub, email and any service that sends webhooks
+- [Agents as MCP servers](https://agents.camelai.dev/docs/guides/mcp-server.md): every agent as an MCP server with one tool, message: connecting Claude or Cursor to an agent
 - [Production checklist](https://agents.camelai.dev/docs/production.md): the checklist before shipping
 
 ## Reference

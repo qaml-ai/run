@@ -1,4 +1,5 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Api } from "../packages/cli/src/api.ts";
 import { createServer } from "../packages/cli/src/mcp.ts";
@@ -23,46 +24,78 @@ export interface HostedMcpOptions {
   loopback: () => string;
 }
 
-const CORS = {
+export const MCP_CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID",
   "Access-Control-Expose-Headers": "WWW-Authenticate, Mcp-Session-Id, MCP-Protocol-Version",
 };
 
+export const mcpPreflight = (c: Context) => c.body(null, 204, { ...MCP_CORS, "Access-Control-Max-Age": "86400" });
+
+/** The 401 an MCP client signs in from: `metadata` is the resource's protected-resource metadata (RFC 9728). */
+export function mcpSignIn(c: Context, authorization: string | undefined, metadata: string) {
+  return c.json({ error: authorization ? "invalid_token" : "unauthorized", error_description: authorization ? "The token is invalid, expired or revoked" : "Sign in (OAuth), or send Authorization: Bearer <API token>" }, 401, {
+    ...MCP_CORS, "WWW-Authenticate": `Bearer resource_metadata="${metadata}"${authorization ? ", error=\"invalid_token\"" : ""}, scope="agents"`,
+  });
+}
+
+/** A stateless endpoint's POST body, read whole within the limit (to hand on); or the answer refusing the request. */
+export async function mcpBody(c: Context): Promise<string | Response> {
+  // Stateless: no session, and nothing to stream to between requests.
+  if (c.req.method !== "POST") return c.json({ jsonrpc: "2.0", error: { code: -32000, message: "This server is stateless: POST each message" }, id: null }, 405, { ...MCP_CORS, Allow: "POST" });
+  // Refused from its length before it is read; otherwise read within the limit (it throws 413 past it).
+  if (Number(c.req.header("content-length") ?? 0) > MAX_BODY) return c.json({ jsonrpc: "2.0", error: { code: -32600, message: `A message is at most ${MAX_BODY} bytes` }, id: null }, 413, MCP_CORS);
+  return readText(c.req.raw.body, MAX_BODY);
+}
+
+/**
+ * Answer one POST with `server`, which is closed once the answer is sent. By default the answer is JSON, whole. With
+ * `stream`, it is server-sent events, so a long tool call can send progress (and requests of its own) before its
+ * result: the server closes when the stream ends, or when the client goes (which aborts the calls it was making).
+ */
+export async function serveMcp(c: Context, server: McpServer, body: string, options: { stream?: boolean; headers?: Record<string, string> } = {}) {
+  const headers = new Headers(c.req.raw.headers);
+  headers.delete("content-length");
+  const request = new Request(c.req.raw.url, { method: "POST", headers, body });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: !options.stream });
+  await server.connect(transport);
+  let streaming = false;
+  try {
+    const response = await transport.handleRequest(request);
+    const answer = new Headers(response.headers);
+    for (const [name, value] of Object.entries({ ...MCP_CORS, ...options.headers })) answer.set(name, value);
+    if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+      // The body is read before the server closes: a JSON response is whole by now.
+      return new Response(response.body && await response.arrayBuffer(), { status: response.status, headers: answer });
+    }
+    const reader = response.body.getReader();
+    const close = () => void server.close().catch(() => {});
+    streaming = true;
+    return new Response(new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const { value, done } = await reader.read();
+        if (done) { controller.close(); close(); } else controller.enqueue(value);
+      },
+      cancel() { void reader.cancel().catch(() => {}); close(); },
+    }), { status: response.status, headers: answer });
+  } finally {
+    if (!streaming) await server.close();
+  }
+}
+
 export function hostedMcp(options: HostedMcpOptions) {
   const app = new Hono();
-  app.options("/mcp", c => c.body(null, 204, { ...CORS, "Access-Control-Max-Age": "86400" }));
+  app.options("/mcp", mcpPreflight);
   app.on(["GET", "POST", "DELETE"], "/mcp", async c => {
     const authorization = c.req.header("authorization");
     const principal = authorization ? await options.authenticate(authorization) : undefined;
-    if (!principal) {
-      const metadata = `${options.publicUrl()}/.well-known/oauth-protected-resource/mcp`;
-      return c.json({ error: authorization ? "invalid_token" : "unauthorized", error_description: authorization ? "The token is invalid, expired or revoked" : "Sign in (OAuth), or send Authorization: Bearer <API token>" }, 401, {
-        ...CORS, "WWW-Authenticate": `Bearer resource_metadata="${metadata}"${authorization ? ", error=\"invalid_token\"" : ""}, scope="agents"`,
-      });
-    }
-    // Stateless: no session, and nothing to stream to between requests.
-    if (c.req.method !== "POST") return c.json({ jsonrpc: "2.0", error: { code: -32000, message: "This server is stateless: POST each message" }, id: null }, 405, { ...CORS, Allow: "POST" });
+    if (!principal) return mcpSignIn(c, authorization, `${options.publicUrl()}/.well-known/oauth-protected-resource/mcp`);
+    const body = await mcpBody(c);
+    if (body instanceof Response) return body;
     const publicUrl = options.publicUrl(), loopback = options.loopback();
     const local: typeof fetch = (input, init) => { const url = String(input); return fetch(url.startsWith(publicUrl) ? loopback + url.slice(publicUrl.length) : url, init); };
-    // Read within a limit (it throws 413 past it), then handed on whole.
-    if (Number(c.req.header("content-length") ?? 0) > MAX_BODY) return c.json({ jsonrpc: "2.0", error: { code: -32600, message: `A message is at most ${MAX_BODY} bytes` }, id: null }, 413, CORS);
-    const headers = new Headers(c.req.raw.headers);
-    headers.delete("content-length");
-    const request = new Request(c.req.raw.url, { method: "POST", headers, body: await readText(c.req.raw.body, MAX_BODY) });
-    const server = createServer(() => new Api({ url: publicUrl, apiKey: authorization!.slice(7) }, local));
-    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    await server.connect(transport);
-    try {
-      const response = await transport.handleRequest(request);
-      const answer = new Headers(response.headers);
-      for (const [name, value] of Object.entries(CORS)) answer.set(name, value);
-      // The body is read before the server closes: a JSON response is whole by now.
-      return new Response(response.body && await response.arrayBuffer(), { status: response.status, headers: answer });
-    } finally {
-      await server.close();
-    }
+    return serveMcp(c, createServer(() => new Api({ url: publicUrl, apiKey: authorization!.slice(7) }, local)), body);
   });
   return app;
 }
