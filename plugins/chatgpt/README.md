@@ -1,7 +1,7 @@
 # camelRun plugin for ChatGPT and Codex
 
 `plugin/` is the plugin package: the manifest (`plugin.json`, Agent Plugins format with OpenAI's settings under
-`extensions.com.openai`), `mcp.json` naming the hosted MCP server `https://agents.camelai.dev/mcp`, the onboarding
+`extensions.com.openai`), `mcp.json` naming the hosted MCP server `https://run.camelai.com/mcp`, the onboarding
 skill `skills/create-first-agent`, and the icons (from the console's favicon). The MCP tools themselves are the
 camelrun CLI's (`packages/cli/src/tools.ts`), served by the runtime; changing them needs no new package, since OpenAI
 rescans the server.
@@ -52,7 +52,7 @@ The package is ready except for the demo video's URL, which needs you. The build
    infra/tenant.sh add chatgpt-review                  # operator token in Secrets Manager
    infra/tenant.sh set-spend-limit chatgpt-review 25   # caps the reviewers' model spend per month
    ```
-   Sign in to https://agents.camelai.dev/console with that operator token, create an API token named `chatgpt-review`
+   Sign in to https://run.camelai.com/console with that operator token, create an API token named `chatgpt-review`
    on the API tokens page, and create the demo agent the test cases mention:
    ```sh
    export CAMELAI_API_KEY=art_...   # the chatgpt-review API token
@@ -61,7 +61,7 @@ The package is ready except for the demo video's URL, which needs you. The build
    ```
    If runs fail for want of a model key, give the tenant one with `infra/tenant.sh set-key chatgpt-review anthropic`.
 4. **Try it in ChatGPT first (developer mode).** Settings, Security and login, turn on Developer mode. Then at
-   https://chatgpt.com/plugins select +, name it camelRun, URL `https://agents.camelai.dev/mcp`, authentication
+   https://chatgpt.com/plugins select +, name it camelRun, URL `https://run.camelai.com/mcp`, authentication
    OAuth. ChatGPT registers itself (dynamic client registration), so there is no client ID or secret to enter and no
    redirect URI to allowlist. Sign in on the camelRun page (GitHub, Google, or paste the API token), select Allow, then run
    the test cases below in a new chat with camelRun added from the + menu.
@@ -69,18 +69,18 @@ The package is ready except for the demo video's URL, which needs you. The build
    select Upload new or existing plugin, choose the verified developer identity, and upload
    `plugins/chatgpt/dist/camelrun-1.0.0.zip`. Fix any Metadata & Skills findings in `plugin/` and upload again
    (bump `version` for a package that was already submitted).
-6. **Connect the MCP server.** MCPs, camelrun, Connect: URL `https://agents.camelai.dev/mcp`, OAuth with dynamic
+6. **Connect the MCP server.** MCPs, camelrun, Connect: URL `https://run.camelai.com/mcp`, OAuth with dynamic
    registration. The drawer shows a domain-verification token, which the runtime serves from
    `AGENT_OPENAI_APPS_CHALLENGE` (Terraform variable `openai_apps_challenge`). Set it in prod.tfvars
    (`s3://camelai-terraform-state-904534089871/agent-runtime/prod.tfvars`), plan and apply with
    `-var-file=prod.tfvars`, then redeploy the running image tag with `infra/ecs-deploy.sh <tag>`, which ships the new
    environment. A guarded script that does exactly this (backing up prod.tfvars first, refusing a plan that changes
    more than the task definition, asking before it applies, and checking
-   `https://agents.camelai.dev/.well-known/openai-apps-challenge` at the end) was handed over with this package.
+   `https://run.camelai.com/.well-known/openai-apps-challenge` at the end) was handed over with this package.
    Then select Verify Domain, connect, sign in, and wait for the tool scan. Every tool states its three hints; the dashboard may
    still ask for a one-line justification per hint (see "Annotations" below).
 7. **Review details.** In Metadata & Skills, Review information, Review details, enter:
-   - login URL `https://agents.camelai.dev/console`;
+   - login URL `https://run.camelai.com/console`;
    - credential: the `chatgpt-review` API token, in the password field (no username);
    - sign-in instructions: "When ChatGPT opens the camelRun sign-in page, paste the API token into the field under
      'Or sign in with an API token' and select Sign in, then select Allow. Don't use Sign in with GitHub or Google. The account
@@ -123,7 +123,7 @@ Clean up after a rehearsal: delete haiku-bot, triage-1 and the triage definition
 6. (1:40) P4: deploy the triage manifest, confirm, and see triage-1's label.
 7. (2:10) P5: delete haiku-bot; show the confirmation, then list agents again.
 8. (2:30) N2: paste the fake Stripe key; show that it declines and points to the CLI.
-9. (2:45) The console at https://agents.camelai.dev/console: the agents made from ChatGPT, and the grant under
+9. (2:45) The console at https://run.camelai.com/console: the agents made from ChatGPT, and the grant under
    Connected apps.
 
 ## Release notes (1.0.0)

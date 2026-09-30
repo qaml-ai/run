@@ -26,7 +26,7 @@ take priority over this workflow: skip or change steps when they ask.
      they decided.
    - `failed`: show the error and suggest a fix, such as another model.
 6. Finish with how to keep going: message it again by its key, change it with `configure_agent`, schedule it with
-   `add_schedule`, and see it in the console at https://agents.camelai.dev/console. It keeps its history until
+   `add_schedule`, and see it in the console at https://run.camelai.com/console. It keeps its history until
    deleted.
 
 When they want the same configuration for several agents, or kept in a repository, write an agent.yaml manifest and
@@ -36,6 +36,6 @@ Rules:
 
 - Never ask for, repeat or put credentials (API keys, tokens, passwords) in a manifest or a message. If the agent
   needs a tool server that takes a secret, explain that it is deployed with the camelrun CLI (`camelrun deploy`),
-  which reads secrets from its environment, and point to https://agents.camelai.dev/docs/reference/cli.md.
+  which reads secrets from its environment, and point to https://run.camelai.com/docs/reference/cli.md.
 - Delete agents, definitions or schedules only when the person asks, one at a time, after they confirm.
 - Only act on the connected account. You can't see or change anyone else's agents.

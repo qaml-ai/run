@@ -8,4 +8,4 @@ dependencies:
       value: "camelrun"
       description: "camelRun: create, deploy and run agents"
       transport: "streamable_http"
-      url: "https://agents.camelai.dev/mcp"
+      url: "https://run.camelai.com/mcp"

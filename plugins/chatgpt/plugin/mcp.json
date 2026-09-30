@@ -3,7 +3,7 @@
   "mcpServers": {
     "camelrun": {
       "type": "streamable-http",
-      "url": "https://agents.camelai.dev/mcp"
+      "url": "https://run.camelai.com/mcp"
     }
   }
 }

@@ -9,7 +9,7 @@ export function QuickstartPage() {
   const url = location.origin;
   const model = available.data?.find(entry => entry.id === "anthropic/claude-sonnet-5")?.id ?? available.data?.[0]?.id ?? "anthropic/claude-sonnet-5";
   // The hosted runtime is the SDKs' default; another origin (a self-hosted console) is named explicitly.
-  const hosted = url === "https://agents.camelai.dev";
+  const hosted = url === "https://run.camelai.com" || url === "https://agents.camelai.dev";
   const typescript = `import { Agents, schema, tool } from "@camelai/run";
 
 const agents = new Agents(${hosted ? "" : `{ url: "${url}" }`}); // reads CAMELAI_API_KEY: an API token from this console

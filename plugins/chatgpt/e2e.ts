@@ -8,11 +8,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
  * way in), consent, the code exchange with PKCE, then the MCP tools the review cases use, a refresh, and
  * revocation. Everything it makes is deleted, and the grant is revoked, even when a step fails.
  *
- *   CAMELRUN_TOKEN=art_... node --experimental-strip-types plugins/chatgpt/e2e.ts [https://agents.camelai.dev]
+ *   CAMELRUN_TOKEN=art_... node --experimental-strip-types plugins/chatgpt/e2e.ts [https://run.camelai.com]
  *
  * The token is read from the environment and never printed.
  */
-const base = (process.argv[2] ?? "https://agents.camelai.dev").replace(/\/$/, "");
+const base = (process.argv[2] ?? "https://run.camelai.com").replace(/\/$/, "");
 const token = process.env.CAMELRUN_TOKEN;
 if (!token) { console.error("Set CAMELRUN_TOKEN to an API token of the account to test with"); process.exit(2); }
 const REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
