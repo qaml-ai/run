@@ -119,7 +119,9 @@ test("signed links: bound to tenant, volume, path, method, expiry, size and cont
   const [payload, mac] = token.split(".");
   const grant = JSON.parse(Buffer.from(payload, "base64url").toString());
   const forged = Buffer.from(JSON.stringify({ ...grant, path: "/docs/secret.txt" })).toString("base64url");
-  for (const bad of [`${forged}.${mac}`, `${payload}.${mac.slice(0, -2)}AA`, payload, `${payload}.${mac}.x`]) {
+  // The signature's first character always changes the MAC (its last carries only 4 bits, and may already be what a swap writes).
+  const otherMac = `${mac[0] === "A" ? "B" : "A"}${mac.slice(1)}`;
+  for (const bad of [`${forged}.${mac}`, `${payload}.${otherMac}`, payload, `${payload}.${mac}.x`]) {
     const response = await fetch(`${prefix}/v1/links/${bad}/a.txt`);
     assert.equal(response.status, 403, bad);
   }
