@@ -164,11 +164,15 @@ const signer = new RuntimeSigner({ db, accounts, issuer: publicUrl });
 // OAuth for the hosted MCP endpoint; the issuer follows the signer's, which is the public URL once it is known.
 const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, publicUrl: () => signer.issuer, github: !!github });
 // web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else (prepaid) the
-// platform's, whose calls are charged to credit at that provider's price.
+// platform's, whose calls are charged to credit at that provider's price. js_exec can make many calls between two
+// model requests, so spent or rate-limited credit refuses the platform's key at each call, not only at the next request.
 const webKey = async (tenant: string, provider: string) => {
   const resolved = await accounts.providerKey(tenant, provider);
+  if (!resolved) return undefined;
   // Only the platform's own key is the platform's: an admin's key for the tenant (its apiKeys) is the tenant's to account for.
-  return resolved && { key: resolved.key, platform: resolved.source === "platform" };
+  const platform = resolved.source === "platform";
+  if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+  return { key: resolved.key, platform };
 };
 const searchTimeoutMs = Number(process.env.AGENT_WEB_SEARCH_TIMEOUT_MS ?? 5_000);
 if (!Number.isInteger(searchTimeoutMs) || searchTimeoutMs < 100 || searchTimeoutMs > 60_000) throw new Error("AGENT_WEB_SEARCH_TIMEOUT_MS must be an integer between 100 and 60000");

@@ -314,3 +314,22 @@ test("a search key the operator set for a tenant (its apiKeys) is used, and is n
   const usage = await until(async () => (await r.call("/v1/usage", { token: ADMIN_KEYED })).json.days.find((day: any) => day.model === "brave/web_search"), "the search's usage");
   assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 0, 0]);
 });
+
+test("js_exec's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request", async t => {
+  const brave = await fakeBrave(t);
+  const code = `const out = []; for (let i = 0; i < 4; i++) { try { out.push((await tools.web_search({ query: "q" + i })).provider); } catch (error) { out.push(String(error.message ?? error)); } } return JSON.stringify(out);`;
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("js_exec", { code }) : { role: "assistant", content: "done" }, {
+    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_BRAVE_SEARCH_URL: brave.url, AGENT_WEB_SEARCH_PROVIDERS: "brave",
+    AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_USD: "0.6", AGENT_FREE_HOURLY_SPEND_USD: "100",
+  }, tenantsFile);
+  assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Searcher", builtins: ["web_search"] }, token: PAYG })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id }, token: PAYG })).json.id;
+  const outcome = await r.prompt(agent, "search a lot", PAYG);
+  assert.equal(brave.searches.length, 2, "$1 of credit pays for the first search and starts the second; the rest are refused");
+  const messages = (await r.call(`/v1/agents/${agent}/history`, { token: PAYG })).json.messages;
+  const result = JSON.stringify(messages.find((message: any) => message.role === "toolResult"));
+  assert.match(result, /brave.*brave.*Not enough credit.*Not enough credit/, result);
+  assert.equal(r.model.bodies.length, 1, "the next model request is refused too");
+  assert.match(JSON.stringify(outcome), /INSUFFICIENT_CREDIT|SPEND_LIMIT|credit/);
+});

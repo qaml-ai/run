@@ -24,7 +24,7 @@ export interface WebRenderOptions {
   outbound: Outbound;
   /** Firecrawl's scrape endpoint (AGENT_FIRECRAWL_SCRAPE_URL overrides it, for tests). */
   endpoint?: string;
-  /** The tenant's key for Firecrawl, and whether it is the platform's rather than the tenant's own. */
+  /** The tenant's key for Firecrawl, and whether it is the platform's rather than the tenant's own; it throws when that key may not be used now (spent credit). */
   key(tenant: string, provider: string): Promise<{ key: string; platform: boolean } | undefined>;
   /** Micro-USD per render, reported as its cost. */
   price: number;
@@ -43,7 +43,8 @@ export class WebRender {
   async render(context: { tenant: string; agent: string }, url: string, signal: AbortSignal): Promise<{ title?: string; markdown: string } | undefined> {
     const { outbound } = this.options;
     try { await outbound.reachable(url); } catch { return undefined; }
-    const key = await this.options.key(context.tenant, "firecrawl");
+    // A key refused (spent credit) leaves the page unrendered, as having none does.
+    const key = await this.options.key(context.tenant, "firecrawl").catch(() => undefined);
     if (!key) return undefined;
     try {
       const response = await outbound.fetch(this.options.endpoint ?? "https://api.firecrawl.dev/v2/scrape", {
