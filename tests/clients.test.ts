@@ -402,6 +402,8 @@ test("a call with no application connected fails as not run; one the application
   const f = await fixture(t, { timeout: 400 });
   const agent = await f.start({ echo: echo(() => "must not execute") });
   await agent.close();
+  // A call racing the disconnect is sent and comes back "outcome unknown", which is right; this is about one made after it.
+  await until(() => !f.sessions.sessions.get(agent.session.id)?.attached?.open, "the runtime to see the application disconnect");
   await assert.rejects(f.supervisor.request(agent.session.id, "execute", { code: 'return await tools.echo({value:"write"})' }), /No application is connected[\s\S]*did not run/);
 
   const app = await attachSilently(t, f.url, agent.session.id, agent.session.token);
