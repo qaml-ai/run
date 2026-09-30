@@ -173,3 +173,15 @@ variable "email_domain" {
   type        = string
   default     = ""
 }
+
+variable "storage_gc_enabled" {
+  description = "Collect chunks nothing refers to, and deleted volumes' objects (src/storage-gc.ts, AGENT_GC_ENABLED). Run scripts/backfill-pins.ts once before a runtime with agents from before migration 026 enables it (docs/operations/persistence.md)."
+  type        = bool
+  default     = false
+}
+
+variable "storage_gc_dry_run" {
+  description = "With storage_gc_enabled, only log what collection would delete (storage_gc_dry_run lines, AGENT_GC_DRY_RUN) and delete nothing. Turn off once the logs have been checked."
+  type        = bool
+  default     = true
+}

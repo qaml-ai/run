@@ -15,7 +15,10 @@ locals {
 
   runtime_environment = merge(var.runtime_env, local.email_environment, local.billing_environment, var.openai_apps_challenge == "" ? {} : {
     AGENT_OPENAI_APPS_CHALLENGE = var.openai_apps_challenge
-    }, {
+    }, var.storage_gc_enabled ? {
+    AGENT_GC_ENABLED = "true"
+    AGENT_GC_DRY_RUN = tostring(var.storage_gc_dry_run)
+    } : {}, {
     AGENT_PUBLIC_URL = "https://${var.hostname}"
     AGENT_STORAGE    = "s3"
     AGENT_S3_BUCKET  = aws_s3_bucket.state.id
