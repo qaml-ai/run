@@ -210,7 +210,10 @@ text, so those lines carry `safeError(error)` (`src/metrics.ts`): the error's cl
 its name, status and code, and its message's length, not the message. Only background
 work over the runtime's own tables and services (database, ECS, sweeps) logs an error's
 message. `tests/log-privacy.test.ts` scans every log call in `src/` and `shared/`
-and fails on a content field, or on a raw error message outside that list.
+and fails on a content field, or on a raw error message outside that list. An agent process's stderr is
+piped through `childStderr` (`src/child-stderr.ts`): its own JSON lines pass, and anything else (a crash's
+stack trace, a library warning) becomes one `agent_stderr` line with the error's name and class, the first
+frame's file and line, and the text's size.
 
 Schedules and channel work items are claimed with `FOR UPDATE SKIP LOCKED` and a
 claim deadline, so one node delivers each; a crashed node's claims lapse.

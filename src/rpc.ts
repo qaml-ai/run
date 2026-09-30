@@ -4,6 +4,7 @@ import { OUTBOUND_ENV } from "./outbound.ts";
 import { fileURLToPath } from "node:url";
 import type { WireMessage } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
+import { childStderr } from "./child-stderr.ts";
 
 // JSON IPC is shared by Node and Bun. Never use stdout as a protocol channel:
 // dependencies and model-generated console output may both write to it.
@@ -47,7 +48,8 @@ export class Rpc {
   }
 }
 
-export function childProcess(entry: string, cwd: string, runtime = process.execPath, detached = false): { child: ChildProcess; rpc: Rpc } {
+/** `label` names the process in its stderr lines (an agent's id). */
+export function childProcess(entry: string, cwd: string, runtime = process.execPath, detached = false, label = entry): { child: ChildProcess; rpc: Rpc } {
   const args = runtime.toLowerCase().includes("bun") ? [] : ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"];
   const child = spawn(runtime, [...args, fileURLToPath(new URL(entry, import.meta.url))], {
     cwd,
@@ -65,9 +67,13 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
       // The dimension of the metric lines an agent process writes (metrics.ts).
       ...(process.env.AGENT_SERVICE_NAME ? { AGENT_SERVICE_NAME: process.env.AGENT_SERVICE_NAME } : {}),
     },
-    stdio: ["ignore", "ignore", "inherit", "ipc"],
+    // Its stderr reaches the node's log only through childStderr: a crash's text never does.
+    stdio: ["ignore", "ignore", "pipe", "ipc"],
     serialization: "json",
   });
+  const stderr = childStderr(label);
+  child.stderr!.setEncoding("utf8");
+  child.stderr!.on("data", stderr.data).on("end", stderr.end);
   const rpc = new Rpc(message => {
     if (!child.connected) throw new Error("Process disconnected");
     child.send(message, error => { if (error) rpc.close(error.message); });

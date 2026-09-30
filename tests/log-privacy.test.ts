@@ -101,3 +101,28 @@ test("safeError keeps an error's class, name, status and code, and only the leng
   assert.equal(safeError("overloaded"), "overloaded (10 chars)");
   assert.equal(safeError(undefined), `${errorClass("undefined")} (9 chars)`);
 });
+
+test("an agent process's stderr reaches the log only through childStderr, which keeps its own lines and reduces anything else to its name, class, place and size", async () => {
+  // Every process the runtime spawns has its stderr piped, not inherited, and filtered.
+  const rpc = readFileSync("src/rpc.ts", "utf8");
+  assert.match(rpc, /stdio: \["ignore", "ignore", "pipe", "ipc"\]/);
+  assert.match(rpc, /childStderr\(/);
+  for (const file of sources) assert.doesNotMatch(readFileSync(file, "utf8"), /stdio:[^\n]*"inherit"/, `${file} lets a child's output into the log unfiltered`);
+
+  const { childStderr } = await import("../src/child-stderr.ts");
+  const lines: string[] = [];
+  const stderr = childStderr("client_x", line => lines.push(line));
+  const own = JSON.stringify({ type: "turn_metrics", agent: "client_x", Turns: 1 });
+  stderr.data(`${own}\nfile:///app/src/agent-host.ts:120\n  throw new TypeError(\`Cannot read "launch code 4321" of undefined\`);\n`);
+  stderr.data("TypeError: Cannot read properties of undefined (reading 'the secret plan for ada@example.com')\n    at render (file:///app/src/agent-host.ts:120:9)\n");
+  stderr.data("    at next (file:///app/node_modules/@earendil-works/pi-agent-core/dist/agent.js:88:3)\n(node:12) ExperimentalWarning: prompt text here\n{\"not\": \"ours\", \"content\": \"private\"}\npartial line with no end");
+  stderr.end();
+  const text = lines.join("");
+  for (const secret of ["4321", "secret plan", "ada@example.com", "prompt text", "private", "partial line"]) assert.ok(!text.includes(secret), `${secret} reached the log`);
+  assert.equal(lines[0], `${own}\n`, "the process's own lines pass as they are");
+  const reduced = lines.slice(1).map(line => JSON.parse(line));
+  assert.ok(reduced.every(line => line.type === "agent_stderr" && line.agent === "client_x"));
+  const crash = reduced.find(line => line.name === "TypeError" && line.lines === 3);
+  assert.deepEqual(crash && { at: crash.at, class: typeof crash.class, bytes: crash.bytes > 0 }, { at: "src/agent-host.ts:120", class: "string", bytes: true });
+  assert.ok(reduced.some(line => line.name === "ExperimentalWarning"));
+});

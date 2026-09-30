@@ -101,7 +101,7 @@ export class AgentSupervisor {
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
-    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true);
+    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id);
     const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript };
     this.agents.set(id, handle);
     this.starting.delete(id);
