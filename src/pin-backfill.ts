@@ -23,38 +23,52 @@ function collect(value: unknown, into: Set<string>, refs: { count: number }) {
  * pages. FileRefs made before pins existed (migration 026) have none, and storage collection would take their
  * chunks once nothing else refers to them (storage-gc.ts). Idempotent; with `dryRun` it only counts.
  */
+/**
+ * The chunks of every FileRef `agent` holds, wherever it keeps them: its header (initialMessages), every transcript
+ * record (messages a reset dropped too), its journal (runs' presented files) and its history pages. What cannot be
+ * read is passed to `onError` and counted in `unreadable`.
+ */
+export async function agentChunks(options: { db: Db; storage: Storage; journalPrefix?: string; onError?: (what: string, error: unknown) => void }, agent: { id: string; header: unknown }) {
+  const { db, storage } = options;
+  const { id, header } = agent;
+  const hashes = new Set<string>();
+  const refs = { count: 0 };
+  let unreadable = 0;
+  const readLog = async (key: string) => {
+    const log = storage.log<unknown>(key);
+    try { return await log.read(); } finally { await log.close(); }
+  };
+  const read = async (what: string, load: () => Promise<unknown>) => {
+    try { collect(await load(), hashes, refs); }
+    catch (error) { unreadable++; options.onError?.(what, error); }
+  };
+  await read("header", async () => typeof header === "string" ? JSON.parse(header) : header);
+  await read("transcript", () => readLog(AgentSupervisor.transcriptKey(id)));
+  await read("journal", () => readLog(`${options.journalPrefix ?? "client-sessions/"}${id}.journal`));
+  const { rows: pages } = await db.query("select start, count, hash from agent_history_chunks where agent = $1", [id]);
+  for (const page of pages) {
+    await read(`history ${page.start}`, async () => {
+      const data = await storage.readBlob(`sessions/${id}/history/${page.start}-${page.count}-${page.hash}`);
+      if (!data) throw new Error("history page is missing from storage");
+      return JSON.parse(Buffer.from(data).toString("utf8"));
+    });
+  }
+  return { hashes, refs: refs.count, unreadable };
+}
+
 export async function backfillPins(options: { db: Db; storage: Storage; journalPrefix?: string; dryRun?: boolean; tenant?: string; concurrency?: number; onError?: (agent: string, what: string, error: unknown) => void }) {
   const { db, storage, dryRun = false } = options;
   const journalPrefix = options.journalPrefix ?? "client-sessions/";
   const { rows: agents } = await db.query(
     "select id, tenant, header from agents where purged_at is null and ($1::text is null or tenant = $1) order by tenant, id", [options.tenant ?? null]);
   const tenants = new Map<string, TenantPins>();
-  const readLog = async (key: string) => {
-    const log = storage.log<unknown>(key);
-    try { return await log.read(); } finally { await log.close(); }
-  };
   const one = async ({ id, tenant, header }: { id: string; tenant: string; header: unknown }) => {
     const totals = tenants.get(tenant) ?? { tenant, agents: 0, refs: 0, chunks: 0, missing: 0, inserted: 0, unreadable: 0 };
     tenants.set(tenant, totals);
     totals.agents++;
-    const hashes = new Set<string>();
-    const refs = { count: 0 };
-    const read = async (what: string, load: () => Promise<unknown>) => {
-      try { collect(await load(), hashes, refs); }
-      catch (error) { totals.unreadable++; options.onError?.(id, what, error); }
-    };
-    await read("header", async () => typeof header === "string" ? JSON.parse(header) : header);
-    await read("transcript", () => readLog(AgentSupervisor.transcriptKey(id)));
-    await read("journal", () => readLog(`${journalPrefix}${id}.journal`));
-    const { rows: pages } = await db.query("select start, count, hash from agent_history_chunks where agent = $1", [id]);
-    for (const page of pages) {
-      await read(`history ${page.start}`, async () => {
-        const data = await storage.readBlob(`sessions/${id}/history/${page.start}-${page.count}-${page.hash}`);
-        if (!data) throw new Error("history page is missing from storage");
-        return JSON.parse(Buffer.from(data).toString("utf8"));
-      });
-    }
-    totals.refs += refs.count;
+    const { hashes, refs, unreadable } = await agentChunks({ db, storage, journalPrefix, onError: (what, error) => options.onError?.(id, what, error) }, { id, header });
+    totals.unreadable += unreadable;
+    totals.refs += refs;
     totals.chunks += hashes.size;
     if (!hashes.size) return;
     const wanted = [...hashes];

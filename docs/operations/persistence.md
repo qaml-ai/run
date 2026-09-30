@@ -146,7 +146,10 @@ refers to any more, so they stop being stored and billed:
   logs what it would delete (`storage_gc_dry_run`) without deleting. Pins and which
   chunks writes created are recorded either way. To roll it out: deploy with it off,
   run `scripts/backfill-pins.ts` (in the image, so it can run as a one-off task), enable
-  it with the dry run and watch the logs for a few intervals, then unset the dry run.
+  it with the dry run and watch the logs for a few intervals, check them with
+  `scripts/verify-gc.ts --logged <tenant:hash,…>` (read-only: it fails if a due candidate is
+  held by a FileRef without a pin, or a hash the dry run named is referred to at all), then
+  unset the dry run.
 - **Accepted gap.** A collector that crashes after deleting a chunk and before putting
   it back for a writer that touched it meanwhile loses that chunk. The window is one
   delete and one query long, and needs a writer storing the same bytes at that moment.
