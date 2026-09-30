@@ -56,7 +56,10 @@ hour (`credit_spend_minutes`), for the free-credit limit below. Usage entries fr
 before hourly accrual are one per flush, and stay as they are. A prepaid tenant at or below
 zero gets **402** for new runs, code executions included, with where to add credit;
 a running turn ends after the response that spent the last credit, as at the
-[monthly spend cap](persistence.md). The balance counts this node's unwritten charges
+[monthly spend cap](persistence.md). Within a turn, each `web_search` and `web_fetch`
+render on the platform's key checks credit first, so a `js_exec` loop of them stops
+there rather than at the next model request (a refused render returns the plain page).
+The balance counts this node's unwritten charges
 at once and other nodes' within about five seconds, so the overdraft is about one
 response per node running the tenant's turns.
 
