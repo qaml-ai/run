@@ -31,6 +31,13 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
     } while (token);
     return objects;
   }
+  /** Delete up to 1000 objects; one S3 could not delete fails the whole call, so whoever asked retries. */
+  async function deleteObjects(keys: string[]) {
+    if (!keys.length) return;
+    const result = await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys.map(key => ({ Key: key })), Quiet: true } }));
+    if (result.Errors?.length) throw new Error(`S3 could not delete ${result.Errors.length} of ${keys.length} objects (${result.Errors[0].Code ?? "unknown"})`);
+  }
+
   async function getText(key: string) {
     try { return await (await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }))).Body!.transformToString("utf8"); }
     catch (error) { if (missing(error)) return undefined; throw error; }
@@ -61,7 +68,7 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
       async remove(names) {
         for (let index = 0; index < names.length; index += 1000) {
           const batch = names.slice(index, index + 1000);
-          if (batch.length) await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: batch.map(name => ({ Key: directory + name })), Quiet: true } }));
+          await deleteObjects(batch.map(name => directory + name));
         }
       },
     };
@@ -90,7 +97,7 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
       const objects = await list(validKey(prefix.replace(/\/$/, "")) + "/");
       for (let index = 0; index < objects.length; index += 1000) {
         const batch = objects.slice(index, index + 1000);
-        await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: batch.map(object => ({ Key: object.key })), Quiet: true } }));
+        await deleteObjects(batch.map(object => object.key));
         for (const object of batch) options.meter?.(base ? object.key.slice(base.length + 1) : object.key, -object.size);
       }
     },

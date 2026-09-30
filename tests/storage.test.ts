@@ -127,3 +127,20 @@ for (const [name, open] of backends) {
     assert.ok(after.get(`volume:${volume}`)! > 100_000);
   });
 }
+
+test("s3 storage: a batch delete S3 answers with per-object errors fails, so the purge or deletion that asked retries", async () => {
+  const { s3Storage } = await import("../shared/s3-storage.ts");
+  const deleted: string[][] = [];
+  const client = { send: async (command: { constructor: { name: string }; input: any }) => {
+    if (command.constructor.name === "ListObjectsV2Command") return { Contents: [{ Key: "chunks/t/ab/abc", Size: 3 }, { Key: "chunks/t/cd/cde", Size: 4 }] };
+    if (command.constructor.name === "DeleteObjectsCommand") {
+      deleted.push(command.input.Delete.Objects.map((object: { Key: string }) => object.Key));
+      return deleted.length === 1 ? { Errors: [{ Key: "chunks/t/cd/cde", Code: "SlowDown" }] } : {};
+    }
+    throw new Error(`unexpected ${command.constructor.name}`);
+  } };
+  const storage = s3Storage({ bucket: "fixture", client: client as never, tail: await tail() });
+  await assert.rejects(storage.removeBlobs("chunks/t/"), /could not delete 1 of 2 objects \(SlowDown\)/);
+  await storage.removeBlobs("chunks/t/");
+  assert.deepEqual(deleted, [["chunks/t/ab/abc", "chunks/t/cd/cde"], ["chunks/t/ab/abc", "chunks/t/cd/cde"]]);
+});

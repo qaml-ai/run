@@ -5,7 +5,7 @@
 #   tenant.sh add <tenant>                      # creates an operator token (stored in Secrets Manager)
 #   tenant.sh set-key <tenant> <provider>       # reads the provider API key from stdin, e.g. anthropic
 #   tenant.sh rotate-token <tenant>             # replaces the operator token; the old one stops working
-#   tenant.sh remove <tenant>                   # removes the tenant (its agents stay on disk, unreachable)
+#   tenant.sh remove <tenant>                   # removes the tenant (its agents stay on disk, unreachable: delete them through the API first)
 #   tenant.sh link-github <tenant> <login>      # console sign-in with that GitHub login uses this tenant
 #   tenant.sh set-limit <tenant> <n|default>    # hosted agents per task for this tenant (default: AGENT_MAX_AGENTS_PER_TENANT)
 #   tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month, e.g. 250 or 99.50 (default: none, unlimited)
