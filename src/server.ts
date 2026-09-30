@@ -52,7 +52,7 @@ import { errorCode, errorStatus, HttpError, readJson, readText } from "./http.ts
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
-import { recordCreate, Steps, webhookBacklogLine } from "./metrics.ts";
+import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
@@ -232,7 +232,7 @@ async function createAgent(tenant: string, params: any, key?: string) {
     recordCreate(steps, { tenant, ...made });
     return result;
   } catch (error) {
-    recordCreate(steps, { tenant, ...made, error: errorText(error) });
+    recordCreate(steps, { tenant, ...made, error: safeError(error) });
     throw error;
   }
 }

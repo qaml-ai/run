@@ -3,6 +3,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
+import { safeError } from "./metrics.ts";
 import { HttpError } from "./http.ts";
 import { MAX_TIMEOUT_MS, type McpConnections, type McpServer } from "./mcp.ts";
 import type { Outbound } from "./outbound.ts";
@@ -354,7 +355,7 @@ export class ToolSources {
       try {
         return { tools: this.definitions(spec, await withTimeout(this.mcp.tools(context.tenant, this.endpoint(context, spec)), LIST_TIMEOUT_MS)), at: Date.now() };
       } catch (error) {
-        console.error(JSON.stringify({ type: "mcp_tools_unavailable", tenant: context.tenant, agent: context.agent, server: spec.name, error: errorText(error) }));
+        console.error(JSON.stringify({ type: "mcp_tools_unavailable", tenant: context.tenant, agent: context.agent, server: spec.name, error: safeError(error) }));
         return { error: errorText(error), at: Date.now() };
       }
     };

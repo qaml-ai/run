@@ -8,6 +8,7 @@ import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.t
 import { HttpError } from "./http.ts";
 import { deleteTail } from "./log-tail.ts";
 import { errorText, type ToolDefinition } from "./protocol.ts";
+import { safeError } from "./metrics.ts";
 import { runVolumeTool, volumeToolDefinitions, type ToolContext } from "./volume-tools.ts";
 import { declaredType, guessContentType, sniffContentType, validContentType } from "./files.ts";
 
@@ -694,7 +695,7 @@ export class VolumeService {
     volume.notifying ??= setTimeout(() => {
       volume.notifying = undefined;
       const changes = volume.pending.splice(0);
-      void this.notify(volume, changes).catch(error => console.error(JSON.stringify({ type: "volume_notify_failed", volume: volume.header.id, error: errorText(error) })));
+      void this.notify(volume, changes).catch(error => console.error(JSON.stringify({ type: "volume_notify_failed", volume: volume.header.id, error: safeError(error) })));
     }, NOTIFY_DELAY_MS);
   }
 

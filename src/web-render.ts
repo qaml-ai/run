@@ -1,6 +1,7 @@
 import type { Outbound } from "./outbound.ts";
 import type { UsageRecord } from "./client-sessions.ts";
 import { MICROS } from "./pricing.ts";
+import { safeError } from "./metrics.ts";
 
 /**
  * web_fetch's fallback for pages that are only a JavaScript shell: Firecrawl's scrape endpoint
@@ -65,7 +66,7 @@ export class WebRender {
       return { ...(typeof title === "string" && title ? { title } : {}), markdown };
     } catch (error) {
       if (signal.aborted) throw error;
-      console.error(JSON.stringify({ type: "web_render_failed", tenant: context.tenant, agent: context.agent, error: String((error as Error)?.message ?? error).slice(0, 200) }));
+      console.error(JSON.stringify({ type: "web_render_failed", tenant: context.tenant, agent: context.agent, error: safeError(error) }));
       return undefined;
     }
   }

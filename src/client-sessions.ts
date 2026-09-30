@@ -38,7 +38,7 @@ import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
-import { recordStart, recordWatchRefused, Steps } from "./metrics.ts";
+import { recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -579,7 +579,7 @@ export class ClientSessions {
       await session.started;
       await enqueueEvents(this.db, records.map(record => this.runEvent(session, record, usage?.get(record.id))));
     } catch (error) {
-      console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: errorText(error) }));
+      console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: safeError(error) }));
       return;
     }
     if (this.sessions.get(session.header.id) !== session || session.fault) return;
@@ -1102,7 +1102,7 @@ export class ClientSessions {
       session.lastActive = Date.now();
       recordStart(steps, { tenant: session.header.tenant, agent: id });
       return result;
-    })().catch(error => { recordStart(steps, { tenant: session.header.tenant, agent: id, error: errorText(error) }); throw error; })
+    })().catch(error => { recordStart(steps, { tenant: session.header.tenant, agent: id, error: safeError(error) }); throw error; })
       .finally(() => { session.starting = undefined; this.supervisor.unreserve(id); });
   }
 
@@ -1547,7 +1547,7 @@ export class ClientSessions {
     // servers, and a prompt sent meanwhile waits on the same start. A start that fails is only logged: the agent exists,
     // and its next request starts it again, answering with the error if it recurs.
     if (created) void this.ensureStarted(session).catch(error => {
-      if (!session.header.revoked) console.error(JSON.stringify({ type: "agent_start_failed", agent: id, tenant, error: errorText(error) }));
+      if (!session.header.revoked) console.error(JSON.stringify({ type: "agent_start_failed", agent: id, tenant, error: safeError(error) }));
     });
     return { id, token, expiresAt: session.header.expiresAt, ...changed };
   }
@@ -1707,7 +1707,7 @@ export class ClientSessions {
         resume_after = $2 + least($3 * power(2, least(resume_failures, 30))::bigint, $4)
       where id = $1 and (resume_after is null or resume_after <= $2) returning resume_failures`,
       [id, now, this.sweepMs, MAX_RESUME_DELAY_MS]).catch(() => ({ rows: [] as { resume_failures: number }[] }));
-    if (rows[0]) console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, failures: rows[0].resume_failures, error: errorText(error) }));
+    if (rows[0]) console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, failures: rows[0].resume_failures, error: safeError(error) }));
   }
   private get sweepMs() { return this.options.orphanSweepMs || 30_000; }
 
@@ -2456,7 +2456,7 @@ export class ClientSessions {
         this.hook("runStarted", session, record);
         if (session.announcing) {
           session.started = enqueueEvents(this.db, [this.runEvent(session, record)])
-            .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: errorText(error) })));
+            .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: safeError(error) })));
         }
         if (record.method !== "execute") session.turn = { requestId: record.id, messages: [], count: 0, bytes: 0 };
       }
@@ -2608,7 +2608,7 @@ export class ClientSessions {
 
   private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
     try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, record); }
-    catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: errorText(error) })); }
+    catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: safeError(error) })); }
   }
 
   /**
@@ -2625,7 +2625,7 @@ export class ClientSessions {
   private searchTools(session: Session, query: SearchQuery) {
     return searchTools(session.searchable ?? [], query, {
       rerankers: this.options.rerankers ?? [],
-      onError: (error, stage) => console.error(JSON.stringify({ type: "tool_search_rerank_failed", reranker: stage.kind, agent: session.header.id, error: errorText(error) })),
+      onError: (error, stage) => console.error(JSON.stringify({ type: "tool_search_rerank_failed", reranker: stage.kind, agent: session.header.id, error: safeError(error) })),
       onRanked: ({ cost }) => this.toolSearchUsage(session, cost, 1),
     });
   }

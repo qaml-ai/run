@@ -4,9 +4,10 @@
  * needs no API calls or IAM. One line per turn (outcome, duration, time to first token,
  * model and tool counts), per failed model response, per webhook delivery and per batch
  * of run and usage events. Dimensions are few and bounded: outcome, error class,
- * provider, model, tenant, webhook kind. Nothing a user wrote goes into a line.
+ * provider, model, tenant, webhook kind. Nothing a user wrote goes into a line: errors go as `safeError` has them.
  */
 import type { WebhookEvent } from "./webhooks.ts";
+import { errorText } from "./protocol.ts";
 
 type Unit = "Count" | "Milliseconds" | "None";
 type Value = number | [number, Unit];
@@ -66,6 +67,24 @@ export function errorClass(message: string | null | undefined): string {
   return CLASSES.find(([, pattern]) => pattern.test(message))?.[0] ?? "other";
 }
 
+/**
+ * An error as a log line may carry it: its class, its name, status and code when it has them, and its message's
+ * length, never the message. Errors from model providers, channels, tool servers and requests can echo what a
+ * user wrote (a prompt, a tool call's arguments, an address). Logs keep ids and sizes; tests/log-privacy.test.ts
+ * holds the lines that log a raw message to this.
+ */
+export function safeError(error: unknown): string {
+  const message = typeof error === "string" ? error : errorText(error);
+  const { status, code } = (typeof error === "object" && error ? error : {}) as { status?: unknown; code?: unknown };
+  const name = error instanceof Error ? error.name === "Error" ? error.constructor.name : error.name : undefined;
+  const facts = [
+    name && /^\w{1,40}$/.test(name) ? name : undefined,
+    typeof status === "number" && Number.isInteger(status) ? String(status) : undefined,
+    typeof code === "number" || typeof code === "string" && /^[\w.-]{1,40}$/.test(code) ? String(code) : undefined,
+  ].filter(Boolean);
+  return `${errorClass(message)}${facts.length ? ` ${facts.join(" ")}` : ""} (${message.length} chars)`;
+}
+
 /** The methods that are a turn of the model (not code executions, configuration or loads). */
 const TURN_METHODS = new Set(["prompt", "continue", "resume"]);
 
@@ -91,7 +110,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
           dimensions: { Provider: provider, Model: id, ErrorClass: errorClass(errorMessage || "error") },
           rollups: [[], ["Provider", "Model"], ["ErrorClass"]],
           metrics: { ModelErrors: 1 },
-          properties: { error: errorMessage.slice(0, 300) },
+          properties: { error: safeError(errorMessage) },
         });
       }
     } else if (event.type === "auto_retry_start") {

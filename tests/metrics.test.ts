@@ -60,7 +60,7 @@ test("a turn's line: its outcome, duration, time to first token, model responses
       now += 800;
       turns.event({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta" } });
       turns.event({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta" } });
-      turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "openai/gpt-6-luna", stopReason: "error", errorMessage: "429 rate limited" } });
+      turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "openai/gpt-6-luna", stopReason: "error", errorMessage: "429 rate limited: my secret memo" } });
       turns.event({ type: "auto_retry_start", attempt: 1 });
       turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "openai/gpt-6-luna", stopReason: "toolUse" } });
       turns.event({ type: "tool_execution_end", toolName: "js_exec", isError: false });
@@ -78,7 +78,7 @@ test("a turn's line: its outcome, duration, time to first token, model responses
   assert.equal(modelError.Model, "openai/gpt-6-luna");
   assert.equal(modelError.ErrorClass, "rate_limit");
   assert.equal(modelError.ModelErrors, 1);
-  assert.equal(modelError.error, "429 rate limited");
+  assert.equal(modelError.error, "rate_limit (32 chars)", "a provider's error can echo the prompt: only its class and length are logged");
 
   const toolError = lines.find(line => line.type === "tool_failed");
   assert.equal(toolError.toolName, "camel__query");

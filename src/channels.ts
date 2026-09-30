@@ -4,6 +4,7 @@ import type { Accounts, Sealed } from "./accounts.ts";
 import type { AgentRef, SessionHooks } from "./client-sessions.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
+import { safeError } from "./metrics.ts";
 import { valueServer } from "./tool-servers.ts";
 import type { Definitions } from "./definitions.ts";
 import { HttpError, readText } from "./http.ts";
@@ -366,7 +367,7 @@ export class Channels {
   async remove(tenant: string, id: string) {
     const channel = await this.owned(tenant, id);
     try { await this.provider(channel.type).teardown(this.secrets(channel).credentials); }
-    catch (error) { console.error(JSON.stringify({ type: "channel_teardown_failed", channel: id, error: errorText(error) })); }
+    catch (error) { console.error(JSON.stringify({ type: "channel_teardown_failed", channel: id, error: safeError(error) })); }
     await this.db.query("delete from channels where id = $1 and tenant = $2", [id, tenant]);
     // A definition made for the channel goes with it, unless another channel took it up.
     if ((await this.options.definitions.read(tenant, channel.definition).catch(() => undefined))?.spec.channel === id) {
@@ -527,7 +528,7 @@ export class Channels {
         },
         // Kept claimed, so no other node tries the same credentials; this node retries after a pause.
         failed: error => {
-          console.error(JSON.stringify({ type: "channel_gateway_failed", channel: channel.id, error: errorText(error) }));
+          console.error(JSON.stringify({ type: "channel_gateway_failed", channel: channel.id, error: safeError(error) }));
           this.gatewayRetry.set(channel.id, Date.now() + GATEWAY_RETRY_MS);
           if (current()) this.closeGateway(channel.id, false);
         },
@@ -605,7 +606,7 @@ export class Channels {
 
   /** Release a claimed item after an unexpected error, to be retried later. */
   private async failed(item: Item, error: unknown) {
-    console.error(JSON.stringify({ type: "channel_item_failed", item: item.id, state: item.state, error: errorText(error) }));
+    console.error(JSON.stringify({ type: "channel_item_failed", item: item.id, state: item.state, error: safeError(error) }));
     const row = (await this.db.query("select item, due, revision, claimed_by from channel_items where id = $1", [item.id]).catch(() => undefined))?.rows[0];
     if (!row || row.claimed_by !== this.options.node) return;
     const current = held(row);
@@ -646,7 +647,7 @@ export class Channels {
     // Channels run unattended: a turn goes ahead without the application, whose calls fail as not connected.
     try { await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: { ...prompt, allowDisconnected: true } }); }
     catch (error) {
-      console.error(JSON.stringify({ type: "channel_submit_failed", item: item.id, error: errorText(error) }));
+      console.error(JSON.stringify({ type: "channel_submit_failed", item: item.id, error: safeError(error) }));
       await this.save(next, { due: Date.now() + this.retryDelay(0) }).catch(() => {});
     }
   }
@@ -680,7 +681,7 @@ export class Channels {
         files.push({ path: (await this.options.files.upload(agent, channel.tenant, requestId, name, counted(), file.contentType ?? contentType)).path });
         total += size;
       } catch (error) {
-        console.error(JSON.stringify({ type: "channel_attachment_failed", channel: channel.id, request: requestId, error: errorText(error) }));
+        console.error(JSON.stringify({ type: "channel_attachment_failed", channel: channel.id, request: requestId, error: safeError(error) }));
         notes.push(size > limit ? `(file ${file.name} too large, not attached)` : `(file ${file.name} could not be downloaded, not attached)`);
       }
     }
@@ -748,7 +749,7 @@ export class Channels {
       catch (error) {
         const attempts = (current.item.attempts ?? 0) + 1;
         const permanent = error instanceof SendError && error.permanent;
-        console.error(JSON.stringify({ type: "channel_send_failed", item: current.item.id, attempts, permanent, error: errorText(error) }));
+        console.error(JSON.stringify({ type: "channel_send_failed", item: current.item.id, attempts, permanent, error: safeError(error) }));
         if (permanent || attempts >= MAX_ATTEMPTS) return this.finish(current);
         const delay = Math.max(this.retryDelay(attempts - 1), error instanceof SendError ? error.retryAfterMs ?? 0 : 0);
         await this.save(current, { attempts, due: Date.now() + delay }, false);
@@ -864,7 +865,7 @@ export class Channels {
     runEnded: (agent, record) => {
       this.stopTyping(agent.id);
       if (record.method !== "prompt" && record.method !== "resume") return;
-      void this.settle(agent, record).catch(error => console.error(JSON.stringify({ type: "channel_reply_failed", agent: agent.id, request: record.id, error: errorText(error) })));
+      void this.settle(agent, record).catch(error => console.error(JSON.stringify({ type: "channel_reply_failed", agent: agent.id, request: record.id, error: safeError(error) })));
     },
     // A channel's agents get send_message, for updates before the final reply.
     server: async agent => {

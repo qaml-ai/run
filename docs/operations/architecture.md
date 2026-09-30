@@ -199,5 +199,15 @@ only for tenants with an endpoint for them. An agent in its own process
 (`AGENT_HOSTING=process`) writes its lines to stderr. Alarms and the launch dashboard
 on them are in `infra/terraform/observability.tf`.
 
+**What logs hold.** Log lines carry ids (tenant, agent, request, channel, item),
+counts, sizes and durations, never what a user wrote: no prompt, transcript, tool
+arguments or results, file names or contents, or email addresses, subjects or bodies.
+An error from a model provider, a channel, a tool server or a request can echo such
+text, so those lines carry `safeError(error)` (`src/metrics.ts`): the error's class,
+its name, status and code, and its message's length, not the message. Only background
+work over the runtime's own tables and services (database, ECS, sweeps) logs an error's
+message. `tests/log-privacy.test.ts` scans every log call in `src/` and `shared/`
+and fails on a content field, or on a raw error message outside that list.
+
 Schedules and channel work items are claimed with `FOR UPDATE SKIP LOCKED` and a
 claim deadline, so one node delivers each; a crashed node's claims lapse.

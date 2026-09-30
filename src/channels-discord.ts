@@ -1,4 +1,5 @@
 import { HttpError } from "./http.ts";
+import { safeError } from "./metrics.ts";
 import { fetchFile, SendError, type ChannelProvider, type Gateway, type GatewayHandlers, type Inbound } from "./channels.ts";
 
 /** Discord's attachment limit in servers without boosts (and DMs without Nitro): larger files are sent as a link. */
@@ -175,7 +176,7 @@ export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number 
               }
             });
             if (inbound) { accepted++; log("message", { messageId: inbound.messageId, conversationId: inbound.conversationId, sequence }); }
-            if (inbound) void handlers.message(inbound).catch(error => log("message_failed", { error: error instanceof Error ? error.message : String(error) }));
+            if (inbound) void handlers.message(inbound).catch(error => log("message_failed", { error: safeError(error) }));
           }
         }
       };

@@ -5,6 +5,7 @@ import type { Db } from "./db.ts";
 import { HttpError, readText } from "./http.ts";
 import { readableText } from "./html-text.ts";
 import { errorText } from "./protocol.ts";
+import { safeError } from "./metrics.ts";
 import { SendError, type Channel, type ChannelProvider, type Channels, type ChannelSettings, type InboundFile, type Sender } from "./channels.ts";
 
 /**
@@ -406,7 +407,7 @@ export function emailReceiver(channels: Channels, options: EmailOptions) {
     try { notification = JSON.parse(message.Message!); } catch { return c.body(null, 200); }
     try { await receive(notification); }
     catch (error) {
-      console.error(JSON.stringify({ type: "email_inbound_failed", ses: notification.mail?.messageId, error: errorText(error) }));
+      console.error(JSON.stringify({ type: "email_inbound_failed", ses: notification.mail?.messageId, error: safeError(error) }));
       return c.body(null, 500);
     }
     return c.body(null, 200);
