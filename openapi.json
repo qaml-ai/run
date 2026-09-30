@@ -2939,6 +2939,10 @@
             "type": "integer",
             "description": "Credit left; at zero or below, runs are refused with 402, in micro-USD (1 USD = 1000000)"
           },
+          "purchased": {
+            "type": "integer",
+            "description": "Credit bought over the account's life, net of refunds, in micro-USD (1 USD = 1000000)"
+          },
           "freeCredit": {
             "type": "boolean",
             "description": "Whether the tenant has only ever had free credit, which comes with tighter limits"
@@ -3101,6 +3105,7 @@
         "required": [
           "billing",
           "balance",
+          "purchased",
           "freeCredit",
           "checkout",
           "startingCredit",

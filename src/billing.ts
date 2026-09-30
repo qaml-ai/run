@@ -312,7 +312,7 @@ export class Billing {
     const thisMonth = Object.fromEntries(LEDGER_KINDS.map(kind => [kind, Number(rows.find(row => row.kind === kind)?.amount ?? 0)])) as Record<LedgerKind, number>;
     const pricing = this.pricing;
     return {
-      billing: mode, balance, freeCredit: mode === "prepaid" && purchased <= 0, checkout: !!this.options.stripe,
+      billing: mode, balance, purchased, freeCredit: mode === "prepaid" && purchased <= 0, checkout: !!this.options.stripe,
       startingCredit: mode === "prepaid" ? await this.startingCredit(tenant) : { status: "not_applicable" as const, amount: 0 },
       month: { since, ...thisMonth },
       recent: (await this.ledger(tenant, { limit: 10 })).entries,

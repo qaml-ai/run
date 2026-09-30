@@ -5,7 +5,34 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyButton, ErrorAlert, PageHeader } from "@/components/common";
-import { api, type Me } from "@/lib/api";
+import { api, formatMicros, useApi, type Billing, type Me } from "@/lib/api";
+
+/**
+ * The credit a deletion forfeits, split as it was paid for: the balance is one pool, and free credit
+ * (grants) counts as spent first, so what is left is purchased credit up to what was bought.
+ */
+export function forfeited(billing: Pick<Billing, "balance" | "purchased">) {
+  const balance = Math.max(0, billing.balance);
+  const purchased = Math.min(balance, Math.max(0, billing.purchased));
+  return { purchased, free: balance - purchased };
+}
+
+function Forfeited() {
+  const billing = useApi<Billing>("/v1/billing");
+  const credit = billing.data?.billing === "prepaid" ? forfeited(billing.data) : undefined;
+  return (
+    <div className="border-destructive/40 border p-3 text-sm">
+      {billing.loading ? <p className="text-muted-foreground">Checking your credit…</p> : credit && credit.purchased + credit.free > 0 ? <>
+        <p className="font-medium">Your remaining credit is forfeited, and is not refunded:</p>
+        <ul className="mt-1 font-mono text-xs">
+          <li>Purchased credit: {formatMicros(credit.purchased)}</li>
+          <li>Free credit: {formatMicros(credit.free)}</li>
+        </ul>
+      </> : <p>You have no remaining credit to forfeit.</p>}
+      <p className="text-muted-foreground mt-2 text-xs">Questions about your credit? Write to <a className="underline" href="mailto:support@camelai.com">support@camelai.com</a> before deleting.</p>
+    </div>
+  );
+}
 
 /** What the person types to confirm: the same for every account, since sign-in ids (`u-…`) mean nothing to people. */
 export const DELETE_PHRASE = "delete my account";
@@ -32,9 +59,10 @@ function DeleteAccountDialog({ tenant, onClose }: { tenant: string; onClose: () 
             <DialogTitle>Delete your account?</DialogTitle>
             <DialogDescription>
               This deletes every agent and its history, your volumes and files, definitions, channels, webhooks, API tokens,
-              connected apps and saved keys, and your saved payment cards. It cannot be undone. Remaining credit is forfeited.
+              connected apps and saved keys, and your saved payment cards. It cannot be undone.
             </DialogDescription>
           </DialogHeader>
+          <Forfeited />
           <ErrorAlert error={error} />
           <div className="flex flex-col gap-2">
             <Label htmlFor="delete-confirm">Type <span className="font-mono">{DELETE_PHRASE}</span> to confirm</Label>

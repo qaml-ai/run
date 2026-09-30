@@ -24,7 +24,8 @@ ZIP64 only when it needs it (over 65,535 files or 4 GiB). A platform operator ex
 ## Deletion
 
 A signed-in person deletes their account from the console (**Account → Delete account**, typing
-`delete my account`), which calls `DELETE /v1/account` with `{"confirm": "<tenant id>"}`. Only a
+`delete my account`; the dialog shows the purchased and free credit the deletion forfeits, counting
+free credit as spent first, and points to support@camelai.com), which calls `DELETE /v1/account` with `{"confirm": "<tenant id>"}`. Only a
 console session can: an API or OAuth token cannot. A platform operator (an operator token of a tenant
 in `AGENT_BILLING_ADMINS`) deletes any tenant with `DELETE /v1/tenants/{id}` and follows it with
 `GET /v1/tenants/{id}/deletion`. Admin tenants, from the tenants file, are refused (403): remove them

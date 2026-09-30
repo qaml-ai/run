@@ -613,6 +613,7 @@ export const Ledger = z.object({
 export const Billing = z.object({
   billing: z.enum(["prepaid", "none"]).openapi({ description: "prepaid: runs are paid from credit; none: not billed by the runtime" }),
   balance: micros("Credit left; at zero or below, runs are refused with 402"),
+  purchased: micros("Credit bought over the account's life, net of refunds"),
   freeCredit: z.boolean().openapi({ description: "Whether the tenant has only ever had free credit, which comes with tighter limits" }),
   checkout: z.boolean().openapi({ description: "Whether credit can be bought here (POST /v1/billing/checkout)" }),
   startingCredit: z.object({
