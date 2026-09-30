@@ -89,12 +89,14 @@ test("a tool that returns nothing succeeds with null; its context has a stable i
 
 test("a slow onEvent never holds up the agent's tool calls", async t => {
   const { make } = await setup(t, (body, index) => index < 3 ? toolCall("echo", { value: `v${index}` }, `call_${index}`) : { role: "assistant", content: "Done." }, {});
-  let handled = 0;
+  let handled = 0, done = false;
   const agent = await make({
     tools: { echo: echo(({ value }) => value) },
-    // Far slower than the runtime's 15 s tool timeout, in all.
-    onEvent: async () => { await sleep(1000); handled++; },
+    // Far slower than the runtime's 15 s tool timeout, in all. Once the test is done, the backlog is let go:
+    // a second each for the rest kept the file's process alive for half a minute after its last test.
+    onEvent: async () => { if (done) return; await sleep(1000); handled++; },
   });
+  t.after(() => { done = true; });
   const started = Date.now();
   const run = await agent.run("Echo three times");
   assert.equal(run.text, "Done.");
