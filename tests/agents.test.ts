@@ -195,6 +195,29 @@ test("the same create sent twice at once makes one agent, and the same prompt tw
   assert.equal(r.model.bodies.length, 1, "one turn, one model call");
 });
 
+test("a create can carry the first prompt: sent once per requestId, a refused one leaves the agent made, a malformed one makes nothing", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const create = (prompt: unknown, key = "thread_2") => r.call("/v1/agents", { body: { name: "thread", ttlSeconds: null, prompt }, headers: { "Idempotency-Key": key } });
+  const made = await create({ text: "hi", requestId: "send_1", metadata: { source: "web" } });
+  assert.equal(made.status, 201, made.text);
+  assert.deepEqual([made.json.prompt.id, made.json.prompt.method, made.json.prompt.metadata], ["send_1", "prompt", { source: "web" }]);
+  const again = await create({ text: "hi", requestId: "send_1", metadata: { source: "web" } });
+  assert.deepEqual([again.status, again.json.id, again.json.prompt.id], [201, made.json.id, "send_1"]);
+  await until(async () => (await r.call(`/v1/agents/${made.json.id}/requests/send_1`)).json.state === "completed", "the turn to end");
+  assert.equal(r.model.bodies.length, 1, "a retried create sends its prompt once");
+
+  const refused = await create({ text: "hi", requestId: "send_2", files: [{ path: "/workspace/missing.txt" }] }, "thread_3");
+  assert.equal(refused.status, 201, refused.text);
+  assert.deepEqual(Object.keys(refused.json.prompt), ["error"]);
+  assert.equal(refused.json.prompt.error.status, 400);
+  assert.equal(typeof refused.json.prompt.error.code, "string");
+  assert.equal((await r.call(`/v1/agents/${refused.json.id}`)).status, 200, "the agent was made");
+
+  const malformed = await create({ requestId: "send_3" }, "thread_4");
+  assert.equal(malformed.status, 400);
+  assert.equal((await r.call("/v1/agents")).json.length, 2, "nothing made for a malformed prompt");
+});
+
 test("one process serves an agent's tools at a time; others may still run it, and takeover replaces the one serving", async t => {
   const { r } = await setup(t, () => ({ role: "assistant", content: "ok" }));
   const one = new Agents({ url: r.base, apiKey: OPERATOR }), two = new Agents({ url: r.base, apiKey: OPERATOR }), three = new Agents({ url: r.base, apiKey: OPERATOR });

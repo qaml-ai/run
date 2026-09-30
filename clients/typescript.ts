@@ -344,6 +344,11 @@ export interface CreateAgentOptions extends AgentOptions {
   mounts?: Mount[];
   /** Tools the runtime answers itself, for an agent without a definition (one made from a definition has its definition's). */
   builtins?: Builtin[];
+  /**
+   * A first prompt, sent in the same call once the agent is made (upsertAgent returns its request, or why it was refused).
+   * Give it a `requestId`: a retried call with the same key and requestId sends it once.
+   */
+  prompt?: { text: string; requestId?: string; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; whileRunning?: "queue" | "steer"; allowDisconnected?: boolean; files?: ({ path: string } | { name?: string; data: string; contentType?: string })[] };
 }
 /** A tool the runtime answers itself: web_fetch, web_search, schedule (wake-ups) or ask_user (questions, waiting for the answer). */
 export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user";
@@ -624,7 +629,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "prompt"] as const;
   return Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]]));
 }
 
@@ -637,14 +642,14 @@ export class AgentRuntime {
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;
    * connect with `connectAgent`. Keyed agents live until they are deleted.
    */
-  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; reconfigured?: { id: string } }> {
+  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; reconfigured?: { id: string }; prompt?: { id: string; state: "running" | "completed"; [field: string]: unknown } | { error: { status: number; code: string; message: string } } }> {
     const apiKey = this.options.apiKey;
     if (!apiKey) throw new AgentError("Set apiKey to provision an agent");
     if (!AGENT_KEY.test(key)) throw new AgentError(`An agent's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
     const server = options.mcp ?? toolServer(options.tools ?? {});
     // The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
     const answer = await this.transport.json("/v1/agents", apiKey, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options) }, true, { "Idempotency-Key": key });
-    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, ...(answer.reconfigured ? { reconfigured: answer.reconfigured } : {}) };
+    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, ...(answer.reconfigured ? { reconfigured: answer.reconfigured } : {}), ...(answer.prompt ? { prompt: answer.prompt } : {}) };
   }
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
     const key = this.options.apiKey;

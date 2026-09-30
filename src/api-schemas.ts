@@ -188,6 +188,25 @@ export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeade
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
 const Builtin = z.enum(["web_fetch", "web_search", "schedule", "ask_user"]).openapi("Builtin");
+export const PromptInput = z.object({
+  text: z.string({ error: SEND_TEXT }).refine(text => !!text.trim(), SEND_TEXT),
+  actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
+  from: z.strictObject({
+    id: z.string().openapi({ description: "The sender's id in your app; the model may rely on it" }),
+    name: z.string().optional().openapi({ description: "Display name, chosen by the sender" }),
+    username: z.string().optional().openapi({ description: "Handle, chosen by the sender" }),
+  }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
+  requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble" }),
+  allowDisconnected: z.boolean().optional().openapi({ description: "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected" }),
+  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step, and this request ends with that turn (steeredInto names it); if the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
+  spendLimit: SpendLimitInput.optional().openapi({ description: "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too" }),
+  metadata: z.record(z.string(), z.string({ error: "metadata values must be strings" }), { error: "metadata must be an object of string values" }).optional().openapi({ description: "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model", example: { source: "web", clientMessageId: "m_123" } }),
+  files: z.array(z.union([
+    z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }) }),
+    z.strictObject({ name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a message's inline files" }), contentType: z.string().optional() }),
+  ])).optional().openapi({ description: "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them" }),
+}, { error: SEND_TEXT }).openapi("PromptInput");
+
 export const AgentInput = z.object({
   definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
   name: z.string().optional(),
@@ -206,13 +225,9 @@ export const AgentInput = z.object({
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
   spendLimit: SpendLimitInput.optional(),
   modelHeaders: ModelHeaders.optional(),
+  prompt: PromptInput.optional().openapi({ description: "A first prompt, as POST /v1/agents/{id}/prompt takes it, sent once the agent is made: it runs as soon as the agent has started, so a new conversation needs one call. Give it a requestId: a retry of the create (same Idempotency-Key) with the same requestId makes no second agent and sends no second prompt" }),
 }).openapi("AgentInput");
 
-export const AgentCreated = z.looseObject({
-  id: z.string(),
-  token: z.string().openapi({ description: "The agent's scoped credential for /clients routes" }),
-  expiresAt: z.number().nullable(),
-}).openapi("AgentCreated");
 
 export const AgentSummary = z.object({
   id: z.string(),
@@ -245,6 +260,13 @@ export const RequestRecord = z.object({
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
 }).openapi("RequestRecord");
+export const AgentCreated = z.looseObject({
+  id: z.string(),
+  token: z.string().openapi({ description: "The agent's scoped credential for /clients routes" }),
+  expiresAt: z.number().nullable(),
+  prompt: z.union([RequestRecord, z.object({ error: z.object({ status: z.number(), code: z.string(), message: z.string() }) })]).optional()
+    .openapi({ description: "The first prompt's request, when one was given: accepted, or refused (spend limit, capacity, model) with why, the agent made regardless; send it again with POST /v1/agents/{id}/prompt" }),
+}).openapi("AgentCreated");
 
 const Sender = z.strictObject({ id: z.string(), name: z.string().optional(), username: z.string().optional() });
 export const Input = z.object({
@@ -336,24 +358,6 @@ export const HistoryPage = z.object({
   split: z.literal(true).optional().openapi({ description: "One turn alone was larger than a page (about 4 MB), so this page starts inside it" }),
 }).openapi("HistoryPage");
 
-export const PromptInput = z.object({
-  text: z.string({ error: SEND_TEXT }).refine(text => !!text.trim(), SEND_TEXT),
-  actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
-  from: z.strictObject({
-    id: z.string().openapi({ description: "The sender's id in your app; the model may rely on it" }),
-    name: z.string().optional().openapi({ description: "Display name, chosen by the sender" }),
-    username: z.string().optional().openapi({ description: "Handle, chosen by the sender" }),
-  }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
-  requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble" }),
-  allowDisconnected: z.boolean().optional().openapi({ description: "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected" }),
-  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step, and this request ends with that turn (steeredInto names it); if the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
-  spendLimit: SpendLimitInput.optional().openapi({ description: "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too" }),
-  metadata: z.record(z.string(), z.string({ error: "metadata values must be strings" }), { error: "metadata must be an object of string values" }).optional().openapi({ description: "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model", example: { source: "web", clientMessageId: "m_123" } }),
-  files: z.array(z.union([
-    z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }) }),
-    z.strictObject({ name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a message's inline files" }), contentType: z.string().optional() }),
-  ])).optional().openapi({ description: "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them" }),
-}, { error: SEND_TEXT }).openapi("PromptInput");
 export const Upload = z.object({
   path: z.string().openapi({ description: "Where the agent sees the file: attach it as {path}" }),
   version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(), contentType: z.string(),

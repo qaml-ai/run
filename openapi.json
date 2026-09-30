@@ -1393,6 +1393,41 @@
               "number",
               "null"
             ]
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequestRecord"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "error": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "number"
+                      },
+                      "code": {
+                        "type": "string"
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "code",
+                      "message"
+                    ]
+                  }
+                },
+                "required": [
+                  "error"
+                ]
+              }
+            ],
+            "description": "The first prompt's request, when one was given: accepted, or refused (spend limit, capacity, model) with why, the agent made regardless; send it again with POST /v1/agents/{id}/prompt"
           }
         },
         "required": [
@@ -1401,6 +1436,102 @@
           "expiresAt"
         ],
         "additionalProperties": {}
+      },
+      "RequestRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "prompt",
+              "execute",
+              "status",
+              "abort",
+              "continue",
+              "steer",
+              "configure",
+              "resume"
+            ],
+            "description": "resume: the runtime continuing a turn that waited on human input, once its inputs settled"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "began": {
+            "type": "number"
+          },
+          "endedAt": {
+            "type": "number"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "suspension": {
+            "type": "string",
+            "description": "resume: the request whose turn waited on human input"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The metadata sent with the message"
+          },
+          "steeredInto": {
+            "type": "string",
+            "description": "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "error": {
+            "type": "string",
+            "description": "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded"
+          },
+          "stopped": {
+            "type": "string",
+            "enum": [
+              "input_required",
+              "spend_limit"
+            ],
+            "description": "Why an ended run stopped early (outcome.result.stopped)"
+          }
+        },
+        "required": [
+          "id",
+          "method",
+          "state",
+          "fingerprint"
+        ]
+      },
+      "Outcome": {
+        "type": "object",
+        "properties": {
+          "result": {},
+          "error": {
+            "type": "string"
+          },
+          "uncertain": {
+            "type": "boolean"
+          }
+        },
+        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs"
       },
       "AgentInput": {
         "type": "object",
@@ -1489,6 +1620,9 @@
           },
           "modelHeaders": {
             "$ref": "#/components/schemas/ModelHeaders"
+          },
+          "prompt": {
+            "$ref": "#/components/schemas/PromptInput"
           }
         }
       },
@@ -1554,6 +1688,121 @@
           "type": "string"
         },
         "description": "Non-secret headers sent on each of the agent's model calls, after a key scope entry's, e.g. cf-aig-metadata. At most 20 and 8 KB; never authorization, x-api-key, x-goog-api-key, cf-aig-authorization, chatgpt-account-id, x-agent-runtime-identity, x-amz-* or transport headers"
+      },
+      "PromptInput": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens"
+          },
+          "from": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The sender's id in your app; the model may rely on it"
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name, chosen by the sender"
+              },
+              "username": {
+                "type": "string",
+                "description": "Handle, chosen by the sender"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false,
+            "description": "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble"
+          },
+          "allowDisconnected": {
+            "type": "boolean",
+            "description": "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected"
+          },
+          "whileRunning": {
+            "type": "string",
+            "enum": [
+              "queue",
+              "steer"
+            ],
+            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step, and this request ends with that turn (steeredInto names it); if the turn ends first, it runs as a turn of its own. With no turn running, both start one"
+          },
+          "spendLimit": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpendLimitInput"
+              },
+              {
+                "description": "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too"
+              }
+            ]
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model",
+            "example": {
+              "source": "web",
+              "clientMessageId": "m_123"
+            }
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "string",
+                      "description": "The file's bytes, base64: at most 4 MiB across a message's inline files"
+                    },
+                    "contentType": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "description": "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "A first prompt, as POST /v1/agents/{id}/prompt takes it, sent once the agent is made: it runs as soon as the agent has started, so a new conversation needs one call. Give it a requestId: a retry of the create (same Idempotency-Key) with the same requestId makes no second agent and sends no second prompt"
       },
       "AgentDetail": {
         "allOf": [
@@ -1836,102 +2085,6 @@
           "tools"
         ]
       },
-      "RequestRecord": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string",
-            "enum": [
-              "prompt",
-              "execute",
-              "status",
-              "abort",
-              "continue",
-              "steer",
-              "configure",
-              "resume"
-            ],
-            "description": "resume: the runtime continuing a turn that waited on human input, once its inputs settled"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "running",
-              "completed"
-            ]
-          },
-          "fingerprint": {
-            "type": "string"
-          },
-          "startedAt": {
-            "type": "number"
-          },
-          "began": {
-            "type": "number"
-          },
-          "endedAt": {
-            "type": "number"
-          },
-          "prompt": {
-            "type": "string"
-          },
-          "code": {
-            "type": "string"
-          },
-          "suspension": {
-            "type": "string",
-            "description": "resume: the request whose turn waited on human input"
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "The metadata sent with the message"
-          },
-          "steeredInto": {
-            "type": "string",
-            "description": "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares"
-          },
-          "outcome": {
-            "$ref": "#/components/schemas/Outcome"
-          },
-          "error": {
-            "type": "string",
-            "description": "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded"
-          },
-          "stopped": {
-            "type": "string",
-            "enum": [
-              "input_required",
-              "spend_limit"
-            ],
-            "description": "Why an ended run stopped early (outcome.result.stopped)"
-          }
-        },
-        "required": [
-          "id",
-          "method",
-          "state",
-          "fingerprint"
-        ]
-      },
-      "Outcome": {
-        "type": "object",
-        "properties": {
-          "result": {},
-          "error": {
-            "type": "string"
-          },
-          "uncertain": {
-            "type": "boolean"
-          }
-        },
-        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs"
-      },
       "EventPoll": {
         "type": "object",
         "properties": {
@@ -2124,120 +2277,6 @@
             "description": "Whom it is for, in your app (a user id)"
           }
         }
-      },
-      "PromptInput": {
-        "type": "object",
-        "properties": {
-          "text": {
-            "type": "string"
-          },
-          "actor": {
-            "type": "string",
-            "description": "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens"
-          },
-          "from": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "description": "The sender's id in your app; the model may rely on it"
-              },
-              "name": {
-                "type": "string",
-                "description": "Display name, chosen by the sender"
-              },
-              "username": {
-                "type": "string",
-                "description": "Handle, chosen by the sender"
-              }
-            },
-            "required": [
-              "id"
-            ],
-            "additionalProperties": false,
-            "description": "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given"
-          },
-          "requestId": {
-            "type": "string",
-            "description": "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble"
-          },
-          "allowDisconnected": {
-            "type": "boolean",
-            "description": "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected"
-          },
-          "whileRunning": {
-            "type": "string",
-            "enum": [
-              "queue",
-              "steer"
-            ],
-            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step, and this request ends with that turn (steeredInto names it); if the turn ends first, it runs as a turn of its own. With no turn running, both start one"
-          },
-          "spendLimit": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SpendLimitInput"
-              },
-              {
-                "description": "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too"
-              }
-            ]
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model",
-            "example": {
-              "source": "web",
-              "clientMessageId": "m_123"
-            }
-          },
-          "files": {
-            "type": "array",
-            "items": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "description": "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}"
-                    }
-                  },
-                  "required": [
-                    "path"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "type": "string"
-                    },
-                    "data": {
-                      "type": "string",
-                      "description": "The file's bytes, base64: at most 4 MiB across a message's inline files"
-                    },
-                    "contentType": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data"
-                  ],
-                  "additionalProperties": false
-                }
-              ]
-            },
-            "description": "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them"
-          }
-        },
-        "required": [
-          "text"
-        ]
       },
       "Upload": {
         "type": "object",

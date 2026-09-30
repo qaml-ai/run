@@ -326,7 +326,8 @@ async function submitAnywhere(agent: string, tenant: string, request: { id: stri
   const response = await signedPost(owner, `/internal/agents/${agent}/requests`, { tenant, request }).catch(error => { ownership.forget(agent); throw error; });
   if (!response.ok) {
     ownership.forget(agent);
-    throw Object.assign(new Error(`Owner rejected the request: HTTP ${response.status}`), { status: response.status });
+    const { error } = await response.json().catch(() => ({})) as { error?: string };
+    throw new HttpError(response.status, error ?? `Owner rejected the request: HTTP ${response.status}`);
   }
   return response.json();
 }
