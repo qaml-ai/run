@@ -94,8 +94,8 @@ contact support@camelai.com if they believe this was a mistake.
 
 With Google sign-in configured (`GOOGLE_CLIENT_ID`, or `AGENT_GOOGLE_OAUTH_SECRET_ARN`),
 anyone with a verified Google address can sign up too. A Google tenant is tied to
-the account's `sub`, named after the address's local part (with a suffix when that is
-taken), and never merged with a GitHub tenant, even with the same address. Google
+the account's `sub`, with a neutral id derived from it (`u-<16 hex>`, never any part of
+the address, and never an admin tenant's or another account's id), and never merged with a GitHub tenant, even with the same address. Google
 tenants get no starting credit at signup. Instead, any prepaid tenant made by sign-in
 that has no starting credit (Google tenants, and GitHub accounts that did not qualify)
 can unlock it once by verifying a card: `POST /v1/billing/card-check` returns a Stripe

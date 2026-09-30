@@ -157,8 +157,8 @@ export class Accounts {
 
   /**
    * The tenant a Google user signs in as: the one made for that Google account (by its `sub`),
-   * else a new one named after the address's local part (or, when that is taken, the local part
-   * and a suffix from the `sub`). Google tenants are never linked to GitHub ones or admin tenants,
+   * else a new one with a neutral id derived from the `sub` (`u-<16 hex>`, longer if that is
+   * taken), so no part of the address shows in it. Google tenants are never linked to GitHub ones or admin tenants,
    * and get no automatic starting credit: a card check unlocks it (src/card-credit.ts).
    */
   async tenantForGoogle({ sub, email }: GoogleUser): Promise<string> {
@@ -167,9 +167,8 @@ export class Accounts {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`google:${sub}`]);
       let row: { id: string; google_email: string | null } | undefined = (await sql.query("select id, google_email from tenants where google_sub = $1", [sub])).rows[0];
       if (!row) {
-        const name = email.slice(0, email.lastIndexOf("@")).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30).replace(/-+$/, "");
-        const suffix = sha256(`google:${sub}`).slice(0, 8);
-        for (const candidate of [name, `${name || "google"}-${suffix}`, `google-${sha256(`google:${sub}`).slice(0, 16)}`]) {
+        const hash = sha256(`google:${sub}`);
+        for (const candidate of [`u-${hash.slice(0, 16)}`, `u-${hash.slice(0, 32)}`]) {
           if (!validTenant(candidate) || this.tenants.has(candidate)) continue;
           row = (await sql.query("insert into tenants (id, google_sub, google_email, created_at) values ($1, $2, $3, $4) on conflict do nothing returning id, google_email", [candidate, sub, email, Date.now()])).rows[0];
           if (row) break;

@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
 import { type Db } from "../src/db.ts";
 import { DEFAULT_PRICING, micros } from "../src/pricing.ts";
@@ -11,6 +11,8 @@ import { listen } from "./runtime-server.ts";
 
 const SECRET = "whsec_card_credit_fixture";
 const DAY = 86_400_000;
+/** The id a Google account's tenant gets first, and the longer one when that is taken. */
+const neutral = (sub: string, length = 16) => `u-${createHash("sha256").update(`google:${sub}`).digest("hex").slice(0, length)}`;
 const count = async (db: Db, table: string, where = "true") => Number((await db.query(`select count(*) as n from ${table} where ${where}`)).rows[0].n);
 
 /** A Stripe with customers, setup-mode Checkout sessions and their SetupIntents. `verify` finishes one with a card. */
@@ -37,7 +39,7 @@ async function fixture(t: TestContext) {
     }
     res.writeHead(value ? 200 : 404, { "Content-Type": "application/json" }).end(JSON.stringify(value ?? { error: { message: "Missing fixture", code: "resource_missing" } }));
   });
-  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { root: { tokenSha256: "a".repeat(64), billing: "prepaid" } } }) });
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { root: { tokenSha256: "a".repeat(64), billing: "prepaid" }, [neutral("sub-admin")]: { tokenSha256: "b".repeat(64) } } }) });
   await tenants.reload();
   const stripe = new Stripe({ secretKey: "sk_test_fixture", webhookSecret: SECRET, apiUrl: url });
   const accounts = new Accounts({ db, tenants, stripe, publicUrl: "https://agents.example.test", pricing: { ...DEFAULT_PRICING, startingGrant: micros(5) } });
@@ -63,7 +65,7 @@ async function fixture(t: TestContext) {
 test("a Google signup gets no automatic credit; a verified card unlocks it once, through webhook retries and races", async t => {
   const f = await fixture(t);
   const tenant = await f.google("gina");
-  assert.equal(tenant, "gina");
+  assert.equal(tenant, neutral("sub-gina"));
   assert.deepEqual(await f.accounts.billing.startingCredit(tenant), { status: "not_granted", amount: 0, cardCheck: { amount: micros(5) } });
   assert.equal((await f.accounts.billing.summary(tenant)).balance, 0);
   const session = await f.verify(tenant, "fp_gina");
@@ -128,23 +130,25 @@ test("prepaid cards and unfinished checks add nothing; admin tenants and granted
   assert.equal((await f.accounts.billing.summary(newcomer)).balance, micros(5));
 });
 
-test("Google tenants never take an admin tenant's or another account's id, and are never merged by address", async t => {
+test("Google tenants get neutral ids, never an admin tenant's or another account's, and are never merged by address", async t => {
   const f = await fixture(t);
-  await f.accounts.tenantForGithub({ id: 903, login: "taken", createdAt: Date.now() - 400 * DAY }, { minAccountAgeMs: 0 });
+  // Ids say nothing about the address.
   const root = await f.accounts.tenantForGoogle({ sub: "sub-root", email: "root@example.com" });
-  assert.notEqual(root, "root");
-  assert.match(root, /^root-[0-9a-f]{8}$/);
+  assert.equal(root, neutral("sub-root"));
+  assert.match(root, /^u-[0-9a-f]{16}$/);
+  // An admin tenant's id, or one another account already has, is skipped for the longer id.
+  assert.equal(await f.accounts.tenantForGoogle({ sub: "sub-admin", email: "admin@example.com" }), neutral("sub-admin", 32));
+  await f.db.query("insert into tenants (id, github, github_id, created_at) values ($1, 'squatter', 904, 1)", [neutral("sub-taken")]);
   const taken = await f.accounts.tenantForGoogle({ sub: "sub-taken", email: "Taken@example.com" });
-  assert.match(taken, /^taken-[0-9a-f]{8}$/);
+  assert.equal(taken, neutral("sub-taken", 32));
   // The same address on another Google account is another tenant; the same account keeps its tenant when its address changes.
-  const twin = await f.accounts.tenantForGoogle({ sub: "sub-twin", email: "taken@example.com" });
+  const twin = await f.accounts.tenantForGoogle({ sub: "sub-twin", email: "Taken@example.com" });
   assert.notEqual(twin, taken);
   assert.equal(await f.accounts.tenantForGoogle({ sub: "sub-taken", email: "renamed@example.org" }), taken);
   assert.equal((await f.db.query("select google_email from tenants where id = $1", [taken])).rows[0].google_email, "renamed@example.org");
-  assert.match(await f.accounts.tenantForGoogle({ sub: "sub-odd", email: "--@example.com" }), /^google-[0-9a-f]{8}$/);
   // Concurrent first sign-ins of one account make one tenant.
   const same = await Promise.all(Array.from({ length: 6 }, () => f.accounts.tenantForGoogle({ sub: "sub-once", email: "once@example.com" })));
-  assert.deepEqual(new Set(same), new Set(["once"]));
-  assert.equal(await count(f.db, "credit_ledger", "tenant <> 'taken'"), 0, "Google signups get no automatic grant");
+  assert.deepEqual(new Set(same), new Set([neutral("sub-once")]));
+  assert.equal(await count(f.db, "credit_ledger"), 0, "Google signups get no automatic grant");
   await assert.rejects(f.accounts.tenantForGoogle({ sub: "", email: "x@example.com" }), /valid account/);
 });

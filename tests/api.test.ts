@@ -79,6 +79,8 @@ async function fakeGoogle(t: { after(fn: () => Promise<void>): void }) {
   } };
 }
 
+const neutral = (sub: string) => `u-${sha(`google:${sub}`).slice(0, 16)}`;
+
 const defaultTenants = {
   alice: { tokenSha256: sha(alice), apiKeys: {} },
   bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "bob-admin-anthropic-key" }, github: "Bob-Builder" },
@@ -309,17 +311,17 @@ test("Google sign-in verifies the ID token, creates separate tenants, and return
   };
   const ada = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true });
   assert.equal(ada.location, "/console/");
-  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: "ada", via: "console", login: "ada@example.com", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: neutral("1001"), via: "console", login: "ada@example.com", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
   // No automatic starting credit: the account starts at zero.
   const billing = (await call("/v1/billing", { headers: { Cookie: ada.session! } })).json;
   assert.equal(billing.balance, 0);
   assert.equal(billing.startingCredit.status, "not_granted");
-  // The same Google account keeps its tenant; another account with a similar address, or an admin tenant's name, gets its own.
+  // The same Google account keeps its tenant; another account with a similar address gets its own. Ids never carry the address.
   assert.equal((await signIn({ sub: "1001", email: "ada.renamed@example.com", email_verified: true })).location, "/console/");
   const other = await signIn({ sub: "1002", email: "ada@example.org", email_verified: true });
-  assert.match((await call("/v1/me", { headers: { Cookie: other.session! } })).json.tenant, /^ada-[0-9a-f]{8}$/);
+  assert.equal((await call("/v1/me", { headers: { Cookie: other.session! } })).json.tenant, neutral("1002"));
   const admin = await signIn({ sub: "1003", email: "alice@example.com", email_verified: true });
-  assert.match((await call("/v1/me", { headers: { Cookie: admin.session! } })).json.tenant, /^alice-[0-9a-f]{8}$/);
+  assert.equal((await call("/v1/me", { headers: { Cookie: admin.session! } })).json.tenant, neutral("1003"));
   // The MCP consent page offers Google, and sign-in started there returns there, signed in.
   const client = (await call("/oauth/register", { body: { client_name: "Test Agent", redirect_uris: ["http://127.0.0.1:43210/cb"], token_endpoint_auth_method: "none" } })).json;
   const consent = `/oauth/authorize?${new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: "http://127.0.0.1:43210/cb", code_challenge: "x".repeat(43), code_challenge_method: "S256", state: "s-1", resource: `${base}/mcp` })}`;
