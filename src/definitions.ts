@@ -22,6 +22,8 @@ import type { ToolSourceView } from "./tool-servers.ts";
  * each through its `configure` request.
  */
 export interface DefinitionSpec {
+  /** What its agents are for: the description of each one's MCP tool (agent-mcp.ts). */
+  description?: string;
   model?: string;
   systemPrompt?: string;
   thinkingLevel?: string;
@@ -54,7 +56,7 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "fileTools"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
@@ -268,6 +270,7 @@ export class Definitions {
       if (!spec.limits || typeof spec.limits !== "object" || Object.keys(spec.limits).some(key => key !== "ttlSeconds")) throw new HttpError(400, "limits is { ttlSeconds }");
       validTtl(spec.limits.ttlSeconds);
     }
+    if (spec.description !== undefined && (typeof spec.description !== "string" || !spec.description.trim() || spec.description.length > 1000)) throw new HttpError(400, "description must contain 1–1000 characters");
     if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
     if (spec.builtins !== undefined) builtinsInput(spec.builtins);

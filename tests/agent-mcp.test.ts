@@ -63,11 +63,21 @@ test("an agent's MCP endpoint takes whatever may prompt it, and no other tenant'
     const { client, message } = await connect(t, r, echo.id, token);
     const [tool] = (await client.listTools()).tools;
     assert.equal(tool.name, "message");
-    assert.match(tool.description!, /"Echo"[\s\S]*You repeat what you are told\./);
-    assert.doesNotMatch(tool.description!, /Never add anything/, "only the prompt's first paragraph");
+    assert.match(tool.description!, /^Send a message to the agent "Echo" and get its reply\./);
+    assert.doesNotMatch(tool.description!, /repeat/, "never its system prompt");
     const reply = await message(`hi via ${token.slice(0, 4)}`);
     assert.deepEqual([reply.isError, reply.text], [false, `echo: hi via ${token.slice(0, 4)}`]);
   }
+  // A definition's description says what its agents are for; a change to it shows at once.
+  const definition = (await r.call("/v1/definitions", { body: { name: "Support", description: "Answers questions about orders and refunds.", systemPrompt: "Secret instructions." } })).json;
+  const support = await agent(r, { definition: definition.id });
+  const described = async () => (await (await connect(t, r, support.id, OPERATOR)).client.listTools()).tools[0].description!;
+  assert.match(await described(), /^Send a message to the agent "Support" and get its reply\.\n\nAnswers questions about orders and refunds\./);
+  assert.doesNotMatch(await described(), /Secret/);
+  assert.equal((await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { description: "Tracks parcels." } })).status, 200);
+  assert.match(await described(), /\n\nTracks parcels\.\n/);
+  assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", description: " " } })).status, 400);
+
   // The messages went into the agent's one history, as prompts do.
   const history = (await r.call(`/v1/agents/${echo.id}/history`)).json.messages;
   assert.equal(history.filter((entry: any) => entry.role === "user").length, 3);

@@ -31,8 +31,10 @@ connector, with the agent's URL. Cursor and other clients configured with JSON:
   (`/.well-known/oauth-protected-resource/v1/agents/<id>/mcp`), so clients sign
   in [as with the hosted MCP server](../reference/cli.md#hosted-mcp-server).
   Other tenants' tokens get `404`.
-- **The tool's description** says what the agent is: its name and the first
-  paragraph of its system prompt.
+- **The tool's description** names the agent and, when the agent is made from a
+  [definition](definitions.md) with a `description`, says what it is for:
+  `"description": "Answers questions about orders and refunds."` (1–1,000
+  characters). Its system prompt is never shown.
 - **Long turns.** A call lasts as long as the turn. It sends progress
   notifications as the agent works (its text as it streams, each tool it uses,
   and a heartbeat every 20 seconds), so clients that reset their timeout on

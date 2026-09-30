@@ -1634,14 +1634,15 @@ export class ClientSessions {
   }
 
   /**
-   * An agent as its MCP endpoint (agent-mcp.ts) shows it, while it lives: its tenant, what it is called and its prompt,
-   * and whether `authorization` carries its own token, as its `/clients/:id` routes check. Read without loading it.
+   * An agent as its MCP endpoint (agent-mcp.ts) shows it, while it lives: its tenant, what it is called and the
+   * definition it is made from, and whether `authorization` carries its own token, as its `/clients/:id` routes check.
+   * Read without loading it.
    */
   async mcpView(id: string, authorization: string) {
     const header = this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value;
     if (!header || header.revoked || header.purged || expired(header.expiresAt)) return undefined;
     const own = authorization.startsWith("Bearer ") && timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"));
-    return { tenant: header.tenant, own, name: header.metadata?.name ?? header.key, systemPrompt: header.config.systemPrompt };
+    return { tenant: header.tenant, own, name: header.metadata?.name ?? header.key, definition: header.definition?.id };
   }
 
   /** A tenant's view of one agent's request state and stream cursor (`/clients/:id/state`). */

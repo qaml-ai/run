@@ -594,7 +594,7 @@ const mcpOptions = {
 };
 app.route("/", hostedMcp(mcpOptions));
 // Each agent as an MCP server of its own: one tool that messages it. Before api, whose /v1/agents/:id/* it is in.
-app.route("/", agentMcp({ ...mcpOptions, agents: clients }));
+app.route("/", agentMcp({ ...mcpOptions, agents: clients, definitions }));
 // Before channels.app, whose /channels/:type/:id would take /channels/email/inbound.
 if (emailOptions) app.route("/", emailReceiver(channels, emailOptions));
 app.route("/", channels.app);

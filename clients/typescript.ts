@@ -358,7 +358,10 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
 /** Options every tool source takes. `exposure` defaults to both for a source of up to 10 tools, else codemode. */
 interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number }
 export interface DefinitionInput {
-  name: string; model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
+  name: string;
+  /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */
+  description?: string;
+  model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
   /** The search providers web_search tries, in order, instead of the runtime's. */
   webSearch?: { providers: ("exa" | "brave" | "parallel")[] };

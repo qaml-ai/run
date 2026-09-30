@@ -8,12 +8,14 @@ import { summarize, type RunSummary } from "../packages/cli/src/ops.ts";
 import { VERSION } from "../packages/cli/src/version.ts";
 import type { Principal } from "./accounts.ts";
 import { resumeId, type ClientSessions } from "./client-sessions.ts";
+import type { Definitions } from "./definitions.ts";
 import { MCP_CORS, mcpBody, mcpPreflight, mcpSignIn, serveMcp } from "./hosted-mcp.ts";
 
 /**
  * Every agent as an MCP server, at /v1/agents/:id/mcp: one tool, `message`, that sends the agent a message and gives
  * its reply. The message joins the agent's one conversation, as a prompt through the REST API does; the agent's own
- * tools stay its own. Whatever may prompt the agent may call it: the agent's own token, or the tenant's API or OAuth
+ * tools stay its own. The tool is described by the agent's name, and by its definition's description when it has one.
+ * Whatever may prompt the agent may call it: the agent's own token, or the tenant's API or OAuth
  * token (a 401 names the protected-resource metadata MCP clients sign in from).
  *
  * Like the hosted /mcp it is stateless, and the tool calls the runtime's REST API over loopback with the caller's
@@ -27,6 +29,8 @@ import { MCP_CORS, mcpBody, mcpPreflight, mcpSignIn, serveMcp } from "./hosted-m
  */
 export interface AgentMcpOptions {
   agents: Pick<ClientSessions, "mcpView">;
+  /** Where an agent's description comes from: its definition's. */
+  definitions?: Pick<Definitions, "get">;
   /** The tenant an API or OAuth token acts for. */
   authenticate(authorization: string): Promise<Principal | undefined>;
   publicUrl: () => string;
@@ -94,6 +98,8 @@ export function agentMcp(options: AgentMcpOptions) {
     const elicitation = initialize?.params?.capabilities?.elicitation;
     const session = initialize ? `${randomUUID().replaceAll("-", "")}.${elicitation && (elicitation.form || !elicitation.url) ? "f" : ""}${elicitation?.url ? "u" : ""}` : c.req.header("mcp-session-id");
     const can = session?.split(".")[1] ?? "";
+    // Read as the definition is now: a description is what the agent is for, not configuration it runs with.
+    const definition = agent.definition ? await options.definitions?.get(agent.tenant, agent.definition).catch(() => undefined) : undefined;
     const server = new McpServer({ name: "camelrun-agent", title: agent.name ?? "camelRun agent", version: VERSION });
     const call: Call = {
       agent: id, api, own: agent.own, authorization, events: `${base}/events?watch=1&snapshot=0`, publicUrl: options.publicUrl(),
@@ -102,7 +108,7 @@ export function agentMcp(options: AgentMcpOptions) {
     };
     server.registerTool("message", {
       title: agent.name ? `Message ${agent.name}` : "Message the agent",
-      description: describe(agent),
+      description: describe(agent.name, definition?.description),
       inputSchema: {
         text: z.string().min(1).describe("Your message"),
         requestId: z.string().regex(/^[A-Za-z0-9_-]{1,80}$/).optional().describe("Sending again with the same requestId (and text) is the same message: it is not sent twice, and the call gives its reply"),
@@ -117,13 +123,12 @@ export function agentMcp(options: AgentMcpOptions) {
   return app;
 }
 
-/** The tool's description: what the agent is, as its name and the start of its instructions say. */
-function describe(agent: { name?: string; systemPrompt?: string }) {
-  const about = agent.systemPrompt?.trim().split(/\n\s*\n/)[0]?.trim();
+/** The tool's description: the agent's name, and what it is for when its definition says. */
+function describe(name: string | undefined, description: string | undefined) {
   return [
-    `Send ${agent.name ? `the agent "${agent.name}"` : "this agent"} a message and get its reply.`,
-    ...(about ? [`Its instructions begin: ${clip(about, 500)}`] : []),
-    "It keeps one conversation with everyone who messages it, so it remembers what was said before. It works with tools of its own, and a reply can take minutes.",
+    `Send a message to the agent ${name ? `"${name}"` : "this endpoint serves"} and get its reply.`,
+    ...(description ? [description] : []),
+    "It keeps one conversation with everyone who messages it, so it remembers what was said before. A reply can take minutes.",
   ].join("\n\n");
 }
 

@@ -23,6 +23,9 @@ const agent = await agents.upsert(`ticket-${ticket.id}`, { definition: definitio
 Saving a definition lists its MCP servers: credentials a server refuses are a
 400 that says so, and the answer's `toolSources` shows what each offers.
 
+A `description` (1–1,000 characters) says what its agents are for; models see it
+as the description of each agent's [MCP tool](mcp-server.md).
+
 The definition supplies the model, prompt, thinking level and tool sources;
 `name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
 its defaults, and tools of your process (`tools`) are added as its attached

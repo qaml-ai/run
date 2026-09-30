@@ -464,6 +464,7 @@ const McpServer = z.object({
   auth: SourceAuth.optional(),
 }).openapi("McpServer");
 const definitionFields = {
+  description: z.string().trim().min(1).max(1000).openapi({ description: "What its agents are for, in a sentence or two: shown to models as the description of each agent's MCP tool (/v1/agents/{id}/mcp)" }),
   model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().trim().min(1).max(32_000),
   thinkingLevel: ThinkingLevel,
