@@ -49,13 +49,13 @@ Definitions (a definition is its key or its id, def_…)
 
 MCP
   mcp                              Serve these commands as an MCP server over stdio
-                                   (or connect clients to the hosted one: https://agents.camelai.dev/mcp)
+                                   (or connect clients to the hosted one: https://run.camelai.com/mcp)
 
 Options
   --json                           Print JSON (the default when stdout is not a terminal)
   --api-key <key>, --url <url>     Instead of CAMELAI_API_KEY / CAMELAI_URL / the saved login
 
-Docs: https://agents.camelai.dev/llms.txt`;
+Docs: https://run.camelai.com/llms.txt`;
 
 const OPTIONS = {
   json: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
@@ -183,9 +183,9 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
 async function login(flags: Flags, io: Io, print: (value: unknown, human?: () => string) => void) {
   let apiKey = flags["api-key"] || io.env.CAMELAI_API_KEY;
   if (!apiKey) {
-    if (!process.stdin.isTTY) throw new UsageError("Pass --api-key art_… (or set CAMELAI_API_KEY); create one under API tokens at https://agents.camelai.dev/console");
+    if (!process.stdin.isTTY) throw new UsageError("Pass --api-key art_… (or set CAMELAI_API_KEY); create one under API tokens at https://run.camelai.com/console");
     const prompt = createInterface({ input: process.stdin, output: process.stderr });
-    apiKey = (await prompt.question("API key (from https://agents.camelai.dev/console, API tokens): ")).trim();
+    apiKey = (await prompt.question("API key (from https://run.camelai.com/console, API tokens): ")).trim();
     prompt.close();
   }
   const url = flags.url || io.env.CAMELAI_URL || DEFAULT_URL;

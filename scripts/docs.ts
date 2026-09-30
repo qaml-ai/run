@@ -6,7 +6,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 
-export const DOCS_URL = "https://agents.camelai.dev/docs";
+export const DOCS_URL = "https://run.camelai.com/docs";
 
 /** The user-facing pages, in reading order, each with what it is for. Operations pages are left out. */
 export const PAGES: { section: string; path: string; about: string }[] = [
@@ -42,7 +42,7 @@ export function llmsTxt() {
     "",
     "> A hosted runtime for durable agents. You define tools in your code (TypeScript or Python SDK, or an HTTP server of",
     "> yours); the runtime runs the model loop, keeps each agent's history and files, runs model-written code in a sandbox,",
-    "> and wakes agents when there is work. REST API at https://agents.camelai.dev/v1 (OpenAPI: https://agents.camelai.dev/v1/openapi.json).",
+    "> and wakes agents when there is work. REST API at https://run.camelai.com/v1 (OpenAPI: https://run.camelai.com/v1/openapi.json).",
     "",
     "Agents are upserted by a key of yours and run with `agent.run(text)`, which resolves with the run (status, text, inputs,",
     "error). Install `@camelai/run` (npm) or `camelai-run` (PyPI), and set CAMELAI_API_KEY.",

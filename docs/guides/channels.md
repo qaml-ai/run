@@ -8,7 +8,7 @@ Linear, Stripe, your own) start agents; see [Generic webhooks](#generic-webhooks
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"type":"telegram","credentials":{"botToken":"<from @BotFather>"},
        "definition":"def_…","access":{"allow":["@ada","123456789"]}}' \
-  https://agents.camelai.dev/v1/channels
+  https://run.camelai.com/v1/channels
 ```
 
 Each conversation's agent is made from the channel's `definition`. A channel
@@ -27,7 +27,7 @@ the channel.
 Creating a channel checks its credentials with the service. Credentials and a
 random webhook secret are stored encrypted; the API returns only masked values.
 
-- **Telegram.** `https://agents.camelai.dev/channels/telegram/<id>` is registered as the
+- **Telegram.** `https://run.camelai.com/channels/telegram/<id>` is registered as the
   bot's webhook with the random secret, which each delivery must echo (compared
   in constant time). Deleting the channel removes the webhook. `/start` gets the
   channel's `greeting` without a model call.
@@ -141,7 +141,7 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
                    "key":"sentry-{{data.issue.id}}",
                    "filter":[{"path":"action","in":["created"]}],
                    "prompt":"Sentry issue {{data.issue.title}} ({{data.issue.web_url}}) was created. Triage it."}}' \
-  https://agents.camelai.dev/v1/channels
+  https://run.camelai.com/v1/channels
 ```
 
 - **`signature`** is how a delivery proves itself; unsigned or wrongly signed
@@ -198,7 +198,7 @@ mail for through Amazon SES (on a runtime with `AGENT_EMAIL_DOMAIN`; see
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"type":"email","settings":{"address":"support","fromName":"Acme Support"},
        "definition":"def_…","access":{"allow":["ada@example.com","@acme.com"]}}' \
-  https://agents.camelai.dev/v1/channels
+  https://run.camelai.com/v1/channels
 ```
 
 - **Address.** `settings.address` is the part before the `@` (or the whole

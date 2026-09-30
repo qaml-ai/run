@@ -2,6 +2,6 @@
   "$schema": "https://ui.shadcn.com/schema/registry-item.json",
   "name": "agent-chat",
   "type": "registry:block",
-  "registryDependencies": ["https://agents.camelai.dev/r/agent-markdown.json"],
+  "registryDependencies": ["https://run.camelai.com/r/agent-markdown.json"],
   "files": [{ "path": "agent-chat.tsx", "type": "registry:component", "content": "export function AgentChat() {}" }]
 }

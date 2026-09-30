@@ -1,7 +1,7 @@
 {
   "$schema": "https://ui.shadcn.com/schema/registry.json",
   "name": "camelai-agents",
-  "homepage": "https://agents.camelai.dev",
+  "homepage": "https://run.camelai.com",
   "items": [
     {
       "name": "agent-chat",

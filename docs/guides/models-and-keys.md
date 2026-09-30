@@ -15,7 +15,7 @@ you add its server as a provider, your account's or a key scope's: see
 [Custom models](custom-models.md).
 
 An agent that names no model (and whose definition names none) gets the
-runtime's default: Claude Sonnet 5.5 on agents.camelai.dev, on the first of
+runtime's default: Claude Sonnet 5.5 on run.camelai.com, on the first of
 Anthropic (`anthropic/claude-sonnet-5-5`), OpenRouter
 (`openrouter/anthropic/claude-sonnet-5.5`) and Bedrock
 (`amazon-bedrock/global.anthropic.claude-sonnet-5-5`) you have a key for (its

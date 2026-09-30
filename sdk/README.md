@@ -10,7 +10,7 @@ npm install @camelai/run
 ```
 
 Node 22 or later, Bun, Deno or Cloudflare Workers. Get an API key from the
-console at <https://agents.camelai.dev/console> and export it as
+console at <https://run.camelai.com/console> and export it as
 `CAMELAI_API_KEY`.
 
 ```ts
@@ -55,10 +55,10 @@ await agents.close();
   `npm create @camelai/run-app`. `watchAgent` (`@camelai/run/watch`)
   shows an agent live with a browser token your server mints.
 
-Documentation: [Quickstart](https://agents.camelai.dev/docs/quickstart.md),
-[Concepts](https://agents.camelai.dev/docs/concepts.md),
-[SDK reference](https://agents.camelai.dev/docs/reference/sdk.md),
-and all of it as Markdown at <https://agents.camelai.dev/llms.txt>.
+Documentation: [Quickstart](https://run.camelai.com/docs/quickstart.md),
+[Concepts](https://run.camelai.com/docs/concepts.md),
+[SDK reference](https://run.camelai.com/docs/reference/sdk.md),
+and all of it as Markdown at <https://run.camelai.com/llms.txt>.
 
 `AgentRuntime` and `AgentClient`, the lower-level interface the SDK is built on,
 remain available. See the SDK reference's "Changes in 0.9" when upgrading.

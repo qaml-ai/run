@@ -24,7 +24,7 @@ cd my-app && npm run dev
 
 A Next.js app with the chat, its route, a tool drawn by its own component, and a demo sign-in to
 replace with yours. Examples with Vite (React, Vue, Svelte, Solid), the read proxy and the AI SDK are in
-[examples/frontend](../examples/frontend). Get an API key in the [console](https://agents.camelai.dev/console).
+[examples/frontend](../examples/frontend). Get an API key in the [console](https://run.camelai.com/console).
 
 ## Add it to an app you have
 
@@ -80,7 +80,7 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 | `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
 | `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts, so the boundary is what the agent can read. Default: only files it presented, or in its own workspace volume. |
 | `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](#reading-through-your-route-proxy)). Default `false`. |
-| `apiKey`, `url` | Default `CAMELAI_API_KEY`, and `CAMELAI_BASE_URL` or https://agents.camelai.dev. |
+| `apiKey`, `url` | Default `CAMELAI_API_KEY`, and `CAMELAI_BASE_URL` or https://run.camelai.com. |
 
 ### 2. The UI
 
@@ -187,8 +187,8 @@ copy arrives, so rows keyed by `id` never remount.
 **shadcn**: copy the chat into your project, in your theme, and own the code:
 
 ```sh
-npx shadcn add https://agents.camelai.dev/r/agent-chat.json
-npx shadcn add https://agents.camelai.dev/r/agent-route.json   # the Next.js route
+npx shadcn add https://run.camelai.com/r/agent-chat.json
+npx shadcn add https://run.camelai.com/r/agent-route.json   # the Next.js route
 ```
 
 **AI SDK**: use `useChat` (and AI Elements) with the agent:
@@ -256,7 +256,7 @@ Workers), serve the tools over HTTP with `serveTools` and name them in a definit
 ```ts
 // app/api/tools/route.ts
 import { serveTools } from "@camelai/run/server";
-const handler = serveTools(tools, { runtime: "https://agents.camelai.dev", tenant: process.env.CAMELAI_TENANT! });
+const handler = serveTools(tools, { runtime: "https://run.camelai.com", tenant: process.env.CAMELAI_TENANT! });
 export { handler as GET, handler as POST };
 ```
 

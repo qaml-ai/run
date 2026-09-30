@@ -103,7 +103,7 @@ import { serveTools } from "@camelai/run/server";
 
 // A fetch handler: Cloudflare Workers, Bun and Deno serve it as is.
 // tenant: your tenant's id (GET /v1/me, or `await agents.runtime.me()`): tokens for other tenants' agents are refused.
-export default { fetch: serveTools({ refund }, { runtime: "https://agents.camelai.dev", tenant: "acme" }) };
+export default { fetch: serveTools({ refund }, { runtime: "https://run.camelai.com", tenant: "acme" }) };
 ```
 
 On Node, wrap it: `createServer(nodeListener(handler, { origin: "https://tools.example.com" }))`
@@ -118,7 +118,7 @@ are checked against.
 ```python
 from camelai_run import serve_tools
 
-app = serve_tools([refund], runtime="https://agents.camelai.dev", tenant="acme")  # ASGI: uvicorn, or mount in FastAPI
+app = serve_tools([refund], runtime="https://run.camelai.com", tenant="acme")  # ASGI: uvicorn, or mount in FastAPI
 ```
 
 Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
@@ -193,10 +193,13 @@ The token itself (for servers that verify it by hand, e.g. with `jose`):
 ```
 
 ```ts
-const jwks = createRemoteJWKSet(new URL("https://agents.camelai.dev/.well-known/jwks.json"));
+const jwks = createRemoteJWKSet(new URL("https://run.camelai.com/.well-known/jwks.json"));
 const { payload } = await jwtVerify(token, jwks, { issuer: "https://agents.camelai.dev", audience: "https://tools.example.com/mcp", algorithms: ["EdDSA"] });
 ```
 
+- `iss` is the hosted runtime's first address, `https://agents.camelai.dev`,
+  at either of its URLs (a self-hosted runtime's is its `AGENT_ISSUER`, else its
+  `AGENT_PUBLIC_URL`). The SDKs expect it for either hosted URL.
 - `aud` is the server's URL (or the source's `audience`, for a server that knows
   itself by another URL), so a token cannot be replayed against another server.
   Tokens live two minutes, and each request gets its own `jti`.

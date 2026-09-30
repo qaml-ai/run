@@ -16,7 +16,7 @@ dependencies = ["httpx==0.28.1"]
 server = ["cryptography>=42"]
 
 [project.urls]
-Homepage = "https://agents.camelai.dev"
+Homepage = "https://run.camelai.com"
 
 [tool.setuptools]
 py-modules = ["camelai_run"]

@@ -1,6 +1,6 @@
 /**
  * End-to-end check of a running runtime through the SDK:
- *   AGENT_URL=https://agents.camelai.dev AGENT_RUNTIME_TOKEN=<operator token> node --experimental-strip-types deploy/smoke.ts
+ *   AGENT_URL=https://run.camelai.com AGENT_RUNTIME_TOKEN=<operator token> node --experimental-strip-types deploy/smoke.ts
  * Add SMOKE_PROMPT=1 to also run one real model turn (uses the tenant's provider key), and
  * SMOKE_MODEL=provider/model-id to choose the model (default: the runtime's default model).
  */

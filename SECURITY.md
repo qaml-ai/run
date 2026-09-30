@@ -11,4 +11,4 @@ Include what you found, how to reproduce it, and its impact. We'll acknowledge y
 
 ## Scope
 
-This repository (the runtime, SDKs, CLI and packages) and the hosted service at agents.camelai.dev. Please don't access other people's data, degrade the service, or run automated scans against the hosted service.
+This repository (the runtime, SDKs, CLI and packages) and the hosted service at run.camelai.com. Please don't access other people's data, degrade the service, or run automated scans against the hosted service.

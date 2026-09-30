@@ -6,7 +6,7 @@
 > you replace `authorize` in `app/api/agent/route.ts` (and `proxy.ts`) with your auth, or opt in to
 > anonymous demo users with `DEMO_AUTH=1`.
 
-A Next.js app with a streaming chat to an agent on [camelRun](https://agents.camelai.dev).
+A Next.js app with a streaming chat to an agent on [camelRun](https://run.camelai.com).
 
 ```sh
 cp .env.example .env.local   # add your CAMELAI_API_KEY

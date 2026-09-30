@@ -32,7 +32,7 @@ export interface LocalFiles {
   load(file?: string): Manifest[];
 }
 
-export const INSTRUCTIONS = `Deploy and manage agents on camelRun (https://agents.camelai.dev).
+export const INSTRUCTIONS = `Deploy and manage agents on camelRun (https://run.camelai.com).
 
 - An agent is durable and keyed: the same key is the same agent, with its history, until deleted. Tools take an agent's key or its id (client_…).
 - A definition is a reusable configuration (model, system prompt, built-ins, MCP servers, OpenAPI specs). Keep it in the repository as agent.yaml and deploy it with deploy: the same key is the same definition, and deploying again makes a new revision. apply: true also moves live agents to it between their turns.

@@ -9,7 +9,7 @@
     "url": "git+https://github.com/qaml-ai/run.git",
     "directory": "packages/vue"
   },
-  "homepage": "https://agents.camelai.dev",
+  "homepage": "https://run.camelai.com",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public"

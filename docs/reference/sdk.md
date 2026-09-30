@@ -32,7 +32,7 @@ async with Agents(api_key, url=url) as agents: ...
 ```
 
 - `apiKey` defaults to the `CAMELAI_API_KEY` environment variable, `url` to
-  `CAMELAI_BASE_URL`, else `https://agents.camelai.dev`.
+  `CAMELAI_BASE_URL`, else `https://run.camelai.com`.
 - `agents.close()` closes every agent's connection so the process can exit;
   their runs go on in the runtime.
 - `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
@@ -279,6 +279,10 @@ application keeps serving its tools.
   `https://run.camelai.com` or `https://agents.camelai.dev`, expect the issuer
   `https://agents.camelai.dev`, which the hosted runtime's identity tokens name
   at both. Pass `issuer` to expect another.
+- The default `url` (and the CLI's) is `https://run.camelai.com`, the hosted
+  runtime's new address. `https://agents.camelai.dev` keeps working, with the
+  same agents, tokens and OAuth grants, so an earlier version or a configured
+  URL needs no change.
 - `close()` stops `onEvent` (`on_event`): events still queued when it is called
   are dropped instead of handed over, and `close()` waits only for the call in
   progress. Before, a slow handler kept being called for the whole backlog after

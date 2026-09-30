@@ -28,7 +28,7 @@ the same tag, and depends on the exact same version of the core.
 | | `/styles.css`, `/shadcn.css` | default theme; a theme that maps onto shadcn tokens |
 | `@camelai/run-vue`, `-svelte`, `-solid` | `.` | bindings over `/chat` (later) |
 | `@camelai/create-run-app` | `npm create @camelai/run-app` | Next.js starter |
-| shadcn registry | `npx shadcn add https://agents.camelai.dev/r/agent-chat.json` | Tailwind + shadcn-token versions of the `/ui` components, over the React hooks |
+| shadcn registry | `npx shadcn add https://run.camelai.com/r/agent-chat.json` | Tailwind + shadcn-token versions of the `/ui` components, over the React hooks |
 
 Why subpaths of the core rather than more packages: a server developer already
 installs `@camelai/run` for tools, so the route handler is one import
@@ -246,7 +246,7 @@ streaming `fetch`, e.g. `expo/fetch`, or `transport: "poll"`).
 
 ## Asks of the runtime (not blocking)
 
-- Serve the registry JSON at `https://agents.camelai.dev/r/*.json` (the repo is
+- Serve the registry JSON at `https://run.camelai.com/r/*.json` (the repo is
   private, so GitHub raw URLs do not work for users).
 - A tenant route for a file link by agent and path (`POST
   /v1/agents/:id/links`), so `link` needs no agent token; until then the

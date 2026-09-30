@@ -10,7 +10,7 @@ pip install camelai-run
 ```
 
 Python 3.11 or later. Get an API key from the console at
-<https://agents.camelai.dev/console> and export it as `CAMELAI_API_KEY`.
+<https://run.camelai.com/console> and export it as `CAMELAI_API_KEY`.
 
 ```python
 import asyncio
@@ -46,10 +46,10 @@ asyncio.run(main())
 - **Events.** `on_event` may be a plain or an async function; it runs in order,
   apart from the connection. `close()` stops it: events still queued are dropped.
 
-Documentation: [Quickstart](https://agents.camelai.dev/docs/quickstart.md),
-[Concepts](https://agents.camelai.dev/docs/concepts.md),
-[SDK reference](https://agents.camelai.dev/docs/reference/sdk.md),
-and all of it as Markdown at <https://agents.camelai.dev/llms.txt>.
+Documentation: [Quickstart](https://run.camelai.com/docs/quickstart.md),
+[Concepts](https://run.camelai.com/docs/concepts.md),
+[SDK reference](https://run.camelai.com/docs/reference/sdk.md),
+and all of it as Markdown at <https://run.camelai.com/llms.txt>.
 
 ## Serving tools to many users
 
@@ -72,7 +72,7 @@ async def list_todos(context: ToolContext) -> dict:
     return {"todos": await db.todos(user=who.user, team=who.context["team"])}
 
 # tenant: yours (GET /v1/me): tokens for other tenants' agents, which may claim any user, are refused.
-app = serve_tools([list_todos], runtime="https://agents.camelai.dev", tenant="acme")  # uvicorn, or mount in FastAPI
+app = serve_tools([list_todos], runtime="https://run.camelai.com", tenant="acme")  # uvicorn, or mount in FastAPI
 ```
 
 Name the server in a definition with `mcpServers=[{"name": "todos", "url": ..., "auth": {"type": "runtime"}}]`,
@@ -82,7 +82,7 @@ The same `@tool` functions get the same identity when attached to an agent.
 and `TestRuntime()` signs tokens for tests: `await TestRuntime().call_tool(app, url, "list_todos", {}, subject="alice")`.
 
 Keep the API key on your backend: it can create and control every
-agent in your tenant. Sign in at https://agents.camelai.dev/console to add provider
+agent in your tenant. Sign in at https://run.camelai.com/console to add provider
 keys, create API tokens and watch agents. The TypeScript SDK is
 [`@camelai/run`](https://www.npmjs.com/package/@camelai/run).
 

@@ -42,7 +42,7 @@ const tools = {
   }),
 };
 // tenant: yours (GET /v1/me). Other tenants' agents can reach this URL too, claiming any user: their tokens are refused.
-export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev", tenant: "acme" }) };
+export default { fetch: serveTools(tools, { runtime: "https://run.camelai.com", tenant: "acme" }) };
 ```
 
 ```ts

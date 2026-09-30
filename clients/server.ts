@@ -4,7 +4,7 @@
  * whom it acts for and who is acting; these helpers verify it and hand your tools the identity.
  * Portable: fetch-style handlers and WebCrypto (Ed25519), so it runs on Workers, Node 22+, Bun and Deno.
  *
- *   export default { fetch: serveTools(tools, { runtime: "https://agents.camelai.dev", tenant: "acme" }) };
+ *   export default { fetch: serveTools(tools, { runtime: "https://run.camelai.com", tenant: "acme" }) };
  *
  * An identity means something only within your own tenant: other tenants' agents can be pointed at your
  * server too, so every check here requires `tenant`, and refuses tokens made for anyone else's agents.
@@ -18,7 +18,7 @@ export interface VerifyOptions {
    * refused. Required: another tenant can point its agents at your server and say they act for anyone.
    */
   tenant: string | string[];
-  /** The runtime's URL (e.g. https://agents.camelai.dev): its keys are at /.well-known/jwks.json. */
+  /** The runtime's URL (e.g. https://run.camelai.com): its keys are at /.well-known/jwks.json. */
   runtime: string;
   /** The issuer tokens must name; the runtime's URL by default (camelRun's hosted runtime names itself https://agents.camelai.dev at either of its URLs). */
   issuer?: string;

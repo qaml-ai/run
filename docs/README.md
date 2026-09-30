@@ -3,7 +3,7 @@
 The hosted runtime for durable agents: you define tools in your code, and the
 runtime runs the model loop, keeps each agent's history and files, runs
 model-written code in a sandbox, and wakes agents when there is work.
-<https://agents.camelai.dev>
+<https://run.camelai.com>
 
 1. **[Quickstart](quickstart.md)**: an agent answering you in five minutes, in
    TypeScript, Python or curl.
@@ -27,6 +27,6 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Errors](reference/errors.md)
    - [SDKs](reference/sdk.md): TypeScript and Python, the simple and the lower-level API
    - [CLI and MCP server](reference/cli.md): deploy and manage agents from a terminal, or from a coding agent over the hosted MCP server
-   - REST API: [`openapi.json`](../openapi.json), also served at <https://agents.camelai.dev/v1/openapi.json>
+   - REST API: [`openapi.json`](../openapi.json), also served at <https://run.camelai.com/v1/openapi.json>
 
 Running or developing the runtime itself? See [Operations](operations/README.md).

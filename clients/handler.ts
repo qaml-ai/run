@@ -54,7 +54,7 @@ export interface SendEvent<A extends AgentAuth = AgentAuth> {
 export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
   /** Your API key. Default: the CAMELAI_API_KEY environment variable. */
   apiKey?: string;
-  /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://agents.camelai.dev. */
+  /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://run.camelai.com. */
   url?: string;
   /**
    * Your own session check, on every request. Return the user (and optionally which agent), or null to

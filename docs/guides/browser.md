@@ -96,7 +96,7 @@ talks to, which keeps your API key on the server and lets each user reach only t
 (`agent-route`). Add one to your app with its URL:
 
 ```bash
-npx shadcn@latest add https://agents.camelai.dev/r/agent-chat.json
+npx shadcn@latest add https://run.camelai.com/r/agent-chat.json
 ```
 
 `/r/registry.json` lists them. The registry is public and cacheable; a self-hosted runtime serves

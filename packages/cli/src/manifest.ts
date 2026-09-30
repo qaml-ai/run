@@ -96,7 +96,7 @@ export function interpolate(value: unknown, env: Record<string, string | undefin
 export function template(key: string, model?: string) {
   return `# An agent on camelRun. Deploy it with \`camelrun deploy\`; deploying again
 # updates the definition in place (the same key is the same definition).
-# Fields: https://agents.camelai.dev/docs/guides/definitions.md
+# Fields: https://run.camelai.com/docs/guides/definitions.md
 key: ${key}
 name: ${key}
 ${model ? `model: ${model}` : "# model: anthropic/claude-sonnet-5-5   # camelrun models --available lists yours"}

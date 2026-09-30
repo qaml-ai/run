@@ -1,6 +1,6 @@
 # @camelai/camelrun
 
-The camelRun CLI: deploy and manage agents on [camelRun](https://agents.camelai.dev)
+The camelRun CLI: deploy and manage agents on [camelRun](https://run.camelai.com)
 from a terminal, a script or CI, and give a coding agent the same powers over MCP.
 
 ```sh
@@ -35,7 +35,7 @@ on a person (`camelrun inputs`, `camelrun answer`).
 The hosted MCP server needs nothing installed; sign in when the client asks:
 
 ```sh
-claude mcp add --transport http camelrun https://agents.camelai.dev/mcp
+claude mcp add --transport http camelrun https://run.camelai.com/mcp
 ```
 
 Or run it locally, where its `deploy` also reads your repository's manifests:
@@ -45,4 +45,4 @@ claude mcp add camelrun -- npx -y @camelai/camelrun mcp
 ```
 
 Every command, the manifest's fields and the MCP tools:
-[CLI and MCP server](https://agents.camelai.dev/docs/reference/cli.md).
+[CLI and MCP server](https://run.camelai.com/docs/reference/cli.md).

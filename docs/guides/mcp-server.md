@@ -1,6 +1,6 @@
 # Agents as MCP servers
 
-Every agent is also an MCP server, at `https://agents.camelai.dev/v1/agents/<agent id>/mcp`
+Every agent is also an MCP server, at `https://run.camelai.com/v1/agents/<agent id>/mcp`
 (Streamable HTTP). Connect Claude, Cursor or any MCP client to it, and the model
 there can talk to your agent. It has one tool, `message`: it sends the agent a
 message and returns the agent's reply. The agent's own tools stay its own.
@@ -8,16 +8,16 @@ message and returns the agent's reply. The agent's own tools stay its own.
 Claude Code:
 
 ```sh
-claude mcp add --transport http support https://agents.camelai.dev/v1/agents/client_…/mcp
+claude mcp add --transport http support https://run.camelai.com/v1/agents/client_…/mcp
 # then /mcp in Claude Code to sign in; or skip signing in with a token:
-claude mcp add --transport http support https://agents.camelai.dev/v1/agents/client_…/mcp --header "Authorization: Bearer art_..."
+claude mcp add --transport http support https://run.camelai.com/v1/agents/client_…/mcp --header "Authorization: Bearer art_..."
 ```
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the agent's URL. Cursor and other clients configured with JSON:
 
 ```json
-{ "mcpServers": { "support": { "url": "https://agents.camelai.dev/v1/agents/client_…/mcp" } } }
+{ "mcpServers": { "support": { "url": "https://run.camelai.com/v1/agents/client_…/mcp" } } }
 ```
 
 - **One conversation.** A message joins the agent's history exactly as a prompt

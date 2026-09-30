@@ -1,7 +1,7 @@
 # Frontend examples
 
 Each is a chat with an agent in the browser, over one route in your server (`createAgentHandler`), against
-https://agents.camelai.dev with your API key. See the [Frontend guide](../../docs/frontend.md).
+https://run.camelai.com with your API key. See the [Frontend guide](../../docs/frontend.md).
 
 | Example | Shows |
 | --- | --- |
