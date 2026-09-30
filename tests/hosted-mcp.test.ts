@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { request, type IncomingMessage } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { REFRESH_GRACE_MS } from "../src/oauth.ts";
 import { OPERATOR, OTHER_OPERATOR, lastUser, runtime } from "./runtime-server.ts";
 
 const PUBLIC = "https://agents.example.test";
@@ -179,11 +180,19 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
   assert.deepEqual(grants.map((grant: any) => [grant.clientName, grant.login]), [["Test Agent", null]]);
   assert.equal((await r.call("/v1/oauth/grants", { token: OTHER_OPERATOR })).json.length, 0);
 
-  // Refreshing rotates; presenting a used refresh token again revokes the grant.
-  const refreshed = await (await exchange({ grant_type: "refresh_token", refresh_token: tokens.refresh_token })).json();
+  // Refreshing rotates. Concurrent refreshes with one token, and a retry within the grace, get the same new tokens.
+  const concurrent = await Promise.all([1, 2, 3].map(async () => (await exchange({ grant_type: "refresh_token", refresh_token: tokens.refresh_token })).json()));
+  const refreshed = concurrent[0];
   assert.match(refreshed.access_token, /^aro_/);
   assert.notEqual(refreshed.refresh_token, tokens.refresh_token);
+  for (const other of concurrent) assert.deepEqual([other.access_token, other.refresh_token], [refreshed.access_token, refreshed.refresh_token], "one rotation, whoever won it");
+  const retried = await (await exchange({ grant_type: "refresh_token", refresh_token: tokens.refresh_token })).json();
+  assert.equal(retried.refresh_token, refreshed.refresh_token, "a retry within the grace");
   assert.equal((await r.call("/v1/me", { token: refreshed.access_token })).status, 200);
+  assert.equal((await r.db.query("select count(*)::int as n from oauth_tokens where kind = 'refresh' and grant_id is not null")).rows[0].n, 2, "the losers' tokens are gone");
+  // Past the grace, presenting a used refresh token again revokes the grant.
+  const hash = createHash("sha256").update(tokens.refresh_token).digest("hex");
+  await r.db.query("update oauth_tokens set used_at = used_at - $2 where sha256 = $1", [hash, REFRESH_GRACE_MS + 1000]);
   assert.equal((await (await exchange({ grant_type: "refresh_token", refresh_token: tokens.refresh_token })).json()).error, "invalid_grant");
   assert.equal((await r.call("/v1/me", { token: refreshed.access_token })).status, 401, "reuse ended the grant");
   assert.equal((await r.call("/v1/oauth/grants")).json.length, 0);

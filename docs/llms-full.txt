@@ -2692,7 +2692,8 @@ runtime as the authorization server (`/.well-known/oauth-authorization-server`);
 clients register themselves (`/oauth/register`) and use the authorization code
 flow with PKCE. Access tokens last an hour and act as your tenant at `/mcp` and
 the REST API, except that they cannot create API tokens; refresh tokens last 30
-days and rotate on each use, and a refresh token used twice revokes its grant.
+days and rotate on each use. A refresh token presented again within 10 seconds of its
+rotation (a retry, or refreshes racing) gets the same new tokens; later, it revokes its grant.
 The console's API tokens page lists connected apps under **Connected apps**,
 where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 /v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.

@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { Accounts, Principal } from "./accounts.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
@@ -8,7 +8,8 @@ import { readText } from "./http.ts";
 /**
  * The runtime as an OAuth 2.1 authorization server for its hosted MCP endpoints (/mcp, and each agent's), as MCP's authorization spec
  * asks: protected-resource metadata (RFC 9728), dynamic client registration (RFC 7591), the authorization code
- * flow with PKCE (S256 only), refresh tokens that rotate (a reused one revokes its grant), and revocation (RFC
+ * flow with PKCE (S256 only), refresh tokens that rotate (a reused one revokes its grant, but within REFRESH_GRACE_MS
+ * of its rotation gets the same successor, so a client's retry or concurrent refresh is not taken for theft), and revocation (RFC
  * 7009). People sign in with the console's session and consent on a page of ours. Access tokens are opaque and act
  * for the tenant as an API token does, at /mcp and /v1, until they expire or the grant is revoked.
  *
@@ -31,6 +32,8 @@ export interface OAuthOptions {
 export const SCOPE = "agents";
 export const ACCESS_TOKEN_MS = 3600_000;
 export const REFRESH_TOKEN_MS = 30 * 86_400_000;
+/** How long after a refresh token is rotated presenting it again returns the same new tokens, instead of revoking the grant. */
+export const REFRESH_GRACE_MS = 10_000;
 const CODE_MS = 600_000;
 const ACCESS = "aro_", REFRESH = "arr_", CODE = "arc_";
 const CACHE_MS = 10_000;
@@ -43,6 +46,22 @@ export type OAuthPrincipal = Principal & { via: "oauth"; grantId: string; login?
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+/**
+ * A rotated refresh token's successor (the token response it was exchanged for), sealed with a key only that refresh
+ * token derives: the row keeps its hash, so what is stored opens for no one but whoever presents the token again.
+ */
+const sealKey = (refreshToken: string) => createHash("sha256").update(`oauth-successor:${refreshToken}`).digest();
+function seal(refreshToken: string, value: object) {
+  const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", sealKey(refreshToken), iv);
+  const body = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return [iv, cipher.getAuthTag(), body].map(part => part.toString("base64url")).join(".");
+}
+function unseal(refreshToken: string, sealed: string) {
+  const [iv, tag, body] = sealed.split(".").map(part => Buffer.from(part, "base64url"));
+  const decipher = createDecipheriv("aes-256-gcm", sealKey(refreshToken), iv);
+  decipher.setAuthTag(tag);
+  return JSON.parse(Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8"));
+}
 /** An agent's MCP endpoint (agent-mcp.ts), as a path. */
 const AGENT_RESOURCE = /^\/v1\/agents\/client_[a-f0-9]{40}\/mcp\/?$/;
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -230,19 +249,27 @@ export class OAuth {
         return this.issue(grantId);
       }
       case "refresh_token": {
-        const hash = sha(form.get("refresh_token") ?? "");
-        const row = (await this.options.db.query(
-          "update oauth_tokens t set used_at = $2 from oauth_grants g where t.sha256 = $1 and t.kind = 'refresh' and t.used_at is null and g.id = t.grant_id returning t.grant_id, t.expires_at, g.client_id",
-          [hash, Date.now()])).rows[0];
-        if (!row) {
-          // A refresh token used before is a copy someone kept: end the grant it belongs to.
-          const reused = (await this.options.db.query("select grant_id from oauth_tokens where sha256 = $1 and kind = 'refresh'", [hash])).rows[0];
-          if (reused?.grant_id) { await this.options.db.query("delete from oauth_grants where id = $1", [reused.grant_id]); this.forget(reused.grant_id); }
-          throw new OAuthError("invalid_grant", "The refresh token is unknown, used or revoked");
+        const presented = form.get("refresh_token") ?? "", hash = sha(presented);
+        const current = (await this.options.db.query(
+          "select t.grant_id, t.expires_at, t.used_at, t.data, g.client_id from oauth_tokens t join oauth_grants g on g.id = t.grant_id where t.sha256 = $1 and t.kind = 'refresh'", [hash])).rows[0];
+        if (!current) throw new OAuthError("invalid_grant", "The refresh token is unknown, used or revoked");
+        if (current.client_id !== clientId) throw new OAuthError("invalid_grant", "The refresh token was issued to another client");
+        if (Number(current.expires_at) <= Date.now()) throw new OAuthError("invalid_grant", "The refresh token expired; connect again");
+        if (current.used_at === null) {
+          // The successor is stored before the rotation is claimed, so a request that loses the claim finds it.
+          const tokens = await this.issue(current.grant_id);
+          const claimed = (await this.options.db.query("update oauth_tokens set used_at = $2, data = $3 where sha256 = $1 and used_at is null returning 1",
+            [hash, Date.now(), { successor: seal(presented, tokens) }])).rowCount;
+          if (claimed) return tokens;
+          await this.options.db.query("delete from oauth_tokens where sha256 = any($1)", [[sha(tokens.access_token), sha(tokens.refresh_token)]]);
         }
-        if (row.client_id !== clientId) throw new OAuthError("invalid_grant", "The refresh token was issued to another client");
-        if (Number(row.expires_at) <= Date.now()) throw new OAuthError("invalid_grant", "The refresh token expired; connect again");
-        return this.issue(row.grant_id);
+        // Used already: within the grace, a retry or a concurrent refresh gets what the rotation issued.
+        const used = (await this.options.db.query("select used_at, data from oauth_tokens where sha256 = $1", [hash])).rows[0];
+        if (used?.data?.successor && Date.now() - Number(used.used_at) <= REFRESH_GRACE_MS) return unseal(presented, used.data.successor);
+        // Past it, a used refresh token is a copy someone kept: end the grant it belongs to.
+        await this.options.db.query("delete from oauth_grants where id = $1", [current.grant_id]);
+        this.forget(current.grant_id);
+        throw new OAuthError("invalid_grant", "The refresh token is unknown, used or revoked");
       }
       default: throw new OAuthError("unsupported_grant_type", "grant_type is authorization_code or refresh_token");
     }
