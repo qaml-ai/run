@@ -159,10 +159,13 @@ test("deliveries are verified, filtered, deduped, keyed to one agent each, and c
   await until(() => r.prompts.length >= 3, "three prompts");
   await sleep(100);
   assert.equal(r.prompts.length, 3, "the retried delivery is dropped");
-  const [first, second, third] = r.prompts;
+  // Deliveries for different keys run independently, so issue 2's prompt may come before issue 1's second.
+  const of = (id: number) => r.prompts.filter(prompt => prompt.text.includes(`"id": ${id},`));
+  const [first, second] = of(1), [third] = of(2);
+  assert.equal(of(1).length, 2);
   assert.equal(first.agent, second.agent, "one agent per key");
   assert.notEqual(first.agent, third.agent);
-  assert.deepEqual(r.created.map(agent => agent.name), ["Webhook: sentry-1", "Webhook: sentry-2"]);
+  assert.deepEqual(r.created.map(agent => agent.name).sort(), ["Webhook: sentry-1", "Webhook: sentry-2"]);
   assert.match(first.text, /^A webhook delivery arrived:\n```json\n\{\n  "action": "created"/);
   assert.equal(first.from?.id, "webhook:ada@example.com");
   assert.equal(first.files?.length, 1);
