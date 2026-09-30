@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useState } from "react";
-import type { FilePart } from "@camelai/agent-runtime/chat";
+import type { FilePart } from "@camelai/run/chat";
 import { useAgent } from "../index.tsx";
 import { useUI } from "./context.tsx";
 

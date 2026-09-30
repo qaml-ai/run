@@ -57,7 +57,7 @@ test("the hosted MCP endpoint runs the CLI's tools as the caller, and reads no f
   assert.equal(deployed.json[0].agents[0].status, "ready");
   const ran = await call("run_agent", { agent: "hosted-1", message: "ping" });
   assert.equal(ran.json.text, "echo: ping", ran.text);
-  assert.match((await call("read_docs")).text, /^# camelAI agent runtime/);
+  assert.match((await call("read_docs")).text, /^# camelRun/);
   assert.equal((await call("read_docs", { path: "../v1/me" })).isError, true);
 
   // Nothing of the server's: no files, no environment variables.

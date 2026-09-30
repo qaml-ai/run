@@ -4,7 +4,7 @@
  * mints (`POST /v1/agents/:id/browser-tokens`). No Node APIs and no dependencies.
  *
  * ```ts
- * import { watchAgent } from "@camelai/agent-runtime/watch";
+ * import { watchAgent } from "@camelai/run/watch";
  * const watcher = watchAgent({ url, agentId, token, getToken: () => fetch("/api/token").then(r => r.json()), onChange: render });
  * ```
  */

@@ -67,7 +67,7 @@ import { Webhook } from "standardwebhooks";
 const event = new Webhook(process.env.WEBHOOK_SECRET!.replace(/^whsec_/, "")).verify(body, headers) as WebhookEvent;
 ```
 
-(`WebhookEvent` is typed in `@camelai/agent-runtime`.)
+(`WebhookEvent` is typed in `@camelai/run`.)
 
 - Delivery is at least once. Answer 2xx within 10 seconds; anything else is
   retried with exponential backoff, from 5 seconds to an hour apart, for 3 days.

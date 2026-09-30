@@ -1,6 +1,6 @@
 # @camelai/camelrun
 
-The Camel Run CLI: deploy and manage agents on the [camelAI agent runtime](https://agents.camelai.dev)
+The camelRun CLI: deploy and manage agents on [camelRun](https://agents.camelai.dev)
 from a terminal, a script or CI, and give a coding agent the same powers over MCP.
 
 ```sh

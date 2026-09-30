@@ -11,7 +11,7 @@ import sqlite3
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "clients" / "python"))
-from camelai_agent_runtime import Agents, ToolContext, tool
+from camelai_run import Agents, ToolContext, tool
 
 
 async def main():

@@ -3,9 +3,9 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { describe, expect, it } from "vitest";
-import { projectMessages, type ChatInput, type LocalSend, type ProjectInput, type ProjectMemo, type UserChatMessage } from "@camelai/agent-runtime/chat";
-import { AgentChat, Markdown, UserMessage } from "@camelai/agent-runtime-react/ui";
-import type { ToolRenderProps } from "@camelai/agent-runtime-react";
+import { projectMessages, type ChatInput, type LocalSend, type ProjectInput, type ProjectMemo, type UserChatMessage } from "@camelai/run/chat";
+import { AgentChat, Markdown, UserMessage } from "@camelai/run-react/ui";
+import type { ToolRenderProps } from "@camelai/run-react";
 import { fakeChat } from "./fake-chat.ts";
 
 const user = (text: string, timestamp: number, extra: object = {}) => ({ role: "user", content: text, timestamp, ...extra }) as ProjectInput["messages"][number];

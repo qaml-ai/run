@@ -94,7 +94,7 @@ export function interpolate(value: unknown, env: Record<string, string | undefin
 }
 
 export function template(key: string, model?: string) {
-  return `# An agent on the camelAI agent runtime. Deploy it with \`camelrun deploy\`; deploying again
+  return `# An agent on camelRun. Deploy it with \`camelrun deploy\`; deploying again
 # updates the definition in place (the same key is the same definition).
 # Fields: https://agents.camelai.dev/docs/guides/definitions.md
 key: ${key}

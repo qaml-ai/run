@@ -6,7 +6,7 @@
 > you replace `authorize` in `app/api/agent/route.ts` (and `proxy.ts`) with your auth, or opt in to
 > anonymous demo users with `DEMO_AUTH=1`.
 
-A Next.js app with a streaming chat to an agent on the [camelAI agent runtime](https://agents.camelai.dev).
+A Next.js app with a streaming chat to an agent on [camelRun](https://agents.camelai.dev).
 
 ```sh
 cp .env.example .env.local   # add your CAMELAI_API_KEY
@@ -23,8 +23,8 @@ Your account needs access to it: prepaid credit, or your own OpenRouter key in t
   sign-in in `authorize` (and `proxy.ts`) with yours.
 - `app/components/chat.tsx`: the chat (`<AgentChat>`), with `get_weather` drawn by your own component.
   Theme it with CSS variables (`--agent-accent`, `--agent-radius`, …), or build your own UI with the hooks
-  in `@camelai/agent-runtime-react` (`useMessages`, `useSend`, `useAgentStatus`, `useInputs`).
+  in `@camelai/run-react` (`useMessages`, `useSend`, `useAgentStatus`, `useInputs`).
 
 Tools in `route.ts` run inside this server, so they need a long-running process (`next dev`,
 `next start`, a container). On serverless hosting, serve them with `serveTools` (with your `tenant`) from
-`@camelai/agent-runtime/server` and name them in a definition (`agent: { definition: "def_…" }`).
+`@camelai/run/server` and name them in a definition (`agent: { definition: "def_…" }`).

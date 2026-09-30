@@ -1,6 +1,6 @@
 # ai-sdk
 
-The AI SDK's `useChat` with an agent: `AgentRuntimeChatTransport` from `@camelai/agent-runtime/ai-sdk` talks to
+The AI SDK's `useChat` with an agent: `AgentRuntimeChatTransport` from `@camelai/run/ai-sdk` talks to
 the same route (`createAgentHandler`, here in Express), so anything built on `useChat` (AI Elements, say) works
 with it. The agent keeps the conversation: `useChat`'s `id` is the route's thread, only the new message is sent,
 and `loadMessages` reads the history back.

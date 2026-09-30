@@ -1,7 +1,7 @@
 import { createRoot } from "react-dom/client";
-import { AgentChat } from "@camelai/agent-runtime-react/ui";
-import type { ToolRenderProps } from "@camelai/agent-runtime-react";
-import "@camelai/agent-runtime-react/styles.css";
+import { AgentChat } from "@camelai/run-react/ui";
+import type { ToolRenderProps } from "@camelai/run-react";
+import "@camelai/run-react/styles.css";
 
 // Demo sign-in: a random user per browser (see server.ts).
 const user = localStorage.demoUser ??= crypto.randomUUID();

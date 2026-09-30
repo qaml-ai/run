@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AgentProvider, useAgentSelector, useAgentStatus, useInputs, useMessages, useSend, useToolRenderer, useToolRendererFor,
   type ChatMessage, type ToolRenderProps,
-} from "@camelai/agent-runtime-react";
+} from "@camelai/run-react";
 import { fakeChat } from "./fake-chat.ts";
 
 const message = (id: string, text: string): ChatMessage => ({ id, role: "user", parts: [{ type: "text", id: `${id}:0`, text, streaming: false }], text, createdAt: 1, status: "sent" });

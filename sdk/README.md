@@ -1,12 +1,12 @@
-# @camelai/agent-runtime
+# @camelai/run
 
-The TypeScript SDK for the camelAI agent runtime: durable agents you upsert by
+The TypeScript SDK for camelRun: durable agents you upsert by
 key and run, with tools that are ordinary functions in your code. The runtime
 runs the model loop, keeps each agent's history and files, and runs
 model-written code in a sandbox that can only call your tools.
 
 ```sh
-npm install @camelai/agent-runtime
+npm install @camelai/run
 ```
 
 Node 22 or later, Bun, Deno or Cloudflare Workers. Get an API key from the
@@ -14,7 +14,7 @@ console at <https://agents.camelai.dev/console> and export it as
 `CAMELAI_API_KEY`.
 
 ```ts
-import { Agents, schema, tool } from "@camelai/agent-runtime";
+import { Agents, schema, tool } from "@camelai/run";
 
 const agents = new Agents();
 
@@ -47,12 +47,12 @@ await agents.close();
 - **Tools.** Each call's `context.idempotencyKey` is stable across retries;
   `timeoutMs` and `context.progress()` handle long calls. One process at a time
   serves an agent's tools; serverless and multi-user backends serve them over
-  HTTP with `serveTools` (`@camelai/agent-runtime/server`).
+  HTTP with `serveTools` (`@camelai/run/server`).
 - **Browsers.** A chat in your app: one route with `createAgentHandler`
-  (`@camelai/agent-runtime/server`) and `<AgentChat>` or the hooks from
-  `@camelai/agent-runtime-react` (or `/chat` without React, `/ai-sdk` with the AI
+  (`@camelai/run/server`) and `<AgentChat>` or the hooks from
+  `@camelai/run-react` (or `/chat` without React, `/ai-sdk` with the AI
   SDK's `useChat`); see the Frontend guide (`docs/frontend.md`), or start with
-  `npm create @camelai/agent-app`. `watchAgent` (`@camelai/agent-runtime/watch`)
+  `npm create @camelai/run-app`. `watchAgent` (`@camelai/run/watch`)
   shows an agent live with a browser token your server mints.
 
 Documentation: [Quickstart](https://agents.camelai.dev/docs/quickstart.md),

@@ -32,7 +32,7 @@ return Response.json(await agents.runtime.browserToken(agent.id, { ttlSeconds: 9
 ## 2. Watch from the browser
 
 ```ts
-import { watchAgent } from "@camelai/agent-runtime/watch";
+import { watchAgent } from "@camelai/run/watch";
 
 const { token, expiresAt, agentId, url } = await fetch(`/api/threads/${id}/token`, { method: "POST" }).then(r => r.json());
 const watcher = watchAgent({
@@ -45,7 +45,7 @@ const watcher = watchAgent({
 // later: watcher.loadOlder() on scroll-up; watcher.close() when the view goes away
 ```
 
-`@camelai/agent-runtime/watch` has no dependencies and no Node APIs (it bundles
+`@camelai/run/watch` has no dependencies and no Node APIs (it bundles
 to under 30 KB). `state` is:
 
 | field | |

@@ -3,7 +3,7 @@
  *
  *   CAMELAI_API_KEY=art_… node --experimental-strip-types examples/quickstart.ts
  *
- * In your app: import { Agents, schema, tool } from "@camelai/agent-runtime";
+ * In your app: import { Agents, schema, tool } from "@camelai/run";
  */
 import { Agents, schema, tool } from "../clients/typescript.ts";
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT (shipped in the MIT-licensed SDK, @camelai/agent-runtime)
+// SPDX-License-Identifier: MIT (shipped in the MIT-licensed SDK, @camelai/run)
 export const FRAME_BYTES = 1_100_000;
 /** `uncertain` marks an outcome nobody can confirm (timeout after claim, restart). It is informational, never a gate. */
 export type Outcome = { result: unknown; error?: never; uncertain?: never } | { error: string; uncertain?: boolean; result?: never };

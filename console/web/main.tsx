@@ -50,7 +50,7 @@ const NAV = [
   { to: "quickstart", label: "Quickstart", icon: Rocket },
 ];
 
-/** While `tenant` is signed in, offer the Camel Run tools to the browser's agent (WebMCP), where the browser has one. */
+/** While `tenant` is signed in, offer the camelRun tools to the browser's agent (WebMCP), where the browser has one. */
 function useWebMcp(tenant: string | undefined) {
   useEffect(() => {
     // Loaded only where the browser has an agent to offer tools to: the tools bring zod and yaml with them.

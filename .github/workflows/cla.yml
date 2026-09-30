@@ -24,6 +24,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           path-to-signatures: signatures/version1/cla.json
-          path-to-document: https://github.com/qaml-ai/agent-runtime/blob/main/CLA.md
+          path-to-document: https://github.com/qaml-ai/run/blob/main/CLA.md
           branch: cla-signatures
           allowlist: Vercantez,illianaa,howdy-isabella,dependabot[bot],github-actions[bot]

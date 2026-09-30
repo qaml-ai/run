@@ -10,7 +10,7 @@ export function QuickstartPage() {
   const model = available.data?.find(entry => entry.id === "anthropic/claude-sonnet-5")?.id ?? available.data?.[0]?.id ?? "anthropic/claude-sonnet-5";
   // The hosted runtime is the SDKs' default; another origin (a self-hosted console) is named explicitly.
   const hosted = url === "https://agents.camelai.dev";
-  const typescript = `import { Agents, schema, tool } from "@camelai/agent-runtime";
+  const typescript = `import { Agents, schema, tool } from "@camelai/run";
 
 const agents = new Agents(${hosted ? "" : `{ url: "${url}" }`}); // reads CAMELAI_API_KEY: an API token from this console
 
@@ -33,7 +33,7 @@ console.log(run.text);
 
 await agents.close();`;
   const python = `import asyncio
-from camelai_agent_runtime import Agents, tool
+from camelai_run import Agents, tool
 
 @tool
 def weather(city: str) -> dict:
@@ -80,8 +80,8 @@ curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -r '.outcome.result
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <CodeBlock language="shell" code="npm install @camelai/agent-runtime" />
-            <CodeBlock language="shell" code="pip install camelai-agent-runtime" />
+            <CodeBlock language="shell" code="npm install @camelai/run" />
+            <CodeBlock language="shell" code="pip install camelai-run" />
           </CardContent>
         </Card>
         <Card>

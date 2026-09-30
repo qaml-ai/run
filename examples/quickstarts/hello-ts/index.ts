@@ -1,4 +1,4 @@
-import { Agents } from "@camelai/agent-runtime";
+import { Agents } from "@camelai/run";
 
 const agents = new Agents(); // reads CAMELAI_API_KEY
 const agent = await agents.upsert("hello-ts", { model: "openrouter/openai/gpt-6-luna" });

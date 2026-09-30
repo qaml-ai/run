@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type ReactNode } from "react";
-import { inlineText, parseMarkdown, type Block, type Inline } from "@camelai/agent-runtime/markdown";
+import { inlineText, parseMarkdown, type Block, type Inline } from "@camelai/run/markdown";
 import { cx, useUI } from "./context.tsx";
 
 /**

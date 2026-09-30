@@ -1,4 +1,4 @@
-import { Agents, schema, tool } from "@camelai/agent-runtime";
+import { Agents, schema, tool } from "@camelai/run";
 
 // A real tool: runs here, in this process, and calls Open-Meteo (free, no key).
 const weather = tool({

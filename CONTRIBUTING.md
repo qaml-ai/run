@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve the camelAI agent runtime.
+Thanks for helping improve camelRun.
 
 ## Contributor License Agreement
 

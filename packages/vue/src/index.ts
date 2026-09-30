@@ -6,9 +6,9 @@
  *   const { messages, status, send, stop } = useAgentChat({ endpoint: "/api/agent" });
  */
 import { getCurrentInstance, getCurrentScope, inject, onMounted, onScopeDispose, provide, readonly, shallowRef, type InjectionKey, type Ref } from "vue";
-import { createAgentChat, type AgentChat, type AgentChatOptions, type ChatSnapshot } from "@camelai/agent-runtime/chat";
-export type * from "@camelai/agent-runtime/chat";
-export { answerValue, createAgentChat } from "@camelai/agent-runtime/chat";
+import { createAgentChat, type AgentChat, type AgentChatOptions, type ChatSnapshot } from "@camelai/run/chat";
+export type * from "@camelai/run/chat";
+export { answerValue, createAgentChat } from "@camelai/run/chat";
 
 export interface UseAgentChat {
   chat: AgentChat;

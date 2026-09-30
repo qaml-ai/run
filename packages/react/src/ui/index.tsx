@@ -5,13 +5,13 @@
  * components per tool), the agent's questions and approvals, files it hands over, a composer with
  * stop, and scrolling that follows the reply. Themed with CSS variables; import the stylesheet once:
  *
- *   import { AgentChat } from "@camelai/agent-runtime-react/ui";
- *   import "@camelai/agent-runtime-react/styles.css";
+ *   import { AgentChat } from "@camelai/run-react/ui";
+ *   import "@camelai/run-react/styles.css";
  *
  *   <AgentChat endpoint="/api/agent" suggestions={["Where is my order?"]} />
  */
 import { useMemo, type CSSProperties, type ReactNode } from "react";
-import type { AgentChat as Chat, ChatInput } from "@camelai/agent-runtime/chat";
+import type { AgentChat as Chat, ChatInput } from "@camelai/run/chat";
 import { AgentProvider, useAgent, useAgentSelector, useAgentStatus, type ToolRenderers, type UseAgentChatOptions } from "../index.tsx";
 import { Composer, type ComposerHandle, type ComposerProps } from "./composer.tsx";
 import { cx, defaultLabels, UIContext, useUI, type AgentChatComponents, type Labels, type UIContextValue } from "./context.tsx";

@@ -1,5 +1,5 @@
 import { createContext, useContext, type ComponentType, type ReactNode } from "react";
-import type { AssistantChatMessage, ChatInput, FilePart, ToolPart, UserChatMessage } from "@camelai/agent-runtime/chat";
+import type { AssistantChatMessage, ChatInput, FilePart, ToolPart, UserChatMessage } from "@camelai/run/chat";
 import type { ToolRenderers } from "../index.tsx";
 
 /** Every string the components show, for translation or tone. */

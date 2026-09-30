@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useAgentChat } from "@camelai/agent-runtime-vue";
+import { useAgentChat } from "@camelai/run-vue";
 
 // Demo sign-in: a random user per browser (see server.ts).
 const user = (localStorage.demoUser ??= crypto.randomUUID());

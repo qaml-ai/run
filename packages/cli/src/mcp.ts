@@ -24,7 +24,7 @@ export async function serve(api: () => Api, options: { cwd: string }) {
  */
 export function createServer(api: () => Api, options: { cwd?: string } = {}) {
   const { cwd } = options;
-  const server = new McpServer({ name: "camelrun", title: "Camel Run", version: VERSION }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "camelrun", title: "camelRun", version: VERSION }, { instructions: INSTRUCTIONS });
   const local = cwd === undefined ? undefined : {
     env: process.env,
     readFile: (path: string) => readFileSync(resolve(cwd, path), "utf8"),

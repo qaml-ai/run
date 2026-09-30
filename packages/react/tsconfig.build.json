@@ -5,8 +5,8 @@
     "rewriteRelativeImportExtensions": true,
     "jsx": "react-jsx", "types": [], "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "paths": {
-      "@camelai/agent-runtime/chat": ["../../sdk/dist/clients/chat.d.ts"],
-      "@camelai/agent-runtime/markdown": ["../../sdk/dist/clients/markdown.d.ts"]
+      "@camelai/run/chat": ["../../sdk/dist/clients/chat.d.ts"],
+      "@camelai/run/markdown": ["../../sdk/dist/clients/markdown.d.ts"]
     }
   },
   "include": ["./src/**/*.ts", "./src/**/*.tsx"]

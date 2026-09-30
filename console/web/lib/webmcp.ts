@@ -3,7 +3,7 @@ import { Api } from "../../../packages/cli/src/api.ts";
 import { errorText, resultText, tools, type ToolSpec } from "../../../packages/cli/src/tools.ts";
 
 /**
- * WebMCP (https://webmachinelearning.github.io/webmcp/): while someone is signed in to the console, the Camel Run
+ * WebMCP (https://webmachinelearning.github.io/webmcp/): while someone is signed in to the console, the camelRun
  * tools (the same list as camelrun mcp and the hosted /mcp) are offered to the browser's agent. They run in the page,
  * as the signed-in person, through the console's own session. The spec puts `modelContext` on `document`; Chrome's
  * early builds have it on `navigator`, with `unregisterTool`. Without either, nothing happens.

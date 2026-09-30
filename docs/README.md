@@ -1,4 +1,4 @@
-# camelAI agent runtime documentation
+# camelRun documentation
 
 The hosted runtime for durable agents: you define tools in your code, and the
 runtime runs the model loop, keeps each agent's history and files, runs

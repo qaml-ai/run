@@ -19,7 +19,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - `src/` server, supervisor, agent host, sessions, scheduler, REST API, sandbox
 - `migrations/` Postgres schema, applied at startup
 - `shared/` storage backends (file, S3), wire protocol
-- `clients/` TypeScript and Python SDKs; `sdk/` publishes `@camelai/agent-runtime`
+- `clients/` TypeScript and Python SDKs; `sdk/` publishes `@camelai/run`
 - `console/` tenant console (React); `studio/` local chat/trace UI
 - `infra/` AWS provisioning and deploy scripts; `deploy/smoke.ts` live smoke test; `deploy/selfhost/` Docker Compose for self-hosting
 - `tests/` Node test suites (no paid model calls)

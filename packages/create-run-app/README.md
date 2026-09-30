@@ -1,9 +1,9 @@
-# @camelai/create-agent-app
+# @camelai/create-run-app
 
-Create a Next.js app with a streaming chat to an agent on the camelAI agent runtime:
+Create a Next.js app with a streaming chat to an agent on camelRun:
 
 ```sh
-npm create @camelai/agent-app my-app -- --api-key $CAMELAI_API_KEY
+npm create @camelai/run-app my-app -- --api-key $CAMELAI_API_KEY
 cd my-app && npm run dev
 ```
 

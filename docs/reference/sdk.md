@@ -1,22 +1,22 @@
 # SDKs
 
-The TypeScript SDK (`@camelai/agent-runtime`) and the Python SDK
-(`camelai-agent-runtime`). Start with the [Quickstart](../quickstart.md);
+The TypeScript SDK (`@camelai/run`) and the Python SDK
+(`camelai-run`). Start with the [Quickstart](../quickstart.md);
 this page is the reference.
 
 ```sh
-npm install @camelai/agent-runtime      # Node 22+, Bun, Deno, Cloudflare Workers
-pip install camelai-agent-runtime       # Python 3.11+; "camelai-agent-runtime[server]" for serve_tools
+npm install @camelai/run      # Node 22+, Bun, Deno, Cloudflare Workers
+pip install camelai-run       # Python 3.11+; "camelai-run[server]" for serve_tools
 ```
 
 | TypeScript entry | |
 | --- | --- |
-| `@camelai/agent-runtime` | everything portable: `Agents`, `tool`, `schema`, the lower-level `AgentRuntime` and `AgentClient`, the types |
-| `@camelai/agent-runtime/node` | the same for Node and Bun, plus local file paths as attachments, `nodeListener` |
-| `@camelai/agent-runtime/server` | `serveTools`, `verifyRuntimeToken`, `runtimeAuth`, `runtimeIdentity`: serving tools over HTTP |
-| `@camelai/agent-runtime/watch` | `watchAgent`: reading an agent from a browser |
-| `@camelai/agent-runtime/mcp` | `fromMcpServer`: attaching an MCP SDK server (needs `@modelcontextprotocol/sdk`) |
-| `@camelai/agent-runtime/testing` | `testRuntime`: signing identity tokens in tests |
+| `@camelai/run` | everything portable: `Agents`, `tool`, `schema`, the lower-level `AgentRuntime` and `AgentClient`, the types |
+| `@camelai/run/node` | the same for Node and Bun, plus local file paths as attachments, `nodeListener` |
+| `@camelai/run/server` | `serveTools`, `verifyRuntimeToken`, `runtimeAuth`, `runtimeIdentity`: serving tools over HTTP |
+| `@camelai/run/watch` | `watchAgent`: reading an agent from a browser |
+| `@camelai/run/mcp` | `fromMcpServer`: attaching an MCP SDK server (needs `@modelcontextprotocol/sdk`) |
+| `@camelai/run/testing` | `testRuntime`: signing identity tokens in tests |
 
 The public types need nothing else installed: messages and events are declared
 in the SDK (`Message`, `AgentEvent`, `AssistantMessage`, …).
@@ -206,7 +206,7 @@ waiting also asks for its own status every 30 s (`pollMs`, Python
 
 A `message_update` is its delta alone (`assistantMessageEvent`), not the whole
 message: fold the message from its `message_start` and the deltas since
-(`@camelai/agent-runtime/watch` does). A subscriber that cannot replay gets a
+(`@camelai/run/watch` does). A subscriber that cannot replay gets a
 `snapshot` of the running turn first. See the [event
 reference](../reference/events.md).
 
@@ -249,7 +249,7 @@ can be cached. `history()` answers the whole transcript.
 
 ### Portable use
 
-The portable entry (`@camelai/agent-runtime`) imports no Node modules and reads
+The portable entry (`@camelai/run`) imports no Node modules and reads
 environment variables only where the platform has them, so it runs on
 Cloudflare Workers and other runtimes without a filesystem. A client keeps its
 stream's cursor in memory; a new one starts from a snapshot of the running turn.

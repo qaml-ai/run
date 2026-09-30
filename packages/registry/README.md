@@ -9,6 +9,6 @@ npx shadcn add https://agents.camelai.dev/r/agent-markdown.json  # just the mark
 npx shadcn add https://agents.camelai.dev/r/agent-route.json     # app/api/agent/route.ts (Next.js)
 ```
 
-They use the hooks from `@camelai/agent-runtime-react` (installed with them). Sources are in `src/`;
+They use the hooks from `@camelai/run-react` (installed with them). Sources are in `src/`;
 after changing them, run `npm run registry` (writes `public/r/*.json`; a test fails when those are
 stale).

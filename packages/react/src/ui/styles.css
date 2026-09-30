@@ -1,5 +1,5 @@
 /*
- * @camelai/agent-runtime-react/styles.css: the default look of <AgentChat>.
+ * @camelai/run-react/styles.css: the default look of <AgentChat>.
  * Theme it with the variables below (on .agent-chat or any ancestor); every rule has zero specificity
  * beyond its class (:where), so your own CSS wins without !important.
  * Dark mode follows the system unless theme="light"/"dark" is set, or an ancestor has .dark/.light

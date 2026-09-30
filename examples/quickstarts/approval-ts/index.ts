@@ -1,7 +1,7 @@
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { Agents, schema, tool } from "@camelai/agent-runtime";
+import { Agents, schema, tool } from "@camelai/run";
 
 // A throwaway folder for the agent to tidy.
 const dir = "playground";

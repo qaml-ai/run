@@ -1,4 +1,4 @@
-# Agent runtime
+# camelRun
 
 A hosted runtime for durable agents. Applications define tools in their own
 code with the TypeScript or Python SDK (or serve them over HTTP); the runtime runs
@@ -11,7 +11,7 @@ Live at <https://agents.camelai.dev> (REST API under `/v1`, described by
 `/console`).
 
 ```ts
-import { Agents } from "@camelai/agent-runtime";
+import { Agents } from "@camelai/run";
 
 const agents = new Agents(); // CAMELAI_API_KEY
 const agent = await agents.upsert("support-triage", { model: "anthropic/claude-sonnet-5-5", instructions: "Be concise." });
@@ -39,7 +39,7 @@ for agents and tools that read documentation.
 ## Repository
 
 - `src/` server, supervisor, agent host, sessions, scheduler, REST API, sandbox
-- `clients/` the TypeScript and Python SDKs; `sdk/` publishes `@camelai/agent-runtime`
+- `clients/` the TypeScript and Python SDKs; `sdk/` publishes `@camelai/run`
 - `packages/cli/` the `camelrun` CLI and MCP server (`@camelai/camelrun`)
 - `console/` the tenant console; `studio/` a local chat and trace UI
 - `examples/` runnable examples; `docs/` the documentation
@@ -57,7 +57,7 @@ The runtime (this repository's server, `src/`, `shared/`, `infra/`, and everythi
 The client SDKs and frontend packages are MIT, so you can use them in any application:
 
 - `clients/` (the TypeScript and Python SDKs) and `sdk/`: [MIT](clients/LICENSE)
-- `packages/` (React, Vue, Svelte, Solid, `create-agent-app`, the CLI): MIT, each with its own `LICENSE`
+- `packages/` (React, Vue, Svelte, Solid, `create-run-app`, the CLI): MIT, each with its own `LICENSE`
 - `shared/client-protocol.ts`, which ships inside the SDK: MIT
 - `examples/`: [MIT](examples/LICENSE)
 

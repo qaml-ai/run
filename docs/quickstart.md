@@ -26,13 +26,13 @@ server and never ship it to a browser.
 TypeScript (Node 22 or later, or Bun):
 
 ```sh
-npm install @camelai/agent-runtime
+npm install @camelai/run
 ```
 
 Python (3.11 or later):
 
 ```sh
-pip install camelai-agent-runtime
+pip install camelai-run
 ```
 
 ## 3. Run an agent
@@ -40,7 +40,7 @@ pip install camelai-agent-runtime
 TypeScript, `quickstart.ts`:
 
 ```ts
-import { Agents, schema, tool } from "@camelai/agent-runtime";
+import { Agents, schema, tool } from "@camelai/run";
 
 const agents = new Agents(); // reads CAMELAI_API_KEY
 
@@ -72,7 +72,7 @@ Python, `quickstart.py`:
 
 ```python
 import asyncio
-from camelai_agent_runtime import Agents, tool
+from camelai_run import Agents, tool
 
 @tool
 def weather(city: str) -> dict:

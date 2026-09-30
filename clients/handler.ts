@@ -10,7 +10,7 @@
  *   });
  *
  * Fetch-standard: Next.js route handlers, Hono (`c => handler(c.req.raw)`), Workers, Bun and Deno take it
- * as is; Express and node:http with `nodeListener(handler)` from "@camelai/agent-runtime/node".
+ * as is; Express and node:http with `nodeListener(handler)` from "@camelai/run/node".
  *
  * With `proxy: true`, browsers read their agent through this route too (GET <route>/v1/agents/:id/…),
  * so they only ever talk to your origin: mount it on the route and everything under it.

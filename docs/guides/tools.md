@@ -8,7 +8,7 @@ for. For the short version of where tools should run, see the table in
 ## Writing a tool
 
 ```ts
-import { schema, tool } from "@camelai/agent-runtime";
+import { schema, tool } from "@camelai/run";
 
 const refund = tool({
   description: "Refund an order in full",
@@ -22,7 +22,7 @@ const refund = tool({
 ```
 
 ```python
-from camelai_agent_runtime import ToolContext, tool
+from camelai_run import ToolContext, tool
 
 @tool(timeout=60)
 async def refund(order_id: str, context: ToolContext) -> dict:
@@ -89,7 +89,7 @@ credentials, and nothing is exposed on the network. The trade-offs:
 
 An existing MCP server (from `@modelcontextprotocol/sdk`) can be attached as is:
 `upsert(key, { mcp: await fromMcpServer(server) })` from
-`@camelai/agent-runtime/mcp`.
+`@camelai/run/mcp`.
 
 ## Served tools: over HTTP, for serverless and many users
 
@@ -99,7 +99,7 @@ nothing needs to stay connected, and the runtime signs a token for each call
 saying which agent it is for, whom that agent acts for, and who is acting.
 
 ```ts
-import { serveTools } from "@camelai/agent-runtime/server";
+import { serveTools } from "@camelai/run/server";
 
 // A fetch handler: Cloudflare Workers, Bun and Deno serve it as is.
 // tenant: your tenant's id (GET /v1/me, or `await agents.runtime.me()`): tokens for other tenants' agents are refused.
@@ -107,7 +107,7 @@ export default { fetch: serveTools({ refund }, { runtime: "https://agents.camela
 ```
 
 On Node, wrap it: `createServer(nodeListener(handler, { origin: "https://tools.example.com" }))`
-with `nodeListener` from `@camelai/agent-runtime/node`. Tokens are checked
+with `nodeListener` from `@camelai/run/node`. Tokens are checked
 against the URL the runtime called, so set `origin` to your public URL. Without
 it, the URL is the server's own (its socket's scheme and the Host header), which
 is wrong behind a load balancer or proxy that ends TLS. `trustProxy: true` reads
@@ -116,7 +116,7 @@ proxy overwrites those headers: otherwise any client could choose the URL tokens
 are checked against.
 
 ```python
-from camelai_agent_runtime import serve_tools
+from camelai_run import serve_tools
 
 app = serve_tools([refund], runtime="https://agents.camelai.dev", tenant="acme")  # ASGI: uvicorn, or mount in FastAPI
 ```
@@ -124,7 +124,7 @@ app = serve_tools([refund], runtime="https://agents.camelai.dev", tenant="acme")
 Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
 naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 
-(`pip install "camelai-agent-runtime[server]"` for the token checks.)
+(`pip install "camelai-run[server]"` for the token checks.)
 
 Then name the server in a definition, and make agents from it:
 
@@ -146,7 +146,7 @@ your own tenant. Any tenant can make agents, give them any `subject` and
 `context`, and point them at your server's URL; the runtime signs their tokens
 too. Only the tenant check tells your agents from theirs. Pass your tenant's id
 (or a list, if several of your tenants share the server). To test your authorization without a runtime,
-`testRuntime()` (`@camelai/agent-runtime/testing`; `TestRuntime()` in Python)
+`testRuntime()` (`@camelai/run/testing`; `TestRuntime()` in Python)
 signs tokens with a key of its own:
 
 ```ts

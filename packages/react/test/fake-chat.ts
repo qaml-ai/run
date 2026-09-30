@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AgentChat, ChatSnapshot } from "@camelai/agent-runtime/chat";
+import type { AgentChat, ChatSnapshot } from "@camelai/run/chat";
 
 export const EMPTY: ChatSnapshot = { status: "ready", messages: [], inputs: [], error: null, hasOlder: false, connected: true, agentId: "client_x" };
 

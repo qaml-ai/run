@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useMemo, type ReactNode } from "react";
-import { parseMarkdown, type Block, type Inline } from "@camelai/agent-runtime/markdown";
+import { parseMarkdown, type Block, type Inline } from "@camelai/run/markdown";
 import { cn } from "@/lib/utils";
 
 /**

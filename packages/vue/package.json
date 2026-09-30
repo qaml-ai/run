@@ -1,12 +1,12 @@
 {
-  "name": "@camelai/agent-runtime-vue",
+  "name": "@camelai/run-vue",
   "version": "0.10.1",
-  "description": "Vue bindings for chatting with agents on the camelAI agent runtime.",
+  "description": "Vue bindings for chatting with agents on camelRun.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qaml-ai/agent-runtime.git",
+    "url": "git+https://github.com/qaml-ai/run.git",
     "directory": "packages/vue"
   },
   "homepage": "https://agents.camelai.dev",
@@ -31,7 +31,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@camelai/agent-runtime": "0.10.1"
+    "@camelai/run": "0.10.1"
   },
   "peerDependencies": {
     "vue": "^3.3.0"

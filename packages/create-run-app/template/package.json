@@ -9,8 +9,8 @@
     "start": "next start"
   },
   "dependencies": {
-    "@camelai/agent-runtime": "^{{version}}",
-    "@camelai/agent-runtime-react": "^{{version}}",
+    "@camelai/run": "^{{version}}",
+    "@camelai/run-react": "^{{version}}",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

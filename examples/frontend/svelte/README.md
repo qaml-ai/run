@@ -1,6 +1,6 @@
 # svelte
 
-A chat with an agent in Svelte 5, with `agentChat` from `@camelai/agent-runtime-svelte` (stores for the messages, status and inputs, and the actions). The route is `createAgentHandler` in a plain Express server; the API key stays there, and the browser streams
+A chat with an agent in Svelte 5, with `agentChat` from `@camelai/run-svelte` (stores for the messages, status and inputs, and the actions). The route is `createAgentHandler` in a plain Express server; the API key stays there, and the browser streams
 from the runtime with a short-lived token the route mints.
 
 ```sh

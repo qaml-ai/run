@@ -6,9 +6,9 @@
  *   <For each={chat.messages()}>{message => …}</For>
  */
 import { createSignal, getOwner, onCleanup, onMount, type Accessor } from "solid-js";
-import { createAgentChat, type AgentChat, type AgentChatOptions, type ChatSnapshot } from "@camelai/agent-runtime/chat";
-export type * from "@camelai/agent-runtime/chat";
-export { answerValue, createAgentChat } from "@camelai/agent-runtime/chat";
+import { createAgentChat, type AgentChat, type AgentChatOptions, type ChatSnapshot } from "@camelai/run/chat";
+export type * from "@camelai/run/chat";
+export { answerValue, createAgentChat } from "@camelai/run/chat";
 
 export interface UseAgentChat {
   chat: AgentChat;

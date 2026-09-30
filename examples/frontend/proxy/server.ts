@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { createAgentHandler } from "@camelai/agent-runtime/server";
+import { createAgentHandler } from "@camelai/run/server";
 
 const handler = createAgentHandler({
   // The browser reads its agent through this route too, and never talks to the runtime itself.

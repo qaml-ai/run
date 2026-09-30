@@ -1,12 +1,12 @@
-# camelai-agent-runtime
+# camelai-run
 
-The Python SDK for the camelAI agent runtime: durable agents you upsert by key
+The Python SDK for camelRun: durable agents you upsert by key
 and run, with tools that are ordinary functions in your code. The runtime runs
 the model loop, keeps each agent's history and files, and runs model-written
 code in a sandbox that can only call your tools.
 
 ```sh
-pip install camelai-agent-runtime
+pip install camelai-run
 ```
 
 Python 3.11 or later. Get an API key from the console at
@@ -14,7 +14,7 @@ Python 3.11 or later. Get an API key from the console at
 
 ```python
 import asyncio
-from camelai_agent_runtime import Agents, tool
+from camelai_run import Agents, tool
 
 @tool
 def weather(city: str) -> dict:
@@ -59,11 +59,11 @@ runtime's signed identity token on every request and hands each call a
 `context.identity`:
 
 ```sh
-pip install "camelai-agent-runtime[server]"
+pip install "camelai-run[server]"
 ```
 
 ```python
-from camelai_agent_runtime import ToolContext, serve_tools, tool
+from camelai_run import ToolContext, serve_tools, tool
 
 @tool
 async def list_todos(context: ToolContext) -> dict:
@@ -84,7 +84,7 @@ and `TestRuntime()` signs tokens for tests: `await TestRuntime().call_tool(app, 
 Keep the API key on your backend: it can create and control every
 agent in your tenant. Sign in at https://agents.camelai.dev/console to add provider
 keys, create API tokens and watch agents. The TypeScript SDK is
-[`@camelai/agent-runtime`](https://www.npmjs.com/package/@camelai/agent-runtime).
+[`@camelai/run`](https://www.npmjs.com/package/@camelai/run).
 
 ## Asking the user
 

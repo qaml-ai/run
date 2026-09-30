@@ -232,7 +232,7 @@ export interface RuntimeOptions {
   apiKey?: string;
   /** Injectable for tests, observability, or an application's HTTP stack. */
   fetch?: typeof globalThis.fetch;
-  /** Opens a local file to attach by its path; set by the Node entry (`@camelai/agent-runtime/node`). */
+  /** Opens a local file to attach by its path; set by the Node entry (`@camelai/run/node`). */
   openFile?: (path: string) => Promise<Blob>;
   /** How often a request still waiting for its result asks for its status, in case the result's event was lost. Default 30 s. */
   pollMs?: number;
@@ -715,7 +715,7 @@ export class AgentRuntime {
    * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
    */
   /**
-   * A token a browser reads one agent with (`@camelai/agent-runtime/watch`): mint one per user, after your
+   * A token a browser reads one agent with (`@camelai/run/watch`): mint one per user, after your
    * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for
    * `ttlSeconds` (default 900, 5 to 3600).
    */
@@ -1158,7 +1158,7 @@ export class AgentClient {
       if (isRecord(file) && "path" in file && typeof file.path === "string" && !("data" in file)) { attached.push({ path: file.path }); continue; }
       let data: Uint8Array | Blob, name: string | undefined, contentType: string | undefined;
       if (typeof file === "string") {
-        if (!this.openFile) throw new AgentError("Attaching a local path needs the Node entry (@camelai/agent-runtime/node); pass bytes or a Blob instead");
+        if (!this.openFile) throw new AgentError("Attaching a local path needs the Node entry (@camelai/run/node); pass bytes or a Blob instead");
         data = await this.openFile(file);
         name = file.split(/[\\/]/).pop();
       } else if (file instanceof Uint8Array || file instanceof Blob) {

@@ -1,6 +1,6 @@
 import { For, Show, createSignal } from "solid-js";
 import { render } from "solid-js/web";
-import { useAgentChat } from "@camelai/agent-runtime-solid";
+import { useAgentChat } from "@camelai/run-solid";
 
 // Demo sign-in: a random user per browser (see server.ts).
 const user = (localStorage.demoUser ??= crypto.randomUUID());

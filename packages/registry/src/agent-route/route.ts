@@ -1,4 +1,4 @@
-import { createAgentHandler } from "@camelai/agent-runtime/server";
+import { createAgentHandler } from "@camelai/run/server";
 
 /**
  * The route <AgentChat endpoint="/api/agent" /> talks to. Your API key (CAMELAI_API_KEY) stays here;

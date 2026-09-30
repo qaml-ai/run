@@ -5,14 +5,14 @@
   "title": "Agent route (Next.js)",
   "description": "The Next.js App Router route the chat talks to: keeps your API key on the server and lets each user reach only their own agent.",
   "dependencies": [
-    "@camelai/agent-runtime@0.10.1"
+    "@camelai/run@0.10.1"
   ],
   "files": [
     {
       "path": "src/agent-route/route.ts",
       "type": "registry:file",
       "target": "app/api/agent/route.ts",
-      "content": "import { createAgentHandler } from \"@camelai/agent-runtime/server\";\n\n/**\n * The route <AgentChat endpoint=\"/api/agent\" /> talks to. Your API key (CAMELAI_API_KEY) stays here;\n * browsers get short-lived read-only tokens for their user's own agent, and every message is sent as\n * the user `authorize` returns.\n */\nexport const POST = createAgentHandler({\n  authorize: async () => {\n    // Replace with your own session check (Clerk, Auth.js, your cookie…): return { userId, name } or null.\n    // Until then: one shared demo user, in development only.\n    return process.env.NODE_ENV === \"production\" ? null : { userId: \"demo\", name: \"Demo user\" };\n  },\n  agent: {\n    instructions: \"You are a helpful assistant.\",\n  },\n});\n"
+      "content": "import { createAgentHandler } from \"@camelai/run/server\";\n\n/**\n * The route <AgentChat endpoint=\"/api/agent\" /> talks to. Your API key (CAMELAI_API_KEY) stays here;\n * browsers get short-lived read-only tokens for their user's own agent, and every message is sent as\n * the user `authorize` returns.\n */\nexport const POST = createAgentHandler({\n  authorize: async () => {\n    // Replace with your own session check (Clerk, Auth.js, your cookie…): return { userId, name } or null.\n    // Until then: one shared demo user, in development only.\n    return process.env.NODE_ENV === \"production\" ? null : { userId: \"demo\", name: \"Demo user\" };\n  },\n  agent: {\n    instructions: \"You are a helpful assistant.\",\n  },\n});\n"
     }
   ]
 }

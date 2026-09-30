@@ -28,13 +28,13 @@ server and never ship it to a browser.
 TypeScript (Node 22 or later, or Bun):
 
 ```sh
-npm install @camelai/agent-runtime
+npm install @camelai/run
 ```
 
 Python (3.11 or later):
 
 ```sh
-pip install camelai-agent-runtime
+pip install camelai-run
 ```
 
 ## 3. Run an agent
@@ -42,7 +42,7 @@ pip install camelai-agent-runtime
 TypeScript, `quickstart.ts`:
 
 ```ts
-import { Agents, schema, tool } from "@camelai/agent-runtime";
+import { Agents, schema, tool } from "@camelai/run";
 
 const agents = new Agents(); // reads CAMELAI_API_KEY
 
@@ -74,7 +74,7 @@ Python, `quickstart.py`:
 
 ```python
 import asyncio
-from camelai_agent_runtime import Agents, tool
+from camelai_run import Agents, tool
 
 @tool
 def weather(city: str) -> dict:
@@ -341,7 +341,7 @@ for. For the short version of where tools should run, see the table in
 ## Writing a tool
 
 ```ts
-import { schema, tool } from "@camelai/agent-runtime";
+import { schema, tool } from "@camelai/run";
 
 const refund = tool({
   description: "Refund an order in full",
@@ -355,7 +355,7 @@ const refund = tool({
 ```
 
 ```python
-from camelai_agent_runtime import ToolContext, tool
+from camelai_run import ToolContext, tool
 
 @tool(timeout=60)
 async def refund(order_id: str, context: ToolContext) -> dict:
@@ -422,7 +422,7 @@ credentials, and nothing is exposed on the network. The trade-offs:
 
 An existing MCP server (from `@modelcontextprotocol/sdk`) can be attached as is:
 `upsert(key, { mcp: await fromMcpServer(server) })` from
-`@camelai/agent-runtime/mcp`.
+`@camelai/run/mcp`.
 
 ## Served tools: over HTTP, for serverless and many users
 
@@ -432,7 +432,7 @@ nothing needs to stay connected, and the runtime signs a token for each call
 saying which agent it is for, whom that agent acts for, and who is acting.
 
 ```ts
-import { serveTools } from "@camelai/agent-runtime/server";
+import { serveTools } from "@camelai/run/server";
 
 // A fetch handler: Cloudflare Workers, Bun and Deno serve it as is.
 // tenant: your tenant's id (GET /v1/me, or `await agents.runtime.me()`): tokens for other tenants' agents are refused.
@@ -440,7 +440,7 @@ export default { fetch: serveTools({ refund }, { runtime: "https://agents.camela
 ```
 
 On Node, wrap it: `createServer(nodeListener(handler, { origin: "https://tools.example.com" }))`
-with `nodeListener` from `@camelai/agent-runtime/node`. Tokens are checked
+with `nodeListener` from `@camelai/run/node`. Tokens are checked
 against the URL the runtime called, so set `origin` to your public URL. Without
 it, the URL is the server's own (its socket's scheme and the Host header), which
 is wrong behind a load balancer or proxy that ends TLS. `trustProxy: true` reads
@@ -449,7 +449,7 @@ proxy overwrites those headers: otherwise any client could choose the URL tokens
 are checked against.
 
 ```python
-from camelai_agent_runtime import serve_tools
+from camelai_run import serve_tools
 
 app = serve_tools([refund], runtime="https://agents.camelai.dev", tenant="acme")  # ASGI: uvicorn, or mount in FastAPI
 ```
@@ -457,7 +457,7 @@ app = serve_tools([refund], runtime="https://agents.camelai.dev", tenant="acme")
 Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
 naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 
-(`pip install "camelai-agent-runtime[server]"` for the token checks.)
+(`pip install "camelai-run[server]"` for the token checks.)
 
 Then name the server in a definition, and make agents from it:
 
@@ -479,7 +479,7 @@ your own tenant. Any tenant can make agents, give them any `subject` and
 `context`, and point them at your server's URL; the runtime signs their tokens
 too. Only the tenant check tells your agents from theirs. Pass your tenant's id
 (or a list, if several of your tenants share the server). To test your authorization without a runtime,
-`testRuntime()` (`@camelai/agent-runtime/testing`; `TestRuntime()` in Python)
+`testRuntime()` (`@camelai/run/testing`; `TestRuntime()` in Python)
 signs tokens with a key of its own:
 
 ```ts
@@ -864,7 +864,7 @@ return Response.json(await agents.runtime.browserToken(agent.id, { ttlSeconds: 9
 ## 2. Watch from the browser
 
 ```ts
-import { watchAgent } from "@camelai/agent-runtime/watch";
+import { watchAgent } from "@camelai/run/watch";
 
 const { token, expiresAt, agentId, url } = await fetch(`/api/threads/${id}/token`, { method: "POST" }).then(r => r.json());
 const watcher = watchAgent({
@@ -877,7 +877,7 @@ const watcher = watchAgent({
 // later: watcher.loadOlder() on scroll-up; watcher.close() when the view goes away
 ```
 
-`@camelai/agent-runtime/watch` has no dependencies and no Node APIs (it bundles
+`@camelai/run/watch` has no dependencies and no Node APIs (it bundles
 to under 30 KB). `state` is:
 
 | field | |
@@ -965,7 +965,7 @@ run = await agent.run("What changed in Q3?", files=[Path("q3.pdf"), screenshot_b
 ```
 
 A file is bytes, a `Blob` or `File`, `{name, data, contentType?}`, a local path
-(the Node entry `@camelai/agent-runtime/node`, or a `str`/`Path` in Python), or
+(the Node entry `@camelai/run/node`, or a `str`/`Path` in Python), or
 `{path}` for a file already in the agent's mounts. The SDKs upload each first,
 streamed, to `uploads/<run id>/<name>` in the agent's workspace, then send the
 message referring to them by path, so a retried run never uploads twice.
@@ -1267,7 +1267,7 @@ import { Webhook } from "standardwebhooks";
 const event = new Webhook(process.env.WEBHOOK_SECRET!.replace(/^whsec_/, "")).verify(body, headers) as WebhookEvent;
 ```
 
-(`WebhookEvent` is typed in `@camelai/agent-runtime`.)
+(`WebhookEvent` is typed in `@camelai/run`.)
 
 - Delivery is at least once. Answer 2xx within 10 seconds; anything else is
   retried with exponential backoff, from 5 seconds to an hour apart, for 3 days.
@@ -2184,23 +2184,23 @@ Before you ship an application on the runtime, check each of these.
 
 # SDKs
 
-The TypeScript SDK (`@camelai/agent-runtime`) and the Python SDK
-(`camelai-agent-runtime`). Start with the [Quickstart](../quickstart.md);
+The TypeScript SDK (`@camelai/run`) and the Python SDK
+(`camelai-run`). Start with the [Quickstart](../quickstart.md);
 this page is the reference.
 
 ```sh
-npm install @camelai/agent-runtime      # Node 22+, Bun, Deno, Cloudflare Workers
-pip install camelai-agent-runtime       # Python 3.11+; "camelai-agent-runtime[server]" for serve_tools
+npm install @camelai/run      # Node 22+, Bun, Deno, Cloudflare Workers
+pip install camelai-run       # Python 3.11+; "camelai-run[server]" for serve_tools
 ```
 
 | TypeScript entry | |
 | --- | --- |
-| `@camelai/agent-runtime` | everything portable: `Agents`, `tool`, `schema`, the lower-level `AgentRuntime` and `AgentClient`, the types |
-| `@camelai/agent-runtime/node` | the same for Node and Bun, plus local file paths as attachments, `nodeListener` |
-| `@camelai/agent-runtime/server` | `serveTools`, `verifyRuntimeToken`, `runtimeAuth`, `runtimeIdentity`: serving tools over HTTP |
-| `@camelai/agent-runtime/watch` | `watchAgent`: reading an agent from a browser |
-| `@camelai/agent-runtime/mcp` | `fromMcpServer`: attaching an MCP SDK server (needs `@modelcontextprotocol/sdk`) |
-| `@camelai/agent-runtime/testing` | `testRuntime`: signing identity tokens in tests |
+| `@camelai/run` | everything portable: `Agents`, `tool`, `schema`, the lower-level `AgentRuntime` and `AgentClient`, the types |
+| `@camelai/run/node` | the same for Node and Bun, plus local file paths as attachments, `nodeListener` |
+| `@camelai/run/server` | `serveTools`, `verifyRuntimeToken`, `runtimeAuth`, `runtimeIdentity`: serving tools over HTTP |
+| `@camelai/run/watch` | `watchAgent`: reading an agent from a browser |
+| `@camelai/run/mcp` | `fromMcpServer`: attaching an MCP SDK server (needs `@modelcontextprotocol/sdk`) |
+| `@camelai/run/testing` | `testRuntime`: signing identity tokens in tests |
 
 The public types need nothing else installed: messages and events are declared
 in the SDK (`Message`, `AgentEvent`, `AssistantMessage`, …).
@@ -2390,7 +2390,7 @@ waiting also asks for its own status every 30 s (`pollMs`, Python
 
 A `message_update` is its delta alone (`assistantMessageEvent`), not the whole
 message: fold the message from its `message_start` and the deltas since
-(`@camelai/agent-runtime/watch` does). A subscriber that cannot replay gets a
+(`@camelai/run/watch` does). A subscriber that cannot replay gets a
 `snapshot` of the running turn first. See the [event
 reference](../reference/events.md).
 
@@ -2433,7 +2433,7 @@ can be cached. `history()` answers the whole transcript.
 
 ### Portable use
 
-The portable entry (`@camelai/agent-runtime`) imports no Node modules and reads
+The portable entry (`@camelai/run`) imports no Node modules and reads
 environment variables only where the platform has them, so it runs on
 Cloudflare Workers and other runtimes without a filesystem. A client keeps its
 stream's cursor in memory; a new one starts from a snapshot of the running turn.
@@ -2510,7 +2510,7 @@ temporary local runtime with scripted code, calling no model.
 
 <!-- https://agents.camelai.dev/docs/reference/cli.md -->
 
-# Camel Run CLI and MCP server
+# camelRun CLI and MCP server
 
 `camelrun` deploys and manages agents from a terminal, a script or CI. Coding
 agents (Claude Code, Cursor, Codex…) get the same operations over MCP, so they can
@@ -2925,7 +2925,7 @@ token does not receive unless it lists them in `events`.
 
 Only `text_delta` is reply text. `thinking_*` is the model's reasoning, and
 `toolcall_delta` is JSON. The SDKs' `stream()` yields only reply text, and the
-watcher (`@camelai/agent-runtime/watch`) folds all of them for you.
+watcher (`@camelai/run/watch`) folds all of them for you.
 
 Messages (`message` fields, and history) are one of:
 

@@ -18,31 +18,31 @@ the same tag, and depends on the exact same version of the core.
 
 | Package | Import | What |
 | --- | --- | --- |
-| `@camelai/agent-runtime` (exists) | `/server` | + `createAgentHandler`: the developer's server route (fetch-standard) |
+| `@camelai/run` (exists) | `/server` | + `createAgentHandler`: the developer's server route (fetch-standard) |
 | | `/chat` | **new**: the headless store `createAgentChat`, message parts, `answerValue`. No dependencies, no Node APIs |
 | | `/markdown` | **new**: the streaming-safe markdown parser (an AST any framework renders) |
 | | `/watch` (exists) | the browser watcher `/chat` is built on |
 | | `/ai-sdk` | **new**: `AgentRuntimeChatTransport` for the AI SDK's `useChat` (structural types; no `ai` dependency) |
-| `@camelai/agent-runtime-react` | `.` | `AgentProvider`, `useAgent`, `useMessages`, `useSend`, `useInputs`, `useAgentStatus`, `useToolRenderer` |
+| `@camelai/run-react` | `.` | `AgentProvider`, `useAgent`, `useMessages`, `useSend`, `useInputs`, `useAgentStatus`, `useToolRenderer` |
 | | `/ui` | `<AgentChat/>` and its parts (`Messages`, `Composer`, `ToolCard`, `QuestionCard`, `FilePreview`, `Markdown`) |
 | | `/styles.css`, `/shadcn.css` | default theme; a theme that maps onto shadcn tokens |
-| `@camelai/agent-runtime-vue`, `-svelte`, `-solid` | `.` | bindings over `/chat` (later) |
-| `@camelai/create-agent-app` | `npm create @camelai/agent-app` | Next.js starter |
+| `@camelai/run-vue`, `-svelte`, `-solid` | `.` | bindings over `/chat` (later) |
+| `@camelai/create-run-app` | `npm create @camelai/run-app` | Next.js starter |
 | shadcn registry | `npx shadcn add https://agents.camelai.dev/r/agent-chat.json` | Tailwind + shadcn-token versions of the `/ui` components, over the React hooks |
 
 Why subpaths of the core rather than more packages: a server developer already
-installs `@camelai/agent-runtime` for tools, so the route handler is one import
+installs `@camelai/run` for tools, so the route handler is one import
 away; the headless store sits next to the watcher it wraps and versions with the
 event protocol it folds. Framework code is its own package so the core stays
 dependency-free. Sources: `clients/handler.ts`, `clients/chat.ts`,
-`clients/ai-sdk.ts`, `packages/react/`, `packages/create-agent-app/`,
+`clients/ai-sdk.ts`, `packages/react/`, `packages/create-run-app/`,
 `packages/registry/`.
 
 ## 2. Server: `createAgentHandler`
 
 ```ts
 // app/api/agent/route.ts (Next.js App Router)
-import { createAgentHandler } from "@camelai/agent-runtime/server";
+import { createAgentHandler } from "@camelai/run/server";
 
 const handler = createAgentHandler({
   apiKey: process.env.CAMELAI_API_KEY,               // never leaves the server
@@ -95,7 +95,7 @@ framework without a catch-all route:
 ## 3. Headless core: `createAgentChat`
 
 ```ts
-import { createAgentChat } from "@camelai/agent-runtime/chat";
+import { createAgentChat } from "@camelai/run/chat";
 
 const chat = createAgentChat({ endpoint: "/api/agent", thread: "support" });
 const off = chat.subscribe(() => render(chat.getSnapshot()));  // useSyncExternalStore-shaped
@@ -159,8 +159,8 @@ token re-renders the streaming message only.
 ## 5. Prebuilt components
 
 ```tsx
-import { AgentChat } from "@camelai/agent-runtime-react/ui";
-import "@camelai/agent-runtime-react/styles.css";
+import { AgentChat } from "@camelai/run-react/ui";
+import "@camelai/run-react/styles.css";
 
 <AgentChat
   endpoint="/api/agent"
@@ -240,7 +240,7 @@ minor. Public types are exported and documented; internals are not.
 ## 10. Rollout
 
 1. Server handler. 2. Headless store. 3. React hooks. 4. `<AgentChat/>`.
-5. shadcn registry. 6. AI SDK transport. 7. `create-agent-app` (Next.js).
+5. shadcn registry. 6. AI SDK transport. 7. `create-run-app` (Next.js).
 8. Vue, Svelte, Solid; React Native note (the store is fetch-only; RN needs a
 streaming `fetch`, e.g. `expo/fetch`, or `transport: "poll"`).
 

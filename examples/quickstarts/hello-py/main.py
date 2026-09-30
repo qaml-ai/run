@@ -1,5 +1,5 @@
 import asyncio
-from camelai_agent_runtime import Agents
+from camelai_run import Agents
 
 async def main():
     async with Agents() as agents:  # reads CAMELAI_API_KEY

@@ -94,7 +94,7 @@ export function agentMcp(options: AgentMcpOptions) {
     const elicitation = initialize?.params?.capabilities?.elicitation;
     const session = initialize ? `${randomUUID().replaceAll("-", "")}.${elicitation && (elicitation.form || !elicitation.url) ? "f" : ""}${elicitation?.url ? "u" : ""}` : c.req.header("mcp-session-id");
     const can = session?.split(".")[1] ?? "";
-    const server = new McpServer({ name: "camelrun-agent", title: agent.name ?? "Camel Run agent", version: VERSION });
+    const server = new McpServer({ name: "camelrun-agent", title: agent.name ?? "camelRun agent", version: VERSION });
     const call: Call = {
       agent: id, api, own: agent.own, authorization, events: `${base}/events?watch=1&snapshot=0`, publicUrl: options.publicUrl(),
       form: can.includes("f"), url: can.includes("u"), waiting,
@@ -214,7 +214,7 @@ function inputRequired(call: Call, requestId: string, inputs: Input[]): CallTool
   return text([
     "The agent is waiting for a person's input before it goes on:",
     ...lines,
-    `Answer in the Camel Run console, or with POST ${agentUrl}/inputs/<input id> ({"action": "accept" or "decline", "content": …}; see ${call.publicUrl}/docs/guides/human-input.md). Once every input is answered the turn resumes: call message again with the same text and requestId "${requestId}" for its reply.`,
+    `Answer in the camelRun console, or with POST ${agentUrl}/inputs/<input id> ({"action": "accept" or "decline", "content": …}; see ${call.publicUrl}/docs/guides/human-input.md). Once every input is answered the turn resumes: call message again with the same text and requestId "${requestId}" for its reply.`,
     "Or send a new message instead: it sets these inputs aside, and the agent reads your message.",
   ].join("\n"), false, { status: "input_required", requestId, inputs: inputs.map(({ id, kind, message, detail }) => ({ id, kind, message, detail })) });
 }

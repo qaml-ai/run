@@ -1,5 +1,5 @@
 /*
- * @camelai/agent-runtime-react/shadcn.css: <AgentChat> in your shadcn/ui theme. Import it after
+ * @camelai/run-react/shadcn.css: <AgentChat> in your shadcn/ui theme. Import it after
  * styles.css; it maps the chat's variables onto shadcn's tokens (--background, --foreground, …), so
  * the chat follows your theme and its .dark class.
  */

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agentChat } from "@camelai/agent-runtime-svelte";
+  import { agentChat } from "@camelai/run-svelte";
 
   // Demo sign-in: a random user per browser (see server.ts).
   const user = (localStorage.demoUser ??= crypto.randomUUID());

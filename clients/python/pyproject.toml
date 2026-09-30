@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "camelai-agent-runtime"
+name = "camelai-run"
 version = "0.6.1"
-description = "Python SDK for the camelAI hosted agent runtime"
+description = "Python SDK for camelRun"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -19,4 +19,4 @@ server = ["cryptography>=42"]
 Homepage = "https://agents.camelai.dev"
 
 [tool.setuptools]
-py-modules = ["camelai_agent_runtime"]
+py-modules = ["camelai_run"]

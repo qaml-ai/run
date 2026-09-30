@@ -1,12 +1,12 @@
-# @camelai/agent-runtime-vue
+# @camelai/run-vue
 
-Vue 3 bindings for a chat with an agent on the camelAI agent runtime, through your server's route
-(`createAgentHandler` from `@camelai/agent-runtime/server`; see the Frontend guide).
+Vue 3 bindings for a chat with an agent on camelRun, through your server's route
+(`createAgentHandler` from `@camelai/run/server`; see the Frontend guide).
 
 ```vue
 <script setup lang="ts">
 import { ref } from "vue";
-import { useAgentChat } from "@camelai/agent-runtime-vue";
+import { useAgentChat } from "@camelai/run-vue";
 
 const { messages, status, send, stop } = useAgentChat({ endpoint: "/api/agent" });
 const text = ref("");
@@ -28,4 +28,4 @@ const text = ref("");
 `useAgentChat(options | chat)` returns refs (`messages`, `status`, `inputs`, `error`, `hasOlder`,
 `snapshot`) and actions (`send`, `answer`, `decline`, `stop`, `retry`, `loadOlder`, `fileUrl`); the chat
 is connected until the component unmounts. `provideAgentChat` / `useAgent` share one chat with
-descendants. Render markdown with `parseMarkdown` from `@camelai/agent-runtime/markdown`.
+descendants. Render markdown with `parseMarkdown` from `@camelai/run/markdown`.

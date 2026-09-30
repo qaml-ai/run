@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from camelai_agent_runtime import Agents
+from camelai_run import Agents
 
 async def main():
     async with Agents() as agents:

@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
-import { createAgentHandler } from "@camelai/agent-runtime/server";
-import { schema, tool } from "@camelai/agent-runtime";
+import { createAgentHandler } from "@camelai/run/server";
+import { schema, tool } from "@camelai/run";
 
 /**
  * The route the chat talks to. Your API key (CAMELAI_API_KEY) stays on this server: browsers get

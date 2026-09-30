@@ -1,12 +1,12 @@
 {
-  "name": "@camelai/agent-runtime-svelte",
+  "name": "@camelai/run-svelte",
   "version": "0.10.1",
-  "description": "Svelte bindings for chatting with agents on the camelAI agent runtime.",
+  "description": "Svelte bindings for chatting with agents on camelRun.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qaml-ai/agent-runtime.git",
+    "url": "git+https://github.com/qaml-ai/run.git",
     "directory": "packages/svelte"
   },
   "homepage": "https://agents.camelai.dev",
@@ -31,6 +31,6 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@camelai/agent-runtime": "0.10.1"
+    "@camelai/run": "0.10.1"
   }
 }

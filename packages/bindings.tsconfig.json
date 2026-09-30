@@ -15,22 +15,22 @@
       "DOM"
     ],
     "paths": {
-      "@camelai/agent-runtime": [
+      "@camelai/run": [
         "../clients/typescript.ts"
       ],
-      "@camelai/agent-runtime/server": [
+      "@camelai/run/server": [
         "../clients/server.ts"
       ],
-      "@camelai/agent-runtime/chat": [
+      "@camelai/run/chat": [
         "../clients/chat.ts"
       ],
-      "@camelai/agent-runtime/markdown": [
+      "@camelai/run/markdown": [
         "../clients/markdown.ts"
       ],
-      "@camelai/agent-runtime/watch": [
+      "@camelai/run/watch": [
         "../clients/watch.ts"
       ],
-      "@camelai/agent-runtime/ai-sdk": [
+      "@camelai/run/ai-sdk": [
         "../clients/ai-sdk.ts"
       ]
     }

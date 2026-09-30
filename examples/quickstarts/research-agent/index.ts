@@ -1,4 +1,4 @@
-import { Agents } from "@camelai/agent-runtime";
+import { Agents } from "@camelai/run";
 
 const agents = new Agents();
 

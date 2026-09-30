@@ -1,6 +1,6 @@
 # solid
 
-A chat with an agent in Solid, with `useAgentChat` from `@camelai/agent-runtime-solid` (signals for the messages, status and inputs, and the actions). The route is `createAgentHandler` in a plain Express server; the API key stays there, and the browser streams
+A chat with an agent in Solid, with `useAgentChat` from `@camelai/run-solid` (signals for the messages, status and inputs, and the actions). The route is `createAgentHandler` in a plain Express server; the API key stays there, and the browser streams
 from the runtime with a short-lived token the route mints.
 
 ```sh

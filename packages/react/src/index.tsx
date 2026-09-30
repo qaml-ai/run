@@ -21,10 +21,10 @@ import {
   createAgentChat,
   type AgentChat, type AgentChatOptions, type ChatError, type ChatInput, type ChatMessage, type ChatSnapshot, type ChatStatus,
   type InputAnswer, type InputValue, type SendOptions, type ToolPart,
-} from "@camelai/agent-runtime/chat";
+} from "@camelai/run/chat";
 
-export type * from "@camelai/agent-runtime/chat";
-export { answerValue, createAgentChat, projectMessages } from "@camelai/agent-runtime/chat";
+export type * from "@camelai/run/chat";
+export { answerValue, createAgentChat, projectMessages } from "@camelai/run/chat";
 
 /** What a tool renderer gets: the call, and the means to answer what it waits on. */
 export interface ToolRenderProps {

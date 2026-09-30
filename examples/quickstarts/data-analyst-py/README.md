@@ -4,7 +4,7 @@ Attach a CSV to a message; the agent analyses it with code in its sandbox (`js_e
 hands it back with `present_file`, which this script saves locally.
 
 ```sh
-pip install camelai-agent-runtime   # or: uv run main.py
+pip install camelai-run   # or: uv run main.py
 export CAMELAI_API_KEY=art_...
 python main.py
 ```

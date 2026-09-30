@@ -9,7 +9,7 @@ import * as ops from "./ops.ts";
 import { VERSION } from "./version.ts";
 
 
-const HELP = `camelrun: deploy and manage agents on Camel Run, the camelAI agent runtime
+const HELP = `camelrun: deploy and manage agents on camelRun
 
 Usage: camelrun <command> [options]
 

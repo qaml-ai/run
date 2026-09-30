@@ -5,10 +5,10 @@ const at = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
-      "@camelai/agent-runtime/chat": at("../../clients/chat.ts"),
-      "@camelai/agent-runtime/markdown": at("../../clients/markdown.ts"),
-      "@camelai/agent-runtime-react/ui": at("./src/ui/index.tsx"),
-      "@camelai/agent-runtime-react": at("./src/index.tsx"),
+      "@camelai/run/chat": at("../../clients/chat.ts"),
+      "@camelai/run/markdown": at("../../clients/markdown.ts"),
+      "@camelai/run-react/ui": at("./src/ui/index.tsx"),
+      "@camelai/run-react": at("./src/index.tsx"),
     },
   },
   esbuild: { jsx: "automatic" },

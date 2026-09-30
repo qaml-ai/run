@@ -6,10 +6,10 @@ const read = (path: string) => JSON.parse(readFileSync(new URL(`../${path}`, imp
 
 test("the SDK and the frontend packages are one release train: one version, and exact dependencies on the core", () => {
   const core = read("sdk/package.json");
-  for (const name of ["react", "vue", "svelte", "solid", "create-agent-app"]) {
+  for (const name of ["react", "vue", "svelte", "solid", "create-run-app"]) {
     const manifest = read(`packages/${name}/package.json`);
     assert.equal(manifest.version, core.version, `${manifest.name} is at the core's version`);
-    if (manifest.dependencies?.["@camelai/agent-runtime"] !== undefined) assert.equal(manifest.dependencies["@camelai/agent-runtime"], core.version, `${manifest.name} depends on exactly this core`);
+    if (manifest.dependencies?.["@camelai/run"] !== undefined) assert.equal(manifest.dependencies["@camelai/run"], core.version, `${manifest.name} depends on exactly this core`);
   }
   // The shadcn registry installs exactly this train.
   for (const item of read("packages/registry/registry.json").items) {

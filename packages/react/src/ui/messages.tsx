@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import type { AssistantChatMessage, AssistantPart, ChatMessage, UserChatMessage } from "@camelai/agent-runtime/chat";
+import type { AssistantChatMessage, AssistantPart, ChatMessage, UserChatMessage } from "@camelai/run/chat";
 import { useAgent, useAgentSelector, useAgentStatus, useLoadOlder, useMessages } from "../index.tsx";
 import { cx, useUI } from "./context.tsx";
 import { ToolView } from "./tool.tsx";

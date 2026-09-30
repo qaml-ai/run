@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { Agents, type Agent, type Run } from "@camelai/agent-runtime";
+import { Agents, type Agent, type Run } from "@camelai/run";
 
 const agents = new Agents();
 const byUser = new Map<string, Promise<Agent>>(); // one durable agent per user, connected once

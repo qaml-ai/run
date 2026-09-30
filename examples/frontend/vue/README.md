@@ -1,6 +1,6 @@
 # vue
 
-A chat with an agent in Vue 3, with `useAgentChat` from `@camelai/agent-runtime-vue` (refs for the messages, status and inputs, and the actions). The route is `createAgentHandler` in a plain Express server; the API key stays there, and the browser streams
+A chat with an agent in Vue 3, with `useAgentChat` from `@camelai/run-vue` (refs for the messages, status and inputs, and the actions). The route is `createAgentHandler` in a plain Express server; the API key stays there, and the browser streams
 from the runtime with a short-lived token the route mints.
 
 ```sh

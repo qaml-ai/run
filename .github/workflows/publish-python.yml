@@ -1,6 +1,6 @@
 name: Publish Python SDK
 # Push a tag like py-v0.2.0 (matching clients/python/pyproject.toml) to publish
-# camelai-agent-runtime to PyPI. Authentication is PyPI trusted publishing (GitHub OIDC):
+# camelai-run to PyPI. Authentication is PyPI trusted publishing (GitHub OIDC):
 # the project trusts this workflow file in the `pypi` environment; no token is stored anywhere.
 on:
   push: { tags: ["py-v*"] }

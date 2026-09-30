@@ -157,7 +157,7 @@ Terraform, then ship it with `infra/ecs-deploy.sh <running tag>`.
 
 ## SDKs
 
-- TypeScript: `sdk`, published as `@camelai/agent-runtime`
+- TypeScript: `sdk`, published as `@camelai/run`
   to GitHub Packages. Bump `version` in `sdk/package.json`, then run
   `npm publish` from that directory. Installation instructions are in
   `sdk/README.md`.

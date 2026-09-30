@@ -5,9 +5,9 @@ const at = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
-      "@camelai/agent-runtime/chat": at("../../clients/chat.ts"),
-      "@camelai/agent-runtime/markdown": at("../../clients/markdown.ts"),
-      "@camelai/agent-runtime-react": at("../react/src/index.tsx"),
+      "@camelai/run/chat": at("../../clients/chat.ts"),
+      "@camelai/run/markdown": at("../../clients/markdown.ts"),
+      "@camelai/run-react": at("../react/src/index.tsx"),
       "@/components/ui/button": at("./test/stubs/button.tsx"),
       "@/lib/utils": at("./test/stubs/utils.ts"),
     },

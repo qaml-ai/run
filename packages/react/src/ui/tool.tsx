@@ -1,5 +1,5 @@
 import { memo, useId, useState, type FormEvent } from "react";
-import type { ChatInput, InputAnswer, InputValue, ToolPart } from "@camelai/agent-runtime/chat";
+import type { ChatInput, InputAnswer, InputValue, ToolPart } from "@camelai/run/chat";
 import { useAgent, useToolRendererFor } from "../index.tsx";
 import { useUI } from "./context.tsx";
 

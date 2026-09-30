@@ -18,7 +18,7 @@ run = await agent.run("What changed in Q3?", files=[Path("q3.pdf"), screenshot_b
 ```
 
 A file is bytes, a `Blob` or `File`, `{name, data, contentType?}`, a local path
-(the Node entry `@camelai/agent-runtime/node`, or a `str`/`Path` in Python), or
+(the Node entry `@camelai/run/node`, or a `str`/`Path` in Python), or
 `{path}` for a file already in the agent's mounts. The SDKs upload each first,
 streamed, to `uploads/<run id>/<name>` in the agent's workspace, then send the
 message referring to them by path, so a retried run never uploads twice.

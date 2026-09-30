@@ -15,7 +15,7 @@ on deploys, Secrets Manager) turn on only when their settings are present.
   browsers through your application (see [Networking](#networking)). A reverse
   proxy that terminates TLS only if other hosts or browsers reach it directly.
 
-The image is `ghcr.io/qaml-ai/agent-runtime:<version>`. It needs no extra
+The image is `ghcr.io/qaml-ai/run:<version>`. It needs no extra
 privileges: no `--privileged`, no added capabilities, no Docker socket, no
 gVisor. Its entrypoint, `agent-launcher`, starts as root inside the container,
 runs each [sandbox process](sandbox.md) for `js_exec` as its own uid under a

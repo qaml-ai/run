@@ -76,7 +76,7 @@ export class OAuth {
 
   /** An MCP endpoint's metadata (RFC 9728), the hosted one's or an agent's (agent-mcp.ts): where its tokens come from. */
   protectedResource(resource = this.resource, documentation = "reference/cli.md") {
-    return { resource, authorization_servers: [this.issuer], scopes_supported: [SCOPE], bearer_methods_supported: ["header"], resource_name: "Camel Run", resource_documentation: `${this.issuer}/docs/${documentation}` };
+    return { resource, authorization_servers: [this.issuer], scopes_supported: [SCOPE], bearer_methods_supported: ["header"], resource_name: "camelRun", resource_documentation: `${this.issuer}/docs/${documentation}` };
   }
 
   /** The tenant an OAuth access token acts for, while it is unexpired and its grant stands. */
@@ -321,8 +321,8 @@ export class OAuth {
       const principal = await this.options.consoleAuth.principal(c.req.raw);
       const here = `/oauth/authorize?${params}`;
       if (!principal) {
-        return page(c, 200, "Sign in", `<h1>Sign in to Camel Run</h1>
-<p><strong>${escape(request.client.name)}</strong> wants to connect to your Camel Run account. Sign in first.</p>
+        return page(c, 200, "Sign in", `<h1>Sign in to camelRun</h1>
+<p><strong>${escape(request.client.name)}</strong> wants to connect to your camelRun account. Sign in first.</p>
 ${this.options.github ? `<p><a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a></p><p class="muted">Or sign in with an API token:</p>` : ""}
 <form method="post" action="/oauth/login"><input type="hidden" name="next" value="${escape(here)}">
 <input type="password" name="token" placeholder="art_…" autocomplete="off" required aria-label="API token"><button type="submit"${this.options.github ? " class=\"secondary\"" : ""}>Sign in</button></form>`);
@@ -384,7 +384,7 @@ function redirectMatches(registered: string, given: string) {
 }
 
 const PAGE = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escape(title)} · Camel Run</title><style>
+<title>${escape(title)} · camelRun</title><style>
 :root{color-scheme:light dark;--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--card:#fff;--line:#e7e5e4;--accent:#1c1917;--on:#fff}
 @media (prefers-color-scheme:dark){:root{--bg:#0c0a09;--fg:#f5f5f4;--muted:#a8a29e;--card:#1c1917;--line:#292524;--accent:#f5f5f4;--on:#0c0a09}}
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;padding:16px;box-sizing:border-box}
@@ -392,4 +392,4 @@ main{max-width:440px;width:100%;background:var(--card);border:1px solid var(--li
 h1{font-size:20px;margin:0 0 12px}.muted{color:var(--muted);font-size:13px}code{font-size:13px}
 button,.button{display:inline-block;border:1px solid var(--accent);background:var(--accent);color:var(--on);border-radius:8px;padding:8px 16px;font:inherit;cursor:pointer;text-decoration:none}
 .secondary{background:transparent;color:var(--fg)}input[type=password]{width:100%;box-sizing:border-box;margin:0 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
-.brand{font-weight:600;margin-bottom:16px}</style></head><body><main><div class="brand">Camel Run</div>${body}</main></body></html>`;
+.brand{font-weight:600;margin-bottom:16px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;

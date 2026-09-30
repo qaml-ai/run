@@ -4,7 +4,7 @@ import { parseManifests, type Manifest } from "./manifest.ts";
 import * as ops from "./ops.ts";
 
 /**
- * The Camel Run tools, one list for every surface: `camelrun mcp` (stdio), the runtime's hosted /mcp, and the
+ * The camelRun tools, one list for every surface: `camelrun mcp` (stdio), the runtime's hosted /mcp, and the
  * console's WebMCP. It reads no files and no environment itself, so it runs in browsers; only `local` (the stdio
  * server on the user's machine) lets deploy read manifests from disk and `${NAME}` from the environment.
  */
@@ -25,7 +25,7 @@ export interface LocalFiles {
   load(file?: string): Manifest[];
 }
 
-export const INSTRUCTIONS = `Deploy and manage agents on Camel Run, the camelAI agent runtime (https://agents.camelai.dev).
+export const INSTRUCTIONS = `Deploy and manage agents on camelRun (https://agents.camelai.dev).
 
 - An agent is durable and keyed: the same key is the same agent, with its history, until deleted. Tools take an agent's key or its id (client_…).
 - A definition is a reusable configuration (model, system prompt, built-ins, MCP servers, OpenAPI specs). Keep it in the repository as agent.yaml and deploy it with deploy: the same key is the same definition, and deploying again makes a new revision. apply: true also moves live agents to it between their turns.

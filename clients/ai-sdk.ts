@@ -4,7 +4,7 @@
  *
  *   import { useChat } from "@ai-sdk/react";
  *   import { lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
- *   import { AgentRuntimeChatTransport } from "@camelai/agent-runtime/ai-sdk";
+ *   import { AgentRuntimeChatTransport } from "@camelai/run/ai-sdk";
  *
  *   const { messages, sendMessage, addToolApprovalResponse, stop } = useChat({
  *     transport: new AgentRuntimeChatTransport({ endpoint: "/api/agent" }),
@@ -407,7 +407,7 @@ function messageChunks(index: number, message: any): AgentUIMessageChunk[] {
   return chunks;
 }
 
-/** Chat messages (from `@camelai/agent-runtime/chat`) as the AI SDK's UIMessages. */
+/** Chat messages (from `@camelai/run/chat`) as the AI SDK's UIMessages. */
 export function toUIMessages(messages: ChatMessage[]): AgentUIMessage[] {
   return messages.map(message => {
     if (message.role === "user") return { id: message.id, role: "user", parts: message.parts.map(part => part.type === "text" ? { type: "text", text: part.text } : { type: "file", url: part.url, mediaType: part.mimeType }) };

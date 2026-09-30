@@ -1,12 +1,12 @@
-# @camelai/agent-runtime-svelte
+# @camelai/run-svelte
 
-Svelte stores for a chat with an agent on the camelAI agent runtime, through your server's route
-(`createAgentHandler` from `@camelai/agent-runtime/server`; see the Frontend guide). They follow the
+Svelte stores for a chat with an agent on camelRun, through your server's route
+(`createAgentHandler` from `@camelai/run/server`; see the Frontend guide). They follow the
 store contract, so they work in Svelte 4 and 5 (`$messages`), and have no dependency on Svelte.
 
 ```svelte
 <script lang="ts">
-  import { agentChat } from "@camelai/agent-runtime-svelte";
+  import { agentChat } from "@camelai/run-svelte";
   const { messages, status, send, stop } = agentChat({ endpoint: "/api/agent" });
   let text = "";
 </script>

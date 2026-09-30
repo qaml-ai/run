@@ -10,8 +10,8 @@
     "types": ["node"],
     // The quickstarts import the published SDK; here they are checked against this one.
     "paths": {
-      "@camelai/agent-runtime": ["./clients/typescript.ts"],
-      "@camelai/agent-runtime/*": ["./clients/*.ts"]
+      "@camelai/run": ["./clients/typescript.ts"],
+      "@camelai/run/*": ["./clients/*.ts"]
     }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "clients/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"],

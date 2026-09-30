@@ -1,4 +1,4 @@
-# Camel Run CLI and MCP server
+# camelRun CLI and MCP server
 
 `camelrun` deploys and manages agents from a terminal, a script or CI. Coding
 agents (Claude Code, Cursor, Codex…) get the same operations over MCP, so they can

@@ -1,18 +1,18 @@
-# @camelai/agent-runtime-react
+# @camelai/run-react
 
 React hooks and components for a streaming chat with an agent on the
-[camelAI agent runtime](https://agents.camelai.dev). Your server has one route
-(`createAgentHandler` from `@camelai/agent-runtime/server`); these talk to it.
+[camelRun](https://agents.camelai.dev). Your server has one route
+(`createAgentHandler` from `@camelai/run/server`); these talk to it.
 
 ```sh
-npm install @camelai/agent-runtime @camelai/agent-runtime-react
+npm install @camelai/run @camelai/run-react
 ```
 
 ## Prebuilt
 
 ```tsx
-import { AgentChat } from "@camelai/agent-runtime-react/ui";
-import "@camelai/agent-runtime-react/styles.css";
+import { AgentChat } from "@camelai/run-react/ui";
+import "@camelai/run-react/styles.css";
 
 <AgentChat endpoint="/api/agent" suggestions={["Where is my order?"]} tools={{ get_weather: WeatherCard }} />
 ```
@@ -28,7 +28,7 @@ or import `shadcn.css` too to follow a shadcn/ui theme.
 ## Hooks
 
 ```tsx
-import { AgentProvider, useMessages, useSend, useAgentStatus, useInputs } from "@camelai/agent-runtime-react";
+import { AgentProvider, useMessages, useSend, useAgentStatus, useInputs } from "@camelai/run-react";
 
 <AgentProvider endpoint="/api/agent" thread={threadId}>
   <MyChat />
@@ -44,7 +44,7 @@ import { AgentProvider, useMessages, useSend, useAgentStatus, useInputs } from "
 | `useLoadOlder()` | `{ hasOlder, loading, loadOlder }` |
 | `useToolRenderer(name, Component)` | draws that tool's calls with your component |
 | `useAgentSelector(select)` | any part of the snapshot, re-rendering only when it changes |
-| `useAgent()` / `useAgentChat(options)` | the chat itself (`@camelai/agent-runtime/chat`) |
+| `useAgent()` / `useAgentChat(options)` | the chat itself (`@camelai/run/chat`) |
 
 Each hook re-renders only when what it returns changes, and unchanged messages keep their objects,
 so a streamed token re-renders one message.

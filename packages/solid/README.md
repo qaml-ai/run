@@ -1,11 +1,11 @@
-# @camelai/agent-runtime-solid
+# @camelai/run-solid
 
-Solid signals for a chat with an agent on the camelAI agent runtime, through your server's route
-(`createAgentHandler` from `@camelai/agent-runtime/server`; see the Frontend guide).
+Solid signals for a chat with an agent on camelRun, through your server's route
+(`createAgentHandler` from `@camelai/run/server`; see the Frontend guide).
 
 ```tsx
 import { For, Show, createSignal } from "solid-js";
-import { useAgentChat } from "@camelai/agent-runtime-solid";
+import { useAgentChat } from "@camelai/run-solid";
 
 function Chat() {
   const chat = useAgentChat({ endpoint: "/api/agent" });

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useState, type FormEvent } from "react";
-import { useAgent, useToolRendererFor, type ChatInput, type FilePart, type InputAnswer, type InputValue, type ToolPart, type ToolRenderers } from "@camelai/agent-runtime-react";
+import { useAgent, useToolRendererFor, type ChatInput, type FilePart, type InputAnswer, type InputValue, type ToolPart, type ToolRenderers } from "@camelai/run-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 

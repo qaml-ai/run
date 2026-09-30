@@ -1,7 +1,7 @@
 "use client";
 
-import { AgentChat } from "@camelai/agent-runtime-react/ui";
-import type { ToolRenderProps } from "@camelai/agent-runtime-react";
+import { AgentChat } from "@camelai/run-react/ui";
+import type { ToolRenderProps } from "@camelai/run-react";
 
 /** A tool call rendered with your own component ("generative UI"): here, get_weather as a card. */
 function WeatherCard({ args, state, result }: ToolRenderProps) {

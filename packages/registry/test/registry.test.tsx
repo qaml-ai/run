@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { projectMessages } from "@camelai/agent-runtime/chat";
-import { AgentProvider } from "@camelai/agent-runtime-react";
+import { projectMessages } from "@camelai/run/chat";
+import { AgentProvider } from "@camelai/run-react";
 import { AgentChatView } from "../src/agent-chat/agent-chat.tsx";
 import { fakeChat } from "../../react/test/fake-chat.ts";
 
@@ -16,7 +16,7 @@ describe("the shadcn registry", () => {
     execFileSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", at("../build.ts"), "--check"]);
     const item = JSON.parse(readFileSync(at("../public/r/agent-chat.json"), "utf8"));
     expect(item.name).toBe("agent-chat");
-    expect(item.dependencies).toContain(`@camelai/agent-runtime-react@${JSON.parse(readFileSync(at("../../../sdk/package.json"), "utf8")).version}`);
+    expect(item.dependencies).toContain(`@camelai/run-react@${JSON.parse(readFileSync(at("../../../sdk/package.json"), "utf8")).version}`);
     expect(item.files.map((file: { target: string }) => file.target)).toEqual(["components/agent-chat/agent-chat.tsx", "components/agent-chat/agent-parts.tsx", "components/agent-chat/agent-markdown.tsx"]);
     for (const file of item.files) expect(file.content.length).toBeGreaterThan(100);
   });

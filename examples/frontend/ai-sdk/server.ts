@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer } from "vite";
-import { createAgentHandler } from "@camelai/agent-runtime/server";
-import { nodeListener } from "@camelai/agent-runtime/node";
+import { createAgentHandler } from "@camelai/run/server";
+import { nodeListener } from "@camelai/run/node";
 
 const handler = createAgentHandler({
   // Demo sign-in: the browser names its user. Replace with your own auth (a session cookie, a JWT).

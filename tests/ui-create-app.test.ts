@@ -7,11 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const cli = fileURLToPath(new URL("../packages/create-agent-app/index.js", import.meta.url));
-const { version } = JSON.parse(await readFile(new URL("../packages/create-agent-app/package.json", import.meta.url), "utf8"));
+const cli = fileURLToPath(new URL("../packages/create-run-app/index.js", import.meta.url));
+const { version } = JSON.parse(await readFile(new URL("../packages/create-run-app/package.json", import.meta.url), "utf8"));
 
-test("create-agent-app writes the starter, its key (readable only by its owner), and our packages at its version", async t => {
-  const root = await mkdtemp(join(tmpdir(), "create-agent-app-"));
+test("create-run-app writes the starter, its key (readable only by its owner), and our packages at its version", async t => {
+  const root = await mkdtemp(join(tmpdir(), "create-run-app-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const out = execFileSync(process.execPath, [cli, "My App", "--api-key", "key_123", "--base-url", "http://127.0.0.1:8790", "--no-install"], { cwd: root, encoding: "utf8", env: { ...process.env, CAMELAI_API_KEY: "" } });
   assert.match(out, /cd My App/);
@@ -20,8 +20,8 @@ test("create-agent-app writes the starter, its key (readable only by its owner),
   assert.ok(!existsSync(join(app, "_gitignore")));
   const manifest = JSON.parse(await readFile(join(app, "package.json"), "utf8"));
   assert.equal(manifest.name, "my-app");
-  assert.equal(manifest.dependencies["@camelai/agent-runtime"], `^${version}`);
-  assert.equal(manifest.dependencies["@camelai/agent-runtime-react"], `^${version}`);
+  assert.equal(manifest.dependencies["@camelai/run"], `^${version}`);
+  assert.equal(manifest.dependencies["@camelai/run-react"], `^${version}`);
   assert.equal(await readFile(join(app, ".env.local"), "utf8"), "CAMELAI_API_KEY=key_123\nCAMELAI_BASE_URL=http://127.0.0.1:8790\n");
   assert.equal((await stat(join(app, ".env.local"))).mode & 0o777, 0o600);
   // The key never reaches the browser: only the route (server code) reads it.

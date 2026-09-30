@@ -12,4 +12,4 @@ npm run dev          # http://localhost:3000
 
 The sign-in is a demo (the browser sends a random id): replace `authorize` in `server.ts` with yours. With
 Hono instead of Express: `app.post("/api/agent", c => handler(c.req.raw))`. For Next.js, start from
-`npm create @camelai/agent-app` instead.
+`npm create @camelai/run-app` instead.

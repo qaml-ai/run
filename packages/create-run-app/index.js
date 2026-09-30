@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * npm create @camelai/agent-app [directory] [--api-key <key>] [--base-url <url>] [--no-install]
+ * npm create @camelai/run-app [directory] [--api-key <key>] [--base-url <url>] [--no-install]
  *
  * Copies the Next.js starter into `directory` (default: agent-app), writes .env.local with the API key
  * (from --api-key or CAMELAI_API_KEY) and installs its dependencies with the package manager it was run with.
@@ -30,11 +30,11 @@ function parse(argv) {
   }
   return options;
 }
-function fail(message) { console.error(`create-agent-app: ${message}`); process.exit(1); }
+function fail(message) { console.error(`create-run-app: ${message}`); process.exit(1); }
 
 const options = parse(process.argv.slice(2));
 if (options.help) {
-  console.log("Usage: npm create @camelai/agent-app [directory] [--api-key <key>] [--base-url <url>] [--no-install]");
+  console.log("Usage: npm create @camelai/run-app [directory] [--api-key <key>] [--base-url <url>] [--no-install]");
   process.exit(0);
 }
 const target = resolve(options.directory ?? "agent-app");

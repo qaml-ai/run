@@ -25,7 +25,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/mcp-server.md", about: "every agent as an MCP server with one tool, message: connecting Claude or Cursor to an agent" },
   { section: "Guides", path: "production.md", about: "the checklist before shipping" },
   { section: "Reference", path: "reference/sdk.md", about: "the TypeScript and Python SDKs" },
-  { section: "Reference", path: "reference/cli.md", about: "the Camel Run CLI (camelrun) and MCP servers, hosted at /mcp and local: deploying agent.yaml manifests, running and managing agents from a terminal or a coding agent" },
+  { section: "Reference", path: "reference/cli.md", about: "the camelRun CLI (camelrun) and MCP servers, hosted at /mcp and local: deploying agent.yaml manifests, running and managing agents from a terminal or a coding agent" },
   { section: "Reference", path: "reference/events.md", about: "every event on an agent's stream, and a run's outcome" },
   { section: "Reference", path: "reference/limits.md", about: "every limit, with its value" },
   { section: "Reference", path: "reference/errors.md", about: "HTTP errors, run failures and tool errors, and what to do about each" },
@@ -38,14 +38,14 @@ const title = (path: string) => /^# (.+)$/m.exec(read(path))?.[1] ?? path;
 export function llmsTxt() {
   const sections = [...new Set(PAGES.map(page => page.section))];
   return [
-    "# camelAI agent runtime",
+    "# camelRun",
     "",
     "> A hosted runtime for durable agents. You define tools in your code (TypeScript or Python SDK, or an HTTP server of",
     "> yours); the runtime runs the model loop, keeps each agent's history and files, runs model-written code in a sandbox,",
     "> and wakes agents when there is work. REST API at https://agents.camelai.dev/v1 (OpenAPI: https://agents.camelai.dev/v1/openapi.json).",
     "",
     "Agents are upserted by a key of yours and run with `agent.run(text)`, which resolves with the run (status, text, inputs,",
-    "error). Install `@camelai/agent-runtime` (npm) or `camelai-agent-runtime` (PyPI), and set CAMELAI_API_KEY.",
+    "error). Install `@camelai/run` (npm) or `camelai-run` (PyPI), and set CAMELAI_API_KEY.",
     "",
     ...sections.flatMap(section => [
       `## ${section}`, "",

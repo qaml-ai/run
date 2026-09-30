@@ -6,9 +6,9 @@
  *   const { messages, status } = chat;   // then $messages, $status in markup
  *   chat.send("Hello");
  */
-import { createAgentChat, type AgentChat, type AgentChatOptions, type ChatSnapshot } from "@camelai/agent-runtime/chat";
-export type * from "@camelai/agent-runtime/chat";
-export { answerValue, createAgentChat } from "@camelai/agent-runtime/chat";
+import { createAgentChat, type AgentChat, type AgentChatOptions, type ChatSnapshot } from "@camelai/run/chat";
+export type * from "@camelai/run/chat";
+export { answerValue, createAgentChat } from "@camelai/run/chat";
 
 /** A Svelte store (the store contract), readable only. */
 export interface Readable<T> { subscribe(run: (value: T) => void): () => void }

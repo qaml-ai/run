@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
 
   runtime:
-    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/agent-runtime:latest}
+    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/run:latest}
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,7 +64,7 @@ services:
   # Makes the bucket once, with the runtime image's own S3 client, before the runtime starts.
   s3-bucket:
     profiles: [s3]
-    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/agent-runtime:latest}
+    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/run:latest}
     depends_on: [s3]
     env_file: .env
     entrypoint:

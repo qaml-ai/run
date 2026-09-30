@@ -184,7 +184,7 @@ token does not receive unless it lists them in `events`.
 
 Only `text_delta` is reply text. `thinking_*` is the model's reasoning, and
 `toolcall_delta` is JSON. The SDKs' `stream()` yields only reply text, and the
-watcher (`@camelai/agent-runtime/watch`) folds all of them for you.
+watcher (`@camelai/run/watch`) folds all of them for you.
 
 Messages (`message` fields, and history) are one of:
 

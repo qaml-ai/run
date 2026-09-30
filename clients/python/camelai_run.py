@@ -1,4 +1,4 @@
-"""The camelAI agent runtime's Python SDK: keyed agents you upsert and run, with tools in your process.
+"""camelRun's Python SDK: keyed agents you upsert and run, with tools in your process.
 
     async with Agents() as agents:  # CAMELAI_API_KEY
         agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5-5", instructions="...")

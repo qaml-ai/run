@@ -5,7 +5,7 @@ https://agents.camelai.dev with your API key. See the [Frontend guide](../../doc
 
 | Example | Shows |
 | --- | --- |
-| `npm create @camelai/agent-app` | Next.js: `<AgentChat>`, the route, and a tool drawn by its own component (the starter) |
+| `npm create @camelai/run-app` | Next.js: `<AgentChat>`, the route, and a tool drawn by its own component (the starter) |
 | [react-vite](react-vite) | Vite + React, `<AgentChat>`, the route in Express, a custom tool card |
 | [vue](vue), [svelte](svelte), [solid](solid) | the same chat with each framework's bindings |
 | [proxy](proxy) | read-proxy mode: the browser only talks to your origin (Hono) |

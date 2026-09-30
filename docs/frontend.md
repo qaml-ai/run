@@ -18,7 +18,7 @@ its questions and approvals are answered in place.
 ## Start a new app
 
 ```sh
-npm create @camelai/agent-app my-app -- --api-key $CAMELAI_API_KEY
+npm create @camelai/run-app my-app -- --api-key $CAMELAI_API_KEY
 cd my-app && npm run dev
 ```
 
@@ -29,7 +29,7 @@ replace with yours. Examples with Vite (React, Vue, Svelte, Solid), the read pro
 ## Add it to an app you have
 
 ```sh
-npm install @camelai/agent-runtime @camelai/agent-runtime-react
+npm install @camelai/run @camelai/run-react
 ```
 
 ### 1. The route
@@ -40,7 +40,7 @@ and answers. Your API key never leaves the server.
 
 ```ts
 // app/api/agent/route.ts (Next.js App Router)
-import { createAgentHandler } from "@camelai/agent-runtime/server";
+import { createAgentHandler } from "@camelai/run/server";
 
 export const POST = createAgentHandler({
   // CAMELAI_API_KEY from the environment, or apiKey: "…"
@@ -65,7 +65,7 @@ app.post("/api/agent", c => handler(c.req.raw));
 export default { fetch: handler };
 
 // Express or node:http
-import { nodeListener } from "@camelai/agent-runtime/node";
+import { nodeListener } from "@camelai/run/node";
 app.post("/api/agent", nodeListener(handler));    // before any body parser for this route
 ```
 
@@ -86,8 +86,8 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 
 ```tsx
 "use client";
-import { AgentChat } from "@camelai/agent-runtime-react/ui";
-import "@camelai/agent-runtime-react/styles.css";
+import { AgentChat } from "@camelai/run-react/ui";
+import "@camelai/run-react/styles.css";
 
 export default function Support() {
   return <AgentChat endpoint="/api/agent" suggestions={["Where is my order?"]} />;
@@ -148,7 +148,7 @@ they stay the default: use the proxy when policy requires a single origin.
 
 ## The UI, four ways
 
-**`<AgentChat>`**, prebuilt (`@camelai/agent-runtime-react/ui`): messages, streaming markdown, tool
+**`<AgentChat>`**, prebuilt (`@camelai/run-react/ui`): messages, streaming markdown, tool
 cards, questions, files, a composer with Stop, scrolling that follows the reply. Replace any part:
 
 ```tsx
@@ -161,7 +161,7 @@ cards, questions, files, a composer with Stop, scrolling that follows the reply.
 />
 ```
 
-**Hooks**, for your own UI (`@camelai/agent-runtime-react`):
+**Hooks**, for your own UI (`@camelai/run-react`):
 
 ```tsx
 <AgentProvider endpoint="/api/agent">
@@ -196,7 +196,7 @@ npx shadcn add https://agents.camelai.dev/r/agent-route.json   # the Next.js rou
 ```tsx
 import { useChat } from "@ai-sdk/react";
 import { lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
-import { AgentRuntimeChatTransport } from "@camelai/agent-runtime/ai-sdk";
+import { AgentRuntimeChatTransport } from "@camelai/run/ai-sdk";
 
 const transport = useMemo(() => new AgentRuntimeChatTransport({ endpoint: "/api/agent" }), []);
 const { messages, setMessages, sendMessage, addToolApprovalResponse, stop } = useChat({
@@ -213,7 +213,7 @@ The agent keeps the conversation, so only the new message is sent. Tool calls ar
 parts (answer with `transport.answer(input, value, { chatId: threadId })`, then `resumeStream()`).
 
 Without React, the store behind all of these is `createAgentChat` from
-`@camelai/agent-runtime/chat`: `subscribe`, `getSnapshot`, `send`, `answer`, `stop`, `loadOlder`.
+`@camelai/run/chat`: `subscribe`, `getSnapshot`, `send`, `answer`, `stop`, `loadOlder`.
 
 ## Tools and generative UI
 
@@ -221,7 +221,7 @@ Give the agent tools in the route; draw their calls with your own components in 
 
 ```ts
 // route.ts
-import { schema, tool } from "@camelai/agent-runtime";
+import { schema, tool } from "@camelai/run";
 agent: {
   tools: {
     get_weather: tool({
@@ -255,7 +255,7 @@ Workers), serve the tools over HTTP with `serveTools` and name them in a definit
 
 ```ts
 // app/api/tools/route.ts
-import { serveTools } from "@camelai/agent-runtime/server";
+import { serveTools } from "@camelai/run/server";
 const handler = serveTools(tools, { runtime: "https://agents.camelai.dev", tenant: process.env.CAMELAI_TENANT! });
 export { handler as GET, handler as POST };
 ```
@@ -335,7 +335,7 @@ authorize: async (request, { thread }) => {
 Others: `--agent-bg`, `--agent-fg`, `--agent-muted`, `--agent-muted-fg`, `--agent-border`,
 `--agent-user-bg`, `--agent-code-bg`, `--agent-danger`, `--agent-focus`, `--agent-font-size`. Dark mode
 follows the system, a `.dark` (or `data-theme="dark"`) ancestor, or `theme="dark"`; use `theme="light"`
-on a site without dark mode. With shadcn/ui, also import `@camelai/agent-runtime-react/shadcn.css`
+on a site without dark mode. With shadcn/ui, also import `@camelai/run-react/shadcn.css`
 to use your theme's tokens. Every rule is `:where(…)`, so your CSS wins without `!important`; class
 names (`agent-chat__message`, …) are stable.
 
@@ -346,7 +346,7 @@ radio and checkbox groups; focus is always visible; motion follows `prefers-redu
 
 ## Other frameworks
 
-The store (`@camelai/agent-runtime/chat`) has no framework in it; the React bindings are a thin
+The store (`@camelai/run/chat`) has no framework in it; the React bindings are a thin
 layer over it, and so are those for Vue, Svelte and Solid (see their packages). React Native works
 with the store and the hooks where `fetch` streams (Expo's `expo/fetch`), or with
 `watch: { transport: "poll" }`.

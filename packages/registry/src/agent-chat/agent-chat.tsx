@@ -4,14 +4,14 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type K
 import {
   AgentProvider, useAgent, useAgentSelector, useAgentStatus, useLoadOlder, useMessages, useSend,
   type AssistantChatMessage, type ChatMessage, type ToolRenderers, type UserChatMessage,
-} from "@camelai/agent-runtime-react";
+} from "@camelai/run-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AgentMarkdown } from "./agent-markdown";
 import { AgentFile, AgentInputCard, AgentTool } from "./agent-parts";
 
 export interface AgentChatProps {
-  /** Your agent handler's route (createAgentHandler from @camelai/agent-runtime/server). */
+  /** Your agent handler's route (createAgentHandler from @camelai/run/server). */
   endpoint: string;
   /** Which of the user's conversations. */
   thread?: string;

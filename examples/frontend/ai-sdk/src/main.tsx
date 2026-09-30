@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useChat } from "@ai-sdk/react";
-import { AgentRuntimeChatTransport } from "@camelai/agent-runtime/ai-sdk";
+import { AgentRuntimeChatTransport } from "@camelai/run/ai-sdk";
 
 // Demo sign-in: a random user per browser (see server.ts).
 const user = localStorage.demoUser ??= crypto.randomUUID();
