@@ -776,7 +776,7 @@ export class Channels {
         const data = new Blob(parts as BlobPart[], { type: file.contentType });
         // Never send a file short: fail the send (it is retried) and say which part came back short.
         if (data.size !== file.size) {
-          console.error(JSON.stringify({ type: "channel_file_size_mismatch", item: item.id, path: file.path, volume: file.volume, version: file.version, size: file.size, read: data.size, chunks: file.chunks.length, parts: parts.map(part => part.byteLength) }));
+          console.error(JSON.stringify({ type: "channel_file_size_mismatch", item: item.id, volume: file.volume, version: file.version, size: file.size, read: data.size, chunks: file.chunks.length, parts: parts.map(part => part.byteLength) }));
           throw new SendError(`${name} read ${data.size} of its ${file.size} bytes`, false);
         }
         return data;

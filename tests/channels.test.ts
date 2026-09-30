@@ -398,7 +398,7 @@ test("a file that reads back shorter than its reference is never sent: the send 
   assert.deepEqual(tg.sent("42"), ["Here it is."], "the reply went; the file did not");
   assert.deepEqual(tg.sentFiles("42"), []);
   const mismatch = JSON.parse(logged.find(line => line.includes("channel_file_size_mismatch"))!);
-  assert.deepEqual([mismatch.path, mismatch.size, mismatch.read, mismatch.parts], ["/workspace/photo.jpg", 85, 0, [0]]);
+  assert.deepEqual([mismatch.size, mismatch.read, mismatch.parts], [85, 0, [0]]);
   assert.match(logged.find(line => line.includes("channel_send_failed"))!, /"permanent":false/, "retried, not given up");
 });
 
