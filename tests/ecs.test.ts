@@ -141,6 +141,30 @@ test("task protection turns on with work, renews before it expires, and turns of
   assert.equal(off.enabled, false, "a no-op off ECS");
 });
 
+test("protection refused because a deployment replaces the task is logged once, not as a failure, and asked again with backoff", async t => {
+  const writes: number[] = [];
+  let blocked = true;
+  const endpoint = await fake(t, (_req, res) => {
+    writes.push(now);
+    const answer = blocked ? { failure: { Arn: "arn", Reason: "DEPLOYMENT_BLOCKED" } } : { protection: { ProtectionEnabled: true } };
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(answer));
+  });
+  const lines: string[] = [];
+  const log = t.mock.method(console, "log", (line: string) => { lines.push(line); });
+  const error = t.mock.method(console, "error", (line: string) => { lines.push(line); });
+  let now = 0;
+  const protection = new TaskProtection({ uri: endpoint, now: () => now });
+  for (; now <= 60_000; now += 1_000) await protection.update(true);
+  log.mock.restore(); error.mock.restore();
+  assert.deepEqual(writes, [0, 5_000, 15_000, 35_000], "every second's tick asks only after 5, 10, then 20 s");
+  assert.deepEqual(lines, [JSON.stringify({ type: "task_protection_blocked", reason: "DEPLOYMENT_BLOCKED" })], "one line, and no task_protection_failed");
+  assert.equal(protection.enabled, false);
+  blocked = false;
+  now = 75_000;
+  await protection.update(true);
+  assert.equal(protection.enabled, true, "a deployment rolled back lets protection on again");
+});
+
 test("node load is a CloudWatch Embedded Metric Format line", () => {
   const load = { hostedAgents: 3, sessions: 5, volumes: 2, runningTurns: 1, rssBytes: 123_456_789 };
   const line = JSON.parse(nodeLoadLine(load, undefined, { node: "http://10.0.2.106:8790" }, 1_700_000_000_000));

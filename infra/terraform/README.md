@@ -183,7 +183,9 @@ and the RDS instance also have deletion protection in AWS.
     filter on `/ecs/camelai-agent-runtime` counts them as
     `AgentRuntime/Logs` `EcsControlErrors`. Missing IAM or ECS API trouble shows
     up here: without protection, scale-in can stop busy tasks, and without the
-    service check, superseded tasks never retire. The `retiring` and `retired`
+    service check, superseded tasks never retire. ECS refusing protection to a
+    task a deployment is replacing (`DEPLOYMENT_BLOCKED`) is expected while it
+    drains: it is one `task_protection_blocked` line, not counted. The `retiring` and `retired`
     lines can be found with a Logs Insights query:
     `filter type in ["retiring", "retired"]`.
 
