@@ -185,15 +185,17 @@ export class Billing {
   /**
    * Why a prepaid tenant may not start or continue runs: its credit is spent (402), or, on
    * free credit, it has spent the free hourly allowance (429 until the hour's spend ages out).
+   * The messages state the fact and nothing to buy: they reach whoever called, through the API,
+   * the SDKs, chat channels and MCP clients such as ChatGPT, where an upsell does not belong. The
+   * console and billing emails say where to add credit themselves.
    */
   async creditLimit(tenant: string): Promise<HttpError | undefined> {
     if (await this.mode(tenant) !== "prepaid") return undefined;
     const { balance, purchased, lastHour } = await this.account(tenant);
-    const where = `${this.options.publicUrl ?? ""}/console/billing`;
-    if (balance <= 0) return new HttpError(402, `Not enough credit to start this run (balance ${usd(balance)}). Add credit at ${where}`);
+    if (balance <= 0) return new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so runs cannot start`);
     const allowance = this.pricing.free.hourlySpend;
     if (purchased <= 0 && lastHour >= allowance) {
-      return new HttpError(429, `Free credit allows ${usd(allowance)} of usage per hour, and this tenant has used ${usd(lastHour)} in the last hour; retry later, or buy credit at ${where} to lift the limit`);
+      return new HttpError(429, `This account has reached its spending limit on free credit: ${usd(lastHour)} in the last hour, of ${usd(allowance)} an hour; try again later`);
     }
     return undefined;
   }

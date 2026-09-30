@@ -237,14 +237,14 @@ test("a flush whose commit acknowledgement is lost is retried without counting t
 test("credit: prepaid tenants are refused at zero, others never; the balance counts this node's unwritten debits", async () => {
   const { db } = await testDatabase();
   const accounts = await accountsOn(db);
-  assert.match((await accounts.billing.creditLimit("payg"))!.message, /Not enough credit to start this run \(balance \$0\.00\)\. Add credit at https:\/\/agents\.example\.test\/console\/billing/);
+  assert.match((await accounts.billing.creditLimit("payg"))!.message, /^This account is out of credit \(balance \$0\.00\), so runs cannot start$/);
   assert.equal(await accounts.billing.creditLimit("ops"), undefined, "admin tenants are unbilled by default");
   await accounts.billing.post([{ tenant: "payg", kind: "adjustment", amount: 100_000, key: "a1" }]);
   assert.equal(await accounts.billing.creditLimit("payg"), undefined);
   accounts.recordUsage("payg", "a", response(0.1));
   const limited = await accounts.runLimit("payg");
   assert.equal(typeof limited === "object" && limited.status, 402);
-  assert.match(String(typeof limited === "object" && limited.message), /Not enough credit/, "an unwritten debit counts at once");
+  assert.match(String(typeof limited === "object" && limited.message), /out of credit/, "an unwritten debit counts at once");
   // Another node's debits count once its cached balance expires.
   const other = await accountsOn(db);
   assert.equal(await other.billing.creditLimit("payg"), undefined);
@@ -385,7 +385,8 @@ test("a prepaid tenant pays the catalog fallback plus funding when actual cost i
   const agent = (await call("/v1/agents", { body: {}, token: PAYG })).json;
   const refused = await call(`/v1/agents/${agent.id}/prompt`, { body: { text: "hi" }, token: PAYG });
   assert.equal(refused.status, 402);
-  assert.match(refused.json.error, /Not enough credit to start this run.*\/console\/billing/);
+  assert.match(refused.json.error, /^This account is out of credit/);
+  assert.doesNotMatch(refused.json.error, /console|buy|add credit/i, "API errors point to nothing to buy");
   const code = await call(`/clients/${agent.id}/requests`, { body: { id: "code", method: "execute", params: { code: "return 1" } }, token: agent.token });
   assert.equal(code.status, 402, "code runs need credit too");
 
@@ -401,7 +402,7 @@ test("a prepaid tenant pays the catalog fallback plus funding when actual cost i
 
   const first = await prompt(agent.id, "go", PAYG);
   assert.equal(first.outcome.result.stopped, "spend_limit");
-  assert.match(first.outcome.result.error, /Not enough credit to start this run/);
+  assert.match(first.outcome.result.error, /This account is out of credit/);
   assert.equal(model.bodies.length, 2, "the turn ended after the response that spent the last credit");
   assert.deepEqual(new Set(model.keys), new Set(["Bearer fixture-platform-key"]));
   assert.equal((await call(`/v1/agents/${agent.id}/prompt`, { body: { text: "again" }, token: PAYG })).status, 402);
@@ -738,11 +739,12 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
 
   const first = await prompt(call, agent.id, token);
   assert.equal(first.result.stopped, "spend_limit");
-  assert.match(first.result.error, /Free credit allows \$0\.20 of usage per hour/);
+  assert.match(first.result.error, /reached its spending limit on free credit: .* of \$0\.20 an hour/);
   assert.equal(model.bodies.length, 2, "the turn ended after the response that reached the hourly limit");
   const limited = await call(`/v1/agents/${agent.id}/prompt`, { body: { text: "again" }, token });
   assert.equal(limited.status, 429);
-  assert.match(limited.json.error, /buy credit/);
+  assert.match(limited.json.error, /try again later$/);
+  assert.doesNotMatch(limited.json.error, /console|buy/i);
 
   // The first purchase lifts both limits at once.
   const event = { id: "evt_buy", type: "checkout.session.completed", data: { object: { id: "cs_erin", created: 1, livemode: false, payment_status: "paid", payment_intent: "pi_erin", metadata: { purpose: "agent-runtime-credit", tenant: "erin", credit: "5000000" } } } };

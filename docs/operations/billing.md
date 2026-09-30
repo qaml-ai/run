@@ -54,7 +54,9 @@ keeps the ledger to 24 usage rows per tenant a day (instead of one per flush per
 while a row is still a useful line of history; spend is also kept by minute for an
 hour (`credit_spend_minutes`), for the free-credit limit below. Usage entries from
 before hourly accrual are one per flush, and stay as they are. A prepaid tenant at or below
-zero gets **402** for new runs, code executions included, with where to add credit;
+zero gets **402** for new runs, code executions included ("This account is out of
+credit"; API errors name nothing to buy, since they reach MCP clients and applications'
+users, and the console and billing emails say where to add credit);
 a running turn ends after the response that spent the last credit, as at the
 [monthly spend cap](persistence.md). Within a turn, each `web_search` and `web_fetch`
 render on the platform's key checks credit first, so a `js_exec` loop of them stops

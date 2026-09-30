@@ -329,7 +329,7 @@ test("js_exec's searches on the platform's key stop once the tenant's credit is 
   assert.equal(brave.searches.length, 2, "$1 of credit pays for the first search and starts the second; the rest are refused");
   const messages = (await r.call(`/v1/agents/${agent}/history`, { token: PAYG })).json.messages;
   const result = JSON.stringify(messages.find((message: any) => message.role === "toolResult"));
-  assert.match(result, /brave.*brave.*Not enough credit.*Not enough credit/, result);
+  assert.match(result, /brave.*brave.*out of credit.*out of credit/, result);
   assert.equal(r.model.bodies.length, 1, "the next model request is refused too");
   assert.match(JSON.stringify(outcome), /INSUFFICIENT_CREDIT|SPEND_LIMIT|credit/);
 });
