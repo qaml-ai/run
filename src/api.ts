@@ -379,8 +379,19 @@ export function api(context: ApiContext) {
     request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "Provisioning with the same key returns the same agent" }) }), body: content(schema.AgentInput) },
     responses: { 201: reply("The agent and its scoped token", schema.AgentCreated) },
   }), async c => {
-    const key = c.req.header("idempotency-key");
-    return json(c, 201, await context.createAgent(c.var.principal.tenant, await readJson(c.req.raw.body, 18 * 1024 * 1024, {}), key));
+    const tenant = c.var.principal.tenant;
+    const { prompt, ...params } = await readJson(c.req.raw.body, 18 * 1024 * 1024, {}) ?? {};
+    // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
+    const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt));
+    const created = await context.createAgent(tenant, params, c.req.header("idempotency-key")) as { id: string };
+    if (!first) return json(c, 201, created);
+    const submit = context.submit ?? clients.submit.bind(clients);
+    // A prompt refused leaves the agent made: the caller learns why, and may send it again.
+    const sent = await submit(created.id, tenant, first).catch(error => {
+      const status = errorStatus(error, 400);
+      return { error: { status, code: errorCode(error, status), message: errorText(error) } };
+    });
+    return json(c, 201, { ...created, prompt: sent });
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}", request: { params: agentId, query: z.object({
@@ -456,7 +467,7 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
-    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, { id: body.requestId ?? c.req.header("idempotency-key") ?? randomUUID(), method: "prompt", params: { text: body.text, ...(body.actor !== undefined ? { actor: body.actor } : {}), ...(body.spendLimit !== undefined ? { spendLimit: body.spendLimit } : {}), ...(body.from !== undefined ? { from: body.from } : {}), ...(body.metadata !== undefined ? { metadata: body.metadata } : {}), ...(body.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(body.allowDisconnected !== undefined ? { allowDisconnected: body.allowDisconnected } : {}), ...(body.files !== undefined ? { files: body.files } : {}) } }));
+    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key"))));
   });
   route(createRoute({
     method: "put", path: "/v1/agents/{id}/uploads/{requestId}/{name}", request: { params: agentId.extend({ requestId: z.string(), name: z.string() }), body: binary("The file's bytes, streamed") },
@@ -795,6 +806,13 @@ export function api(context: ApiContext) {
 
 /** The OpenAPI document, without a running server (npm run openapi). */
 export const openapiDocument = () => api({} as ApiContext).getOpenAPI31Document(DOCUMENT);
+
+/** The prompt request a prompt's body makes (POST /v1/agents/{id}/prompt, or a create's first prompt). */
+function promptRequest(body: z.infer<typeof schema.PromptInput>, fallbackId?: string) {
+  const { requestId, text, whileRunning, ...rest } = body;
+  const given = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
+  return { id: requestId ?? fallbackId ?? randomUUID(), method: "prompt", params: { text, ...given, ...(whileRunning === "steer" ? { whileRunning } : {}) } };
+}
 
 async function authenticate(c: Context, context: ApiContext): Promise<Caller> {
   const authorization = c.req.header("authorization");

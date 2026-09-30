@@ -56,6 +56,8 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, options:
     const runtime = new AgentRuntime({ ...runtimeOptions, ...config });
     const agent = await runtime.createAgent({ tools, ...extra });
     clients.push(agent);
+    // A created agent starts in the background: these tests reach into its host, so wait until it answers.
+    await until(() => supervisor.request(agent.session.id, "status").then(() => true, () => false), "the agent to start");
     return agent;
   }
   async function post(agent: AgentClient, suffix: string, body: unknown) {
@@ -613,14 +615,16 @@ test("concurrent starts never take a tenant past its quota, and refused creates 
   const writeHeader = sessions.writeHeader.bind(sessions);
   sessions.writeHeader = async (...args) => { await sleep(50); return writeHeader(...args); };
   const results = await Promise.allSettled(Array.from({ length: 6 }, (_, index) => f.sessions.create([], { model: configuredModel() }, `concurrent-${index}`, {}, "default")));
-  assert.ok(peak <= 2, `at most 2 agents were hosted at once, saw ${peak}`);
   for (const result of results) if (result.status === "rejected") assert.equal(result.reason.status, 429, String(result.reason));
   const created = results.filter(result => result.status === "fulfilled").map(result => (result as PromiseFulfilledResult<{ id: string }>).value.id);
   assert.ok(created.length >= 2);
   // Nothing was persisted for a refused create.
   const stored = await Promise.all(Array.from({ length: 6 }, (_, index) => f.header(`client_${createHash("sha256").update(`default:concurrent-${index}`).digest("hex").slice(0, 40)}`)));
   assert.deepEqual(stored.map(header => header?.id).filter(Boolean).sort(), created.sort());
-  assert.equal(supervisor.reserved.size, 0, "no slot stays reserved");
+  // Created agents start in the background, each in the slot its create reserved.
+  await until(() => supervisor.reserved.size === 0 && supervisor.starting.size === 0, "the created agents to start");
+  assert.ok(peak <= 2, `at most 2 agents were hosted at once, saw ${peak}`);
+  assert.deepEqual([...supervisor.agents.keys()].sort(), created.sort(), "no slot stays reserved");
 });
 
 test("an execution's start is durable before its first tool call takes effect, and needs no commit before that", async t => {

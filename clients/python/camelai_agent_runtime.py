@@ -450,7 +450,9 @@ class AgentRuntime:
 
     async def upsert_agent(self, key, *, tools=(), **fields):
         """The agent for `key`: made if there is none, set to `fields` (create_agent's) if they differ. Returns its
-        credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted."""
+        credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted.
+        `prompt` (the prompt call's body, {"text", "requestId", ...}) is sent once the agent is made: the answer's "prompt" is
+        its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once."""
         if not self.api_key:
             raise AgentError("Set api_key (or the CAMELAI_API_KEY environment variable): create a key in the console at https://agents.camelai.dev")
         import re
@@ -578,11 +580,11 @@ class AgentRuntime:
 
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
-                  subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None):
+                  subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None, prompt=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "modelHeaders": model_headers,
-                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "builtins": builtins}
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "builtins": builtins, "prompt": prompt}
     return {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
 
 

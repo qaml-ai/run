@@ -1,6 +1,6 @@
 {
   "name": "@camelai/agent-runtime-svelte",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Svelte bindings for chatting with agents on the camelAI agent runtime.",
   "type": "module",
   "license": "MIT",
@@ -31,6 +31,6 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@camelai/agent-runtime": "0.10.0"
+    "@camelai/agent-runtime": "0.10.1"
   }
 }

@@ -5,7 +5,7 @@
   "title": "Agent route (Next.js)",
   "description": "The Next.js App Router route the chat talks to: keeps your API key on the server and lets each user reach only their own agent.",
   "dependencies": [
-    "@camelai/agent-runtime@0.10.0"
+    "@camelai/agent-runtime@0.10.1"
   ],
   "files": [
     {

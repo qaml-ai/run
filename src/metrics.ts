@@ -217,6 +217,37 @@ export function recordWatchRefused(scope: "agent" | "tenant" | "node", tenant: s
   emit("watch_refused", { dimensions: { Scope: scope, Tenant: tenant }, rollups: [[], ["Scope"], ["Tenant"]], metrics: { WatchersRefused: 1 } });
 }
 
+/** How long each step of one operation took: each is timed on its own, so steps that run at once each show their own time. */
+export class Steps {
+  readonly began = performance.now();
+  readonly ms: Record<string, number> = {};
+  async time<T>(step: string, work: Promise<T> | (() => Promise<T>)): Promise<T> {
+    const started = performance.now();
+    try { return await (typeof work === "function" ? work() : work); }
+    finally { this.ms[step] = (this.ms[step] ?? 0) + Math.round(performance.now() - started); }
+  }
+  get total() { return Math.round(performance.now() - this.began); }
+}
+
+const stepMetrics = (prefix: string, steps: Steps) => Object.fromEntries([[`${prefix}Ms`, [steps.total, "Milliseconds"]],
+  ...Object.entries(steps.ms).map(([step, ms]) => [`${prefix}${step[0].toUpperCase()}${step.slice(1)}Ms`, [ms, "Milliseconds"]])]) as Record<string, Value>;
+
+/** A POST /v1/agents: its total and each step's milliseconds (`create_timing`); `Upsert` says whether the key's agent existed. */
+export function recordCreate(steps: Steps, create: { tenant: string; agent?: string; upsert: boolean; error?: string }) {
+  emit("create_timing", {
+    dimensions: { Outcome: create.error === undefined ? "created" : "failed", Upsert: String(create.upsert) }, rollups: [[], ["Outcome", "Upsert"]],
+    metrics: stepMetrics("Create", steps), properties: { tenant: create.tenant, ...(create.agent ? { agent: create.agent } : {}), ...(create.error !== undefined ? { error: create.error } : {}) },
+  });
+}
+
+/** An agent's cold start: its total and each step's milliseconds (`start_timing`). */
+export function recordStart(steps: Steps, start: { tenant: string; agent: string; error?: string }) {
+  emit("start_timing", {
+    dimensions: { Outcome: start.error === undefined ? "started" : "failed" }, rollups: [[], ["Outcome"]],
+    metrics: stepMetrics("Start", steps), properties: { tenant: start.tenant, agent: start.agent, ...(start.error !== undefined ? { error: start.error } : {}) },
+  });
+}
+
 /** Write a line through the sink (for callers outside this module). */
 export function writeMetricLine(line: string) {
   sink(line);

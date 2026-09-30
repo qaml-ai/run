@@ -38,7 +38,7 @@ import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
-import { recordWatchRefused } from "./metrics.ts";
+import { recordStart, recordWatchRefused, Steps } from "./metrics.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -1064,14 +1064,17 @@ export class ClientSessions {
     session.lastActive = Date.now();
     if (this.supervisor.agents.has(session.header.id) && !session.starting) return Promise.resolve();
     const id = session.header.id;
+    const steps = new Steps();
     return session.starting ??= (async () => {
-      await this.makeRoom(id, session.header.tenant);
+      await steps.time("room", this.makeRoom(id, session.header.tenant));
       // Read before any response is counted against it.
-      await this.spendOf(session);
-      const { key: apiKey, platform } = await this.apiKey(session, session.header.config.model.provider, session.header.keyScope);
+      await steps.time("spend", this.spendOf(session));
+      const { key: apiKey, platform } = await steps.time("key", this.apiKey(session, session.header.config.model.provider, session.header.keyScope));
       session.platformKey = platform;
-      const result = await this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
-        definitions: await this.toolset(session),
+      // Its tool servers are listed (remote MCP servers connected to) before its host starts.
+      const definitions = await steps.time("tools", this.toolset(session));
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
+        definitions,
         spendLimit: async () => {
           const limited = await this.agentSpendLimit(session) ?? this.runSpendLimit(session) ?? await this.options.spendLimit?.(session.header.tenant);
           return typeof limited === "string" ? limited : limited?.message;
@@ -1086,7 +1089,7 @@ export class ClientSessions {
           indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0),
           write: chunk => this.historyIndex.write(id, session.claim, chunk),
         },
-      }, session.claim);
+      }, session.claim));
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
         delete session.header.config.initialMessages;
@@ -1097,8 +1100,10 @@ export class ClientSessions {
       else if (result.recovered) this.publish(session, { type: "event", requestId: "", event: { type: "turn_recovered", reason: "The runtime restarted during a turn; unresolved tool calls were marked unknown" } });
       // Starting can take longer than the idle timeout; the agent is fresh, not idle.
       session.lastActive = Date.now();
+      recordStart(steps, { tenant: session.header.tenant, agent: id });
       return result;
-    })().finally(() => { session.starting = undefined; this.supervisor.unreserve(id); });
+    })().catch(error => { recordStart(steps, { tenant: session.header.tenant, agent: id, error: errorText(error) }); throw error; })
+      .finally(() => { session.starting = undefined; this.supervisor.unreserve(id); });
   }
 
   /**
@@ -1446,7 +1451,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[] } = {}): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[] } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -1460,7 +1465,7 @@ export class ClientSessions {
       scoped = `${tenant}:${key}${generation ? `#${generation}` : ""}`;
       id = this.agentId(tenant, `${key}${generation ? `#${generation}` : ""}`);
       // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
-      existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
+      existing = this.sessions.has(id) ? undefined : await steps.time("lookup", this.readHeader(id));
       const header = this.sessions.get(id)?.header ?? existing?.value;
       if (!header || !(header.revoked || expired(header.expiresAt))) break;
     }
@@ -1474,12 +1479,13 @@ export class ClientSessions {
     if (existing) {
       if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       const changed = changes(existing.value);
-      if (await this.ownerElsewhere(id)) return { id, token, expiresAt: existing.value.expiresAt, running: true, ...changed };
+      if (await steps.time("route", this.ownerElsewhere(id))) return { id, token, expiresAt: existing.value.expiresAt, running: true, ...changed };
     }
-    let session = await this.load(id);
+    // A key with no agent a moment ago needs no second read: unless a create here is making it, this one does.
+    let session = existing || this.sessions.has(id) || this.loading.has(id) ? await steps.time("load", this.load(id)) : undefined;
     // Another create of this agent on this node is provisioning it: wait for what it makes. Two at once
     // would each take the claim, and the second acquire's new epoch would fence the first out.
-    while (!session && this.loading.has(id)) session = await this.load(id);
+    while (!session && this.loading.has(id)) session = await steps.time("load", this.load(id));
     let created = false;
     let changed = {};
     if (session) {
@@ -1497,11 +1503,11 @@ export class ClientSessions {
       let claim: Claim | undefined;
       try {
         // Capacity is reserved before anything is persisted: an agent refused for it leaves nothing behind.
-        await this.makeRoom(id, tenant);
-        const granted = this.options.volumes ? await this.options.volumes.mountsFor(tenant, id, mounts) : undefined;
+        await steps.time("room", this.makeRoom(id, tenant));
+        const granted = this.options.volumes ? await steps.time("mounts", this.options.volumes.mountsFor(tenant, id, mounts)) : undefined;
         const ownership = this.options.ownership;
         if (ownership) {
-          const acquired = await ownership.acquire(id);
+          const acquired = await steps.time("claim", ownership.acquire(id));
           if ("owner" in acquired) throw new NotOwner(acquired.owner);
           claim = acquired.claim;
         }
@@ -1515,37 +1521,35 @@ export class ClientSessions {
         // chunks stored).
         const refs = (safeConfig.initialMessages ?? []).flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
         if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
-        // A conditional create: if a concurrent request made this agent first, retry as a load.
-        await this.writeHeader(session);
-        // A new agent's history is indexed from its first message.
-        await this.historyIndex.begin(id);
+        // A conditional create: if a concurrent request made this agent first, retry as a load. A new agent's history is
+        // indexed from its first message; beginning its index is idempotent, so it goes alongside.
+        await Promise.all([steps.time("header", this.writeHeader(session)), steps.time("index", this.historyIndex.begin(id))]);
         this.sessions.set(id, session);
         created = true;
         settle(session);
-        if (granted) await this.options.volumes!.watch(id, tenant, [], granted, claim);
-        if (access.spendLimit !== undefined) await this.setSpendLimit(session, access.spendLimit);
+        await Promise.all([
+          granted && steps.time("watch", this.options.volumes!.watch(id, tenant, [], granted, claim)),
+          access.spendLimit !== undefined && steps.time("spend", this.setSpendLimit(session, access.spendLimit)),
+        ]);
       } catch (error) {
         settle();
         if (!created) {
           this.supervisor.unreserve(id);
           if (claim) await this.options.ownership!.release(claim).catch(() => {});
-          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, identity, access);
+          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, identity, access, steps);
           throw error;
         }
         await this.discard(session!);
         throw error;
       }
     }
-    try {
-      await this.ensureStarted(session);
-      // An agent whose lifetime ran out as it started has been made, and is already gone: no status to give.
-      const status = await this.supervisor.request(id, "status").catch(error => { if (session.header.revoked) return {}; throw error; });
-      return { id, token, expiresAt: session.header.expiresAt, ...status, ...changed };
-    } catch (error) {
-      // From the caller's view creation is atomic: an agent that never started is gone, so a retry with the same key starts afresh.
-      if (created) await this.discard(session);
-      throw error;
-    }
+    // Creating records the agent: its host starts in the background, so the response does not wait on listing its tool
+    // servers, and a prompt sent meanwhile waits on the same start. A start that fails is only logged: the agent exists,
+    // and its next request starts it again, answering with the error if it recurs.
+    if (created) void this.ensureStarted(session).catch(error => {
+      if (!session.header.revoked) console.error(JSON.stringify({ type: "agent_start_failed", agent: id, tenant, error: errorText(error) }));
+    });
+    return { id, token, expiresAt: session.header.expiresAt, ...changed };
   }
 
   /**
@@ -1750,6 +1754,7 @@ export class ClientSessions {
       const session = await this.load(id);
       if (session) await this.cancelInputs(session, "aborted");
     }
+    await this.sessions.get(id)?.starting?.catch(() => {});
     if (this.supervisor.agents.has(id)) await this.supervisor.request(id, "abort");
     return true;
   }
@@ -2269,6 +2274,8 @@ export class ClientSessions {
 
   private async execute(session: Session, record: RequestRecord, params: any, method: RequestMethod = record.method) {
     const id = session.header.id;
+    // An agent still starting answers nothing yet: wait for it (should it fail, it is not running).
+    await session.starting?.catch(() => {});
     const live = this.supervisor.agents.has(id);
     if (record.method === "status" && !live) return { running: false };
     // Aborting a suspended turn cancels its inputs: the turn is closed without the model.

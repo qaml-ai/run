@@ -5,7 +5,7 @@
   "title": "Agent markdown",
   "description": "Safe, streaming-tolerant markdown for agent replies, rendered with elements (no raw HTML).",
   "dependencies": [
-    "@camelai/agent-runtime@0.10.0"
+    "@camelai/agent-runtime@0.10.1"
   ],
   "registryDependencies": [
     "utils"
