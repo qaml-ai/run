@@ -55,7 +55,7 @@ interface SessionHeader {
   metadata?: AgentMetadata; definitions: ToolDefinition[]; provisionHash: string; config: SessionConfig;
   /** Volumes the agent's file tools can reach; absent on sessions created before volumes existed. */
   mounts?: Mount[];
-  /** A purged agent's tombstone keeps only its identity (see `purge`): nothing loads it again. */
+  /** A purged agent's tombstone keeps only its id, revoked (see `purge`): its other fields are gone, and nothing loads it again. */
   purged?: true;
   /** The definition and revision the agent was made from, or last had applied. */
   definition?: DefinitionRef;
@@ -1871,6 +1871,8 @@ export class ClientSessions {
       // Authenticate against the small header before loading the journal.
       const header = this.sessions.get(c.req.param("id")!)?.header ?? (await this.readHeader(c.req.param("id")!))?.value;
       const authorization = c.req.header("authorization") ?? "";
+      // A tombstone has no token to check.
+      if (header?.purged) throw new HttpError(410, "Session expired or revoked");
       if (!header || c.req.header("origin") || (operator !== undefined && header.tenant !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
       if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
       // A watcher or a poll does not load the agent (see `watchAgent`).
@@ -2736,8 +2738,8 @@ export class ClientSessions {
    * Purge deleted and expired agents that no live node holds, `limit` at a time;
    * returns how many were purged. Everything the agent stored goes: its journal and
    * transcript (segments, snapshots, blobs), tail rows, local directory, schedules,
-   * channel bindings and volume watches. The row stays as a tombstone with only the
-   * agent's identity, so its id is never reused and requests for it get 404 or 410;
+   * channel bindings, email threads and volume watches. The row stays as a tombstone with only the
+   * agent's id (no tenant, token hash or model), so its id is never reused and requests for it get 404 or 410;
    * its idempotency key makes a fresh agent (see `create`). Nodes claim agents with FOR UPDATE SKIP LOCKED and a
    * lease, so they share the work; every step is idempotent, and an agent whose
    * purge failed or whose node died is claimed again once the lease lapses.
@@ -2795,6 +2797,9 @@ export class ClientSessions {
       await underClaim(this.db, claim, async sql => {
         await this.purgeData(id, sql);
         await sql.query("delete from schedules where agent = $1", [id]);
+        // Its email threads' metadata (addresses, subject, Message-IDs) goes with the conversations it answered.
+        await sql.query("delete from email_messages m using channel_conversations c where c.agent = $1 and m.channel = c.channel and m.conversation = c.conversation", [id]);
+        await sql.query("delete from email_threads t using channel_conversations c where c.agent = $1 and t.channel = c.channel and t.conversation = c.conversation", [id]);
         await sql.query("delete from channel_agents where agent = $1", [id]);
         await sql.query("delete from channel_conversations where agent = $1", [id]);
         await sql.query("delete from volume_watchers where agent = $1", [id]);
@@ -2802,8 +2807,9 @@ export class ClientSessions {
         await sql.query("delete from agent_spend_limits where agent = $1", [id]);
         // Its FileRefs are gone with its transcript: their chunks may be collected (storage-gc.ts).
         await sql.query("delete from chunk_pins where agent = $1", [id]);
-        const tombstone = { version: 3, id, tenant: header.tenant, digest: header.digest, expiresAt: header.expiresAt, revoked: true, provisionHash: header.provisionHash, purged: true };
-        await sql.query("update agents set header = $2, name = $1, type = 'general', revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
+        // The id alone stays taken: it is derived from the tenant and key, so a tombstone blocks its reuse without naming either.
+        const tombstone = { version: 3, id, revoked: true, purged: true };
+        await sql.query("update agents set header = $2, tenant = '', name = $1, type = 'general', model = '', expires_at = null, revoked = true, purged_at = $3, purge_claimed_until = null where id = $1",
           [id, JSON.stringify(tombstone), Date.now()]);
       });
       return true;

@@ -64,6 +64,12 @@ test("deleting an agent purges everything it stored and leaves a tombstone that 
   await db.query("insert into channel_agents (agent, channel, tenant, conversation) values ($1, 'ch_1', 'default', 'c1')", [id]);
   await db.query("insert into channel_conversations (channel, conversation, agent, generation) values ('ch_1', 'c1', $1, 0)", [id]);
   await db.query("insert into volume_watchers (volume, agent, tenant, mounts) values ('vol_x', $1, 'default', '[]')", [id]);
+  // An email thread it answered, and one of another agent on the same channel, which stays.
+  await db.query("insert into channel_conversations (channel, conversation, agent, generation) values ('ch_1', 'c2', 'client_other', 0)");
+  for (const conversation of ["c1", "c2"]) {
+    await db.query("insert into email_threads (conversation, channel, reply_to, subject, refs, last_message, updated_at) values ($1, 'ch_1', 'person@example.com', 'Private subject', '[]', 'm@x', 1)", [conversation]);
+    await db.query("insert into email_messages (channel, message_id, conversation, created_at) values ('ch_1', $1, $2, 1)", [`${conversation}@x`, conversation]);
+  }
 
   assert.equal(await sessions.destroyAgent(id, "default"), true);
   await sessions.sweep();
@@ -75,7 +81,11 @@ test("deleting an agent purges everything it stored and leaves a tombstone that 
   assert.equal(row.revoked, true);
   assert.ok(row.purged_at > 0);
   assert.equal(row.header.purged, true);
-  assert.equal("config" in row.header || "definitions" in row.header, false, "the tombstone keeps only identity");
+  assert.deepEqual(row.header, { version: 3, id, revoked: true, purged: true }, "the tombstone keeps only the id");
+  const tombstone = (await db.query("select tenant, name, model, expires_at from agents where id = $1", [id])).rows[0];
+  assert.deepEqual(tombstone, { tenant: "", name: id, model: "", expires_at: null }, "no tenant, name or model on the row");
+  assert.deepEqual((await db.query("select conversation from email_threads")).rows, [{ conversation: "c2" }], "its email thread goes, another agent's stays");
+  assert.deepEqual((await db.query("select conversation from email_messages")).rows, [{ conversation: "c2" }]);
 
   // The id stays taken and the agent is gone; its key makes a fresh agent.
   assert.notEqual((await sessions.create([], { model }, "doomed", {}, "default")).id, id);

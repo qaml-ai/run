@@ -369,6 +369,9 @@ export class Channels {
     try { await this.provider(channel.type).teardown(this.secrets(channel).credentials); }
     catch (error) { console.error(JSON.stringify({ type: "channel_teardown_failed", channel: id, error: safeError(error) })); }
     await this.db.query("delete from channels where id = $1 and tenant = $2", [id, tenant]);
+    // Its queued work, dedup and rate windows, and its email threads' metadata go too: nothing replies through it again.
+    for (const table of ["channel_seen", "channel_counts", "email_threads", "email_messages"]) await this.db.query(`delete from ${table} where channel = $1`, [id]);
+    await this.db.query("delete from channel_items where item->>'channel' = $1", [id]);
     // A definition made for the channel goes with it, unless another channel took it up.
     if ((await this.options.definitions.read(tenant, channel.definition).catch(() => undefined))?.spec.channel === id) {
       await this.options.definitions.remove(tenant, channel.definition).catch(() => {});

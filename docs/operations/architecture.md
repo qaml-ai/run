@@ -88,11 +88,14 @@ agent, stops it and unloads it at once. A sweep every node runs
 (`AGENT_PURGE_INTERVAL_MS`, default a minute; started at once after a delete)
 then purges every revoked or expired agent no live node holds: its journal and
 transcript objects (segments, snapshots, blobs), tail rows, local directory,
-schedules, channel bindings and volume watches. Nodes claim agents with
+schedules, channel bindings, email threads (addresses, subjects, Message-IDs)
+and volume watches. Nodes claim agents with
 `FOR UPDATE SKIP LOCKED` and a five-minute lease, and every step is idempotent,
 so a purge that fails or whose node dies is retried. The row stays as a tombstone
-holding only the agent's identity: its id and idempotency key are never reused,
-`/v1/agents/:id` answers 404 and `/clients/:id` 410. Logs written before the tail existed are
+holding only the agent's id (no tenant, token hash, name or model): the id is
+derived from the tenant and idempotency key, so neither is ever reused,
+`/v1/agents/:id` answers 404 and `/clients/:id` 410. Deleting a channel deletes
+its queued items and its email threads' metadata too. Logs written before the tail existed are
 read unchanged: their segments are ordinary segments.
 
 **Database outages.** The default 90-second lease outlasts most of an RDS

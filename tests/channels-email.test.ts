@@ -216,6 +216,12 @@ test("a message starts a thread; replies thread under it, quoted history is left
   await sleep(200);
   assert.equal(r.prompts.length, 3);
   assert.equal((await r.db.query("select count(*)::int as count from email_threads where channel = $1", [channel.id])).rows[0].count, 2);
+
+  // Deleting the channel deletes its threads' addresses, subjects and Message-IDs.
+  await r.channels.remove("default", channel.id);
+  for (const table of ["email_threads", "email_messages", "channel_seen", "channel_items"]) {
+    assert.equal((await r.db.query(`select count(*)::int as count from ${table}`)).rows[0].count, 0, table);
+  }
 });
 
 test("mail is dropped unless SES proves its sender, and automatic or bulk mail never reaches an agent", async t => {
