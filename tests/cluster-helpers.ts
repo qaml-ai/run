@@ -31,8 +31,14 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
   const { db, url: databaseUrl } = await testDatabase();
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { anthropic: "fixture-key", openrouter: "fixture-key" } } } }));
   const children: ChildProcess[] = [];
-  const start = async (name: string, env: Record<string, string> = {}, fixedPort?: number) => {
-    const port = fixedPort ?? await freePort();
+  const start = async (name: string, env: Record<string, string> = {}, fixedPort?: number): Promise<{ name: string; url: string; child: ChildProcess; logs: any[] }> => {
+    // freePort's port can be taken by another process before the node listens on it: then start again on another.
+    for (let attempt = 1; ; attempt++) {
+      try { return await launch(name, env, fixedPort ?? await freePort()); }
+      catch (error) { if (fixedPort !== undefined || attempt >= 5 || !(error as { addressInUse?: boolean }).addressInUse) throw error; }
+    }
+  };
+  const launch = async (name: string, env: Record<string, string>, port: number) => {
     const url = `http://127.0.0.1:${port}`;
     const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
       env: {
@@ -40,8 +46,10 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
         AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
         AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "cluster-session-secret-with-32-characters!", ...env,
       } as NodeJS.ProcessEnv,
-      stdio: ["ignore", "pipe", "inherit"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    let errors = "";
+    child.stderr!.on("data", chunk => { errors = (errors + chunk).slice(-4096); process.stderr.write(chunk); });
     children.push(child);
     const ready = Promise.withResolvers<void>();
     const logs: any[] = [];
@@ -53,7 +61,7 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
       for (const line of lines) { try { logs.push(JSON.parse(line)); } catch { /* not a log record */ } }
       if (logs.some(entry => entry.type === "listening")) ready.resolve();
     });
-    child.on("exit", code => ready.reject(new Error(`node ${name} exited: ${code}`)));
+    child.on("exit", code => ready.reject(Object.assign(new Error(`node ${name} exited: ${code}`), { addressInUse: errors.includes("EADDRINUSE") })));
     await ready.promise;
     return { name, url, child, logs };
   };
