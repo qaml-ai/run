@@ -39,7 +39,8 @@ test("any node serves any agent: requests are forwarded to the owner, and a surv
   }
   const woken = await viaB.waitForRequest(wakeId, { timeoutMs: 20_000 });
   assert.equal(woken.output[0], "value-of-timer");
-  assert.deepEqual(await viaB.schedules(), []);
+  // The claiming node drops a one-shot wake-up once its delivery returns, which can be just after the run it started ends.
+  await until(async () => (await viaB.schedules()).length === 0, "the delivered wake-up to be dropped");
   calls.splice(calls.indexOf("timer"), 1);
 
   // Re-provisioning through B returns the same agent without starting a second copy.
