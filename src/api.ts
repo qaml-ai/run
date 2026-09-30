@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import { answerList, type ClientSessions } from "./client-sessions.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
@@ -33,6 +34,7 @@ import { BrowserTokens, readableFrame, readableMessage, readableRequest, type Br
  */
 export interface ApiContext {
   accounts: Accounts;
+  billingAlerts?: { service: BillingAlerts; emailEnabled: boolean };
   clients: ClientSessions;
   consoleAuth: ConsoleAuth;
   /** OAuth for the hosted MCP endpoint: its access tokens act for their tenant here too. */
@@ -150,9 +152,49 @@ export function api(context: ApiContext) {
     const payload = await readText(c.req.raw.body, 1024 * 1024);
     return json(c, 200, await accounts.billing.webhook(payload, c.req.header("stripe-signature")));
   });
+  // Token possession only proves the mailbox. Neither route grants account access.
+  // The token travels in a JSON body, not a logged URL; GET never confirms consent.
+  for (const action of ["inspect", "confirm"] as const) route(createRoute({
+    method: "post", path: `/v1/billing/alerts/confirmation/${action}`, security: [],
+    request: { body: content(schema.BillingConfirmationInput) },
+    responses: { 200: reply("Mailbox confirmation state", schema.BillingConfirmation) },
+  }), async c => {
+    const { token } = parse(schema.BillingConfirmationInput, await readJson(c.req.raw.body, 1024, {}));
+    const service = context.billingAlerts?.service;
+    if (!service) return json(c, 200, { status: "unavailable" });
+    if (action === "confirm" && !await service.confirm(token)) return json(c, 200, { status: "unavailable" });
+    return json(c, 200, await service.inspectConfirmation(token));
+  });
+  for (const action of ["inspect", "stop"] as const) route(createRoute({
+    method: "post", path: `/v1/billing/alerts/unsubscribe/${action}`, security: [],
+    request: { body: content(schema.BillingConfirmationInput) }, responses: { 200: reply("Email opt-out state", schema.BillingUnsubscribe) },
+  }), async c => {
+    const { token } = parse(schema.BillingConfirmationInput, await readJson(c.req.raw.body, 1024, {}));
+    const service = context.billingAlerts?.service;
+    if (!service) return json(c, 200, { status: "unavailable" });
+    if (action === "stop") await service.unsubscribe(token);
+    return json(c, 200, await service.inspectUnsubscribe(token));
+  });
+  // RFC 8058 uses the opaque capability in the URL, with no account session.
+  // GET only opens the confirmation page; only a correctly formed POST opts out.
+  app.get("/v1/billing/alerts/one-click/:token", c => c.redirect(`/console/billing/unsubscribe#${encodeURIComponent(c.req.param("token"))}`));
+  app.post("/v1/billing/alerts/one-click/:token", async c => {
+    const type = c.req.header("content-type") ?? "";
+    if (!/^(application\/x-www-form-urlencoded|multipart\/form-data)(;|$)/i.test(type)) throw new HttpError(415, "Expected a form submission");
+    const body = await readText(c.req.raw.body, 4096);
+    let form: FormData;
+    try { form = await new Request("https://localhost", { method: "POST", headers: { "Content-Type": type }, body }).formData(); }
+    catch { throw new HttpError(400, "Invalid form submission"); }
+    if (form.get("List-Unsubscribe") !== "One-Click") throw new HttpError(400, "Expected a one-click unsubscribe request");
+    await context.billingAlerts?.service.unsubscribe(c.req.param("token"));
+    return c.body(null, 204);
+  });
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
     c.set("principal", principal);
+    if (principal.via === "oauth" && c.req.method !== "GET" && c.req.path.startsWith("/v1/billing/")) {
+      throw new HttpError(403, "An OAuth access token cannot change billing settings");
+    }
     // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else.
     if (principal.browser) {
       const [, agent, scope] = BROWSER_ROUTE.exec(c.req.path) ?? [];
@@ -531,6 +573,42 @@ export function api(context: ApiContext) {
 
   route(createRoute({ method: "get", path: "/v1/billing", responses: { 200: reply("Prepaid credit: balance, this month, recent entries and rates", schema.Billing) } }),
     async c => json(c, 200, await accounts.billing.summary(c.var.principal.tenant)));
+  const alertService = async (tenant: string, sending = false) => {
+    if (await accounts.billing.mode(tenant) !== "prepaid") throw new HttpError(400, "Billing alerts are only available for prepaid accounts");
+    if (!context.billingAlerts || (sending && !context.billingAlerts.emailEnabled)) throw new HttpError(503, "Billing email is not configured on this runtime");
+    return context.billingAlerts.service;
+  };
+  route(createRoute({ method: "get", path: "/v1/billing/alerts", responses: { 200: reply("Billing alert settings", schema.BillingAlerts) } }), async c =>
+    json(c, 200, { ...await (await alertService(c.var.principal.tenant)).get(c.var.principal.tenant), emailEnabled: context.billingAlerts!.emailEnabled }));
+  route(createRoute({ method: "put", path: "/v1/billing/alerts", request: { body: content(schema.BillingAlertThreshold) }, responses: { 200: reply("Billing alert settings", schema.BillingAlerts) } }), async c => {
+    const service = await alertService(c.var.principal.tenant);
+    const { thresholdUsd } = parse(schema.BillingAlertThreshold, await readJson(c.req.raw.body, 4096, {}));
+    if (Math.abs(thresholdUsd * 100 - Math.round(thresholdUsd * 100)) > 1e-6) throw new HttpError(400, "thresholdUsd must be in whole cents");
+    return json(c, 200, { ...await service.setThreshold(c.var.principal.tenant, Math.round(thresholdUsd * 100) * 10_000), emailEnabled: context.billingAlerts!.emailEnabled });
+  });
+  route(createRoute({ method: "post", path: "/v1/billing/alerts/recipients", request: { body: content(schema.BillingRecipientInput) }, responses: { 201: reply("Address awaiting mailbox confirmation", schema.BillingRecipient) } }), async c => {
+    const service = await alertService(c.var.principal.tenant, true);
+    const body = parse(schema.BillingRecipientInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 201, await service.add(c.var.principal.tenant, body.email, body.events));
+  });
+  const recipientId = z.object({ id: z.uuid() });
+  route(createRoute({ method: "put", path: "/v1/billing/alerts/recipients/{id}", request: { params: recipientId, body: content(schema.BillingAlertChoices) }, responses: { 200: reply("Recipient preferences", schema.BillingRecipient) } }), async c => {
+    const service = await alertService(c.var.principal.tenant);
+    const { id } = parse(recipientId, c.req.param());
+    return json(c, 200, await service.update(c.var.principal.tenant, id, parse(schema.BillingAlertChoices, await readJson(c.req.raw.body, 4096, {}))));
+  });
+  route(createRoute({ method: "delete", path: "/v1/billing/alerts/recipients/{id}", request: { params: recipientId }, responses: { 200: reply("Recipient removed", schema.Deleted) } }), async c => {
+    const service = await alertService(c.var.principal.tenant);
+    const { id } = parse(recipientId, c.req.param());
+    if (!await service.remove(c.var.principal.tenant, id)) throw new HttpError(404, "Unknown billing recipient");
+    return json(c, 200, { deleted: true });
+  });
+  route(createRoute({ method: "post", path: "/v1/billing/alerts/recipients/{id}/resend", request: { params: recipientId }, responses: { 200: reply("Confirmation queued", z.object({ queued: z.literal(true) })) } }), async c => {
+    const service = await alertService(c.var.principal.tenant, true);
+    const { id } = parse(recipientId, c.req.param());
+    await service.resend(c.var.principal.tenant, id);
+    return json(c, 200, { queued: true });
+  });
   route(createRoute({
     method: "get", path: "/v1/billing/ledger",
     request: { query: z.object({ before: z.string().optional().openapi({ description: "Entries older than this id" }), limit: z.string().optional().openapi({ description: "1–200, default 50" }) }) },
@@ -544,10 +622,54 @@ export function api(context: ApiContext) {
     method: "post", path: "/v1/billing/checkout", request: { body: content(schema.CheckoutInput) },
     responses: { 201: reply("A Stripe Checkout session; the credit is added once Stripe reports the payment", schema.Checkout) },
   }), async c => {
-    const { amountUsd } = parse(schema.CheckoutInput, await readJson(c.req.raw.body, 4096, {}));
+    const { amountUsd, requestId } = parse(schema.CheckoutInput, await readJson(c.req.raw.body, 4096, {}));
     const amount = Math.round(amountUsd * 100) * 10_000;
     if (Math.abs(amountUsd * 100 - Math.round(amountUsd * 100)) > 1e-6) throw new HttpError(400, "amountUsd must be in whole cents");
-    return json(c, 201, await accounts.billing.checkout(c.var.principal.tenant, amount));
+    return json(c, 201, await accounts.billing.checkout(c.var.principal.tenant, amount, requestId));
+  });
+  route(createRoute({ method: "get", path: "/v1/billing/payment-method", responses: { 200: reply("Saved card display details from Stripe", schema.BillingPaymentMethod) } }),
+    async c => json(c, 200, await accounts.billing.paymentMethod(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/billing/portal", request: { body: content(schema.BillingPortalInput) }, responses: { 201: reply("Stripe-hosted billing portal", schema.BillingPortal) } }), async c => {
+    const { flow, resumeAutoTopup } = parse(schema.BillingPortalInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 201, await accounts.billing.portal(c.var.principal.tenant, flow, resumeAutoTopup));
+  });
+  const autoTopup = () => {
+    if (!accounts.billing.autoTopup) throw new HttpError(503, "Stripe billing is not configured");
+    return accounts.billing.autoTopup;
+  };
+  route(createRoute({ method: "get", path: "/v1/billing/auto-topup", responses: { 200: reply("Auto top-up state", schema.AutoTopup) } }),
+    async c => json(c, 200, await autoTopup().get(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/quote", request: { body: content(schema.AutoTopupTerms) }, responses: { 201: reply("Exact terms for confirmation", schema.AutoTopupQuote) } }), async c => {
+    const body = parse(schema.AutoTopupTerms, await readJson(c.req.raw.body, 4096, {}));
+    const micros = (n: number) => { if (Math.abs(n*100-Math.round(n*100)) > 1e-6) throw new HttpError(400, "Use whole cents"); return Math.round(n*100)*10000; };
+    return json(c, 201, await autoTopup().quote(c.var.principal.tenant, { threshold: micros(body.thresholdUsd), amount: micros(body.amountUsd), monthlyLimit: micros(body.monthlyLimitUsd) }));
+  });
+  route(createRoute({ method: "get", path: "/v1/billing/auto-topup/quote", request: { query: z.object({ id: z.uuid().optional() }) }, responses: { 200: reply("Saved draft with current confirmation version", schema.AutoTopupQuote) } }), async c => {
+    const { id } = parse(z.object({ id: z.uuid().optional() }), c.req.query());
+    return json(c, 200, await autoTopup().preview(c.var.principal.tenant, id));
+  });
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/enable", request: { body: content(schema.AutoTopupConsent) }, responses: { 200: reply("Auto top-up enabled", schema.AutoTopup) } }), async c => {
+    const body = parse(schema.AutoTopupConsent, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 200, await autoTopup().enable(c.var.principal.tenant, body.quoteId, body.version, body.consent));
+  });
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/disable", responses: { 200: reply("Future top-ups disabled", schema.AutoTopup) } }),
+    async c => json(c, 200, await autoTopup().disable(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/refresh", responses: { 200: reply("Refresh after a hosted billing return", schema.AutoTopup) } }),
+    async c => json(c, 200, await autoTopup().refresh(c.var.principal.tenant)));
+  route(createRoute({ method: "post", path: "/v1/billing/auto-topup/retry", request: { body: content(schema.AutoTopupRetry) }, responses: { 200: reply("Retry the existing invoice", schema.AutoTopup) } }), async c => {
+    const body = parse(schema.AutoTopupRetry, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 200, await autoTopup().retry(c.var.principal.tenant, body.attemptId));
+  });
+  route(createRoute({
+    method: "post", path: "/v1/billing/starting-credit/grant", request: { body: content(schema.StartingCreditGrantInput) },
+    responses: { 201: reply("The once-per-identity starting-credit grant, or its earlier identical award", schema.LedgerEntry) },
+  }), async c => {
+    const principal = c.var.principal;
+    if (principal.via !== "operator" || !context.billingAdmins?.includes(principal.tenant)) throw new HttpError(403, "Only the platform operator can grant starting credit");
+    const body = parse(schema.StartingCreditGrantInput, await readJson(c.req.raw.body, 4096, {}));
+    if (!await accounts.exists(body.tenant)) throw new HttpError(404, `Unknown tenant ${body.tenant}`);
+    if (Math.abs(body.amountUsd * 100 - Math.round(body.amountUsd * 100)) > 1e-6) throw new HttpError(400, "amountUsd must be in whole cents");
+    return json(c, 201, await accounts.billing.grantStartingCredit(body.tenant, Math.round(body.amountUsd * 100) * 10_000, body.reason, principal.tenant));
   });
   route(createRoute({
     method: "post", path: "/v1/billing/adjustments", request: { body: content(schema.AdjustmentInput) },

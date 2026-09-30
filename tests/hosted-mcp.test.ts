@@ -154,6 +154,15 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
   assert.equal((await mcp.call("run_agent", { agent: "via-oauth", message: "hello" })).json.text, "echo: hello");
   assert.equal((await r.call("/v1/me", { token: tokens.access_token })).json.via, "oauth");
   assert.equal((await r.call("/v1/tokens", { token: tokens.access_token, body: { name: "escape" } })).status, 403);
+  for (const [path, method, body] of [
+    ["/v1/billing/alerts", "PUT", { thresholdUsd: 5 }],
+    ["/v1/billing/alerts/recipients", "POST", { email: "finance@example.test" }],
+    ["/v1/billing/alerts/recipients/00000000-0000-4000-8000-000000000000", "DELETE", undefined],
+    ["/v1/billing/checkout", "POST", { amountUsd: 20 }],
+    ["/v1/billing/portal", "POST", { flow: "payment_method" }],
+    ["/v1/billing/auto-topup/quote", "POST", { thresholdUsd: 5, amountUsd: 20, monthlyLimitUsd: 200 }],
+    ["/v1/billing/auto-topup/disable", "POST", {}],
+  ] as const) assert.equal((await r.call(path, { token: tokens.access_token, method, body })).status, 403, "agents OAuth scope cannot change billing");
   const grants = (await r.call("/v1/oauth/grants")).json;
   assert.deepEqual(grants.map((grant: any) => [grant.clientName, grant.login]), [["Test Agent", null]]);
   assert.equal((await r.call("/v1/oauth/grants", { token: OTHER_OPERATOR })).json.length, 0);

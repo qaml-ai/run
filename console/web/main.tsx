@@ -11,7 +11,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthLayout } from "@/components/auth-layout";
 import { PIXEL_STYLE } from "@/components/brand";
 import { ErrorAlert, PageErrorBoundary } from "@/components/common";
-import { api, useApi, type Me } from "@/lib/api";
+import { BillingBanner, BillingBalance } from "@/components/billing-banner";
+import { BillingDialogs } from "@/components/billing-controls";
+import { useBillingState } from "@/components/billing-state";
+import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { AgentsPage } from "@/pages/agents";
@@ -21,6 +24,8 @@ import { DefinitionsPage } from "@/pages/definitions";
 import { ModelsPage } from "@/pages/models";
 import { TokensPage } from "@/pages/tokens";
 import { UsagePage } from "@/pages/usage";
+import { BillingConfirmationPage } from "@/pages/billing-confirmation";
+import { BillingUnsubscribePage } from "@/pages/billing-unsubscribe";
 import { BillingPage } from "@/pages/billing";
 import { QuickstartPage } from "@/pages/quickstart";
 import { VolumePage, VolumesPage } from "@/pages/volumes";
@@ -59,10 +64,14 @@ function useWebMcp(tenant: string | undefined) {
 function App() {
   const me = useApi<Me>("/v1/me");
   const path = usePath();
+  const [section, ...rest] = path.split("/");
+  const isAgentsList = !section || (section === "agents" && !rest[0]);
+  const billing = useApi<Billing>(me.data ? "/v1/billing" : undefined, 30_000);
+  const billingState = useBillingState(billing);
+  const agents = useApi<AgentSummary[]>(me.data && isAgentsList ? "/v1/agents" : undefined, 10_000);
   useWebMcp(me.data?.tenant);
   if (me.loading && !me.data) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
   if (!me.data) return <SignIn onSignedIn={() => void me.reload()} />;
-  const [section, ...rest] = path.split("/");
   const page = section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
     : section === "volumes" ? (rest[0] ? <VolumePage id={rest[0]} /> : <VolumesPage />)
     : section === "definitions" ? <DefinitionsPage />
@@ -70,9 +79,9 @@ function App() {
     : section === "models" ? <ModelsPage me={me.data} />
     : section === "tokens" ? <TokensPage />
     : section === "usage" ? <UsagePage />
-    : section === "billing" ? <BillingPage />
+    : section === "billing" ? <BillingPage state={billingState} />
     : section === "quickstart" ? <QuickstartPage />
-    : <AgentsPage />;
+    : <AgentsPage agents={agents} billing={billing} />;
   const active = section || "agents";
   const who = me.data.login ?? me.data.tenant;
   // The shell stays quiet: ground-colored, split from the page by a rule, no art or display type.
@@ -84,7 +93,7 @@ function App() {
             <FullLogo className="h-5 w-auto" />
             <div className="text-muted-foreground mt-2 truncate text-xs">{location.host}</div>
           </div>
-          <div className="md:hidden"><SignOut /></div>
+          <div className="flex items-center gap-4 md:hidden"><BillingBalance state={billingState} mobile /><SignOut /></div>
         </div>
         <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-col md:gap-0.5 md:overflow-visible">
           {NAV.map(({ to, label, icon: Icon }) => (
@@ -98,6 +107,7 @@ function App() {
         </nav>
         <div className="mt-auto hidden md:block">
           <Separator />
+          <BillingBalance state={billingState} />
           <div className="flex items-center gap-3 px-3 py-3">
             <span aria-hidden="true" className="border-sidebar-border bg-sidebar-accent flex size-8 shrink-0 items-center justify-center border text-sm font-medium">
               {who[0]?.toUpperCase() ?? "?"}
@@ -110,8 +120,14 @@ function App() {
           </div>
         </div>
       </aside>
-      <main className="min-w-0 flex-1 px-4 py-6 md:px-10 md:py-8">
-        <div className="mx-auto max-w-6xl"><PageErrorBoundary key={path}>{page}</PageErrorBoundary></div>
+      <main className="min-w-0 flex-1">
+        <BillingBanner state={billingState} hideStarting={active === "billing" || (isAgentsList && !agents.data?.length)} />
+        <BillingDialogs state={billingState} />
+        <div className="px-4 py-6 md:px-10 md:py-8">
+          <div className="mx-auto max-w-6xl">
+            <PageErrorBoundary key={path}>{active !== "billing" && <ErrorAlert error={billingState.error} />}{page}</PageErrorBoundary>
+          </div>
+        </div>
       </main>
     </div>
   );
@@ -127,7 +143,7 @@ function SignOut() {
 }
 
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const methods = useApi<{ github: boolean; token: boolean; org?: string; open?: boolean; minAccountDays?: number }>("/console/auth/methods");
+  const methods = useApi<{ github: boolean; token: boolean; org?: string; open?: boolean }>("/console/auth/methods");
   const [token, setToken] = useState("");
   const [error, setError] = useState(new URLSearchParams(location.search).get("error") ?? "");
   const [busy, setBusy] = useState(false);
@@ -149,9 +165,9 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />
         {methods.data?.github && (
           <div className="flex flex-col gap-3">
-            <PixelButton href="/console/auth/github" className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>
+            <PixelButton size="hero" href="/console/auth/github" className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>
             <p className="text-muted-foreground text-center text-xs text-balance">{methods.data.open
-              ? `Any GitHub account can sign up. Accounts at least ${methods.data.minAccountDays} days old start with free credit.`
+              ? "Any GitHub account can sign up."
               : `For members of the ${methods.data.org} GitHub organization.`}</p>
           </div>
         )}
@@ -168,7 +184,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <Label htmlFor="token">Operator or API token</Label>
             <Input id="token" type="password" autoComplete="off" placeholder="art_…" value={token} onChange={event => setToken(event.target.value)} />
           </div>
-          <PixelButton type="submit" variant={methods.data?.github ? "secondary" : "primary"} className="w-full" loading={busy} disabled={!token.trim() || busy}>
+          <PixelButton size="hero" type="submit" variant={methods.data?.github ? "secondary" : "primary"} className="w-full" loading={busy} disabled={!token.trim() || busy}>
             Sign in with token
           </PixelButton>
         </form>
@@ -178,5 +194,5 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><TooltipProvider><App /></TooltipProvider></StrictMode>,
+  <StrictMode><TooltipProvider>{location.pathname === "/console/billing/confirm" ? <BillingConfirmationPage /> : location.pathname === "/console/billing/unsubscribe" ? <BillingUnsubscribePage /> : <App />}</TooltipProvider></StrictMode>,
 );

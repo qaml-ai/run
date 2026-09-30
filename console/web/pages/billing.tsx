@@ -1,28 +1,24 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { CheckCircle2, Loader2, Plus, Receipt } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useEffect, useState } from "react";
+import { Loader2, Plus } from "lucide-react";
+import { BillingAlertsSection } from "@/components/billing-alerts";
+import { cardLabel, invoiceLink, type BillingState } from "@/components/billing-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { PixelButton } from "@/components/ui/pixel-button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, ErrorAlert, PageHeader, Stats } from "@/components/common";
-import { api, formatMicros, formatNumber, formatTime, useApi, type Billing, type LedgerEntry, type LedgerKind } from "@/lib/api";
+import { ErrorAlert } from "@/components/common";
+import { needsStartingCredit, StartingCreditHelp } from "@/components/starting-credit";
+import { api, formatMicros, formatNumber, type Billing, type LedgerEntry, type LedgerKind } from "@/lib/api";
 
 const KIND_LABELS: Record<LedgerKind, string> = {
-  grant: "Free credit", purchase: "Purchase", usage: "Agent usage", storage: "Storage", adjustment: "Adjustment", refund: "Refund",
+  grant: "Credit grant", purchase: "Purchase", usage: "Agent usage", storage: "Storage", adjustment: "Adjustment", refund: "Refund",
 };
 
-/** What an entry was for, from its metadata. */
-function detail(entry: LedgerEntry) {
+function activityDetail(entry: LedgerEntry) {
   const meta = entry.metadata;
+  if (meta.card) return cardLabel(meta.card);
   if (entry.kind === "usage") {
     const parts = [];
-    // Usage accrues into one entry per UTC hour (older entries are one per flush).
     if (meta.hour) parts.push(Date.now() < entry.createdAt + 3_600_000 ? "This hour so far" : "Hour total");
     if (meta.tokens) parts.push(`${formatMicros(meta.tokens)} model tokens`);
     if (meta.funding) parts.push(`${formatMicros(meta.funding)} provider credit funding`);
@@ -32,199 +28,85 @@ function detail(entry: LedgerEntry) {
     if (meta.toolSearches) parts.push(`${formatNumber(meta.toolSearches)} tool search${meta.toolSearches === 1 ? "" : "es"}`);
     return parts.join(" · ");
   }
-  if (entry.kind === "storage") return `${meta.day}: ${formatNumber(meta.bytes / 1e9)} GB stored`;
-  return meta.reason ?? "";
+  if (entry.kind === "storage") return `${formatNumber((meta.bytes ?? 0) / 1e9)} GB stored`;
+  return meta.reason;
 }
 
-function LedgerTable({ entries }: { entries: LedgerEntry[] }) {
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow><TableHead>When</TableHead><TableHead>Kind</TableHead><TableHead>Detail</TableHead><TableHead className="text-right">Amount</TableHead></TableRow>
-      </TableHeader>
-      <TableBody>
-        {entries.map(entry => (
-          <TableRow key={entry.id}>
-            <TableCell className="whitespace-nowrap tabular-nums">{formatTime(entry.createdAt)}</TableCell>
-            <TableCell><Badge variant={entry.amount > 0 ? "default" : "secondary"}>{KIND_LABELS[entry.kind]}</Badge></TableCell>
-            <TableCell className="text-muted-foreground text-xs">{detail(entry)}</TableCell>
-            <TableCell className={`text-right font-mono tabular-nums ${entry.amount > 0 ? "font-medium" : ""}`}>{entry.amount > 0 ? "+" : ""}{formatMicros(entry.amount)}</TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
+function Activity({ entries }: { entries: LedgerEntry[] }) {
+  return <ul className="divide-y border-b">{entries.map(entry => {
+    const meta = entry.metadata, url = invoiceLink(meta.invoiceUrl);
+    const detail = activityDetail(entry);
+    return <li key={entry.id} className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 py-3 text-sm sm:grid-cols-[140px_minmax(0,1fr)_auto]">
+      <time dateTime={new Date(entry.createdAt).toISOString()} className="text-muted-foreground col-span-2 text-xs tabular-nums sm:col-span-1">{new Date(entry.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span>{meta.autoTopup ? "Auto top-up" : KIND_LABELS[entry.kind]}</span>{detail && <span className="text-muted-foreground break-words text-xs">{detail}</span>}{url && <a className="text-xs underline underline-offset-4" href={url} target="_blank" rel="noopener noreferrer">Invoice ↗</a>}</div>
+      <span className={`text-right font-mono tabular-nums ${entry.amount > 0 ? "font-semibold" : "text-muted-foreground"}`}>{entry.amount > 0 ? "+" : ""}{formatMicros(entry.amount)}</span>
+    </li>;
+  })}</ul>;
 }
 
-const AMOUNTS = [5, 10, 25, 50, 100];
-
-/** Choose an amount, then pay for it on Stripe's checkout page, which returns here. */
-function AddCreditDialog({ rates, onClose }: { rates: Billing["rates"]; onClose: () => void }) {
-  const [choice, setChoice] = useState("10");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const amount = Math.round(Number(choice) * 100) * 10_000;
-  const valid = Number.isFinite(Number(choice)) && amount >= rates.minPurchase && amount <= rates.maxPurchase;
-  // Whole cents, as the server and Stripe round it.
-  const fee = Math.round(amount * rates.purchaseFeeBps / 10_000 / 10_000) * 10_000;
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true); setError(undefined);
-    try { location.assign((await api<{ url: string }>("/v1/billing/checkout", { body: { amountUsd: Number(choice) } })).url); }
-    catch (caught) { setError((caught as Error).message); setBusy(false); }
-  }
-  return (
-    <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent>
-        <form onSubmit={submit} className="flex flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>Add credit</DialogTitle>
-            <DialogDescription>You pay on Stripe's checkout page; the credit appears here as soon as the payment goes through.</DialogDescription>
-          </DialogHeader>
-          <ErrorAlert error={error} />
-          <div className="flex flex-wrap gap-2">
-            {AMOUNTS.map(value => (
-              <Button key={value} type="button" size="sm" variant={choice === String(value) ? "default" : "outline"} onClick={() => setChoice(String(value))}>${value}</Button>
-            ))}
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="credit-amount">Amount (USD)</Label>
-            <Input id="credit-amount" inputMode="decimal" value={choice} onChange={event => setChoice(event.target.value.replace(/[^0-9.]/g, ""))} />
-            <p className="text-muted-foreground text-xs">Between {formatMicros(rates.minPurchase)} and {formatMicros(rates.maxPurchase)}.</p>
-          </div>
-          {valid && (
-            <div className="bg-muted grid grid-cols-[1fr_auto] gap-1 border p-3 text-sm tabular-nums">
-              <span>Credit</span><span className="text-right font-mono">{formatMicros(amount)}</span>
-              <span className="text-muted-foreground">Processing fee ({rates.purchaseFeeBps / 100}%)</span><span className="text-muted-foreground text-right font-mono">{formatMicros(fee)}</span>
-              <span className="font-medium">Total</span><span className="text-right font-mono font-medium">{formatMicros(amount + fee)}</span>
-            </div>
-          )}
-          <DialogFooter className="sm:items-center">
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <PixelButton type="submit" loading={busy} disabled={!valid || busy}>Continue to payment</PixelButton>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
+function AutoSection({ state }: { state: BillingState }) {
+  const a = state.auto.data, card = state.payment.data?.card;
+  const label = !a ? "" : a.state === "cancelling" ? "Cancelling" : a.state === "processing" ? "Topping up" : a.state === "action_required" ? "Action needed" : a.state === "on" ? "On" : a.state === "off" ? "Off" : "Paused";
+  const danger = a && ["action_required", "paused_declined", "paused_no_card", "paused_expired"].includes(a.state);
+  return <section className="border-y py-5">
+    <div className="flex items-center gap-3"><h2 className="text-sm font-semibold">Auto top-up</h2>{a && <Badge variant={danger ? "destructive" : a.state === "on" ? "info" : a.state === "processing" ? "live" : "secondary"}>{label}</Badge>}<Button variant="outline" size="sm" className="ml-auto" disabled={!a} onClick={() => state.setDialog("auto")}>{a?.enabled ? "Edit" : "Set up"}</Button></div>
+    <ErrorAlert error={state.auto.error} />
+    {!a ? <Skeleton className="mt-3 h-5 w-64" /> : <>
+      <p className="mt-2 text-sm">{a.enabled ? <>Below {formatMicros(a.threshold)}, add {formatMicros(a.amount)}{card && <> · {cardLabel(card)}</>}</> : "Refill automatically when your balance runs low."}</p>
+      {(a.enabled || a.held > 0 || a.usedThisPeriod > 0) && <div className="text-muted-foreground mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs"><div role="meter" aria-label="Monthly automatic top-up spending" aria-valuemin={0} aria-valuemax={a.monthlyLimit} aria-valuenow={Math.min(a.usedThisPeriod, a.monthlyLimit)} aria-valuetext={`${formatMicros(a.usedThisPeriod)} of ${formatMicros(a.monthlyLimit)}`} className="bg-muted h-1 w-32"><div className={`h-full ${a.state === "limit_reached" ? "bg-destructive" : "bg-foreground"}`} style={{ width: `${Math.min(100, a.usedThisPeriod / a.monthlyLimit * 100)}%` }} /></div><span>{formatMicros(a.usedThisPeriod)} of {formatMicros(a.monthlyLimit)} this month{a.held > 0 && <> · {formatMicros(a.held)} pending</>}</span></div>}
+      {a.state === "limit_reached" && <p className="bg-muted mt-3 px-3 py-2 text-sm">This month's limit is reached. Auto top-up resumes {new Date(a.resetsAt).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} (UTC). <button className="underline underline-offset-4" onClick={() => state.setDialog("auto")}>Raise limit</button></p>}
+      {a.state === "paused_expired" && <p className="bg-muted mt-3 px-3 py-2 text-sm">Paused: bank confirmation expired. Retry to review and authorize a new top-up.</p>}
+      {a.state === "reconcile" && <p className="bg-muted mt-3 px-3 py-2 text-sm">We're checking a recent top-up, so auto top-up is paused for now. Questions? <a className="underline" href="mailto:support@camelai.com">support@camelai.com</a>.</p>}
+      {!a.enabled && a.attempt && <p className="text-muted-foreground mt-2 text-xs">New top-ups are off. The pending {formatMicros(a.attempt.total)} top-up may still finish.</p>}
+    </>}
+  </section>;
 }
 
-/** Stripe sends the buyer back with ?checkout=success or ?checkout=cancelled. */
-function useCheckoutReturn() {
+function RatesDialog({ data, close }: { data: Billing; close(): void }) {
+  return <Dialog open onOpenChange={open => { if (!open) close(); }}><DialogContent><DialogHeader><DialogTitle>Rates</DialogTitle><DialogDescription>Prepaid credit covers your usage.</DialogDescription></DialogHeader>
+    <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-3 text-sm"><dt>Agent time, per active hour</dt><dd className="font-mono">{formatMicros(data.rates.agentHour)}</dd><dt>Storage, per GB-month</dt><dd className="font-mono">{formatMicros(data.rates.storageGbMonth)}</dd>{Object.entries(data.rates.webSearch).map(([provider, price]) => <div key={provider} className="contents"><dt>Web search ({provider}), each</dt><dd className="font-mono">{formatMicros(price)}</dd></div>)}<dt>Rendered pages, each</dt><dd className="font-mono">{formatMicros(data.rates.webRender)}</dd><dt>Credit processing fee</dt><dd className="font-mono">{data.rates.purchaseFeeBps / 100}%</dd></dl>
+    <p className="text-muted-foreground text-sm">Model usage is billed at provider-reported cost, estimated from list prices when unavailable. {data.rates.openrouterCreditMultiplier !== undefined && <>OpenRouter credits cost ${data.rates.openrouterCreditMultiplier} per $1 of provider credits, including funding costs. </>}Meaning-ranked tool search is billed at cost. Model and web tools using your own keys have no platform charge.</p>
+    <p className="text-muted-foreground text-xs">Agent time is metered continuously; storage is charged daily.{data.freeCredit && " Accounts that haven't purchased credit have lower agent and hourly spend limits."}</p>
+  </DialogContent></Dialog>;
+}
+
+export function BillingPage({ state }: { state: BillingState }) {
+  const { billing } = state, data = billing.data;
+  const [rates, setRates] = useState(false);
   const [returned, setReturned] = useState(() => new URLSearchParams(location.search).get("checkout"));
   const [session] = useState(() => new URLSearchParams(location.search).get("session"));
-  const dismiss = () => { history.replaceState(null, "", location.pathname); setReturned(null); };
-  return { returned, session, dismiss };
-}
-
-/** Stop waiting for the webhook's credit after this long, and say it may still come. */
-const CHECKOUT_WAIT_MS = 2 * 60_000;
-
-export function BillingPage() {
-  const { returned, session, dismiss } = useCheckoutReturn();
-  // After a payment, poll until the webhook's credit shows up, for a while.
-  const [polling, setPolling] = useState(returned === "success");
-  const [gaveUp, setGaveUp] = useState(false);
-  const [arrived, setArrived] = useState(false);
-  const billing = useApi<Billing>("/v1/billing", polling ? 3_000 : 30_000);
-  const [adding, setAdding] = useState(false);
+  const [gaveUp, setGaveUp] = useState(false), [arrived, setArrived] = useState(false);
   const [older, setOlder] = useState<LedgerEntry[]>([]);
   const [next, setNext] = useState<number | null>();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>();
-  const data = billing.data;
-  const entries = [...(data?.recent ?? []), ...older];
+  const [loading, setLoading] = useState(false), [error, setError] = useState<string>();
+  const recentIds = new Set(data?.recent.map(e => e.id));
+  const entries = [...(data?.recent ?? []), ...older.filter(e => !recentIds.has(e.id))];
   const cursor = next === undefined ? data?.recent.at(-1)?.id : next;
-  // The purchase has arrived once its entry (by checkout session; else any purchase in the last 15 minutes)
-  // is among the recent ones. Latched, since a busy tenant's usage entries soon push it out of `recent`.
-  const seen = returned === "success" && !!data?.recent.some(entry => entry.kind === "purchase" &&
-    (session ? entry.metadata?.session === session : Date.now() - entry.createdAt < 15 * 60_000));
-  useEffect(() => { if (seen) { setArrived(true); setPolling(false); } }, [seen]);
-  // A tenant that isn't billed here never gets the credit (the purchase was another tenant's).
-  useEffect(() => { if (data?.billing === "none") setPolling(false); }, [data?.billing]);
+  const seen = returned === "success" && !!data?.recent.some(e => e.kind === "purchase" && (session ? e.metadata?.session === session : !e.metadata.autoTopup && Date.now() - e.createdAt < 15 * 60_000));
+  useEffect(() => { if (seen) setArrived(true); }, [seen]);
   useEffect(() => {
-    if (!polling) return;
-    const timer = setTimeout(() => { setGaveUp(true); setPolling(false); }, CHECKOUT_WAIT_MS);
-    return () => clearTimeout(timer);
-  }, [polling]);
-
+    if (returned !== "success" || arrived || gaveUp || data?.billing === "none") return;
+    const poll = setInterval(() => void billing.reload(), 3_000), stop = setTimeout(() => setGaveUp(true), 120_000);
+    return () => { clearInterval(poll); clearTimeout(stop); };
+  }, [returned, arrived, gaveUp, data?.billing, billing.reload]);
+  const dismiss = () => { const q = new URLSearchParams(location.search); q.delete("checkout"); q.delete("session"); history.replaceState(null, "", location.pathname + (q.size ? `?${q}` : "")); setReturned(null); };
   async function loadMore() {
-    if (cursor == null) return;
+    if (cursor == null || loading) return;
     setLoading(true);
-    try {
-      const page = await api<{ entries: LedgerEntry[]; next?: number }>(`/v1/billing/ledger?before=${cursor}&limit=50`);
-      setOlder(current => [...current, ...page.entries]);
-      setNext(page.next ?? null);
-    } catch (caught) { setError((caught as Error).message); }
-    finally { setLoading(false); }
+    try { const page = await api<{ entries: LedgerEntry[]; next?: number }>(`/v1/billing/ledger?before=${cursor}&limit=50`); setOlder(current => [...current, ...page.entries]); setNext(page.next ?? null); }
+    catch (e) { setError((e as Error).message); } finally { setLoading(false); }
   }
-
-  return (
-    <>
-      <PageHeader title="Billing" description="Prepaid credit pays for model usage on the platform's keys at cost, time your agents spend in turns, and storage."
-        actions={data?.billing === "prepaid" && data.checkout && <Button onClick={() => setAdding(true)}><Plus />Add credit</Button>} />
-      <ErrorAlert error={billing.error ?? error} />
-      {returned === "success" && data?.billing !== "none" && (
-        <Alert className="mb-4">
-          {arrived ? <CheckCircle2 className="text-[#5aa7ff]!" /> : gaveUp ? <Receipt /> : <Loader2 className="animate-spin" />}
-          <AlertTitle>{arrived ? "Credit added" : "Payment received"}</AlertTitle>
-          <AlertDescription>
-            {arrived ? "Thank you. Your new balance is below."
-              : gaveUp ? "Stripe hasn't confirmed the payment yet. The credit is added when it does; refresh this page later."
-              : "Your credit appears here as soon as Stripe confirms the payment, usually within seconds."}
-            <Button variant="link" size="sm" className="h-auto p-0" onClick={dismiss}>Dismiss</Button>
-          </AlertDescription>
-        </Alert>
-      )}
-      {returned === "cancelled" && (
-        <Alert className="mb-4">
-          <Receipt /><AlertTitle>Checkout cancelled</AlertTitle>
-          <AlertDescription>Nothing was charged. <Button variant="link" size="sm" className="h-auto p-0" onClick={dismiss}>Dismiss</Button></AlertDescription>
-        </Alert>
-      )}
-      {adding && data && <AddCreditDialog rates={data.rates} onClose={() => setAdding(false)} />}
-      {!data ? <Skeleton className="h-64 w-full" /> : data.billing === "none" ? (
-        <Alert><Receipt /><AlertTitle>Not billed here</AlertTitle><AlertDescription>This tenant is not billed by the runtime: it uses its own or admin-configured provider keys.</AlertDescription></Alert>
-      ) : (
-        <>
-          {data.balance <= 0 && (
-            <Alert variant="destructive" className="mb-4">
-              <Receipt /><AlertTitle>Your credit is used up</AlertTitle>
-              <AlertDescription>New turns are refused until you add credit.</AlertDescription>
-            </Alert>
-          )}
-          <Stats items={[
-            { label: "Balance", value: formatMicros(data.balance), extra: data.freeCredit && <Badge variant="outline" className="mt-2">Free credit</Badge> },
-            { label: "Agent usage this month", value: formatMicros(-data.month.usage) },
-            { label: "Storage this month", value: formatMicros(-data.month.storage) },
-            { label: "Added this month", value: formatMicros(data.month.purchase + data.month.grant + data.month.adjustment + data.month.refund) },
-          ]} />
-          <Card className="mb-6" size="sm">
-            <CardHeader>
-              <CardTitle className="text-sm">Rates</CardTitle>
-              <CardDescription>
-                Agent time {formatMicros(data.rates.agentHour)} per active hour, metered continuously ·
-                storage {formatMicros(data.rates.storageGbMonth)} per GB-month, charged daily ·
-                model usage on the platform's keys at provider-reported cost (estimated from list prices when unavailable) ·
-                {data.rates.openrouterCreditMultiplier !== undefined && `OpenRouter credits billed at $${data.rates.openrouterCreditMultiplier} per $1 of provider credits, including funding costs · `}
-                web searches on the platform's keys at {Object.entries(data.rates.webSearch).map(([provider, price]) => `${formatMicros(price)} (${provider})`).join(", ")} each ·
-                rendered pages {formatMicros(data.rates.webRender)} each, all free with your own keys ·
-                tool searches ranked by meaning at cost.
-                {data.freeCredit && " Tenants on free credit have lower agent and hourly spend limits until their first purchase."}
-              </CardDescription>
-            </CardHeader>
-          </Card>
-          <h2 className="mb-3 text-sm font-medium">Ledger</h2>
-          {entries.length === 0 ? <EmptyState icon={<Receipt />} title="No credit movements yet" /> : (
-            <div className="bg-card border"><LedgerTable entries={entries} /></div>
-          )}
-          {cursor != null && entries.length >= 10 && (
-            <div className="mt-3 flex justify-center">
-              <Button variant="outline" size="sm" disabled={loading} onClick={() => void loadMore()}>{loading && <Loader2 className="animate-spin" />}Show older</Button>
-            </div>
-          )}
-        </>
-      )}
-    </>
-  );
+  return <div className="mx-auto max-w-[760px]">
+    <header className="mb-8"><div className="flex flex-wrap items-center justify-between gap-4"><h1 className="text-2xl font-semibold tracking-tight">Billing</h1>{data?.billing === "prepaid" && data.checkout && <div className="flex flex-wrap gap-2">{state.payment.data?.portal && state.payment.data.customer && <Button variant="outline" disabled={state.busy} onClick={() => void state.portal("manage")}>Manage billing ↗</Button>}<Button onClick={() => state.setDialog("add")}><Plus />Add credit</Button></div>}</div><p className="text-muted-foreground mt-2 text-sm">Prepaid credit for model usage, agent time and storage. {data && <button className="text-foreground underline underline-offset-4" onClick={() => setRates(true)}>Rates</button>}</p></header>
+    <ErrorAlert error={billing.error ?? state.error ?? state.payment.error ?? error} />
+    {state.notice && <p role="status" className="bg-muted mb-5 p-3 text-sm">{state.notice} <button className="underline" onClick={() => state.setNotice(undefined)}>Dismiss</button></p>}
+    {returned && <p role="status" className="bg-muted mb-5 p-3 text-sm">{returned === "cancelled" ? "Checkout cancelled. Nothing was charged." : arrived ? "Credit added. Your new balance is below." : gaveUp ? "Stripe hasn't confirmed the payment yet. Your credit will appear when it does." : "Confirming payment. Your credit appears as soon as Stripe confirms it."} <button className="underline" onClick={dismiss}>Dismiss</button></p>}
+    {rates && data && <RatesDialog data={data} close={() => setRates(false)} />}
+    {!data ? <Skeleton className="h-64 w-full" /> : data.billing === "none" ? <p className="bg-muted p-4 text-sm">This account isn't billed by the runtime. It uses its own or admin-configured provider keys.</p> : <>
+      <section className="pb-7"><h2 className="text-muted-foreground text-xs">Balance</h2><p className="mt-1 font-mono text-[44px] leading-tight font-medium tracking-tight">{formatMicros(data.balance)}</p><p className="text-muted-foreground mt-2 text-sm">{formatMicros(-data.month.usage - data.month.storage)} spent this month</p>{data.freeCredit && data.startingCredit.status === "granted" && <Badge variant="secondary" className="mt-3">Starting credit</Badge>}{needsStartingCredit(data) && <div role="status" className="bg-muted text-muted-foreground mt-4 max-w-xl p-3 text-sm"><StartingCreditHelp status={data.startingCredit.status} /></div>}</section>
+      {data.checkout && <AutoSection state={state} />}
+      <BillingAlertsSection alerts={state.alerts} />
+      <section className="mt-9"><div className="mb-2 flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-semibold">Activity</h2><p className="text-muted-foreground text-xs">This month: {formatMicros(data.month.purchase + data.month.grant + data.month.adjustment + data.month.refund)} added, {formatMicros(-data.month.usage - data.month.storage)} spent</p></div>{entries.length ? <Activity entries={entries} /> : <p className="text-muted-foreground border-b py-4 text-sm">No credit movements yet.</p>}{cursor != null && entries.length >= 10 && <Button className="mt-3" variant="outline" size="sm" disabled={loading} onClick={() => void loadMore()}>{loading && <Loader2 className="animate-spin" />}Show older</Button>}</section>
+    </>}
+  </div>;
 }

@@ -613,6 +613,10 @@ export const Billing = z.object({
   balance: micros("Credit left; at zero or below, runs are refused with 402"),
   freeCredit: z.boolean().openapi({ description: "Whether the tenant has only ever had free credit, which comes with tighter limits" }),
   checkout: z.boolean().openapi({ description: "Whether credit can be bought here (POST /v1/billing/checkout)" }),
+  startingCredit: z.object({
+    status: z.enum(["granted", "not_eligible", "not_granted", "not_applicable"]),
+    amount: micros("The amount of starting credit actually awarded, independent of the current grant setting"),
+  }),
   month: z.object({
     since: z.number(),
     grant: micros("Granted this UTC month"), purchase: micros("Bought"), usage: micros("Spent on model tokens and agent time"),
@@ -629,13 +633,39 @@ export const Billing = z.object({
     webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
   }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost" }),
 }).openapi("Billing");
+export const BillingAlertChoices = z.object({ low: z.boolean(), depleted: z.boolean(), problems: z.boolean(), receipts: z.boolean() });
+export const BillingRecipient = z.object({ id: z.uuid(), email: z.email(), status: z.enum(["pending", "verified", "bounced", "unsubscribed"]), events: BillingAlertChoices });
+export const BillingAlerts = z.object({ threshold: micros("Low-balance threshold"), emailEnabled: z.boolean(), recipients: z.array(BillingRecipient) });
+export const BillingRecipientInput = z.object({ email: z.email().max(254), events: BillingAlertChoices.optional() });
+export const BillingAlertThreshold = z.object({ thresholdUsd: z.number().min(0.01).max(500) });
+export const BillingConfirmationInput = z.object({ token: z.string().max(100) });
+export const BillingUnsubscribe = z.union([
+  z.object({ status: z.literal("unavailable") }),
+  z.object({ status: z.enum(["ready", "unsubscribed"]), tenant: z.string(), email: z.string() }),
+]);
+export const BillingConfirmation = z.union([
+  z.object({ status: z.literal("unavailable") }),
+  z.object({ status: z.enum(["ready", "confirmed"]), tenant: z.string(), email: z.email() }),
+]);
 export const AdjustmentInput = z.object({
   tenant: z.string(),
   amount: z.number().int().refine(value => value !== 0 && Math.abs(value) <= 1e12, "amount must be a non-zero integer of micro-USD").openapi({ description: "Micro-USD to add (negative to remove)" }),
   reason: z.string().trim().min(1).max(500),
   idempotencyKey: z.string().regex(/^[A-Za-z0-9_.:-]{1,120}$/).optional().openapi({ description: "Repeating an adjustment with the same key applies it once" }),
 }).openapi("AdjustmentInput");
+export const StartingCreditGrantInput = z.object({
+  tenant: z.string(),
+  amountUsd: z.number().min(1).max(100).openapi({ description: "Starting credit to award in USD ($1–$100, whole cents), once per GitHub identity", example: 5 }),
+  reason: z.string().trim().min(1).max(500).openapi({ description: "Private support audit note; never included in the tenant's ledger" }),
+}).openapi("StartingCreditGrantInput");
+export const BillingPortalInput = z.object({ flow: z.enum(["manage", "payment_method"]).default("manage"), resumeAutoTopup: z.boolean().optional() }).strict();
+export const BillingPortal = z.object({ url: z.string() });
+export const BillingPaymentMethod = z.object({
+  portal: z.boolean(), customer: z.boolean(),
+  card: z.object({ brand: z.string(), last4: z.string(), expMonth: z.number(), expYear: z.number() }).nullable(),
+});
 export const CheckoutInput = z.object({
+  requestId: z.uuid().optional().openapi({ description: "Reuse this UUID when retrying the same purchase; a different amount needs a new UUID" }),
   amountUsd: z.number().openapi({ description: "Credit to buy, in USD with at most two decimals; the fee is added on top", example: 10 }),
 }).openapi("CheckoutInput");
 export const Checkout = z.object({
@@ -643,3 +673,12 @@ export const Checkout = z.object({
   url: z.string().openapi({ description: "Send the buyer here to pay" }),
   amount: micros("Credit bought"), fee: micros("Fee"), total: micros("Charged"),
 }).openapi("Checkout");
+
+
+export const AutoTopupTerms = z.object({ thresholdUsd: z.number(), amountUsd: z.number(), monthlyLimitUsd: z.number() }).strict();
+const AutoCard = z.object({ brand: z.string(), last4: z.string(), expMonth: z.number(), expYear: z.number() }).nullable();
+export const AutoTopupQuote = z.object({ id: z.uuid(), version: z.string(), threshold: z.number(), amount: z.number(), fee: z.number(), total: z.number(), monthlyLimit: z.number(), card: AutoCard, immediate: z.boolean(), expiresAt: z.number() });
+export const AutoTopup = z.object({ enabled: z.boolean(), state: z.enum(["off","on","processing","cancelling","action_required","paused_declined","paused_no_card","paused_expired","limit_reached","reconcile"]), version: z.number(), threshold: z.number(), amount: z.number(), fee: z.number(), total: z.number(), monthlyLimit: z.number(), usedThisPeriod: z.number(), held: z.number(), resetsAt: z.number(),
+  attempt: z.object({ id: z.uuid(), state: z.string(), amount: z.number(), fee: z.number(), total: z.number(), card: AutoCard, invoiceUrl: z.string().nullable(), canRetry: z.boolean(), submitted: z.boolean() }).nullable() });
+export const AutoTopupConsent = z.object({ quoteId: z.uuid(), version: z.string().length(64), consent: z.literal(true) }).strict();
+export const AutoTopupRetry = z.object({ attemptId: z.uuid() }).strict();

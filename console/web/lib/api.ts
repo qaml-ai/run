@@ -79,6 +79,7 @@ export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustmen
 export interface LedgerEntry { id: number; kind: LedgerKind; amount: number; metadata: Record<string, any>; createdAt: number }
 export interface Billing {
   billing: "prepaid" | "none"; balance: number; freeCredit: boolean; checkout: boolean;
+  startingCredit: { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number };
   month: { since: number } & Record<LedgerKind, number>;
   recent: LedgerEntry[];
   rates: { agentHour: number; storageGbMonth: number; openrouterCreditMultiplier?: number; purchaseFeeBps: number; minPurchase: number; maxPurchase: number; webSearch: Record<string, number>; webRender: number };
@@ -146,3 +147,16 @@ export const formatBytes = (value: number) => {
   for (; value >= 1024 && index < units.length - 1; index++) value /= 1024;
   return `${index ? value.toFixed(1) : value} ${units[index]}`;
 };
+
+export interface AlertChoices { low: boolean; depleted: boolean; problems: boolean; receipts: boolean }
+export interface BillingRecipient { id: string; email: string; status: "pending" | "verified" | "bounced" | "unsubscribed"; events: AlertChoices }
+export interface BillingAlerts { threshold: number; emailEnabled: boolean; recipients: BillingRecipient[] }
+export interface BillingCard { brand: string; last4: string; expMonth: number; expYear: number }
+export interface PaymentMethod { portal: boolean; customer: boolean; card: BillingCard | null }
+export interface AutoTopupQuote { id: string; version: string; threshold: number; amount: number; fee: number; total: number; monthlyLimit: number; card: BillingCard | null; immediate: boolean; expiresAt: number }
+export interface AutoTopup {
+  enabled: boolean; state: "off" | "on" | "processing" | "cancelling" | "action_required" | "paused_declined" | "paused_no_card" | "paused_expired" | "limit_reached" | "reconcile";
+  version: number; threshold: number; amount: number; fee: number; total: number; monthlyLimit: number;
+  usedThisPeriod: number; held: number; resetsAt: number;
+  attempt: { id: string; state: string; amount: number; fee: number; total: number; card: BillingCard | null; invoiceUrl: string | null; canRetry: boolean; submitted: boolean } | null;
+}

@@ -13,7 +13,7 @@ locals {
 
   runtime_image = "${aws_ecr_repository.runtime.repository_url}:${var.runtime_image_tag}"
 
-  runtime_environment = merge(var.runtime_env, local.email_environment, {
+  runtime_environment = merge(var.runtime_env, local.email_environment, local.billing_environment, {
     AGENT_PUBLIC_URL = "https://${var.hostname}"
     AGENT_STORAGE    = "s3"
     AGENT_S3_BUCKET  = aws_s3_bucket.state.id
@@ -128,6 +128,7 @@ resource "aws_iam_role_policy" "task" {
           aws_secretsmanager_secret.runtime["secrets-key"].arn,
           aws_secretsmanager_secret.runtime["github-oauth"].arn,
           aws_secretsmanager_secret.runtime["stripe"].arn,
+          aws_secretsmanager_secret.runtime["billing-email"].arn,
           aws_secretsmanager_secret.runtime["tool-search"].arn,
         ]
       },

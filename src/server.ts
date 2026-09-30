@@ -19,6 +19,8 @@ import { databaseFromEnvironment, listenFromEnvironment, migrate } from "./db.ts
 import { Ownership } from "./ownership.ts";
 import { tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
+import { BillingAlerts } from "./billing-alerts.ts";
+import { BillingMailer, billingMailConfig } from "./billing-mailer.ts";
 import { ConsoleAuth } from "./console-auth.ts";
 import { OAuth } from "./oauth.ts";
 import { hostedMcp } from "./hosted-mcp.ts";
@@ -132,12 +134,20 @@ const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).r
 // Tenant-set provider keys are encrypted with AGENT_SECRETS_KEY; without it tenants cannot store keys.
 // Prepaid tenants pay from credit at the rates in src/pricing.ts, which the environment may override.
 // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
-const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: process.env.AGENT_STRIPE_API_URL });
+const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: process.env.AGENT_STRIPE_API_URL, portalConfiguration: process.env.AGENT_STRIPE_PORTAL_CONFIGURATION });
 const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe });
-// GitHub sign-in admits members of GITHUB_ORG, or with AGENT_OPEN_SIGNUP=true anyone; starting credit needs an account
-// AGENT_SIGNUP_MIN_ACCOUNT_DAYS (default 30) old.
-const minAccountDays = Number(process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS ?? 30);
-if (!Number.isFinite(minAccountDays) || minAccountDays < 0) throw new Error("AGENT_SIGNUP_MIN_ACCOUNT_DAYS must be a non-negative number of days");
+accounts.billing.autoTopup?.start();
+const billingAlerts = new BillingAlerts(db, accounts);
+const mailConfig = billingMailConfig(process.env, secrets.billingEmailSecret);
+if (mailConfig && !accounts.canStoreKeys) throw new Error("Billing email requires AGENT_SECRETS_KEY for confirmation tokens");
+const billingMailer = mailConfig ? new BillingMailer({ db, alerts: billingAlerts, ...mailConfig }) : undefined;
+billingMailer?.start();
+// Keep the production eligibility threshold in deployment configuration, not public defaults.
+const minAccountDays = process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS === undefined ? undefined : Number(process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS);
+if (minAccountDays !== undefined && (!Number.isFinite(minAccountDays) || minAccountDays < 0 || !Number.isSafeInteger(Math.round(minAccountDays * 86_400_000)))) {
+  throw new Error("AGENT_SIGNUP_MIN_ACCOUNT_DAYS must be a non-negative, safely representable number of days");
+}
+if (secrets.github && pricing.startingGrant > 0 && minAccountDays === undefined) throw new Error("Configure AGENT_SIGNUP_MIN_ACCOUNT_DAYS before enabling GitHub starting credit");
 const github = secrets.github && {
   ...secrets.github, org: process.env.GITHUB_ORG ?? "qaml-ai", open: process.env.AGENT_OPEN_SIGNUP === "true", minAccountDays,
   webUrl: process.env.AGENT_GITHUB_WEB_URL, apiUrl: process.env.AGENT_GITHUB_API_URL,
@@ -254,7 +264,7 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
   return { ...made_, reconfigured };
 }
 
-const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
+const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".gif": "image/gif", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
 /** Serve the console's static build; unknown paths get index.html for client-side routing. */
 async function serveConsole(c: Context) {
   const relative = normalize(decodeURIComponent(new URL(c.req.url).pathname.slice("/console/".length))).replace(/^(\.\.(\/|\\|$))+/, "");
@@ -576,7 +586,8 @@ if (emailOptions) app.route("/", emailReceiver(channels, emailOptions));
 app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
-app.route("/", api({ accounts, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+if (billingMailer) app.route("/", billingMailer.feedback());
+app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
@@ -760,6 +771,8 @@ async function drain(signal: string) {
   await step("volumes", () => volumes.close());
   await step("mcp", () => mcp.close());
   await step("usage", () => accounts.flushUsage());
+  await step("auto top-up", async () => { await accounts.billing.autoTopup?.stop(); });
+  await step("billing email", async () => { await billingMailer?.stop(); });
   await step("storage usage", () => storageUsage.flush());
   await step("listen", () => loads.close());
   await step("heartbeat", () => ownership.close());

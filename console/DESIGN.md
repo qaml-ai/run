@@ -56,6 +56,8 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
 
 - `PixelButton` is for brand calls to action only: sign-in, the first-run
   moments and checkout. Every other button is `Button`.
+  Both share the `sm`/`default`/`lg` height scale; adjacent buttons use the same
+  size. `PixelButton`'s larger `hero` size is only for sign-in and first-run panels.
 - `Badge` sets Silkscreen capitals; `live` marks something running now. Data
   that must keep its case (file names, a key's last characters) is never set in
   a badge's capitals.

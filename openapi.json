@@ -1094,7 +1094,15 @@
                 "run.failed",
                 "input.requested",
                 "input.resolved",
-                "usage.recorded"
+                "usage.recorded",
+                "billing.balance.low",
+                "billing.balance.depleted",
+                "billing.topup.receipt",
+                "billing.topup.declined",
+                "billing.topup.action_required",
+                "billing.topup.no_card",
+                "billing.topup.limit",
+                "billing.topup.reconcile"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -1131,7 +1139,15 @@
                 "run.failed",
                 "input.requested",
                 "input.resolved",
-                "usage.recorded"
+                "usage.recorded",
+                "billing.balance.low",
+                "billing.balance.depleted",
+                "billing.topup.receipt",
+                "billing.topup.declined",
+                "billing.topup.action_required",
+                "billing.topup.no_card",
+                "billing.topup.limit",
+                "billing.topup.reconcile"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -1165,7 +1181,15 @@
                 "run.failed",
                 "input.requested",
                 "input.resolved",
-                "usage.recorded"
+                "usage.recorded",
+                "billing.balance.low",
+                "billing.balance.depleted",
+                "billing.topup.receipt",
+                "billing.topup.declined",
+                "billing.topup.action_required",
+                "billing.topup.no_card",
+                "billing.topup.limit",
+                "billing.topup.reconcile"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -2919,6 +2943,28 @@
             "type": "boolean",
             "description": "Whether credit can be bought here (POST /v1/billing/checkout)"
           },
+          "startingCredit": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "granted",
+                  "not_eligible",
+                  "not_granted",
+                  "not_applicable"
+                ]
+              },
+              "amount": {
+                "type": "integer",
+                "description": "The amount of starting credit actually awarded, independent of the current grant setting, in micro-USD (1 USD = 1000000)"
+              }
+            },
+            "required": [
+              "status",
+              "amount"
+            ]
+          },
           "month": {
             "type": "object",
             "properties": {
@@ -3040,6 +3086,7 @@
           "balance",
           "freeCredit",
           "checkout",
+          "startingCredit",
           "month",
           "recent",
           "rates"
@@ -3137,6 +3184,11 @@
       "CheckoutInput": {
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Reuse this UUID when retrying the same purchase; a different amount needs a new UUID"
+          },
           "amountUsd": {
             "type": "number",
             "description": "Credit to buy, in USD with at most two decimals; the fee is added on top",
@@ -3145,6 +3197,32 @@
         },
         "required": [
           "amountUsd"
+        ]
+      },
+      "StartingCreditGrantInput": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "string"
+          },
+          "amountUsd": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Starting credit to award in USD ($1–$100, whole cents), once per GitHub identity",
+            "example": 5
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Private support audit note; never included in the tenant's ledger"
+          }
+        },
+        "required": [
+          "tenant",
+          "amountUsd",
+          "reason"
         ]
       },
       "AdjustmentInput": {
@@ -4796,6 +4874,392 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VolumeFile"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/confirmation/inspect": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mailbox confirmation state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "confirmed"
+                          ]
+                        },
+                        "tenant": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "tenant",
+                        "email"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/confirmation/confirm": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mailbox confirmation state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "confirmed"
+                          ]
+                        },
+                        "tenant": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "tenant",
+                        "email"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/unsubscribe/inspect": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Email opt-out state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "unsubscribed"
+                          ]
+                        },
+                        "tenant": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "tenant",
+                        "email"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/unsubscribe/stop": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Email opt-out state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "unsubscribed"
+                          ]
+                        },
+                        "tenant": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "tenant",
+                        "email"
+                      ]
+                    }
+                  ]
                 }
               }
             }
@@ -7245,6 +7709,559 @@
         }
       }
     },
+    "/v1/billing/alerts": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Billing alert settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "threshold": {
+                      "type": "integer",
+                      "description": "Low-balance threshold, in micro-USD (1 USD = 1000000)"
+                    },
+                    "emailEnabled": {
+                      "type": "boolean"
+                    },
+                    "recipients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "email": {
+                            "type": "string",
+                            "format": "email"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "verified",
+                              "bounced",
+                              "unsubscribed"
+                            ]
+                          },
+                          "events": {
+                            "type": "object",
+                            "properties": {
+                              "low": {
+                                "type": "boolean"
+                              },
+                              "depleted": {
+                                "type": "boolean"
+                              },
+                              "problems": {
+                                "type": "boolean"
+                              },
+                              "receipts": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "low",
+                              "depleted",
+                              "problems",
+                              "receipts"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "email",
+                          "status",
+                          "events"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "threshold",
+                    "emailEnabled",
+                    "recipients"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "thresholdUsd": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 500
+                  }
+                },
+                "required": [
+                  "thresholdUsd"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Billing alert settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "threshold": {
+                      "type": "integer",
+                      "description": "Low-balance threshold, in micro-USD (1 USD = 1000000)"
+                    },
+                    "emailEnabled": {
+                      "type": "boolean"
+                    },
+                    "recipients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "email": {
+                            "type": "string",
+                            "format": "email"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "verified",
+                              "bounced",
+                              "unsubscribed"
+                            ]
+                          },
+                          "events": {
+                            "type": "object",
+                            "properties": {
+                              "low": {
+                                "type": "boolean"
+                              },
+                              "depleted": {
+                                "type": "boolean"
+                              },
+                              "problems": {
+                                "type": "boolean"
+                              },
+                              "receipts": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "low",
+                              "depleted",
+                              "problems",
+                              "receipts"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "email",
+                          "status",
+                          "events"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "threshold",
+                    "emailEnabled",
+                    "recipients"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/recipients": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "format": "email"
+                  },
+                  "events": {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "boolean"
+                      },
+                      "depleted": {
+                        "type": "boolean"
+                      },
+                      "problems": {
+                        "type": "boolean"
+                      },
+                      "receipts": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "depleted",
+                      "problems",
+                      "receipts"
+                    ]
+                  }
+                },
+                "required": [
+                  "email"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Address awaiting mailbox confirmation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "bounced",
+                        "unsubscribed"
+                      ]
+                    },
+                    "events": {
+                      "type": "object",
+                      "properties": {
+                        "low": {
+                          "type": "boolean"
+                        },
+                        "depleted": {
+                          "type": "boolean"
+                        },
+                        "problems": {
+                          "type": "boolean"
+                        },
+                        "receipts": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "low",
+                        "depleted",
+                        "problems",
+                        "receipts"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "email",
+                    "status",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/recipients/{id}": {
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "low": {
+                    "type": "boolean"
+                  },
+                  "depleted": {
+                    "type": "boolean"
+                  },
+                  "problems": {
+                    "type": "boolean"
+                  },
+                  "receipts": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "low",
+                  "depleted",
+                  "problems",
+                  "receipts"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recipient preferences",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "bounced",
+                        "unsubscribed"
+                      ]
+                    },
+                    "events": {
+                      "type": "object",
+                      "properties": {
+                        "low": {
+                          "type": "boolean"
+                        },
+                        "depleted": {
+                          "type": "boolean"
+                        },
+                        "problems": {
+                          "type": "boolean"
+                        },
+                        "receipts": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "low",
+                        "depleted",
+                        "problems",
+                        "receipts"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "email",
+                    "status",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recipient removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/alerts/recipients/{id}/resend": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Confirmation queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "queued"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/billing/ledger": {
       "get": {
         "parameters": [
@@ -7324,6 +8341,1328 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Checkout"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/payment-method": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Saved card display details from Stripe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "portal": {
+                      "type": "boolean"
+                    },
+                    "customer": {
+                      "type": "boolean"
+                    },
+                    "card": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "brand": {
+                          "type": "string"
+                        },
+                        "last4": {
+                          "type": "string"
+                        },
+                        "expMonth": {
+                          "type": "number"
+                        },
+                        "expYear": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "brand",
+                        "last4",
+                        "expMonth",
+                        "expYear"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "portal",
+                    "customer",
+                    "card"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/portal": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "flow": {
+                    "type": "string",
+                    "enum": [
+                      "manage",
+                      "payment_method"
+                    ],
+                    "default": "manage"
+                  },
+                  "resumeAutoTopup": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Stripe-hosted billing portal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Auto top-up state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "cancelling",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "paused_expired",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/quote": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "thresholdUsd": {
+                    "type": "number"
+                  },
+                  "amountUsd": {
+                    "type": "number"
+                  },
+                  "monthlyLimitUsd": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "thresholdUsd",
+                  "amountUsd",
+                  "monthlyLimitUsd"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Exact terms for confirmation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "card": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "brand": {
+                          "type": "string"
+                        },
+                        "last4": {
+                          "type": "string"
+                        },
+                        "expMonth": {
+                          "type": "number"
+                        },
+                        "expYear": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "brand",
+                        "last4",
+                        "expMonth",
+                        "expYear"
+                      ]
+                    },
+                    "immediate": {
+                      "type": "boolean"
+                    },
+                    "expiresAt": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "card",
+                    "immediate",
+                    "expiresAt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "id",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved draft with current confirmation version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "card": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "brand": {
+                          "type": "string"
+                        },
+                        "last4": {
+                          "type": "string"
+                        },
+                        "expMonth": {
+                          "type": "number"
+                        },
+                        "expYear": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "brand",
+                        "last4",
+                        "expMonth",
+                        "expYear"
+                      ]
+                    },
+                    "immediate": {
+                      "type": "boolean"
+                    },
+                    "expiresAt": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "card",
+                    "immediate",
+                    "expiresAt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/enable": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "quoteId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64
+                  },
+                  "consent": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  }
+                },
+                "required": [
+                  "quoteId",
+                  "version",
+                  "consent"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Auto top-up enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "cancelling",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "paused_expired",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/disable": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Future top-ups disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "cancelling",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "paused_expired",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/refresh": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refresh after a hosted billing return",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "cancelling",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "paused_expired",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/auto-topup/retry": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "attemptId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "attemptId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Retry the existing invoice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on",
+                        "processing",
+                        "cancelling",
+                        "action_required",
+                        "paused_declined",
+                        "paused_no_card",
+                        "paused_expired",
+                        "limit_reached",
+                        "reconcile"
+                      ]
+                    },
+                    "version": {
+                      "type": "number"
+                    },
+                    "threshold": {
+                      "type": "number"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "fee": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "monthlyLimit": {
+                      "type": "number"
+                    },
+                    "usedThisPeriod": {
+                      "type": "number"
+                    },
+                    "held": {
+                      "type": "number"
+                    },
+                    "resetsAt": {
+                      "type": "number"
+                    },
+                    "attempt": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "amount": {
+                          "type": "number"
+                        },
+                        "fee": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "card": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "brand": {
+                              "type": "string"
+                            },
+                            "last4": {
+                              "type": "string"
+                            },
+                            "expMonth": {
+                              "type": "number"
+                            },
+                            "expYear": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "brand",
+                            "last4",
+                            "expMonth",
+                            "expYear"
+                          ]
+                        },
+                        "invoiceUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "canRetry": {
+                          "type": "boolean"
+                        },
+                        "submitted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "amount",
+                        "fee",
+                        "total",
+                        "card",
+                        "invoiceUrl",
+                        "canRetry",
+                        "submitted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "state",
+                    "version",
+                    "threshold",
+                    "amount",
+                    "fee",
+                    "total",
+                    "monthlyLimit",
+                    "usedThisPeriod",
+                    "held",
+                    "resetsAt",
+                    "attempt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/starting-credit/grant": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartingCreditGrantInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The once-per-identity starting-credit grant, or its earlier identical award",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerEntry"
                 }
               }
             }

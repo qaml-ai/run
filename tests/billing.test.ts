@@ -237,14 +237,14 @@ test("a flush whose commit acknowledgement is lost is retried without counting t
 test("credit: prepaid tenants are refused at zero, others never; the balance counts this node's unwritten debits", async () => {
   const { db } = await testDatabase();
   const accounts = await accountsOn(db);
-  assert.match((await accounts.billing.creditLimit("payg"))!.message, /prepaid credit is used up \(balance \$0\.00\); add credit at https:\/\/agents\.example\.test\/console\/billing/);
+  assert.match((await accounts.billing.creditLimit("payg"))!.message, /Not enough credit to start this run \(balance \$0\.00\)\. Add credit at https:\/\/agents\.example\.test\/console\/billing/);
   assert.equal(await accounts.billing.creditLimit("ops"), undefined, "admin tenants are unbilled by default");
   await accounts.billing.post([{ tenant: "payg", kind: "adjustment", amount: 100_000, key: "a1" }]);
   assert.equal(await accounts.billing.creditLimit("payg"), undefined);
   accounts.recordUsage("payg", "a", response(0.1));
   const limited = await accounts.runLimit("payg");
   assert.equal(typeof limited === "object" && limited.status, 402);
-  assert.match(String(typeof limited === "object" && limited.message), /used up/, "an unwritten debit counts at once");
+  assert.match(String(typeof limited === "object" && limited.message), /Not enough credit/, "an unwritten debit counts at once");
   // Another node's debits count once its cached balance expires.
   const other = await accountsOn(db);
   assert.equal(await other.billing.creditLimit("payg"), undefined);
@@ -265,8 +265,8 @@ test("a self-serve tenant gets its starting credit once; tenants from before bil
   await migrate(db);
   const accounts = await accountsOn(db);
   const carol = { login: "Carol", id: 1001, createdAt: Date.parse("2020-01-01") };
-  assert.equal(await accounts.tenantForGithub(carol), "carol");
-  assert.equal(await accounts.tenantForGithub({ ...carol, login: "carol" }), "carol");
+  assert.equal(await accounts.tenantForGithub(carol, { minAccountAgeMs: 7 * DAY }), "carol");
+  assert.equal(await accounts.tenantForGithub({ ...carol, login: "carol" }, { minAccountAgeMs: 7 * DAY }), "carol");
   assert.equal(await balance(db, "carol"), micros(5));
   const summary = await accounts.billing.summary("carol");
   assert.equal(summary.billing, "prepaid");
@@ -385,7 +385,7 @@ test("a prepaid tenant pays the catalog fallback plus funding when actual cost i
   const agent = (await call("/v1/agents", { body: {}, token: PAYG })).json;
   const refused = await call(`/v1/agents/${agent.id}/prompt`, { body: { text: "hi" }, token: PAYG });
   assert.equal(refused.status, 402);
-  assert.match(refused.json.error, /prepaid credit is used up.*\/console\/billing/);
+  assert.match(refused.json.error, /Not enough credit to start this run.*\/console\/billing/);
   const code = await call(`/clients/${agent.id}/requests`, { body: { id: "code", method: "execute", params: { code: "return 1" } }, token: agent.token });
   assert.equal(code.status, 402, "code runs need credit too");
 
@@ -401,7 +401,7 @@ test("a prepaid tenant pays the catalog fallback plus funding when actual cost i
 
   const first = await prompt(agent.id, "go", PAYG);
   assert.equal(first.outcome.result.stopped, "spend_limit");
-  assert.match(first.outcome.result.error, /prepaid credit is used up/);
+  assert.match(first.outcome.result.error, /Not enough credit to start this run/);
   assert.equal(model.bodies.length, 2, "the turn ended after the response that spent the last credit");
   assert.deepEqual(new Set(model.keys), new Set(["Bearer fixture-platform-key"]));
   assert.equal((await call(`/v1/agents/${agent.id}/prompt`, { body: { text: "again" }, token: PAYG })).status, 402);
@@ -484,8 +484,8 @@ async function fakeStripe(t: { after(fn: () => void | Promise<void>): void }) {
     const params = new URLSearchParams(body);
     requests.push({ path: req.url!, params, idempotencyKey: req.headers["idempotency-key"] as string | undefined, authorization: req.headers.authorization });
     const count = requests.length;
-    const reply = req.url === "/v1/customers" ? { id: `cus_${params.get("metadata[tenant]")}` }
-      : req.url === "/v1/checkout/sessions" ? { id: `cs_test_${count}`, url: `https://checkout.stripe.test/c/pay/cs_test_${count}` }
+    const reply = req.url === "/v1/customers" ? { id: `cus_${params.get("metadata[tenant]")}`, livemode: false }
+      : req.url === "/v1/checkout/sessions" ? { id: `cs_test_${count}`, url: `https://checkout.stripe.test/c/pay/cs_test_${count}`, status: "open", livemode: false, mode: "payment", currency: "usd", customer: params.get("customer"), client_reference_id: params.get("client_reference_id"), metadata: { order: params.get("metadata[order]") }, amount_total: Number(params.get("line_items[0][price_data][unit_amount]")) + Number(params.get("line_items[1][price_data][unit_amount]")), expires_at: Math.floor(Date.now()/1000)+86400 }
       : undefined;
     res.writeHead(reply ? 200 : 404, { "Content-Type": "application/json" }).end(JSON.stringify(reply ?? { error: { message: "No such route" } }));
   });
@@ -526,12 +526,13 @@ test("credit is bought through Stripe Checkout with the fee on top, added once t
   assert.deepEqual(checkout.json, { id: "cs_test_2", url: "https://checkout.stripe.test/c/pay/cs_test_2", amount: 10_000_000, fee: 550_000, total: 10_550_000 });
   const [customer, session] = stripeApi.requests;
   assert.equal(customer.path, "/v1/customers");
-  assert.equal(customer.idempotencyKey, "agent-runtime-customer:payg");
+  assert.match(customer.idempotencyKey!, /^camelrun:customer:/);
   assert.equal(customer.authorization, "Bearer sk_test_fixture");
   const params = Object.fromEntries(session.params);
   assert.equal(params.mode, "payment");
   assert.equal(params.customer, "cus_payg");
-  assert.equal(params.client_reference_id, "payg");
+  assert.equal(params.client_reference_id, params["metadata[order]"]);
+  assert.equal(params["invoice_creation[enabled]"], "true");
   assert.equal(params["line_items[0][price_data][unit_amount]"], "1000");
   assert.equal(params["line_items[1][price_data][unit_amount]"], "55");
   assert.equal(params["line_items[1][price_data][product_data][name]"], "Processing fee (5.5%)");
@@ -544,7 +545,7 @@ test("credit is bought through Stripe Checkout with the fee on top, added once t
 
   const completed = (id: string, extra: object = {}) => ({
     id: `evt_${id}`, type: "checkout.session.completed",
-    data: { object: { id, object: "checkout.session", payment_status: "paid", payment_intent: `pi_${id}`, customer: "cus_payg", amount_total: 1055, currency: "usd", metadata: { purpose: "agent-runtime-credit", tenant: "payg", credit: "10000000" }, ...extra } },
+    data: { object: { id, created: 1, livemode: false, mode: "payment", client_reference_id: params["metadata[order]"], object: "checkout.session", payment_status: "paid", payment_intent: `pi_${id}`, customer: "cus_payg", amount_total: 1055, currency: "usd", metadata: { purpose: "agent-runtime-credit", tenant: "payg", credit: "10000000", order: params["metadata[order]"] }, ...extra } },
   });
   const balance = async () => (await call("/v1/billing", { token: PAYG })).json.balance;
   assert.equal((await webhook(completed("cs_test_2"), "t=1,v1=bad")).status, 400);
@@ -567,7 +568,7 @@ test("credit is bought through Stripe Checkout with the fee on top, added once t
   assert.equal(await balance(), 10_000_000 - Math.round(10_000_000 * 264 / 1055));
   await Promise.all([webhook(refunded(1055)), webhook(refunded(1055))]);
   assert.equal(await balance(), 0);
-  assert.equal((await webhook({ ...refunded(1055), data: { object: { ...refunded(1055).data.object, id: "ch_2", payment_intent: "pi_unknown" } } })).json.handled, "ignored");
+  assert.equal((await webhook({ ...refunded(1055), data: { object: { ...refunded(1055).data.object, id: "ch_2", payment_intent: "pi_unknown" } } })).json.handled, "pending refund");
   const kinds = (await call("/v1/billing/ledger", { token: PAYG })).json.entries.map((entry: any) => [entry.kind, entry.amount]);
   assert.deepEqual(kinds, [["refund", -(10_000_000 - Math.round(10_000_000 * 264 / 1055))], ["refund", -Math.round(10_000_000 * 264 / 1055)], ["purchase", 10_000_000]]);
   assert.equal((await call("/v1/billing", { token: PAYG })).json.freeCredit, true, "fully refunded: back on free credit");
@@ -583,13 +584,14 @@ test("without Stripe, checkout answers 503 and the webhook 404", async t => {
 /** GitHub's OAuth and user API for accounts that can be renamed: login → numeric id and creation time. */
 async function fakeGithub(t: { after(fn: () => void | Promise<void>): void }) {
   const accounts = new Map<number, { login: string; createdAt: number }>();
+  let missingDates = 0;
   let current = 0;
   const url = await listen(t, async (req, res) => {
     for await (const _ of req) { /* drain */ }
     const path = new URL(req.url!, "http://github.test").pathname;
     const account = accounts.get(Number((req.headers.authorization ?? "").replace("Bearer gho_", "")));
     const reply = path === "/login/oauth/access_token" ? { access_token: `gho_${current}` }
-      : path === "/user" && account ? { login: account.login, id: current, created_at: new Date(account.createdAt).toISOString() }
+      : path === "/user" && account ? { login: account.login, id: current, ...(missingDates-- > 0 ? {} : { created_at: new Date(account.createdAt).toISOString() }) }
       : undefined;
     res.writeHead(reply ? 200 : 404, { "Content-Type": "application/json" }).end(JSON.stringify(reply ?? { message: "Not Found" }));
   });
@@ -597,6 +599,7 @@ async function fakeGithub(t: { after(fn: () => void | Promise<void>): void }) {
     url,
     account(id: number, login: string, ageDays: number) { accounts.set(id, { login, createdAt: Date.now() - ageDays * DAY }); },
     rename(id: number, login: string) { accounts.get(id)!.login = login; },
+    omitDates(count: number) { missingDates = count; },
     /** Complete the OAuth dance as account `id`; the session cookie, or the error the console is sent. */
     async signIn(base: string, id: number) {
       current = id;
@@ -609,19 +612,19 @@ async function fakeGithub(t: { after(fn: () => void | Promise<void>): void }) {
     },
   };
 }
-const githubEnv = (github: string) => ({ GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", AGENT_GITHUB_WEB_URL: github, AGENT_GITHUB_API_URL: github, AGENT_OPEN_SIGNUP: "true" });
+const githubEnv = (github: string) => ({ GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", AGENT_GITHUB_WEB_URL: github, AGENT_GITHUB_API_URL: github, AGENT_OPEN_SIGNUP: "true", AGENT_SIGNUP_MIN_ACCOUNT_DAYS: "7" });
 const consoleCall = (call: (path: string, init?: any) => Promise<any>, cookie: string) =>
   (path: string, init: { method?: string; body?: unknown } = {}) => call(path, { ...init, token: null, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1" } });
 
-test("open sign-up admits any GitHub account; starting credit is once per account id and only for accounts 30 days old; a renamed login keeps its tenant", async t => {
+test("open sign-up admits any GitHub account; starting credit is once per account id and uses the configured signup policy; a renamed login keeps its tenant", async t => {
   const github = await fakeGithub(t);
   const stripeApi = await fakeStripe(t);
   const { call, base } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {
     ...githubEnv(github.url), AGENT_VERIFY_KEYS: "false", STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: stripeApi.url,
   }, tenantsFile);
-  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, token: true, open: true, minAccountDays: 30 });
+  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, token: true, open: true });
 
-  // Too new for free credit, but in: it can bring its own key or buy credit.
+  // Not eligible at signup, but can sign in and buy credit.
   github.account(2001, "Newbie", 5);
   const newbie = await github.signIn(base, 2001);
   assert.equal(newbie.authorize.searchParams.get("scope"), null, "only the public profile");
@@ -630,6 +633,7 @@ test("open sign-up admits any GitHub account; starting credit is once per accoun
   assert.equal((await asNewbie("/v1/me")).json.tenant, "newbie");
   const newbieBilling = (await asNewbie("/v1/billing")).json;
   assert.deepEqual([newbieBilling.billing, newbieBilling.balance, newbieBilling.freeCredit], ["prepaid", 0, true]);
+  assert.deepEqual(newbieBilling.startingCredit, { status: "not_eligible", amount: 0 });
   assert.equal((await asNewbie("/v1/providers/anthropic/key", { method: "PUT", body: { apiKey: "sk-ant-newbie-1234" } })).status, 200);
   assert.equal((await asNewbie("/v1/billing/checkout", { body: { amountUsd: 5 } })).status, 201);
 
@@ -652,6 +656,50 @@ test("open sign-up admits any GitHub account; starting credit is once per accoun
   const asOther = consoleCall(call, other.cookie!);
   assert.equal((await asOther("/v1/me")).json.tenant, "dave-4001");
   assert.equal((await asOther("/v1/billing")).json.balance, micros(5));
+});
+
+test("signup retries an incomplete profile before creating an account, and does not block an existing login", async t => {
+  const github = await fakeGithub(t);
+  const { base, db, call } = await runtime(t, () => ({ role: "assistant", content: "hi" }), githubEnv(github.url), tenantsFile);
+  github.account(6001, "ProfileRetry", 100);
+  github.omitDates(2);
+  const incomplete = await github.signIn(base, 6001);
+  assert.equal(incomplete.cookie, undefined);
+  assert.match(incomplete.error!, /details are unavailable/);
+  assert.equal((await db.query("select 1 from tenants where github_id = 6001")).rowCount, 0);
+  github.omitDates(1);
+  const retried = await github.signIn(base, 6001);
+  assert.ok(retried.cookie);
+  assert.deepEqual((await consoleCall(call, retried.cookie!)("/v1/billing")).json.startingCredit, { status: "granted", amount: micros(5) });
+  github.omitDates(2);
+  assert.ok((await github.signIn(base, 6001)).cookie, "existing account does not require a new eligibility decision");
+});
+
+test("only a billing-admin operator can issue the one-time support grant", async t => {
+  const github = await fakeGithub(t);
+  const { base, call } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {
+    ...githubEnv(github.url), AGENT_BILLING_ADMINS: "ops",
+  }, tenantsFile);
+  github.account(6002, "SupportReview", 1);
+  const login = await github.signIn(base, 6002);
+  const user = consoleCall(call, login.cookie!);
+  const path = "/v1/billing/starting-credit/grant";
+  const body = { tenant: "supportreview", amountUsd: 8, reason: "Private review evidence" };
+  assert.equal((await user(path, { body })).status, 403);
+  assert.equal((await call(path, { body, token: PAYG })).status, 403);
+  assert.equal((await call(path, { body, token: null })).status, 401);
+  assert.equal((await call(path, { body: { ...body, amountUsd: 0 }, token: OPS })).status, 400);
+  for (const amountUsd of [0.99, 100.01, 5.001, "5"]) assert.equal((await call(path, { body: { ...body, amountUsd }, token: OPS })).status, 400);
+  assert.equal((await call(path, { body: { tenant: body.tenant, amount: 5, reason: body.reason }, token: OPS })).status, 400, "micro-USD input is no longer accepted");
+  const issued = await call(path, { body, token: OPS });
+  assert.equal(issued.status, 201, issued.text);
+  assert.equal((await call(path, { body, token: OPS })).json.id, issued.json.id);
+  assert.equal((await call(path, { body: { ...body, amountUsd: 9 }, token: OPS })).status, 409);
+  const summary = (await user("/v1/billing")).json;
+  assert.deepEqual(summary.startingCredit, { status: "granted", amount: micros(8) });
+  assert.equal(summary.balance, micros(8));
+  assert.equal(summary.freeCredit, true, "support credit does not lift purchase-only limits");
+  assert.deepEqual((await user("/v1/billing/ledger")).json.entries[0].metadata, { reason: "Starting credit" });
 });
 
 test("free credit brings fewer agents and an hourly spend limit, both lifted by the first purchase", async t => {
@@ -697,7 +745,7 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
   assert.match(limited.json.error, /buy credit/);
 
   // The first purchase lifts both limits at once.
-  const event = { id: "evt_buy", type: "checkout.session.completed", data: { object: { id: "cs_erin", payment_status: "paid", payment_intent: "pi_erin", metadata: { purpose: "agent-runtime-credit", tenant: "erin", credit: "5000000" } } } };
+  const event = { id: "evt_buy", type: "checkout.session.completed", data: { object: { id: "cs_erin", created: 1, livemode: false, payment_status: "paid", payment_intent: "pi_erin", metadata: { purpose: "agent-runtime-credit", tenant: "erin", credit: "5000000" } } } };
   assert.equal((await call("/v1/billing/stripe/webhook", { body: event, token: null, headers: { "Stripe-Signature": signWebhook(WEBHOOK_SECRET, JSON.stringify(event)) } })).status, 200);
   assert.equal((await call("/v1/billing", { token })).json.freeCredit, false);
   assert.equal((await prompt(call, agent.id, token)).result.reply, "finished");

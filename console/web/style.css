@@ -150,6 +150,8 @@
    accents, signal blue #5aa7ff and alert red #ff4d3d, which appear only in status
    indicators, destructive actions and charts. Everything is square. */
 :root {
+  --tint-danger: #f7ded7;
+  --tint-info: #dde8f1;
 	--radius: 0rem;
 	color-scheme: light;
 	--background: #f6f4ee;
@@ -186,6 +188,8 @@
 }
 
 .dark {
+  --tint-danger: #3c1816;
+  --tint-info: #1b2a3d;
 	color-scheme: dark;
 	--background: #0b0b0c;
 	--foreground: #f4f2ea;

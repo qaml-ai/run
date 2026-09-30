@@ -30,14 +30,20 @@
 | `AGENT_SESSION_SECRET`, `AGENT_SECRETS_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | plain values, for development |
 | `AGENT_SESSION_SECRET_ARN`, `AGENT_SECRETS_KEY_ARN`, `AGENT_GITHUB_OAUTH_SECRET_ARN` | instead of the plain values (not both): Secrets Manager secrets read once at startup, the last holding `{clientId, clientSecret}`. On ECS only these are set, so no secret value is in the process environment, which any other process running as the same uid could read from `/proc` |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe, for credit purchases (development; see [Billing](billing.md)) |
+| `AGENT_STRIPE_PORTAL_CONFIGURATION` | Product-specific `bpc_` configuration for Stripe-hosted cards and invoices; see [Billing](billing.md) |
 | `AGENT_STRIPE_SECRET_ARN` | instead: a Secrets Manager secret holding `{secretKey, webhookSecret}`, read at startup; while it has no value, purchases are off |
 | `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
 | `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead (see [Billing](billing.md)) |
-| `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | how old a GitHub account must be for a new tenant's starting credit (default 30) |
+| `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | private signup eligibility policy; required when GitHub starting credit is enabled, supplied through deployment configuration |
 | `AGENT_EMAIL_DOMAIN` | the domain SES receives mail for (e.g. `in.agents.camelai.dev`); set, it offers `email` channels, each with an address on it (see [Email](../guides/channels.md#email)). `infra/terraform/email.tf` sets these four |
 | `AGENT_EMAIL_SNS_TOPICS` | SNS topic ARNs (comma-separated) whose notifications `/channels/email/inbound` accepts; with none, no mail is received |
 | `AGENT_EMAIL_BUCKET` | the bucket an SES S3 receipt action stores mail in (the runtime reads messages and their attachments from it, under the task role); without it, only mail SES puts in the SNS notification itself (up to 150 KB) arrives |
 | `AGENT_EMAIL_REGION` | SES and S3's region (default `AWS_REGION`) |
+| `AGENT_BILLING_EMAIL_FROM` | optional verified sender for billing confirmation and balance alerts; unset disables billing email |
+| `AGENT_BILLING_EMAIL_NAME` | sender display name, default `camelRun Billing`; the FROM setting remains the bare verified address |
+| `AGENT_BILLING_EMAIL_PROVIDER` | `cloudflare` for the production mail Worker, or `ses` (default); both require `AGENT_PUBLIC_URL` and `AGENT_SECRETS_KEY` |
+| `AGENT_BILLING_EMAIL_URL`, `AGENT_BILLING_EMAIL_SECRET_ARN` | Cloudflare Worker's HTTPS `/send` URL and Secrets Manager ARN containing its shared authentication secret; use `AGENT_BILLING_EMAIL_SECRET` only for development, never alongside the ARN |
+| `AGENT_BILLING_EMAIL_CONFIGURATION_SET`, `AGENT_BILLING_EMAIL_SNS_TOPICS` | required only for SES: configuration set publishing bounce/complaint feedback and comma-separated SNS topic ARNs; also requires SES access in `AWS_REGION`. See [Billing email](billing.md#configuring-delivery) |
 | `AGENT_BILLING_ADMINS` | tenants (comma-separated) whose operator tokens may adjust any tenant's credit |
 | `AGENT_OPENROUTER_CREDIT_MULTIPLIER` | actual dollars paid per dollar of platform OpenRouter credits (default `1.055`, Standard card funding); use `1` for a fee waiver, or the effective ratio from purchases when discounts, minimum fees or non-recoverable taxes apply. Independent of the checkout fee. |
 | `AGENT_PRICE_AGENT_HOUR_USD`, `AGENT_PRICE_STORAGE_GB_MONTH_USD`, `AGENT_CREDIT_FEE_PERCENT`, `AGENT_CREDIT_MIN_PURCHASE_USD`, `AGENT_CREDIT_MAX_PURCHASE_USD`, `AGENT_CREDIT_GRANT_USD`, `AGENT_FREE_MAX_AGENTS`, `AGENT_FREE_HOURLY_SPEND_USD` | prepaid rates and limits (defaults 0.01, 0.10, 5.5, 5, 1000, 5, 2, 1; see `src/pricing.ts`) |

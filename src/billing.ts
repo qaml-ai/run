@@ -3,8 +3,10 @@ import type { Tenants } from "./tenants.ts";
 import { transaction, type Db, type Sql } from "./db.ts";
 import type { Storage } from "../shared/storage.ts";
 import { HttpError } from "./http.ts";
-import { DEFAULT_PRICING, MICROS, purchaseFee, storageCharge, type Pricing } from "./pricing.ts";
+import { DEFAULT_PRICING, MICROS, storageCharge, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";
+import { AutoTopup } from "./auto-topup.ts";
+import { BillingPayments, stripeId } from "./billing-payments.ts";
 import type { StorageUsage } from "./storage-usage.ts";
 
 /**
@@ -24,6 +26,7 @@ export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustmen
 export const LEDGER_KINDS: LedgerKind[] = ["grant", "purchase", "usage", "storage", "adjustment", "refund"];
 export interface LedgerEntry { tenant: string; kind: LedgerKind; amount: number; key: string; metadata?: Record<string, unknown> }
 export interface LedgerRow { id: number; kind: LedgerKind; amount: number; metadata: Record<string, unknown>; createdAt: number }
+export interface StartingCredit { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number }
 /** What a usage flush charges a tenant: `amount` micro-USD spent, and its breakdown (numbers, summed over the hour). */
 export interface UsageCharge { tenant: string; amount: number; metadata: Record<string, number> }
 /** What limits a tenant's runs: its balance, what it ever bought (none: on free credit), and its usage charges in the last hour. */
@@ -58,12 +61,12 @@ export async function postLedger(sql: Sql, entries: LedgerEntry[], now = Date.no
       select * from jsonb_to_recordset($1::jsonb) as t(tenant text, kind text, amount bigint, key text, metadata jsonb)
     ), appended as (
       insert into credit_ledger (tenant, kind, amount, idempotency_key, metadata, created_at)
-      select tenant, kind, amount, key, coalesce(metadata, '{}'), $2 from input
+      select tenant, kind, amount, key, coalesce(metadata, '{}'), $2 from input order by tenant, key
       on conflict (idempotency_key) do nothing
       returning id, tenant, kind, amount, idempotency_key, metadata
     ), moved as (
       insert into credit_accounts (tenant, balance, purchased)
-      select tenant, sum(amount), coalesce(sum(amount) filter (where kind in ('purchase', 'refund')), 0) from appended group by tenant
+      select tenant, sum(amount), coalesce(sum(amount) filter (where kind in ('purchase', 'refund')), 0) from appended group by tenant order by tenant
       on conflict (tenant) do update set balance = credit_accounts.balance + excluded.balance, purchased = credit_accounts.purchased + excluded.purchased
     )
     select id, tenant, kind, amount, idempotency_key as key, metadata from appended`, [JSON.stringify(entries), now]);
@@ -124,6 +127,8 @@ export class Billing {
   readonly tenants: Tenants;
   readonly pricing: Pricing;
   private readonly options: BillingOptions;
+  readonly payments?: BillingPayments;
+  readonly autoTopup?: AutoTopup;
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
@@ -134,6 +139,10 @@ export class Billing {
     this.db = options.db;
     this.tenants = options.tenants;
     this.pricing = options.pricing ?? DEFAULT_PRICING;
+    if (options.stripe) {
+      this.payments = new BillingPayments(this.db, options.stripe, this.pricing, options.publicUrl);
+      this.autoTopup = new AutoTopup(this, options.stripe);
+    }
   }
 
   /** Admin tenants are billed as their entry says (unbilled by default); tenants created by sign-in as their row says. */
@@ -181,7 +190,7 @@ export class Billing {
     if (await this.mode(tenant) !== "prepaid") return undefined;
     const { balance, purchased, lastHour } = await this.account(tenant);
     const where = `${this.options.publicUrl ?? ""}/console/billing`;
-    if (balance <= 0) return new HttpError(402, `This tenant's prepaid credit is used up (balance ${usd(balance)}); add credit at ${where}`);
+    if (balance <= 0) return new HttpError(402, `Not enough credit to start this run (balance ${usd(balance)}). Add credit at ${where}`);
     const allowance = this.pricing.free.hourlySpend;
     if (purchased <= 0 && lastHour >= allowance) {
       return new HttpError(429, `Free credit allows ${usd(allowance)} of usage per hour, and this tenant has used ${usd(lastHour)} in the last hour; retry later, or buy credit at ${where} to lift the limit`);
@@ -205,12 +214,79 @@ export class Billing {
   /** Forget cached balances after entries were appended in a transaction of the caller's. */
   invalidate(tenants: Iterable<string>) { for (const tenant of tenants) this.accounts.delete(tenant); }
 
+  /** Called inside the signup/support transaction, under the identity's advisory lock. */
+  async recordStartingCredit(sql: Sql, signup: { tenant: string; githubId: number; signupAt: number; created: boolean; githubCreatedAt?: number; minAccountAgeMs?: number }) {
+    const { tenant, githubId, signupAt, created, githubCreatedAt, minAccountAgeMs } = signup;
+    if ((await sql.query("select 1 from starting_credit_decisions where github_id = $1", [githubId])).rowCount) return;
+    // This also covers awards made before the decision table was introduced.
+    const prior = (await sql.query("select id, tenant, amount from credit_ledger where idempotency_key = $1 and kind = 'grant'", [`grant:github:${githubId}`])).rows[0];
+    const amount = created ? this.pricing.startingGrant : prior?.amount ?? 0;
+    if (created && amount > 0 && !prior && (minAccountAgeMs === undefined || !Number.isSafeInteger(minAccountAgeMs) || minAccountAgeMs < 0)) {
+      throw new Error("Starting credit is not configured; contact support");
+    }
+    const eligible = created && amount > 0 && githubCreatedAt !== undefined && signupAt - githubCreatedAt >= minAccountAgeMs!;
+    const decision = prior || !created ? "legacy" : amount === 0 ? "disabled" : eligible ? "eligible" : "ineligible";
+    let entry = !prior && eligible ? (await postLedger(sql, [{
+      tenant, kind: "grant", amount, key: `grant:github:${githubId}`, metadata: { reason: "Starting credit" },
+    }]))[0] : prior;
+    // An older writer may have posted the same key during a rolling deployment.
+    if (!entry && eligible) entry = (await sql.query("select id, tenant, amount from credit_ledger where idempotency_key = $1 and kind = 'grant'", [`grant:github:${githubId}`])).rows[0];
+    await sql.query(`insert into starting_credit_decisions
+      (github_id, tenant, decision, offered_amount, minimum_account_age_ms, github_created_at, signup_at, decided_at, grant_ledger_id)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [githubId, entry?.tenant ?? tenant, decision, amount, created ? minAccountAgeMs ?? null : null,
+      created ? githubCreatedAt ?? null : null, signupAt, Date.now(), entry?.id ?? null]);
+  }
+
+  /** Only the public outcome and the amount actually awarded, never policy inputs or support notes. */
+  async startingCredit(tenant: string): Promise<StartingCredit> {
+    const row = (await this.db.query(`select t.billing, d.decision, l.amount
+      from tenants t left join starting_credit_decisions d on d.github_id = t.github_id and d.tenant = t.id
+      left join credit_ledger l on l.id = d.grant_ledger_id and l.tenant = t.id
+      where t.id = $1`, [tenant])).rows[0];
+    if (!row || row.billing !== "prepaid") return { status: "not_applicable", amount: 0 };
+    if (row.amount > 0) return { status: "granted", amount: row.amount };
+    return { status: row.decision === "disabled" ? "not_applicable" : row.decision === "ineligible" ? "not_eligible" : "not_granted", amount: 0 };
+  }
+
+  /** An operator-approved exception uses the same identity key as an automatic signup award. */
+  async grantStartingCredit(tenant: string, amount: number, reason: string, by: string): Promise<LedgerRow> {
+    if (!Number.isSafeInteger(amount) || amount <= 0) throw new HttpError(400, "Starting credit must be a positive integer amount in micro-USD");
+    if (!reason.trim()) throw new HttpError(400, "A reason is required");
+    const identity = (await this.db.query("select github_id from tenants where id = $1", [tenant])).rows[0];
+    if (!identity?.github_id) throw new HttpError(400, "This tenant has no GitHub identity for a starting-credit grant");
+    const result = await transaction(this.db, async sql => {
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`starting-credit:${identity.github_id}`]);
+      const account = (await sql.query("select billing, created_at from tenants where id = $1 and github_id = $2 for update", [tenant, identity.github_id])).rows[0];
+      if (!account || account.billing !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
+      await this.recordStartingCredit(sql, { tenant, githubId: identity.github_id, signupAt: account.created_at, created: false });
+      const decision = (await sql.query("select tenant from starting_credit_decisions where github_id = $1", [identity.github_id])).rows[0];
+      if (decision.tenant !== tenant) throw new HttpError(409, "This GitHub identity already has a starting-credit decision for another tenant");
+      const key = `grant:github:${identity.github_id}`;
+      const previous = (await sql.query("select * from credit_ledger where idempotency_key = $1", [key])).rows[0];
+      if (previous && (previous.tenant !== tenant || previous.amount !== amount || previous.kind !== "grant")) {
+        throw new HttpError(409, "This GitHub identity already has a different starting-credit grant");
+      }
+      if (!previous) {
+        const [entry] = await postLedger(sql, [{ tenant, kind: "grant", amount, key, metadata: { reason: "Starting credit" } }]);
+        await sql.query("update starting_credit_decisions set grant_ledger_id = $2, granted_by = $3, support_note = $4 where github_id = $1", [identity.github_id, entry.id, by, reason.trim()]);
+      } else {
+        await sql.query("update starting_credit_decisions set grant_ledger_id = $2 where github_id = $1 and grant_ledger_id is null", [identity.github_id, previous.id]);
+      }
+      const row = (await sql.query("select id, kind, amount, metadata, created_at from credit_ledger where idempotency_key = $1", [key])).rows[0];
+      return { id: row.id, kind: row.kind, amount: row.amount, metadata: row.metadata, createdAt: row.created_at };
+    });
+    this.invalidate([tenant]);
+    return result;
+  }
+
   /** A page of the tenant's ledger, newest first: entries before the id `before`. */
   async ledger(tenant: string, options: { before?: number; limit?: number } = {}): Promise<{ entries: LedgerRow[]; next?: number }> {
     const limit = Math.min(200, Math.max(1, options.limit ?? 50));
     const { rows } = await this.db.query(`
-      select id, kind, amount, metadata, created_at from credit_ledger
-      where tenant = $1 and ($2::bigint is null or id < $2) order by id desc limit $3`, [tenant, options.before ?? null, limit + 1]);
+      select l.id, l.kind, l.amount, l.metadata || case when c.invoice_url is null then '{}'::jsonb else jsonb_build_object('invoiceUrl',c.invoice_url) end as metadata, l.created_at from credit_ledger l
+      left join billing_checkouts c on l.metadata->>'order'=c.id::text and c.tenant=l.tenant
+      where l.tenant = $1 and ($2::bigint is null or l.id < $2) order by l.id desc limit $3`, [tenant, options.before ?? null, limit + 1]);
     const entries = rows.slice(0, limit).map(row => ({ id: row.id, kind: row.kind, amount: row.amount, metadata: row.metadata, createdAt: row.created_at }));
     return { entries, ...(rows.length > limit ? { next: entries.at(-1)!.id } : {}) };
   }
@@ -227,6 +303,7 @@ export class Billing {
     const pricing = this.pricing;
     return {
       billing: mode, balance, freeCredit: mode === "prepaid" && purchased <= 0, checkout: !!this.options.stripe,
+      startingCredit: mode === "prepaid" ? await this.startingCredit(tenant) : { status: "not_applicable" as const, amount: 0 },
       month: { since, ...thisMonth },
       recent: (await this.ledger(tenant, { limit: 10 })).entries,
       rates: { agentHour: pricing.agentHour, storageGbMonth: pricing.storageGbMonth, openrouterCreditMultiplier: pricing.openrouterCreditMultiplier, purchaseFeeBps: pricing.purchaseFeeBps, minPurchase: pricing.minPurchase, maxPurchase: pricing.maxPurchase, webSearch: { ...pricing.webSearch }, webRender: pricing.webRender },
@@ -239,41 +316,27 @@ export class Billing {
    * A Stripe Checkout session buying `amount` of credit (whole cents), with the fee as a
    * line of its own. The credit is added when Stripe reports the payment (`webhook`).
    */
-  async checkout(tenant: string, amount: number) {
+  async checkout(tenant: string, amount: number, requestId?: string) {
     const stripe = this.options.stripe;
     if (!stripe) throw new HttpError(503, "Credit purchases are not configured on this runtime");
     if (await this.mode(tenant) !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
-    const { minPurchase, maxPurchase, purchaseFeeBps } = this.pricing;
+    const { minPurchase, maxPurchase } = this.pricing;
     if (!Number.isSafeInteger(amount) || amount % CENT || amount < minPurchase || amount > maxPurchase) {
       throw new HttpError(400, `Buy between ${usd(minPurchase)} and ${usd(maxPurchase)} of credit, in whole cents`);
     }
-    const fee = purchaseFee(this.pricing, amount);
-    const customer = await this.customer(tenant);
-    const page = `${this.options.publicUrl ?? ""}/console/billing`;
-    const metadata = { purpose: PURPOSE, tenant, credit: String(amount) };
-    const session = await stripe.post<{ id: string; url: string }>("/v1/checkout/sessions", {
-      mode: "payment", customer, client_reference_id: tenant, metadata, payment_intent_data: { metadata },
-      line_items: [
-        { quantity: 1, price_data: { currency: "usd", unit_amount: amount / CENT, product_data: { name: "camelRun credit" } } },
-        ...(fee ? [{ quantity: 1, price_data: { currency: "usd", unit_amount: fee / CENT, product_data: { name: `Processing fee (${purchaseFeeBps / 100}%)` } } }] : []),
-      ],
-      // Stripe fills in the session id, so the console can wait for this purchase rather than any.
-      success_url: `${page}?checkout=success&session={CHECKOUT_SESSION_ID}`, cancel_url: `${page}?checkout=cancelled`,
-    });
-    return { id: session.id, url: session.url, amount, fee, total: amount + fee };
+    return this.payments!.checkout(tenant, amount, requestId);
   }
 
-  /** The tenant's Stripe customer, created at its first checkout. */
-  private async customer(tenant: string): Promise<string> {
-    const row = (await this.db.query("select stripe_customer from credit_accounts where tenant = $1", [tenant])).rows[0];
-    if (row?.stripe_customer) return row.stripe_customer;
-    // Concurrent first checkouts send the same idempotency key, so Stripe makes one customer.
-    const created = await this.options.stripe!.post<{ id: string }>("/v1/customers", { name: tenant, metadata: { purpose: PURPOSE, tenant } }, `agent-runtime-customer:${tenant}`);
-    const { rows } = await this.db.query(`
-      insert into credit_accounts (tenant, stripe_customer) values ($1, $2)
-      on conflict (tenant) do update set stripe_customer = coalesce(credit_accounts.stripe_customer, excluded.stripe_customer)
-      returning stripe_customer`, [tenant, created.id]);
-    return rows[0].stripe_customer;
+  async portal(tenant: string, flow: "manage" | "payment_method", resumeAutoTopup = false) {
+    if (!this.payments) throw new HttpError(503, "Stripe billing is not configured");
+    if (await this.mode(tenant) !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
+    return this.payments.portal(tenant, flow, resumeAutoTopup);
+  }
+
+  async paymentMethod(tenant: string) {
+    if (!this.payments) return { portal: false, customer: false, card: null };
+    if (await this.mode(tenant) !== "prepaid") throw new HttpError(400, "This tenant is not billed with prepaid credit");
+    return this.payments.paymentMethod(tenant);
   }
 
   /**
@@ -286,42 +349,97 @@ export class Billing {
     if (!stripe) throw new HttpError(404, "Credit purchases are not configured on this runtime");
     const event = stripe.verify(payload, signature);
     if (!event) throw new HttpError(400, "Invalid Stripe signature");
+    if (event.livemode !== undefined && event.livemode !== stripe.live) return { handled: "ignored" };
     const object = event.data?.object ?? {};
     if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
       if (object.metadata?.purpose !== PURPOSE) return { handled: "ignored" };
       if (object.payment_status !== "paid") return { handled: "awaiting payment" };
-      const tenant = object.metadata.tenant, amount = Number(object.metadata.credit);
+      const order = await this.payments!.purchase(object);
+      const tenant = order?.tenant ?? object.metadata.tenant, amount = order?.amount ?? Number(object.metadata.credit);
       if (typeof tenant !== "string" || !Number.isSafeInteger(amount) || amount <= 0) throw new HttpError(400, "Checkout session without a tenant or credit amount");
-      await this.post([{
-        tenant, kind: "purchase", amount, key: `purchase:${object.id}`,
-        metadata: { session: object.id, paymentIntent: object.payment_intent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null },
-      }]);
-      if (typeof object.customer === "string") await this.db.query("update credit_accounts set stripe_customer = coalesce(stripe_customer, $2) where tenant = $1", [tenant, object.customer]);
+      if (typeof object.id !== "string") throw new HttpError(400, "Checkout session without an id");
+      const paymentIntent = stripeId(object.payment_intent);
+      if (order && !paymentIntent) throw new HttpError(400, "Paid Checkout has no payment intent");
+      const posted = await transaction(this.db, async sql => {
+        if (order) await this.payments!.recordPaid(sql, order, object, paymentIntent!);
+        const purchase: LedgerEntry = { tenant, kind: "purchase", amount, key: `purchase:${object.id}`,
+          metadata: { session: object.id, paymentIntent: paymentIntent ?? null, paid: object.amount_total ?? null, currency: object.currency ?? null, ...(order ? { order: order.id, invoice: stripeId(object.invoice) ?? null } : {}) } };
+        const appended = await this.fulfillPurchase(sql, purchase, paymentIntent ?? object.id);
+        if (typeof object.customer === "string") await sql.query("update credit_accounts set stripe_customer = coalesce(stripe_customer, $2) where tenant = $1", [tenant, object.customer]);
+        return appended;
+      });
+      this.invalidate(posted.map(entry => entry.tenant));
       console.log(JSON.stringify({ type: "credit_purchased", tenant, amount, session: object.id }));
       return { handled: "purchase" };
+    }
+    if (event.type.startsWith("invoice.") && typeof object.id === "string") {
+      await this.autoTopup?.wake(object.id);
+      if (event.type === "invoice.paid") await this.payments?.attachInvoice(object);
     }
     if (event.type === "charge.refunded") return { handled: await this.refund(object) };
     return { handled: "ignored" };
   }
 
-  /** Bring a purchase's refunds up to the charge's refunded total; concurrent deliveries for one charge take turns. */
-  private async refund(charge: { id: string; payment_intent?: string; amount: number; amount_refunded: number }) {
-    if (typeof charge.payment_intent !== "string" || !(charge.amount > 0)) return "ignored";
+  /** Shared settlement for Checkout and automatic invoices. Caller owns the transaction. */
+  async fulfillPurchase(sql: Sql, purchase: LedgerEntry, paymentIntent: string) {
+    await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-payment:${paymentIntent}`]);
+    const prior = (await sql.query("select tenant,amount,metadata from credit_ledger where idempotency_key=$1", [purchase.key])).rows[0];
+    const same = (await sql.query("select idempotency_key from credit_ledger where kind='purchase' and metadata->>'paymentIntent'=$1", [paymentIntent])).rows[0];
+    if (same && same.idempotency_key !== purchase.key) throw new HttpError(400, "Payment is already attached to another purchase");
+    if (prior && (prior.tenant !== purchase.tenant || prior.amount !== purchase.amount || prior.metadata.paymentIntent !== purchase.metadata?.paymentIntent)) throw new HttpError(400, "Purchase conflicts with its recorded payment");
+    if (prior) purchase = { ...purchase, metadata: prior.metadata };
+    const refunds = await this.refundEntries(sql, purchase, paymentIntent);
+    return postLedger(sql, [purchase, ...refunds]);
+  }
+
+  /** Keep cumulative refunds even when their purchase has not arrived. All writers serialize by payment intent. */
+  private async refund(charge: { id: string; payment_intent?: string; amount: number; amount_refunded: number; currency?: string; metadata?: Record<string, string> }) {
+    if (typeof charge.payment_intent !== "string" || typeof charge.id !== "string") return "ignored";
+    if (charge.metadata?.purpose && ![PURPOSE, "agent-runtime-auto-topup"].includes(charge.metadata.purpose)) return "ignored";
+    if (!Number.isSafeInteger(charge.amount) || charge.amount <= 0 || !Number.isSafeInteger(charge.amount_refunded) || charge.amount_refunded < 0 || charge.amount_refunded > charge.amount) {
+      throw new HttpError(400, "Invalid cumulative refund amount");
+    }
     const posted = await transaction(this.db, async sql => {
-      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-refund:${charge.id}`]);
-      const purchase = (await sql.query("select tenant, amount from credit_ledger where kind = 'purchase' and metadata->>'paymentIntent' = $1", [charge.payment_intent])).rows[0];
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-payment:${charge.payment_intent}`]);
+      const prior = (await sql.query("select * from billing_stripe_refunds where charge=$1", [charge.id])).rows[0];
+      if (prior && (prior.payment_intent !== charge.payment_intent || prior.amount !== charge.amount || (prior.currency && charge.currency && prior.currency !== charge.currency))) throw new HttpError(400, "Refund conflicts with its recorded charge");
+      const stored = await sql.query(`insert into billing_stripe_refunds (charge,payment_intent,amount,refunded,currency,updated_at) values ($1,$2,$3,$4,$5,$6)
+        on conflict (charge) do update set refunded=greatest(billing_stripe_refunds.refunded,excluded.refunded), currency=coalesce(billing_stripe_refunds.currency,excluded.currency), updated_at=excluded.updated_at
+        where billing_stripe_refunds.payment_intent=excluded.payment_intent and billing_stripe_refunds.amount=excluded.amount
+          and (billing_stripe_refunds.currency is null or excluded.currency is null or billing_stripe_refunds.currency=excluded.currency)
+        returning charge`,
+      [charge.id, charge.payment_intent, charge.amount, charge.amount_refunded, charge.currency ?? null, Date.now()]);
+      if (!stored.rowCount) throw new HttpError(400, "Refund conflicts with its recorded charge");
+      const purchase = (await sql.query("select tenant, amount, metadata from credit_ledger where kind = 'purchase' and metadata->>'paymentIntent' = $1", [charge.payment_intent])).rows[0];
       if (!purchase) return undefined;
-      const refunded = -Number((await sql.query("select coalesce(sum(amount), 0) as sum from credit_ledger where kind = 'refund' and metadata->>'charge' = $1", [charge.id])).rows[0].sum);
-      const target = Math.round(purchase.amount * Math.min(1, charge.amount_refunded / charge.amount));
-      if (target <= refunded) return [];
-      return postLedger(sql, [{
-        tenant: purchase.tenant, kind: "refund", amount: refunded - target, key: `refund:${charge.id}:${charge.amount_refunded}`,
-        metadata: { charge: charge.id, paymentIntent: charge.payment_intent, refunded: charge.amount_refunded },
-      }]);
+      return postLedger(sql, await this.refundEntries(sql, purchase, charge.payment_intent!));
     });
-    if (!posted) return "ignored";
+    if (!posted) return "pending refund";
     this.invalidate(posted.map(entry => entry.tenant));
     return "refund";
+  }
+
+  private async refundEntries(sql: Sql, purchase: { tenant: string; amount: number; metadata?: Record<string, unknown> }, paymentIntent: string): Promise<LedgerEntry[]> {
+    const refunds = (await sql.query("select * from billing_stripe_refunds where payment_intent=$1 order by charge", [paymentIntent])).rows;
+    const applied = (await sql.query("select metadata->>'charge' as charge, -sum(amount) as amount from credit_ledger where kind='refund' and metadata->>'paymentIntent'=$1 group by metadata->>'charge'", [paymentIntent])).rows;
+    let remaining = Math.max(0, purchase.amount - applied.reduce((sum, row) => sum + Number(row.amount), 0));
+    const entries: LedgerEntry[] = [];
+    for (const refund of refunds) {
+      if ((purchase.metadata?.currency && refund.currency && purchase.metadata.currency !== refund.currency)
+        || (typeof purchase.metadata?.paid === "number" && purchase.metadata.paid !== refund.amount)) {
+        console.error(JSON.stringify({ type: "billing_reconciliation_required", kind: "refund_mismatch", charge: refund.charge, paymentIntent }));
+        throw new HttpError(400, "Refund amount or currency does not match purchase");
+      }
+      const already = Number(applied.find(row => row.charge === refund.charge)?.amount ?? 0);
+      // BigInt keeps rounding exact even for large valid cumulative totals.
+      const target = Number((BigInt(purchase.amount) * BigInt(refund.refunded) * 2n + BigInt(refund.amount)) / (BigInt(refund.amount) * 2n));
+      const amount = Math.min(remaining, Math.max(0, target - already));
+      if (!amount) continue;
+      remaining -= amount;
+      entries.push({ tenant: purchase.tenant, kind: "refund", amount: -amount, key: `refund:${refund.charge}:${refund.refunded}`,
+        metadata: { charge: refund.charge, paymentIntent, refunded: refund.refunded } });
+    }
+    return entries;
   }
 
   // Storage -------------------------------------------------------------------

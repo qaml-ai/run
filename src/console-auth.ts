@@ -93,7 +93,7 @@ export class ConsoleAuth {
 
     app.get("/console/auth/methods", c => {
       const github = this.options.github;
-      return json(c, 200, { github: !!github, token: true, ...(github?.open ? { open: true, minAccountDays: github.minAccountDays ?? 30 } : { org: github?.org }) });
+      return json(c, 200, { github: !!github, token: true, ...(github?.open ? { open: true } : { org: github?.org }) });
     });
     app.get("/console/auth/github", c => {
       const github = this.options.github;
@@ -130,8 +130,22 @@ export class ConsoleAuth {
         if (!accessToken) throw new Error("GitHub did not issue a token");
         const api = github.apiUrl ?? "https://api.github.com";
         const headers = { Authorization: `Bearer ${accessToken}`, Accept: "application/vnd.github+json", "User-Agent": "camelai-agent-runtime" };
-        const user = await (await fetch(`${api}/user`, { headers, signal: AbortSignal.timeout(10_000) })).json() as { login?: string; id?: number; created_at?: string };
-        if (!user.login || !Number.isSafeInteger(user.id)) throw new Error("GitHub did not return a user");
+        type Profile = { login?: string; id?: number; created_at?: string };
+        let user: Profile | undefined;
+        // Retry an incomplete profile before making a permanent signup decision.
+        // An existing account may still sign in if only the creation time is unavailable.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const response = await fetch(`${api}/user`, { headers, signal: AbortSignal.timeout(10_000) });
+            if (!response.ok) continue;
+            const profile = await response.json() as Profile;
+            if (!profile.login || !Number.isSafeInteger(profile.id) || profile.id! <= 0) continue;
+            user = profile;
+            const created = Date.parse(profile.created_at ?? "");
+            if (Number.isSafeInteger(created) && created >= 0 && created <= Date.now()) break;
+          } catch { /* A second lookup can recover; no tenant has been created. */ }
+        }
+        if (!user?.login || !user.id) throw new Error("GitHub account details are unavailable; try signing in again");
         if (!github.open) {
           const membership = await fetch(`${api}/user/memberships/orgs/${encodeURIComponent(github.org)}`, { headers, signal: AbortSignal.timeout(10_000) });
           const member = membership.ok && (await membership.json() as { state?: string }).state === "active";
@@ -140,7 +154,7 @@ export class ConsoleAuth {
         const createdAt = user.created_at ? Date.parse(user.created_at) : NaN;
         const tenant = await this.options.accounts.tenantForGithub(
           { login: user.login, id: user.id, ...(Number.isFinite(createdAt) ? { createdAt } : {}) },
-          { minAccountAgeMs: (github.minAccountDays ?? 30) * 86_400_000 });
+          { minAccountAgeMs: github.minAccountDays === undefined ? undefined : Math.round(github.minAccountDays * 86_400_000) });
         return redirect(c, next ?? "/console/", [clearState, clearNext, this.startSession(tenant, user.login)]);
       } catch (error) {
         return fail(c, (error as Error).message, [clearState, clearNext]);
