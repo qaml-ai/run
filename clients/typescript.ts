@@ -248,7 +248,8 @@ export interface AgentOptions {
    * throws goes to `onError`. A `message_update` is its delta alone (`assistantMessageEvent`), without the
    * message it updates: fold that from its `message_start` and the deltas since. Where the stream
    * cannot replay (a first connect, or a reconnect after the host's buffer moved on), the first event
-   * is a `{ type: "snapshot", turn }` of the running turn to fold from.
+   * is a `{ type: "snapshot", turn }` of the running turn to fold from. `close()` stops it: events still
+   * queued are dropped.
    */
   onEvent?: (event: AgentEvent, requestId?: string) => unknown | Promise<unknown>;
   /**
@@ -989,14 +990,15 @@ export class AgentClient {
       try { listener(event, requestId); } catch (error) { this.report(error); }
     }
     const onEvent = this.options.onEvent;
-    if (!onEvent) return;
+    if (!onEvent || this.closed) return;
     if (this.queued >= MAX_QUEUED_EVENTS && event.type === "message_update") {
       if (this.dropped++ === 0) this.report(new AgentError(`onEvent is falling behind: over ${MAX_QUEUED_EVENTS} events wait, so streamed deltas are dropped until it catches up`));
       return;
     }
     this.queued++;
     this.dispatching = this.dispatching.then(async () => {
-      try { await onEvent(event, requestId); }
+      // A closed client calls onEvent no more: events still queued are dropped.
+      try { if (!this.closed) await onEvent(event, requestId); }
       catch (error) { this.report(error); }
       finally { if (--this.queued === 0) this.dropped = 0; }
     });
@@ -1255,7 +1257,7 @@ export class AgentClient {
     for (const [id, waiter] of this.pending) waiter.reject(new AgentError("Client closed; request may still be running", 0, id));
     this.pending.clear();
     await this.loop;
-    // Events received before closing still reach onEvent, but a handler that never returns cannot hang shutdown.
+    // onEvent is called no more; the call in progress may finish, but one that never returns cannot hang shutdown.
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([this.dispatching, new Promise(resolve => { timer = setTimeout(resolve, 2000); })]);
     clearTimeout(timer);

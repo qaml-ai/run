@@ -807,7 +807,7 @@ class AgentClient:
                 listener(event, request_id)
             except Exception as error:
                 self._report(error)
-        if not self.on_event or self.events is None:
+        if not self.on_event or self.events is None or self.closed:
             return
         if self.events.qsize() >= _MAX_QUEUED_EVENTS and event.get("type") == "message_update":
             if self.dropped == 0:
@@ -821,6 +821,9 @@ class AgentClient:
         while True:
             event, request_id = await self.events.get()
             try:
+                # A closed client calls on_event no more: events still queued are dropped.
+                if self.closed:
+                    continue
                 answer = self.on_event(event, request_id) if _arity(self.on_event) > 1 else self.on_event(event)
                 if inspect.isawaitable(answer):
                     await answer
@@ -1221,7 +1224,7 @@ class AgentClient:
             self.runner.cancel()
             await asyncio.gather(self.runner, return_exceptions=True)
         if self.dispatcher:
-            # Events received before closing still reach on_event, but a handler that never returns cannot hang shutdown.
+            # on_event is called no more; the call in progress may finish, but one that never returns cannot hang shutdown.
             try:
                 await asyncio.wait_for(self.events.join(), 2)
             except TimeoutError:

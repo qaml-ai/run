@@ -213,8 +213,9 @@ reference](../reference/events.md).
 `onEvent` (`on_event`) handlers run one at a time, in order, apart from the
 stream: a slow handler never holds up tool calls, and what it throws goes to
 `onError`. Past 10,000 events waiting, streamed deltas are dropped (with one
-`onError`) until it catches up. `close()` waits up to 2 seconds for handlers to
-finish.
+`onError`) until it catches up. `close()` stops them: the call in progress may
+finish (`close()` waits up to 2 seconds for it), and events still queued are
+dropped.
 
 ### Tool calls and connections
 
@@ -270,6 +271,13 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`set_metadata(name=, type=)`). SDK-created agents appear in a local Studio
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
+
+## Unreleased
+
+- `close()` stops `onEvent` (`on_event`): events still queued when it is called
+  are dropped instead of handed over, and `close()` waits only for the call in
+  progress. Before, a slow handler kept being called for the whole backlog after
+  `close()` returned.
 
 ## Changes in 0.9 (Python 0.5)
 

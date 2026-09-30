@@ -44,7 +44,7 @@ asyncio.run(main())
 - **People in the loop.** `await run.inputs[0].answer(True, from_="alice")` resumes
   a run waiting on approval.
 - **Events.** `on_event` may be a plain or an async function; it runs in order,
-  apart from the connection.
+  apart from the connection. `close()` stops it: events still queued are dropped.
 
 Documentation: [Quickstart](https://agents.camelai.dev/docs/quickstart.md),
 [Concepts](https://agents.camelai.dev/docs/concepts.md),

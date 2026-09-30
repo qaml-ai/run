@@ -89,19 +89,25 @@ test("a tool that returns nothing succeeds with null; its context has a stable i
 
 test("a slow onEvent never holds up the agent's tool calls", async t => {
   const { make } = await setup(t, (body, index) => index < 3 ? toolCall("echo", { value: `v${index}` }, `call_${index}`) : { role: "assistant", content: "Done." }, {});
-  let handled = 0, done = false;
+  let handled = 0;
   const agent = await make({
     tools: { echo: echo(({ value }) => value) },
-    // Far slower than the runtime's 15 s tool timeout, in all. Once the test is done, the backlog is let go:
-    // a second each for the rest kept the file's process alive for half a minute after its last test.
-    onEvent: async () => { if (done) return; await sleep(1000); handled++; },
+    // Far slower than the runtime's 15 s tool timeout, in all.
+    onEvent: async () => { await sleep(1000); handled++; },
   });
-  t.after(() => { done = true; });
   const started = Date.now();
   const run = await agent.run("Echo three times");
   assert.equal(run.text, "Done.");
   assert.ok(Date.now() - started < 10_000, "the run did not wait for onEvent");
   assert.ok(handled < 10, "events were still being handled when the run ended");
+
+  // Closing stops onEvent: the call in progress finishes, and the backlog is dropped.
+  const closing = Date.now();
+  await agent.close();
+  assert.ok(Date.now() - closing < 1_500, "close waited only for the call in progress");
+  const atClose = handled;
+  await sleep(2_500);
+  assert.equal(handled, atClose, "no queued event reached onEvent after close");
 });
 
 test("an onEvent that throws is reported to onError, and the connection goes on", async t => {

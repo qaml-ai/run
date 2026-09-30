@@ -187,6 +187,15 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(run_id == run.id for kind, run_id in handled if kind == "agent_start"))
         self.assertTrue(any("display broke" in str(error) for error in errors))
 
+        # Closing stops on_event: the call in progress finishes, and the backlog is dropped.
+        self.assertGreater(agent.client.events.qsize(), 0, "events were still queued")
+        closing = asyncio.get_running_loop().time()
+        await agent.close()
+        self.assertLess(asyncio.get_running_loop().time() - closing, 1.5, "close waited only for the call in progress")
+        at_close = len(handled)
+        await asyncio.sleep(1.5)
+        self.assertEqual(len(handled), at_close, "no queued event reached on_event after close")
+
     async def test_an_approval_answered_through_the_run_resumes_it(self):
         done = []
 
