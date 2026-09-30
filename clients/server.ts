@@ -20,7 +20,7 @@ export interface VerifyOptions {
   tenant: string | string[];
   /** The runtime's URL (e.g. https://agents.camelai.dev): its keys are at /.well-known/jwks.json. */
   runtime: string;
-  /** The issuer tokens must name; the runtime's URL by default. */
+  /** The issuer tokens must name; the runtime's URL by default (camelRun's hosted runtime names itself https://agents.camelai.dev at either of its URLs). */
   issuer?: string;
   /** What tokens must be for: your server's URL as the runtime calls it (a definition's `url`, or its `audience`). */
   audience: string | string[];
@@ -36,6 +36,14 @@ export class RuntimeTokenError extends Error {
 }
 
 const trim = (url: string) => url.replace(/\/+$/, "");
+/** camelRun's hosted runtime answers at both names, and signs as the first it had, which tool servers already check. */
+const HOSTED = ["https://run.camelai.com", "https://agents.camelai.dev"];
+const HOSTED_ISSUER = "https://agents.camelai.dev";
+const issuerOf = (options: { runtime: string; issuer?: string }) => {
+  if (options.issuer) return trim(options.issuer);
+  const runtime = trim(options.runtime);
+  return HOSTED.includes(runtime) ? HOSTED_ISSUER : runtime;
+};
 const decoder = new TextDecoder();
 function base64url(text: string): Uint8Array<ArrayBuffer> {
   const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(text.length / 4) * 4, "="));
@@ -101,7 +109,7 @@ export async function verifyRuntimeToken(token: string, options: VerifyOptions):
   if (!valid) throw new RuntimeTokenError("Token signature does not verify");
   const claims = part(pieces[1]);
   const now = Math.floor(Date.now() / 1000), skew = options.clockTolerance ?? 30;
-  if (claims.iss !== trim(options.issuer ?? runtime)) throw new RuntimeTokenError("Token is from another issuer");
+  if (claims.iss !== issuerOf(options)) throw new RuntimeTokenError("Token is from another issuer");
   if (![options.tenant].flat().includes(claims.tenant)) throw new RuntimeTokenError("Token is for another tenant's agent");
   const audiences = new Set((Array.isArray(options.audience) ? options.audience : [options.audience]).map(trim));
   if (![claims.aud].flat().some(audience => typeof audience === "string" && audiences.has(trim(audience)))) throw new RuntimeTokenError("Token is for another server");
@@ -157,7 +165,7 @@ export interface ServeOptions extends Omit<VerifyOptions, "audience"> {
 export function serveTools(tools: Tools | ToolServer, options: ServeOptions): (request: Request) => Promise<Response> {
   requireTenant(options);
   const server: ToolServer = typeof (tools as ToolServer).listTools === "function" && typeof (tools as ToolServer).callTool === "function" ? tools as ToolServer : toolServer(tools as Tools);
-  const issuer = trim(options.issuer ?? options.runtime);
+  const issuer = issuerOf(options);
   const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
   const WELL_KNOWN = "/.well-known/oauth-protected-resource";

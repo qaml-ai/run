@@ -274,6 +274,11 @@ application keeps serving its tools.
 
 ## Unreleased
 
+- `verifyRuntimeToken` / `serveTools` (`verify_runtime_token` / `serve_tools`)
+  with `runtime` set to either of the hosted runtime's URLs,
+  `https://run.camelai.com` or `https://agents.camelai.dev`, expect the issuer
+  `https://agents.camelai.dev`, which the hosted runtime's identity tokens name
+  at both. Pass `issuer` to expect another.
 - `close()` stops `onEvent` (`on_event`): events still queued when it is called
   are dropped instead of handed over, and `close()` waits only for the call in
   progress. Before, a slow handler kept being called for the whole backlog after

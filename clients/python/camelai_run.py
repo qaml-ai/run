@@ -1669,6 +1669,18 @@ def _require_tenant(tenant):
     return {tenant} if isinstance(tenant, str) else set(tenant)
 
 
+# camelRun's hosted runtime answers at both names, and signs as the first it had, which tool servers already check.
+_HOSTED = ("https://run.camelai.com", "https://agents.camelai.dev")
+_HOSTED_ISSUER = "https://agents.camelai.dev"
+
+
+def _issuer_of(runtime, issuer):
+    if issuer:
+        return issuer.rstrip("/")
+    runtime = runtime.rstrip("/")
+    return _HOSTED_ISSUER if runtime in _HOSTED else runtime
+
+
 async def verify_runtime_token(token, *, runtime, audience, tenant=None, issuer=None, http=None, clock_tolerance=30):
     """Verify an identity token and return who the call is for (a RuntimeIdentity, with the token's
     claims): the signature against the runtime's published Ed25519 keys (EdDSA only), the issuer,
@@ -1691,7 +1703,7 @@ async def verify_runtime_token(token, *, runtime, audience, tenant=None, issuer=
         raise RuntimeTokenError("Token signature does not verify") from None
     claims = _part(pieces[1])
     now = time.time()
-    if claims.get("iss") != (issuer or runtime).rstrip("/"):
+    if claims.get("iss") != _issuer_of(runtime, issuer):
         raise RuntimeTokenError("Token is from another issuer")
     if claims.get("tenant") not in tenants:
         raise RuntimeTokenError("Token is for another tenant's agent")
@@ -1717,7 +1729,7 @@ def serve_tools(tools, *, runtime, tenant=None, audience=None, issuer=None, meta
     get a 401. `audience` is your server's URL as the runtime calls it; by default the request's URL."""
     _require_tenant(tenant)
     table = tools if isinstance(tools, dict) else {item.name: item for item in tools}
-    issuer = (issuer or runtime).rstrip("/")
+    issuer = _issuer_of(runtime, issuer)
     well_known = "/.well-known/oauth-protected-resource"
 
     async def app(scope, receive, send):

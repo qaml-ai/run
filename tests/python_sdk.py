@@ -587,6 +587,15 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         identity = await verify_runtime_token(self.runtime.token(self.APP, tenant="b"), audience=self.APP, **{**options, "tenant": ["a", "b"]})
         self.assertEqual(identity.tenant, "b")
 
+    async def test_the_hosted_runtime_signs_as_agents_camelai_dev_at_either_url(self):
+        for url in ("https://run.camelai.com", "https://agents.camelai.dev"):
+            runtime = TestRuntime(url)
+            identity = await verify_runtime_token(runtime.token(self.APP, subject="alice", claims={"iss": "https://agents.camelai.dev"}), audience=self.APP, **runtime.options)
+            self.assertEqual(identity.subject, "alice", url)
+            with self.assertRaisesRegex(RuntimeTokenError, "another issuer"):
+                await verify_runtime_token(runtime.token(self.APP, claims={"iss": "https://run.camelai.com"}), audience=self.APP, **runtime.options)
+            await runtime.http.aclose()
+
     async def test_a_tool_that_needs_approval_asks_first_and_runs_once_approved(self):
         app = serve_tools([delete_todo], **self.runtime.options)
         listed = (await self.runtime.post(app, self.APP, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, subject="alice")).json()

@@ -150,6 +150,17 @@ test("a token from another tenant is refused, whatever it says about the user; t
   await assert.rejects(runtimeAuth(await rt.request(APP, {}), without as never), /tenant: your tenant's id/);
 });
 
+test("the hosted runtime signs as https://agents.camelai.dev whichever of its URLs a server names", async () => {
+  for (const url of ["https://run.camelai.com", "https://agents.camelai.dev"]) {
+    const rt = await testRuntime({ url });
+    const hosted = await rt.token({ subject: "alice" }, APP, { claims: { iss: "https://agents.camelai.dev" } });
+    assert.equal((await verifyRuntimeToken(hosted, { ...rt.options, audience: APP })).subject, "alice", url);
+    await assert.rejects(verifyRuntimeToken(await rt.token({}, APP, { claims: { iss: "https://run.camelai.com" } }), { ...rt.options, audience: APP }), /another issuer/, url);
+    const metadata = await serveTools(todoTools([]), rt.options)(new Request("https://app.test/.well-known/oauth-protected-resource/mcp"));
+    assert.deepEqual((await metadata.json() as any).authorization_servers, ["https://agents.camelai.dev"], url);
+  }
+});
+
 test("nodeListener trusts X-Forwarded-Proto and -Host only when told to", async t => {
   const rt = await testRuntime();
   const listen = async (options: Parameters<typeof nodeListener>[1]) => {
