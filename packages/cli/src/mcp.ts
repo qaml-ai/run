@@ -7,6 +7,10 @@ import { errorText, INSTRUCTIONS, resultText, tools } from "./tools.ts";
 import { VERSION } from "./version.ts";
 import { readFileSync } from "node:fs";
 
+/** A result's most characters: past it the rest is cut, so one long history or spec cannot fill a model's context. */
+export const MAX_RESULT = 100_000;
+const capped = (text: string) => text.length <= MAX_RESULT ? text : `${text.slice(0, MAX_RESULT)}\n\n[Cut at ${MAX_RESULT} characters of ${text.length}: ask for less, such as a smaller limit.]`;
+
 /** Serve the CLI's operations as MCP tools over stdio. Credentials are read on each call, so a login takes effect at once. */
 export async function serve(api: () => Api, options: { cwd: string }) {
   const server = createServer(api, options);
@@ -31,8 +35,8 @@ export function createServer(api: () => Api, options: { cwd?: string } = {}) {
     load: (file?: string) => loadManifests(file ? (isAbsolute(file) ? file : resolve(cwd, file)) : findManifest(cwd)),
   };
   for (const tool of tools(api, { local })) {
-    server.registerTool(tool.name, { description: tool.description, inputSchema: tool.input, annotations: tool.annotations }, (async (args: any) => {
-      try { return { content: [{ type: "text", text: resultText(await tool.run(args)) }] }; }
+    server.registerTool(tool.name, { title: tool.title, description: tool.description, inputSchema: tool.input, annotations: { title: tool.title, ...tool.annotations } }, (async (args: any) => {
+      try { return { content: [{ type: "text", text: capped(resultText(await tool.run(args))) }] }; }
       catch (error) { return { isError: true, content: [{ type: "text", text: errorText(error) }] }; }
     }) as any);
   }

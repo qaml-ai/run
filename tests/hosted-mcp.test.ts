@@ -45,7 +45,18 @@ test("the hosted MCP endpoint runs the CLI's tools as the caller, and reads no f
   huge.destroy();
 
   const { client, call } = await connect(t, r.base, OPERATOR);
-  const names = (await client.listTools()).tools.map(tool => tool.name);
+  const listed = (await client.listTools()).tools;
+  const names = listed.map(tool => tool.name);
+  // Every tool says, for clients that confirm before acting, whether it changes, destroys or reaches beyond the account.
+  for (const tool of listed) {
+    assert.ok(tool.title && tool.description, tool.name);
+    for (const hint of ["readOnlyHint", "destructiveHint", "openWorldHint"] as const) assert.equal(typeof tool.annotations?.[hint], "boolean", `${tool.name} ${hint}`);
+    if (tool.annotations!.readOnlyHint) assert.equal(tool.annotations!.destructiveHint, false, tool.name);
+  }
+  const hints = (name: string) => listed.find(tool => tool.name === name)!.annotations!;
+  for (const name of ["delete_agent", "delete_definition", "delete_schedule", "deploy", "configure_agent", "create_agent", "abort_agent", "answer_input"]) assert.equal(hints(name).destructiveHint, true, name);
+  for (const name of ["list_agents", "get_agent", "agent_history", "get_run", "read_docs", "whoami"]) assert.equal(hints(name).readOnlyHint, true, name);
+  assert.deepEqual([hints("run_agent").readOnlyHint, hints("run_agent").openWorldHint], [false, true], "a run can reach the web and the agent's tool servers");
   assert.ok(names.includes("deploy") && names.includes("run_agent") && names.includes("read_docs"));
   const deployTool = (await client.listTools()).tools.find(tool => tool.name === "deploy")!;
   assert.deepEqual(Object.keys(deployTool.inputSchema.properties!).sort(), ["apply", "dryRun", "manifest"], "no file argument when hosted");
@@ -193,4 +204,18 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
   assert.equal((await noSecret.json()).error, "invalid_client");
   const basic = `Basic ${Buffer.from(`${encodeURIComponent(confidential.client_id)}:${encodeURIComponent(confidential.client_secret)}`).toString("base64")}`;
   assert.equal((await (await post("/oauth/token", { grant_type: "refresh_token", refresh_token: "x" }, { Authorization: basic })).json()).error, "invalid_grant", "authenticated, with a bad token");
+});
+
+test("a tool's result is cut at MAX_RESULT characters, saying so", async () => {
+  const { Client: McpClient } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { createServer, MAX_RESULT } = await import("../packages/cli/src/mcp.ts");
+  const long = "x".repeat(MAX_RESULT + 10);
+  const server = createServer(() => ({ text: async () => long }) as any);
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const client = new McpClient({ name: "test", version: "1" });
+  await Promise.all([server.connect(a), client.connect(b)]);
+  const result: any = await client.callTool({ name: "read_docs", arguments: {} });
+  assert.equal(result.content[0].text.startsWith("x".repeat(MAX_RESULT) + "\n\n[Cut at"), true);
+  await client.close();
 });
