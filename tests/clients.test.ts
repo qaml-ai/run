@@ -606,11 +606,16 @@ test("concurrent starts never take a tenant past its quota, and refused creates 
   const supervisor = f.supervisor;
   const start = supervisor.start.bind(supervisor);
   // A slow start (a process spawning, a key lookup) widens the window between the quota check and the agent registering.
-  let peak = 0, starting = 0;
+  // Hosted counts each agent once: a start registers its agent before it returns, so it is in both sets for a while.
+  let peak = 0;
+  const starting = new Set<string>();
+  const count = () => { peak = Math.max(peak, new Set([...supervisor.agents.keys(), ...starting]).size); };
+  const register = supervisor.agents.set.bind(supervisor.agents);
+  supervisor.agents.set = (id, handle) => { const map = register(id, handle); count(); return map; };
   supervisor.start = (async (...args: Parameters<typeof start>) => {
-    starting++;
-    peak = Math.max(peak, supervisor.agents.size + starting);
-    try { await sleep(50); return await start(...args); } finally { starting--; }
+    starting.add(args[0]);
+    count();
+    try { await sleep(50); return await start(...args); } finally { starting.delete(args[0]); }
   }) as typeof supervisor.start;
   // So is a slow header write: every create reserves its slot before any is loaded.
   const sessions = f.sessions as unknown as { writeHeader: (...args: unknown[]) => Promise<void> };
