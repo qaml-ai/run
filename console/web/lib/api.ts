@@ -1,26 +1,44 @@
 import { useCallback, useEffect, useState } from "react";
+import { helpRequestScope, recordHelpFailure } from "./help-context";
 
 /** The console uses the same /v1 API as scripts; its session cookie authenticates it. */
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  code?: string;
+  retryAfter?: number;
+  constructor(status: number, message: string, code?: string, retryAfter?: number) {
+    super(message); this.status = status; this.code = code; this.retryAfter = retryAfter;
+  }
 }
 
 export async function api<T = any>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const method = init.method ?? (init.body === undefined ? "GET" : "POST");
-  const response = await fetch(path, {
-    method, credentials: "same-origin",
-    headers: {
-      ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
-      // Required for any cookie-authenticated write; cross-site pages cannot send it.
-      ...(method !== "GET" ? { "X-Agent-Runtime-Console": "1" } : {}),
-    },
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
-  });
-  const text = await response.text();
+  const scope = helpRequestScope();
+  let response: Response;
+  let text: string;
+  try {
+    response = await fetch(path, {
+      method, credentials: "same-origin",
+      headers: {
+        ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
+        // Required for any cookie-authenticated write; cross-site pages cannot send it.
+        ...(method !== "GET" ? { "X-Agent-Runtime-Console": "1" } : {}),
+      },
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    });
+    text = await response.text();
+  } catch (error) {
+    recordHelpFailure(scope, method, path, 0);
+    throw error;
+  }
   let value: any = undefined;
   try { value = text ? JSON.parse(text) : undefined; } catch { value = text; }
-  if (!response.ok) throw new ApiError(response.status, value?.error ?? `HTTP ${response.status}`);
+  if (!response.ok) {
+    recordHelpFailure(scope, method, path, response.status);
+    const retry = Number(response.headers.get("Retry-After"));
+    throw new ApiError(response.status, value?.error ?? `HTTP ${response.status}`, typeof value?.code === "string" ? value.code : undefined,
+      Number.isFinite(retry) && retry > 0 ? retry : undefined);
+  }
   return value as T;
 }
 

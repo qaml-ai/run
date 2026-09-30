@@ -21,6 +21,8 @@ import { tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
 import { BillingAlerts } from "./billing-alerts.ts";
 import { BillingMailer, billingMailConfig } from "./billing-mailer.ts";
+import { Help, helpConfig } from "./help.ts";
+import { MailTransport } from "./mail-transport.ts";
 import { ConsoleAuth } from "./console-auth.ts";
 import { OAuth } from "./oauth.ts";
 import { hostedMcp } from "./hosted-mcp.ts";
@@ -143,6 +145,10 @@ const mailConfig = billingMailConfig(process.env, secrets.billingEmailSecret);
 if (mailConfig && !accounts.canStoreKeys) throw new Error("Billing email requires AGENT_SECRETS_KEY for confirmation tokens");
 const billingMailer = mailConfig ? new BillingMailer({ db, alerts: billingAlerts, ...mailConfig }) : undefined;
 billingMailer?.start();
+// Get Help mails the support inbox when AGENT_SUPPORT_EMAIL and its sender are set, through the billing email provider.
+const supportConfig = helpConfig(process.env, mailConfig);
+const supportMail = supportConfig && new MailTransport(supportConfig.transport);
+const help = supportConfig && new Help({ ...supportConfig, db, accounts, alerts: billingAlerts, hashKey: sessionSecret, send: (mail, signal) => supportMail!.send(mail, signal) });
 // Keep the production eligibility threshold in deployment configuration, not public defaults.
 const minAccountDays = process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS === undefined ? undefined : Number(process.env.AGENT_SIGNUP_MIN_ACCOUNT_DAYS);
 if (minAccountDays !== undefined && (!Number.isFinite(minAccountDays) || minAccountDays < 0 || !Number.isSafeInteger(Math.round(minAccountDays * 86_400_000)))) {
@@ -595,7 +601,7 @@ app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
 if (billingMailer) app.route("/", billingMailer.feedback());
-app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
@@ -780,7 +786,7 @@ async function drain(signal: string) {
   await step("mcp", () => mcp.close());
   await step("usage", () => accounts.flushUsage());
   await step("auto top-up", async () => { await accounts.billing.autoTopup?.stop(); });
-  await step("billing email", async () => { await billingMailer?.stop(); });
+  await step("billing email", async () => { await billingMailer?.stop(); supportMail?.destroy(); });
   await step("storage usage", () => storageUsage.flush());
   await step("listen", () => loads.close());
   await step("heartbeat", () => ownership.close());

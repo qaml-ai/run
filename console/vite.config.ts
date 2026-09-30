@@ -8,6 +8,7 @@ export default defineConfig({
   root: fileURLToPath(new URL("./web", import.meta.url)),
   base: "/console/",
   plugins: [react()],
+  define: { "import.meta.env.VITE_CONSOLE_BUILD": JSON.stringify(process.env.AGENT_RELEASE ?? `build-${Date.now().toString(36)}`) },
   resolve: { alias: { "@": fileURLToPath(new URL("./web", import.meta.url)) } },
   css: { postcss: { plugins: [tailwind()] } },
   // Fonts stay files: inlined as data: URIs, the console's CSP (fonts from 'self') would block them.
