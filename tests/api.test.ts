@@ -309,9 +309,9 @@ test("Google sign-in verifies the ID token, creates separate tenants, and return
     const session = callback.headers.getSetCookie().find(value => value.startsWith("ar_session="))?.split(";")[0];
     return { location: decodeURIComponent(callback.headers.get("location")!), session };
   };
-  const ada = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true });
+  const ada = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true, name: "Ada Lovelace" });
   assert.equal(ada.location, "/console/");
-  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: neutral("1001"), via: "console", login: "ada@example.com", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: neutral("1001"), via: "console", login: "ada@example.com", name: "Ada Lovelace", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
   // No automatic starting credit: the account starts at zero.
   const billing = (await call("/v1/billing", { headers: { Cookie: ada.session! } })).json;
   assert.equal(billing.balance, 0);
@@ -328,7 +328,12 @@ test("Google sign-in verifies the ID token, creates separate tenants, and return
   assert.ok(String((await call(consent)).json).includes(`href="/console/auth/google?next=${encodeURIComponent(consent)}"`));
   const returned = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true }, { next: consent });
   assert.equal(returned.location, decodeURIComponent(consent));
-  assert.match(String((await call(consent, { headers: { Cookie: returned.session! } })).json), /Connect Test Agent\?[\s\S]*ada@example\.com/);
+  assert.match(String((await call(consent, { headers: { Cookie: returned.session! } })).json), /Connect Test Agent\?[\s\S]*Signed in as <strong>ada@example\.com<\/strong>/);
+  // An API token of a Google tenant names the person too, in /v1/me and in a console session it signs in.
+  const token = (await call("/v1/tokens", { body: { name: "script" }, headers: { Cookie: ada.session!, "X-Agent-Runtime-Console": "1" } })).json.token;
+  assert.equal((await call("/v1/me", { token })).json.login, "ada@example.com");
+  const tokenSession = (await call("/console/auth/token", { body: { token }, headers: { "X-Agent-Runtime-Console": "1" } })).headers.getSetCookie()[0].split(";")[0];
+  assert.equal((await call("/v1/me", { headers: { Cookie: tokenSession } })).json.login, "ada@example.com");
   // Unverified addresses, and tokens with the wrong nonce, signer or lifetime, never sign in or create a tenant.
   const refused = [
     [await signIn({ sub: "2001", email: "eve@example.com", email_verified: false }), /email address is verified/],

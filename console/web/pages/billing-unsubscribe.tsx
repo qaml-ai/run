@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { accountLabel, api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { PixelButton } from "@/components/ui/pixel-button";
 import { FullLogo } from "@/components/ui/logo";
@@ -29,10 +29,10 @@ export function BillingUnsubscribePage() {
       <p className="text-muted-foreground text-sm leading-6">Try the link in your latest billing email, or contact support@camelai.com.</p>
     </> : state.status === "unsubscribed" ? <>
       <Badge variant="info" className="mb-4">Stopped</Badge><h1 className="mb-4 text-2xl font-semibold">Billing alerts stopped</h1>
-      <p className="text-muted-foreground text-sm leading-6"><span className="text-foreground break-all">{state.email}</span> won't receive more billing alerts for <strong className="text-foreground">{state.tenant}</strong>. An email already on its way may still arrive.</p>
+      <p className="text-muted-foreground text-sm leading-6"><span className="text-foreground break-all">{state.email}</span> won't receive more billing alerts for {accountLabel(state.tenant) ? <strong className="text-foreground">{accountLabel(state.tenant)}</strong> : "a camelRun account"}. An email already on its way may still arrive.</p>
     </> : <>
       <h1 className="mb-4 text-2xl font-semibold">Stop billing alerts?</h1>
-      <p className="text-muted-foreground mb-7 text-sm leading-6">Stop sending billing alerts for <strong className="text-foreground">{state.tenant}</strong> to <span className="text-foreground break-all">{state.email}</span>.</p>
+      <p className="text-muted-foreground mb-7 text-sm leading-6">Stop sending billing alerts for {accountLabel(state.tenant) ? <strong className="text-foreground">{accountLabel(state.tenant)}</strong> : "a camelRun account"} to <span className="text-foreground break-all">{state.email}</span>.</p>
       <PixelButton size="hero" className="self-start" disabled={busy} loading={busy} onClick={() => void stop()}>Stop these alerts</PixelButton>
       <p className="text-muted-foreground mt-6 text-xs leading-5">Your other accounts and payment settings stay the same.</p>
     </>}

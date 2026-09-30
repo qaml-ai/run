@@ -65,7 +65,7 @@ export class ConsoleAuth {
   }
 
   /** The signed-in principal from the session cookie, if valid and unexpired. */
-  async principal(req: Request): Promise<(Principal & { login?: string }) | undefined> {
+  async principal(req: Request): Promise<(Principal & { login?: string; name?: string }) | undefined> {
     const raw = cookies(req)[SESSION_COOKIE];
     if (!raw) return undefined;
     const [payload, signature] = raw.split(".");
@@ -73,10 +73,10 @@ export class ConsoleAuth {
     const expected = Buffer.from(this.sign(payload));
     const given = Buffer.from(signature);
     if (expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
-    let session: { tenant: string; login?: string; exp: number };
+    let session: { tenant: string; login?: string; name?: string; exp: number };
     try { session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { return undefined; }
     if (typeof session.exp !== "number" || session.exp < Date.now() || !await this.options.accounts.exists(session.tenant)) return undefined;
-    return { tenant: session.tenant, via: "console", ...(session.login ? { login: session.login } : {}) };
+    return { tenant: session.tenant, via: "console", ...(session.login ? { login: session.login } : {}), ...(session.name ? { name: session.name } : {}) };
   }
 
   /** Browser requests that change state must carry the console header and come from our origin. */
@@ -91,9 +91,13 @@ export class ConsoleAuth {
   /** A session cookie for `tenant`, as sign-in sets it. */
   session(tenant: string, login?: string) { return this.startSession(tenant, login); }
 
-  private startSession(tenant: string, login?: string) {
+  /** A session cookie after token sign-in, naming the person the tenant belongs to when that is known. */
+  async tokenSession(tenant: string) { return this.startSession(tenant, await this.options.accounts.identity(tenant)); }
+
+  /** `login` (Google address or GitHub login) and `name` show who is signed in; the tenant id is only for the API. */
+  private startSession(tenant: string, login?: string, name?: string) {
     const hours = this.options.sessionHours ?? 12;
-    const payload = b64(JSON.stringify({ tenant, ...(login ? { login } : {}), exp: Date.now() + hours * 3600_000 }));
+    const payload = b64(JSON.stringify({ tenant, ...(login ? { login } : {}), ...(name ? { name: name.slice(0, 100) } : {}), exp: Date.now() + hours * 3600_000 }));
     return this.cookie(SESSION_COOKIE, `${payload}.${this.sign(payload)}`, hours * 3600);
   }
 
@@ -147,7 +151,7 @@ export class ConsoleAuth {
         if (!accessToken) throw new Error("GitHub did not issue a token");
         const api = github.apiUrl ?? "https://api.github.com";
         const headers = { Authorization: `Bearer ${accessToken}`, Accept: "application/vnd.github+json", "User-Agent": "camelai-agent-runtime" };
-        type Profile = { login?: string; id?: number; created_at?: string };
+        type Profile = { login?: string; id?: number; name?: string | null; created_at?: string };
         let user: Profile | undefined;
         // Retry an incomplete profile before making a permanent signup decision.
         // An existing account may still sign in if only the creation time is unavailable.
@@ -172,7 +176,7 @@ export class ConsoleAuth {
         const tenant = await this.options.accounts.tenantForGithub(
           { login: user.login, id: user.id, ...(Number.isFinite(createdAt) ? { createdAt } : {}) },
           { minAccountAgeMs: github.minAccountDays === undefined ? undefined : Math.round(github.minAccountDays * 86_400_000) });
-        return redirect(c, next ?? "/console/", [clearState, clearNext, this.startSession(tenant, user.login)]);
+        return redirect(c, next ?? "/console/", [clearState, clearNext, this.startSession(tenant, user.login, user.name ?? undefined)]);
       } catch (error) {
         return fail(c, (error as Error).message, [clearState, clearNext]);
       }
@@ -219,7 +223,7 @@ export class ConsoleAuth {
         if (typeof claims.nonce !== "string" || !same(claims.nonce, nonce) || (claims.azp !== undefined && claims.azp !== google.clientId)) throw new Error("Google's sign-in token did not verify; try again");
         if (claims.email_verified !== true || typeof claims.email !== "string" || typeof claims.sub !== "string") throw new Error("Sign in with a Google account whose email address is verified");
         const tenant = await this.options.accounts.tenantForGoogle({ sub: claims.sub, email: claims.email });
-        return redirect(c, next ?? "/console/", [...clear, this.startSession(tenant, claims.email)]);
+        return redirect(c, next ?? "/console/", [...clear, this.startSession(tenant, claims.email, typeof claims.name === "string" ? claims.name : undefined)]);
       } catch (error) {
         return fail(c, (error as Error).message, clear);
       }
@@ -232,7 +236,7 @@ export class ConsoleAuth {
       catch { return json(c, 400, { error: "Send {\"token\": \"...\"}" }); }
       const principal = typeof token === "string" ? await this.options.accounts.authenticate(`Bearer ${token}`) : undefined;
       if (!principal) return json(c, 401, { error: "Unknown token" });
-      return json(c, 200, { tenant: principal.tenant }, [this.startSession(principal.tenant)]);
+      return json(c, 200, { tenant: principal.tenant }, [await this.tokenSession(principal.tenant)]);
     });
     app.post("/console/auth/logout", c => {
       if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });

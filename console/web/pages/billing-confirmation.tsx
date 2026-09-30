@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { accountLabel, api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { PixelButton } from "@/components/ui/pixel-button";
 import { FullLogo } from "@/components/ui/logo";
@@ -34,10 +34,10 @@ export function BillingConfirmationPage() {
     </> : state.status === "confirmed" ? <>
       <Badge variant="info" className="mb-4">Confirmed</Badge>
       <h1 className="mb-4 text-2xl font-semibold">You're set</h1>
-      <p className="text-muted-foreground text-sm leading-6"><span className="text-foreground break-all">{state.email}</span> will get billing alerts for <strong className="text-foreground">{state.tenant}</strong>. Choose which alerts it gets in Billing.</p>
+      <p className="text-muted-foreground text-sm leading-6"><span className="text-foreground break-all">{state.email}</span> will get billing alerts for {accountLabel(state.tenant) ? <strong className="text-foreground">{accountLabel(state.tenant)}</strong> : "a camelRun account"}. Choose which alerts it gets in Billing.</p>
     </> : <>
       <h1 className="mb-4 text-2xl font-semibold">Confirm billing alerts</h1>
-      <p className="text-muted-foreground mb-7 text-sm leading-6">Send billing alerts for <strong className="text-foreground">{state.tenant}</strong> to <span className="text-foreground break-all">{state.email}</span>?</p>
+      <p className="text-muted-foreground mb-7 text-sm leading-6">Send billing alerts for {accountLabel(state.tenant) ? <strong className="text-foreground">{accountLabel(state.tenant)}</strong> : "a camelRun account"} to <span className="text-foreground break-all">{state.email}</span>?</p>
       <PixelButton size="hero" className="self-start" disabled={busy} loading={busy} onClick={() => void confirm()}>Confirm</PixelButton>
       <p className="text-muted-foreground mt-6 text-xs leading-5">Didn't expect this? Close this page, and nothing else is sent.</p>
     </>}

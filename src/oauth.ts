@@ -358,7 +358,8 @@ ${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth
       }
       const redirect = new URL(request.redirectUri);
       return page(c, 200, "Connect", `<h1>Connect ${escape(request.client.name)}?</h1>
-<p><strong>${escape(request.client.name)}</strong> is asking to manage the agents of <strong>${escape(principal.login ?? principal.tenant)}</strong>: to create, configure, run and delete agents and definitions, read their history, and answer their questions and approvals. It acts as an API token of this account does, until you revoke it.</p>
+<p class="muted">Signed in as <strong>${escape(principal.name ? `${principal.name} (${principal.login ?? principal.tenant})` : principal.login ?? principal.tenant)}</strong></p>
+<p><strong>${escape(request.client.name)}</strong> is asking to manage your camelRun agents: to create, configure, run and delete agents and definitions, read their history, and answer their questions and approvals. It acts as an API token of this account does, until you revoke it.</p>
 <p class="muted">It will be sent back to <code>${escape(redirect.protocol === "http:" || redirect.protocol === "https:" ? redirect.host : redirect.protocol)}</code>. Only connect applications you trust.</p>
 <form method="post" action="/oauth/authorize">${[...params].map(([key, value]) => `<input type="hidden" name="${escape(key)}" value="${escape(value)}">`).join("")}
 <button type="submit" name="decision" value="allow">Allow</button> <button type="submit" name="decision" value="deny" class="secondary">Deny</button></form>`);
@@ -385,7 +386,7 @@ ${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth
       if (!next.startsWith("/oauth/authorize?")) return page(c, 400, "Cannot sign in", "<h1>Cannot sign in</h1><p>Start again from the application.</p>");
       const principal = await this.options.accounts.authenticate(`Bearer ${params.get("token") ?? ""}`);
       if (!principal) return page(c, 403, "Unknown token", `<h1>Unknown token</h1><p>That API token is not valid. <a href="${escape(next)}">Try again</a>.</p>`);
-      c.header("Set-Cookie", this.options.consoleAuth.session(principal.tenant));
+      c.header("Set-Cookie", await this.options.consoleAuth.tokenSession(principal.tenant));
       return c.redirect(next, 303);
     });
     return app;

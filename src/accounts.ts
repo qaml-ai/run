@@ -85,6 +85,15 @@ export class Accounts {
     return this.tenants.has(tenant) || (validTenant(tenant) && !!(await this.db.query("select 1 from tenants where id = $1", [tenant])).rowCount);
   }
 
+  /**
+   * Who a tenant belongs to, for showing the person rather than the tenant id: the Google address
+   * or GitHub login it signed up with, else the GitHub login an admin linked to it.
+   */
+  async identity(tenant: string): Promise<string | undefined> {
+    const row = validTenant(tenant) ? (await this.db.query("select google_email, github from tenants where id = $1", [tenant])).rows[0] : undefined;
+    return row?.google_email ?? row?.github ?? this.tenants.github(tenant);
+  }
+
   /** Resolve a bearer operator token or tenant API token. */
   async authenticate(authorization: string | undefined): Promise<Principal | undefined> {
     const operator = this.tenants.authenticate(authorization);

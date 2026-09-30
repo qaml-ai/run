@@ -62,7 +62,10 @@ export function useApi<T>(path: string | undefined, intervalMs?: number) {
   return { data, error, loading, reload };
 }
 
-export interface Me { tenant: string; via: "operator" | "token" | "console" | "oauth"; login?: string; canStoreKeys: boolean }
+/** `login` (Google address or GitHub login) and `name` are the person; `tenant` is the account's id, for the API and support only. */
+export interface Me { tenant: string; via: "operator" | "token" | "console" | "oauth"; login?: string; name?: string; canStoreKeys: boolean }
+/** How to name an account on pages that only have its id: sign-in ids (`u-…`) mean nothing to people. */
+export const accountLabel = (tenant: string) => /^u-[0-9a-f]{16,32}$/.test(tenant) ? undefined : tenant;
 export interface KeyStatus { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number }
 export interface Provider { id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
 export interface Model {

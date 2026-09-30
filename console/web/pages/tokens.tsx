@@ -62,7 +62,14 @@ function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   );
 }
 
-export function TokensPage() {
+/** The account's id, for API calls and support: shown here only, never as who is signed in. */
+function AccountId({ tenant }: { tenant: string }) {
+  return <div className="text-muted-foreground mb-4 flex flex-wrap items-center gap-2 text-xs">
+    <span>Account ID</span><code className="text-foreground font-mono">{tenant}</code><CopyButton value={tenant} label="Copy account ID" />
+  </div>;
+}
+
+export function TokensPage({ tenant }: { tenant: string }) {
   const tokens = useApi<ApiToken[]>("/v1/tokens");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string>();
@@ -71,6 +78,7 @@ export function TokensPage() {
       <PageHeader title="API tokens" description="Tokens for your applications and scripts. Each one has full access to your tenant; revoke any you no longer use."
         actions={<Button size="sm" onClick={() => setCreating(true)}><Plus />New token</Button>} />
       <ErrorAlert error={tokens.error ?? error} />
+      <AccountId tenant={tenant} />
       <Alert className="mb-4">
         <KeyRound />
         <AlertTitle>Keep tokens on your backend</AlertTitle>

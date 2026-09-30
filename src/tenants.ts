@@ -107,6 +107,9 @@ export class Tenants {
   has(id: string) { return this.byId.has(id); }
 
   /** The admin-defined tenant a GitHub login signs in as, if any (case-insensitive). */
+  /** The GitHub login an admin linked to `tenant`, if any. */
+  github(tenant: string) { return this.byId.get(tenant)?.github; }
+
   byGithub(login: string) {
     for (const tenant of this.byId.values()) if (tenant.github?.toLowerCase() === login.toLowerCase()) return tenant.id;
     return undefined;

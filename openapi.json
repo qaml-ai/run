@@ -644,7 +644,11 @@
           },
           "login": {
             "type": "string",
-            "description": "GitHub login, for console sessions"
+            "description": "Who the tenant belongs to: the Google address or GitHub login it signed in with"
+          },
+          "name": {
+            "type": "string",
+            "description": "The person's display name, for console sessions signed in with Google or GitHub"
           },
           "canStoreKeys": {
             "type": "boolean"

@@ -221,7 +221,9 @@ export function api(context: ApiContext) {
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {
     const principal = c.var.principal;
-    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...("login" in principal ? { login: principal.login } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
+    // A console session names the person; a token names its tenant's, looked up here.
+    const login = "login" in principal ? principal.login as string | undefined : await accounts.identity(principal.tenant);
+    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...(login ? { login } : {}), ...("name" in principal && principal.name ? { name: principal.name } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
   });
 
   // Get Help is the console's, so it is not part of the documented API: a script has no one to reply to.

@@ -15,6 +15,7 @@ import { BillingBanner, BillingBalance } from "@/components/billing-banner";
 import { BillingDialogs } from "@/components/billing-controls";
 import { useBillingState } from "@/components/billing-state";
 import { GetHelp } from "@/components/get-help";
+import { SignedInAs } from "@/components/signed-in-as";
 import { setHelpTenant } from "@/lib/help-context";
 import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
@@ -80,13 +81,12 @@ function App() {
     : section === "definitions" ? <DefinitionsPage />
     : section === "channels" ? <ChannelsPage />
     : section === "models" ? <ModelsPage me={me.data} />
-    : section === "tokens" ? <TokensPage />
+    : section === "tokens" ? <TokensPage tenant={me.data.tenant} />
     : section === "usage" ? <UsagePage />
     : section === "billing" ? <BillingPage state={billingState} />
     : section === "quickstart" ? <QuickstartPage />
     : <AgentsPage agents={agents} billing={billing} />;
   const active = section || "agents";
-  const who = me.data.login ?? me.data.tenant;
   // The shell stays quiet: ground-colored, split from the page by a rule, no art or display type.
   return (
     <div className="flex min-h-dvh flex-col md:flex-row">
@@ -113,13 +113,7 @@ function App() {
           <Separator />
           <BillingBalance state={billingState} />
           <div className="flex items-center gap-3 px-3 py-3">
-            <span aria-hidden="true" className="border-sidebar-border bg-sidebar-accent flex size-8 shrink-0 items-center justify-center border text-sm font-medium">
-              {who[0]?.toUpperCase() ?? "?"}
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium">{who}</div>
-              <div className="text-muted-foreground truncate text-xs">tenant {me.data.tenant}</div>
-            </div>
+            <SignedInAs me={me.data} />
             <SignOut />
           </div>
         </div>
