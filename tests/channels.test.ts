@@ -375,6 +375,33 @@ test("presented files follow the reply: images as photos, others as documents, t
   assert.equal((await db.query("select count(*) as count from channel_items")).rows[0].count, 0);
 });
 
+test("a file that reads back shorter than its reference is never sent: the send fails, is retried, and says what came back", async t => {
+  const tg = await fakeTelegram(t);
+  const { db } = await testDatabase();
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
+  const workspace = memoryFiles();
+  const channels = new Channels({
+    db, definitions: new Definitions({ db }), accounts, node: "a", publicUrl: "https://agents.example.test", retryBaseMs: 50, files: workspace.files,
+    providers: { telegram: telegram({ apiUrl: tg.url }) },
+    createAgent: async () => { throw new Error("unused"); }, agentId: () => "unused", live: async () => true, submit: async () => { throw new Error("unused"); },
+  });
+  const channel = await channels.create("default", { type: "telegram", credentials: { botToken: BOT_TOKEN }, access: { public: true } });
+  await db.query("insert into channel_agents (agent, channel, tenant, conversation) values ('client_x', $1, 'default', '42')", [channel.id]);
+  const logged: string[] = [];
+  const error = t.mock.method(console, "error", (line: string) => { logged.push(line); });
+  // Its reference says 85 bytes; its volume gives back none.
+  const presented = [workspace.present("/workspace/photo.jpg", Buffer.alloc(0), "image/jpeg", { size: 85 })];
+  channels.hooks.runEnded!({ id: "client_x", tenant: "default" }, { id: "schedule-1", method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: "Here it is.", presented } } });
+  await until(() => logged.filter(line => line.includes("channel_file_size_mismatch")).length === 1, "the short read");
+  await until(async () => (await db.query("select item from channel_items where claimed_by is null")).rows[0]?.item.attempts === 1, "the send released for a retry");
+  error.mock.restore();
+  assert.deepEqual(tg.sent("42"), ["Here it is."], "the reply went; the file did not");
+  assert.deepEqual(tg.sentFiles("42"), []);
+  const mismatch = JSON.parse(logged.find(line => line.includes("channel_file_size_mismatch"))!);
+  assert.deepEqual([mismatch.path, mismatch.size, mismatch.read, mismatch.parts], ["/workspace/photo.jpg", 85, 0, [0]]);
+  assert.match(logged.find(line => line.includes("channel_send_failed"))!, /"permanent":false/, "retried, not given up");
+});
+
 test("files the agent presents reach the chat after its reply", async t => {
   const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
   const call = (name: string, args: object, index: number) => ({ role: "assistant", tool_calls: [{ index: 0, id: `call_${index}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
@@ -410,7 +437,12 @@ test("send_message sends files from the agent's mounts, and refuses paths outsid
   await until(() => r.tg.sent(ada.id).includes("Done."), "the final reply");
   assert.match(r.model.bodies[1].messages.find((message: any) => message.role === "tool").content, /does not exist/);
   assert.deepEqual(r.tg.sent(ada.id), ["Here it is", "Done."]);
-  assert.deepEqual(r.tg.sentFiles(ada.id), [{ method: "sendPhoto", name: "photo.jpg", caption: undefined, data: jpeg.toString() }]);
+  // Once (CI, 89d1781) the photo went out with no bytes: say where they were lost if it happens again.
+  const photo = /\[File (\/workspace\/uploads\/[^ ]+\/photo\.jpg)[^\]]*\]/.exec(lastUser(r.model.bodies[1]))?.[0];
+  // The runtime's channel_file_size_mismatch and channel_send_failed lines are on stderr.
+  const trail = () => JSON.stringify({ photo, sent: r.tg.calls.filter(call => call.method.startsWith("send")).map(call => call.method) });
+  await until(() => r.tg.sentFiles(ada.id).length === 1, `the photo (${trail()})`);
+  assert.deepEqual(r.tg.sentFiles(ada.id), [{ method: "sendPhoto", name: "photo.jpg", caption: undefined, data: jpeg.toString() }], trail());
   const order = r.tg.calls.map(call => call.method).filter(method => method === "sendMessage" || method === "sendPhoto");
   assert.deepEqual(order, ["sendMessage", "sendPhoto", "sendMessage"]);
 });

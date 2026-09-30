@@ -770,7 +770,13 @@ export class Channels {
       const blob = async () => {
         const parts: Uint8Array[] = [];
         for await (const part of files.read(item.tenant, file)) parts.push(part);
-        return new Blob(parts as BlobPart[], { type: file.contentType });
+        const data = new Blob(parts as BlobPart[], { type: file.contentType });
+        // Never send a file short: fail the send (it is retried) and say which part came back short.
+        if (data.size !== file.size) {
+          console.error(JSON.stringify({ type: "channel_file_size_mismatch", item: item.id, path: file.path, volume: file.volume, version: file.version, size: file.size, read: data.size, chunks: file.chunks.length, parts: parts.map(part => part.byteLength) }));
+          throw new SendError(`${name} read ${data.size} of its ${file.size} bytes`, false);
+        }
+        return data;
       };
       return provider.sendFile(credentials, item.conversationId, { name, contentType: file.contentType, size: file.size, blob }, caption);
     }
