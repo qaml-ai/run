@@ -66,6 +66,15 @@ resource "aws_cloudwatch_log_group" "runtime" {
   retention_in_days = 30
 }
 
+# Container Insights writes task and container performance events (metrics only, no
+# application output) here. ECS creates the group with 1-day retention when it is
+# missing; declaring it keeps that retention in code. Metrics derived from it are kept
+# by CloudWatch Metrics, not this group. An existing group is imported, not recreated.
+resource "aws_cloudwatch_log_group" "container_insights" {
+  name              = "/aws/ecs/containerinsights/${local.cluster_name}/performance"
+  retention_in_days = 1
+}
+
 resource "aws_ecs_cluster" "runtime" {
   name = local.cluster_name
 
@@ -73,6 +82,9 @@ resource "aws_ecs_cluster" "runtime" {
     name  = "containerInsights"
     value = var.container_insights
   }
+
+  # So a new cluster finds the group with its retention, not one ECS made without it.
+  depends_on = [aws_cloudwatch_log_group.container_insights]
 }
 
 # --- IAM ---

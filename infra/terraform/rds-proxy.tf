@@ -93,6 +93,14 @@ resource "aws_iam_role_policy" "database_proxy" {
   })
 }
 
+# The proxy's connection log (connections, logins, errors; statements only with
+# debug logging, which stays off). RDS creates the group without an expiry when it
+# is missing; declaring it gives it one. An existing group is imported, not recreated.
+resource "aws_cloudwatch_log_group" "database_proxy" {
+  name              = "/aws/rds/proxy/${var.name}-control"
+  retention_in_days = 30
+}
+
 resource "aws_db_proxy" "control" {
   name           = "${var.name}-control"
   engine_family  = "POSTGRESQL"
@@ -112,7 +120,7 @@ resource "aws_db_proxy" "control" {
     client_password_auth_type = "POSTGRES_SCRAM_SHA_256"
   }
 
-  depends_on = [aws_iam_role_policy.database_proxy]
+  depends_on = [aws_iam_role_policy.database_proxy, aws_cloudwatch_log_group.database_proxy]
 }
 
 # Default target group settings: the pool may use all of max_connections, and a

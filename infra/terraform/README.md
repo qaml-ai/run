@@ -166,6 +166,30 @@ and the RDS instance also have deletion protection in AWS.
 [tsp]: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-scale-in-protection.html
 [hc]: https://repost.aws/knowledge-center/elb-ecs-tasks-improperly-replaced
 
+## Log retention
+
+Every log group this stack writes to has an expiry, set here:
+
+| Log group | Retention | What it holds |
+|---|---|---|
+| `/ecs/camelai-agent-runtime` (`ecs.tf`) | 30 days | runtime stdout/stderr: structured lines with ids, sizes and error codes |
+| `/aws/ecs/containerinsights/camelai-agent-runtime/performance` (`ecs.tf`) | 1 day | Container Insights performance events (CPU, memory, task counts); the metrics made from them stay in CloudWatch Metrics |
+| `/aws/rds/proxy/camelai-agent-runtime-control` (`rds-proxy.tf`) | 30 days | RDS Proxy connection log (connections, logins, errors; no statements, debug logging is off) |
+
+ECS and RDS create the last two groups themselves when they are missing (1 day
+and never expiring, respectively). Terraform declares them first on a new stack.
+On a stack where they already exist, import them before the first apply, or the
+create fails with `ResourceAlreadyExistsException`:
+
+```sh
+tofu import -var-file=prod.tfvars aws_cloudwatch_log_group.container_insights /aws/ecs/containerinsights/camelai-agent-runtime/performance
+tofu import -var-file=prod.tfvars aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent-runtime-control
+```
+
+The billing-email Worker (`infra/billing-email`) is deployed with Wrangler, not
+Terraform. Cloudflare keeps Workers Logs for 7 days on the Workers Paid plan
+(3 on Free), and the retention cannot be changed. It logs only a line's type.
+
 ## Alarms
 
 - **Route 53** (`monitoring.tf`, us-east-1): an HTTPS health check on

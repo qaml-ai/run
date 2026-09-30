@@ -5,6 +5,8 @@ It is a narrow authenticated adapter for the Node runtime, which runs on AWS.
 It only sends as `billing@mail.camelai.com`. It accepts one recipient, HTML and
 plain text, and the two unsubscribe headers. It cannot send attachments or use
 arbitrary sender addresses. Secrets and message content are never logged.
+Workers Logs (`[observability]`) keep what it logs for 7 days on the Workers Paid
+plan; Cloudflare does not let the retention be changed.
 
 The sender domain `mail.camelai.com` is already enabled in the camelAI account
 `85bbd288051330fb51ee1c86031a299b`, zone `28430f60fad05000f54916dd3b0b0596`.
