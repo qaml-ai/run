@@ -272,7 +272,7 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
-## Unreleased
+## 0.11.1 (TypeScript) / 0.7.1 (Python), 2026-09-30
 
 - `@camelai/run/watch` (and so `createAgentChat`) reads a snapshot's history before
   asking whether a turn runs. A message sent just as the watcher connected could

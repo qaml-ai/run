@@ -1,6 +1,6 @@
 {
   "name": "@camelai/run-svelte",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Svelte bindings for chatting with agents on camelRun.",
   "type": "module",
   "license": "MIT",
@@ -31,6 +31,6 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@camelai/run": "0.11.0"
+    "@camelai/run": "0.11.1"
   }
 }
