@@ -1,0 +1,11 @@
+interface:
+  display_name: "Create your first agent"
+  short_description: "Build and try a camelRun agent"
+  default_prompt: "Create a camelRun agent that finds and summarizes news about a topic I choose"
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "camelrun"
+      description: "camelRun: create, deploy and run agents"
+      transport: "streamable_http"
+      url: "https://agents.camelai.dev/mcp"

@@ -1,0 +1,12 @@
+{
+  "name": "camelai",
+  "interface": { "displayName": "camelAI" },
+  "plugins": [
+    {
+      "name": "camelrun",
+      "source": { "source": "local", "path": "./plugins/chatgpt/plugin" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Developer Tools"
+    }
+  ]
+}

@@ -41,6 +41,7 @@ for agents and tools that read documentation.
 - `src/` server, supervisor, agent host, sessions, scheduler, REST API, sandbox
 - `clients/` the TypeScript and Python SDKs; `sdk/` publishes `@camelai/run`
 - `packages/cli/` the `camelrun` CLI and MCP server (`@camelai/camelrun`)
+- `plugins/chatgpt/` the camelRun plugin for ChatGPT and Codex (`codex plugin marketplace add qaml-ai/run`)
 - `console/` the tenant console; `studio/` a local chat and trace UI
 - `examples/` runnable examples; `docs/` the documentation
 - `migrations/`, `shared/`, `infra/`, `deploy/`, `tests/`
@@ -60,6 +61,7 @@ The client SDKs and frontend packages are MIT, so you can use them in any applic
 - `packages/` (React, Vue, Svelte, Solid, `create-run-app`, the CLI): MIT, each with its own `LICENSE`
 - `shared/client-protocol.ts`, which ships inside the SDK: MIT
 - `examples/`: [MIT](examples/LICENSE)
+- `plugins/`: MIT, each plugin with its own `LICENSE`
 
 ### Commercial licensing
 

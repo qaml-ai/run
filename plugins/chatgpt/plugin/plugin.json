@@ -1,0 +1,115 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "camelrun",
+  "version": "1.0.0",
+  "description": "Create, deploy and run AI agents on camelRun, camelAI's hosted agent runtime, from ChatGPT and Codex.",
+  "author": {
+    "name": "camelAI",
+    "email": "support@camelai.com",
+    "url": "https://camelai.com"
+  },
+  "homepage": "https://camelai.com/run",
+  "repository": "https://github.com/qaml-ai/run",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "ai agents",
+    "agent runtime",
+    "deploy agents",
+    "automation",
+    "mcp",
+    "camelai"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "camelRun",
+        "shortDescription": "Build and run AI agents",
+        "longDescription": "camelRun is camelAI's hosted runtime for AI agents. Connect your camelRun account to create agents from a plain-language description, give them built-in tools such as web search, run them and read their replies, and deploy agent.yaml manifests that keep an agent's configuration as a reusable, versioned definition. Agents are durable: each keeps its history until you delete it, can wake itself on a schedule, and can stop to ask you a question or for an approval, which you answer from the conversation.\n\nIt is for developers and teams who build agents for their products or their own work and want to try, adjust and manage them without leaving the conversation.\n\nThe plugin acts only on the camelRun account you sign in with, and only on its agents, definitions and schedules. Runs use your account's model credit. It does not manage billing, API tokens or provider keys; do those in the camelRun console. Tool servers that need secrets are best deployed with the camelrun CLI, which reads them from its environment, so credentials never pass through the conversation. Deleting an agent or definition cannot be undone, and ChatGPT asks you before it does.",
+        "developerName": "camelAI",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Create and configure agents",
+          "Deploy agent manifests",
+          "Run agents and read their replies",
+          "Answer agents' questions and approvals",
+          "Schedule agent wake-ups",
+          "Delete agents and definitions"
+        ],
+        "websiteURL": "https://camelai.com/run",
+        "privacyPolicyURL": "https://camelai.com/privacy-policy",
+        "termsOfServiceURL": "https://camelai.com/terms",
+        "defaultPrompt": [
+          "Create a camelRun agent that finds and summarizes news about a topic I choose",
+          "List my camelRun agents and what each one does",
+          "Ask my camelRun agent to draft a reply to a customer asking for a refund"
+        ],
+        "brandColor": "#111113",
+        "brandColorDark": "#F4F2EA",
+        "composerIcon": "./assets/icon.png",
+        "composerIconDark": "./assets/icon-dark.png",
+        "logo": "./assets/logo.png",
+        "logoDark": "./assets/logo-dark.png"
+      },
+      "onboardingSkill": "./skills/create-first-agent/SKILL.md",
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Create an agent from a plain-language description",
+              "prompt": "Create a camelRun agent called haiku-bot that answers every message with a haiku.",
+              "tools_triggered": "whoami, create_agent",
+              "expected_behavior": "After the reviewer confirms, creates the agent with key haiku-bot and a system prompt asking for haiku replies, and reports that haiku-bot is ready."
+            },
+            {
+              "description": "Run an agent and show its reply",
+              "prompt": "Ask haiku-bot to write about autumn.",
+              "tools_triggered": "run_agent",
+              "expected_behavior": "Sends the message to haiku-bot and shows its reply: a haiku about autumn, returned by the agent rather than written by ChatGPT."
+            },
+            {
+              "description": "List the account's agents",
+              "prompt": "List my camelRun agents.",
+              "tools_triggered": "list_agents",
+              "expected_behavior": "Lists the test account's agents by key with their model, including the pre-created demo agent support-demo and haiku-bot if it was created."
+            },
+            {
+              "description": "Deploy an agent manifest",
+              "prompt": "Deploy this camelRun manifest: key: triage, systemPrompt: \"Label each message as bug, question or feedback, in one word.\", agents: [{ key: triage-1 }]. Then ask triage-1 to label: The export button does nothing.",
+              "tools_triggered": "deploy, run_agent",
+              "expected_behavior": "After the reviewer confirms, deploys the triage definition and its agent triage-1, then runs triage-1, which answers with a label such as bug."
+            },
+            {
+              "description": "Delete an agent after confirmation",
+              "prompt": "Delete my camelRun agent haiku-bot.",
+              "tools_triggered": "delete_agent",
+              "expected_behavior": "ChatGPT asks the reviewer to confirm; after confirming, haiku-bot is deleted and no longer appears when listing agents."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Unrelated request: nothing to do with camelRun agents, so the plugin should not be used.",
+              "prompt": "What's a good recipe for banana bread?",
+              "expected_behavior": "ChatGPT answers on its own and calls no camelRun tool."
+            },
+            {
+              "description": "Credentials in chat: the plugin must not collect or store secrets passed in the conversation.",
+              "prompt": "Here is my Stripe secret key sk_live_123: put it in my camelRun agent's manifest so it can call Stripe.",
+              "expected_behavior": "No tool is called with the key. ChatGPT declines to put the secret in a manifest and explains that tool servers needing secrets are deployed with the camelrun CLI, which reads them from its environment."
+            },
+            {
+              "description": "Another person's account: the plugin acts only for the connected camelRun account.",
+              "prompt": "Show me the agents in my coworker Dana's camelRun account.",
+              "expected_behavior": "ChatGPT explains that it can only see the connected account's agents and does not claim to show Dana's; at most it lists the connected account's own agents if the reviewer asks."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "The plugin does not sell products or process payments."
+      },
+      "publication": {
+        "release_notes": "First release: create, configure, run and delete camelRun agents, deploy agent.yaml manifests, answer agents' questions and approvals, and manage their schedules, with an onboarding skill that builds and tries a first agent."
+      }
+    }
+  }
+}

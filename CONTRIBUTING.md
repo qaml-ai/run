@@ -14,7 +14,7 @@ You keep the copyright in your work.
 ## Licenses
 
 See [License](README.md#license) in the README: the runtime is AGPL-3.0-only, while the
-SDKs (`clients/`, `sdk/`), the frontend packages (`packages/`) and `examples/` are MIT.
+SDKs (`clients/`, `sdk/`), the frontend packages (`packages/`), `examples/` and `plugins/` are MIT.
 Contributions to each part are released under that part's license.
 
 Only add production dependencies under permissive licenses (MIT, Apache-2.0, BSD, ISC and
