@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": { "start": "tsx index.ts" },
-  "dependencies": { "@camelai/run": "^0.10.0" },
+  "dependencies": { "@camelai/run": "^0.11.0" },
   "devDependencies": { "tsx": "^4.20.0" }
 }

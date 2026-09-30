@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": { "dev": "tsx server.ts" },
   "dependencies": {
-    "@camelai/run": "^0.10.0",
-    "@camelai/run-react": "^0.10.0",
+    "@camelai/run": "^0.11.0",
+    "@camelai/run-react": "^0.11.0",
     "express": "^5.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

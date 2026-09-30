@@ -5,7 +5,7 @@
   "scripts": { "dev": "tsx server.ts" },
   "dependencies": {
     "@ai-sdk/react": "^4.0.0",
-    "@camelai/run": "^0.10.0",
+    "@camelai/run": "^0.11.0",
     "ai": "^7.0.0",
     "express": "^5.1.0",
     "react": "^19.0.0",

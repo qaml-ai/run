@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": { "dev": "vite --port 3000" },
   "dependencies": {
-    "@camelai/run": "^0.10.0",
-    "@camelai/run-react": "^0.10.0",
+    "@camelai/run": "^0.11.0",
+    "@camelai/run-react": "^0.11.0",
     "hono": "^4.7.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
