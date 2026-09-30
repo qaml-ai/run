@@ -190,7 +190,8 @@ tofu import -var-file=prod.tfvars aws_cloudwatch_log_group.database_proxy /aws/r
 
 The billing-email Worker (`infra/billing-email`) is deployed with Wrangler, not
 Terraform. Cloudflare keeps Workers Logs for 7 days on the Workers Paid plan
-(3 on Free), and the retention cannot be changed. It logs only a line's type.
+(3 on Free), and the retention cannot be changed. It logs only a line's type;
+Cloudflare's invocation logs (request metadata) are off in its `wrangler.toml`.
 
 ## Alarms
 

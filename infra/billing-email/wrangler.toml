@@ -25,3 +25,9 @@ dead_letter_queue = "camelrun-billing-email-feedback-dlq"
 
 [observability]
 enabled = true
+
+# Its own log lines (a type only) are kept; Cloudflare's per-request invocation logs, which record request
+# and response metadata, are not.
+[observability.logs]
+enabled = true
+invocation_logs = false
