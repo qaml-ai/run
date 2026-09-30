@@ -1,6 +1,6 @@
 # Web search provider benchmark (2026-09-25)
 
-Which API should back the `web_search` built-in by default, and which should it fall back to? I ran 43 agent-style queries through seven provider configurations, twice each. A judge model graded every result list blind, all in one batch, and 16 known-answer questions were answered using only each provider's results. The tables here come from `results/summary.md`, which `scripts/bench-search.ts` generates from `results/raw.json`.
+Which API should back the `web_search` built-in by default, and which should it fall back to? I ran 43 agent-style queries through seven provider configurations, twice each. A judge model graded every result list blind, all in one batch, and 16 known-answer questions were answered using only each provider's results. The tables here come from `results/summary.md`, which `scripts/bench-search.ts` generates from `results/raw.json` (not committed: it holds the providers' copies of third-party pages).
 
 > **Adopted:** the order Exa (instant), Brave, Parallel (fast) is now `web_search`'s default, with per-provider prices and fallback (docs/guides/tools.md, "Built-ins a definition enables"). Firecrawl renders JavaScript-only pages for `web_fetch` instead of searching. The "before switching" items below are done.
 
@@ -120,4 +120,4 @@ npm run bench:search -- --phase judge-equal --entries exa-instant,brave   # the 
 npm run bench:search -- --phase report                           # just regenerate results/summary.md
 ```
 
-`results/raw.json` holds every call: latency, status, errors (with keys scrubbed), cost, and the normalized first-run results with page text capped at 1,600 characters. It also holds every grade (v1, v2 and the equal-length check) and every answer.
+`results/raw.json` (kept locally, not committed) holds every call: latency, status, errors (with keys scrubbed), cost, and the normalized first-run results with page text capped at 1,600 characters. It also holds every grade (v1, v2 and the equal-length check) and every answer.
