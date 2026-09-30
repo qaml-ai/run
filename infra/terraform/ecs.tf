@@ -19,11 +19,15 @@ locals {
     AGENT_GC_ENABLED = "true"
     AGENT_GC_DRY_RUN = tostring(var.storage_gc_dry_run)
     } : {}, {
-    AGENT_PUBLIC_URL = "https://${var.hostname}"
-    AGENT_STORAGE    = "s3"
-    AGENT_S3_BUCKET  = aws_s3_bucket.state.id
-    AGENT_S3_PREFIX  = var.state_prefix
-    AWS_REGION       = var.region
+    # Where people are sent; the other hostname is served too, and the issuer
+    # stays the first hostname, which tool servers and MCP clients check.
+    AGENT_PUBLIC_URL     = "https://${var.public_hostname}"
+    AGENT_PUBLIC_ALIASES = join(",", [for host in [var.hostname, var.primary_hostname] : "https://${host}" if host != var.public_hostname])
+    AGENT_ISSUER         = "https://${var.hostname}"
+    AGENT_STORAGE        = "s3"
+    AGENT_S3_BUCKET      = aws_s3_bucket.state.id
+    AGENT_S3_PREFIX      = var.state_prefix
+    AWS_REGION           = var.region
     # Through RDS Proxy (rds-proxy.tf). The bundle holds the RDS CAs and the
     # Amazon Trust Services roots that sign the proxy's certificate.
     AGENT_DATABASE_HOST       = aws_db_proxy.control.endpoint

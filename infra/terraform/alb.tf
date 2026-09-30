@@ -1,6 +1,7 @@
 # Public load balancer in front of the ECS runtime tasks (ecs.tf). It
 # terminates TLS with an ACM certificate.
-# agents.camelai.dev is a CNAME to it (dns.tf).
+# agents.camelai.dev is a CNAME to it (dns.tf), and so is run.camelai.com
+# (dns-primary.tf), whose certificate the HTTPS listener also serves.
 
 # --- Certificate (validated through Cloudflare) ---
 

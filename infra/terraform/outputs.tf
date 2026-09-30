@@ -34,7 +34,7 @@ output "database" {
 }
 
 output "alb_dns_name" {
-  description = "The ALB that agents.camelai.dev points at."
+  description = "The ALB that agents.camelai.dev and run.camelai.com point at."
   value       = aws_lb.runtime.dns_name
 }
 

@@ -17,7 +17,25 @@ variable "name" {
 }
 
 variable "hostname" {
-  description = "Public hostname of the runtime."
+  description = "The runtime's first hostname, in the cloudflare_zone_id zone. Served for good: the issuer its identity and OAuth tokens name (AGENT_ISSUER), and the email channels' SNS endpoint."
+  type        = string
+  default     = "agents.camelai.dev"
+}
+
+variable "primary_hostname" {
+  description = "The runtime's primary hostname, in primary_zone, on its own certificate on the same ALB."
+  type        = string
+  default     = "run.camelai.com"
+}
+
+variable "primary_zone" {
+  description = "The Cloudflare zone primary_hostname is in (looked up by name)."
+  type        = string
+  default     = "camelai.com"
+}
+
+variable "public_hostname" {
+  description = "Which of hostname and primary_hostname is AGENT_PUBLIC_URL, where people are sent (console, links, emails, OAuth pages). The other is served as an alias (AGENT_PUBLIC_ALIASES)."
   type        = string
   default     = "agents.camelai.dev"
 }

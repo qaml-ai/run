@@ -14,6 +14,7 @@ else is here.
 | `state-bucket.tf` | S3 bucket for agent state and the IAM statements for it |
 | `secrets.tf` | Secrets Manager containers under `camelai/agent-runtime/` |
 | `dns.tf` | Cloudflare CNAME `agents.camelai.dev` to the ALB (proxied) |
+| `dns-primary.tf` | `run.camelai.com`: its own ACM certificate on the HTTPS listener (SNI) and a proxied Cloudflare CNAME to the ALB in the `camelai.com` zone |
 | `monitoring.tf` | Route 53 health check, `-healthz` alarm and SNS topic in us-east-1 |
 | `alarms.tf` | ALB/ECS alarms and their us-west-2 SNS topic |
 | `email.tf` | email channels, when `email_domain` is set: SES identity and receipt rule, DKIM/MX/DMARC records, inbound mail bucket, SNS topic and subscription, the task's send/read policy |
@@ -22,8 +23,9 @@ else is here.
 
 - OpenTofu >= 1.10 (`brew install opentofu`; the provider lock file is committed; run `tofu init`). Terraform >= 1.10 also works.
 - AWS credentials for account `904534089871`. The providers refuse any other account.
-- `CLOUDFLARE_API_TOKEN` in the environment with DNS edit access to `camelai.dev`.
-  Without it, planning the DNS records fails.
+- `CLOUDFLARE_API_TOKEN` in the environment with DNS edit access to `camelai.dev`
+  and `camelai.com` (and zone read, to look `camelai.com` up by name). Without
+  it, planning the DNS records fails.
 
 ## Plan and apply
 
@@ -42,11 +44,11 @@ and the RDS instance also have deletion protection in AWS.
 ## Architecture
 
 ```text
-          agents.camelai.dev  (Cloudflare CNAME, proxied)
+   agents.camelai.dev, run.camelai.com  (Cloudflare CNAMEs, proxied)
                    │
                    ▼
    ALB camelai-agent-runtime   (default public subnets, 4 AZs)
-     :443  ACM cert, TLS 1.2/1.3, idle timeout 360 s
+     :443  ACM certs (one per name, by SNI), TLS 1.2/1.3, idle timeout 360 s
      :80   301 to https
                    │ target group (ip) :8790, GET /healthz, deregistration 15 s
                    ▼
@@ -302,3 +304,14 @@ resource IDs and ARNs but no secret values.
 - Both `camelai-agent-runtime-alerts` topics have one email subscription that
   is still pending confirmation (checked 2026-09-24), so alarms reach no one
   until it is confirmed.
+
+## Hostnames
+
+The ALB answers to `agents.camelai.dev` (`hostname`) and `run.camelai.com`
+(`primary_hostname`). `public_hostname` picks which one is `AGENT_PUBLIC_URL`,
+where people are sent; the other goes in `AGENT_PUBLIC_ALIASES` and is served in
+full. `AGENT_ISSUER` stays `https://agents.camelai.dev` whichever is public:
+identity tokens' `iss` and the OAuth issuer name it, and tool servers (chiridion
+among them) and MCP clients check it. The email channels' SNS endpoint also
+stays on `hostname`. `run.camelai.com` needs the `camelai.com` zone's SSL mode
+at Full (strict), since Cloudflare connects to the ALB by that name.
