@@ -14,7 +14,7 @@ import { memoryFiles, requestBody } from "./channel-files.ts";
 type T = { after(fn: () => Promise<void> | void): void };
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const BOT_TOKEN = "xoxb-1111-2222-FixtureSlackBotToken";
-const SIGNING_SECRET = "8f742231b10e8888abcd99aaabbb85a5";
+const SIGNING_SECRET = "0123456789abcdef0123456789abcdef";
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 

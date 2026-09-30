@@ -10,3 +10,5 @@ __pycache__/
 # Local working notes
 plans/
 examples/team-demo/
+# Benchmark raw results hold third-party page text; only summaries are committed
+bench/search/results/raw.json
