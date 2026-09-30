@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createPrivateKey, sign, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Accounts } from "../src/accounts.ts";
@@ -29,6 +29,10 @@ async function fixture() {
 }
 
 test("billing recipient API, scanner-safe confirmation, and SES delivery work together", async t => {
+  // Test the scanner-safe GET without relying on an ignored local console build.
+  const consoleDir = mkdtempSync(join(tmpdir(), "billing-mail-console-"));
+  writeFileSync(join(consoleDir, "index.html"), "<!doctype html><title>Billing confirmation fixture</title>");
+  t.after(() => rmSync(consoleDir, { recursive: true, force: true }));
   const sent: any[] = [];
   const ses = await listen(t, async (req, res) => {
     let body = "";
@@ -36,7 +40,7 @@ test("billing recipient API, scanner-safe confirmation, and SES delivery work to
     sent.push(JSON.parse(body));
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ MessageId: `ses-${sent.length}` }));
   });
-  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { ...MAIL, AWS_ENDPOINT_URL_SESV2: ses }, tenantsFile);
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { ...MAIL, AWS_ENDPOINT_URL_SESV2: ses, AGENT_CONSOLE_DIR: consoleDir }, tenantsFile);
   const path = "/v1/billing/alerts";
   assert.equal((await r.call(path, { token: null })).status, 401);
   assert.equal((await r.call(path, { token: OTHER_OPERATOR })).status, 400, "unbilled accounts cannot create billing rows");
@@ -61,7 +65,9 @@ test("billing recipient API, scanner-safe confirmation, and SES delivery work to
   const inspect = () => r.call(`${path}/confirmation/inspect`, { token: null, body: { token } });
   assert.deepEqual((await inspect()).json, { status: "ready", tenant: "alice", email: "billing@example.test" });
   assert.equal((await r.call(path)).json.recipients[0].status, "pending", "inspection never confirms");
-  assert.equal((await fetch(`${r.base}/console/billing/confirm#${token}`)).status, 200);
+  const landing = await fetch(`${r.base}/console/billing/confirm#${token}`);
+  assert.equal(landing.status, 200);
+  assert.match(await landing.text(), /Billing confirmation fixture/);
   assert.equal((await r.call(path)).json.recipients[0].status, "pending", "scanner GET never confirms");
   const confirmed = await fetch(`${r.base}${path}/confirmation/confirm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }) });
   assert.equal((await confirmed.json()).status, "confirmed");
