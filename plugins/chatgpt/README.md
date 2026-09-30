@@ -66,7 +66,7 @@ video's URL. The build warns about both.
 4. **Try it in ChatGPT first (developer mode).** Settings, Security and login, turn on Developer mode. Then at
    https://chatgpt.com/plugins select +, name it camelRun, URL `https://agents.camelai.dev/mcp`, authentication
    OAuth. ChatGPT registers itself (dynamic client registration), so there is no client ID or secret to enter and no
-   redirect URI to allowlist. Sign in on the camelRun page (GitHub, or paste the API token), select Allow, then run
+   redirect URI to allowlist. Sign in on the camelRun page (GitHub, Google, or paste the API token), select Allow, then run
    the test cases below in a new chat with camelRun added from the + menu.
 5. **Upload.** `node --experimental-strip-types plugins/chatgpt/build.ts`, then at https://platform.openai.com/plugins
    select Upload new or existing plugin, choose the verified developer identity, and upload
@@ -86,7 +86,7 @@ video's URL. The build warns about both.
    - login URL `https://agents.camelai.dev/console`;
    - credential: the `chatgpt-review` API token, in the password field (no username);
    - sign-in instructions: "When ChatGPT opens the camelRun sign-in page, paste the API token into the field under
-     'Or sign in with an API token' and select Sign in, then select Allow. Don't use Sign in with GitHub. The account
+     'Or sign in with an API token' and select Sign in, then select Allow. Don't use Sign in with GitHub or Google. The account
      is a test account with a demo agent, support-demo.";
    - the demo video's URL (step 8).
    The test cases and release notes come from the ZIP.
