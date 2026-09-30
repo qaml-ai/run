@@ -4,8 +4,8 @@
 # Create the app first (organization owners only):
 #   https://github.com/organizations/qaml-ai/settings/applications/new
 #   Application name:            camelRun
-#   Homepage URL:                https://agents.camelai.dev
-#   Authorization callback URL:  https://agents.camelai.dev/console/auth/callback
+#   Homepage URL:                https://run.camelai.com
+#   Authorization callback URL:  https://run.camelai.com/console/auth/callback
 #
 # Usage: infra/github-oauth.sh <client-id>   (the client secret is read from stdin)
 set -euo pipefail

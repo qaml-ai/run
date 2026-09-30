@@ -3,7 +3,8 @@
 #
 # Create the client first in Google Cloud Console (APIs & Services > Credentials):
 #   Application type:              Web application
-#   Authorized redirect URI:       https://agents.camelai.dev/console/auth/google/callback
+#   Authorized redirect URIs:      https://run.camelai.com/console/auth/google/callback
+#                                  (and https://agents.camelai.dev/console/auth/google/callback, from before the move)
 #   Scopes (OAuth consent screen): openid, email, profile
 # Terraform creates the secret (google-oauth); until it has a value, Google sign-in is off.
 #

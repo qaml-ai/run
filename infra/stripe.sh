@@ -7,6 +7,8 @@
 #      Payment Intents and Payment Methods read. See docs/operations/billing.md.
 #   2. Developers > Webhooks > Add endpoint:
 #        URL:    https://agents.camelai.dev/v1/billing/stripe/webhook
+#                (the runtime's first address, served for good: keep the one endpoint there, since a
+#                second one at run.camelai.com would deliver, and credit, every event twice)
 #        API: 2026-08-26.dahlia. Events: checkout.session.completed,
 #        checkout.session.async_payment_succeeded, charge.refunded, invoice.paid,
 #        invoice.payment_failed, invoice.payment_action_required, invoice.voided

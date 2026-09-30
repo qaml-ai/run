@@ -1,14 +1,15 @@
 # Hosted agent runtime
 
-Runs this service for teammates' own agents at `https://agents.camelai.dev`.
+Runs this service at `https://run.camelai.com`, and at `https://agents.camelai.dev`, its
+first address, kept working for good (see [terraform/README.md](terraform/README.md#hostnames)).
 
 Resources (AWS account `904534089871`, `us-west-2`), mostly named
 `camelai-agent-runtime`, all described in [`terraform/`](terraform/README.md):
 
 - ECS Fargate service and cluster `camelai-agent-runtime` (ARM64, 1 vCPU / 2 GB
   per task). Autoscaling targets average CPU 60% and memory 70%, with 2 to 10 tasks.
-- A public ALB with an ACM certificate. `agents.camelai.dev` is a proxied
-  Cloudflare CNAME to it, with TTL 60.
+- A public ALB with an ACM certificate for each name. `run.camelai.com` and
+  `agents.camelai.dev` are proxied Cloudflare CNAMEs to it.
 - RDS Postgres (`camelai-agent-runtime-control`, Multi-AZ): the control plane
   (ownership leases, indexes, timers, outboxes, accounts). RDS manages and
   rotates its credentials in Secrets Manager, and the runtime reads them from there.
@@ -57,7 +58,7 @@ history has the cutover runbook.
 ```sh
 infra/tenant.sh add miguel
 infra/tenant.sh set-key miguel anthropic   # paste the key, then Ctrl-D
-AGENT_URL=https://agents.camelai.dev \
+AGENT_URL=https://run.camelai.com \
 AGENT_RUNTIME_TOKEN=$(aws secretsmanager get-secret-value --region us-west-2 \
   --secret-id camelai/agent-runtime/operator-token/miguel --query SecretString --output text) \
   node --experimental-strip-types deploy/smoke.ts
@@ -65,7 +66,7 @@ AGENT_RUNTIME_TOKEN=$(aws secretsmanager get-secret-value --region us-west-2 \
 
 ## Console and self-service
 
-`https://agents.camelai.dev/console` is where people manage their own tenant:
+`https://run.camelai.com/console` is where people manage their own tenant:
 - add or replace provider keys, which are checked with the provider and stored encrypted;
 - browse models;
 - mint and revoke API tokens;
@@ -83,8 +84,8 @@ an operator token or an API token.
 
 To enable GitHub sign-in, an org owner creates an OAuth app at
 https://github.com/organizations/qaml-ai/settings/applications/new with:
-- homepage `https://agents.camelai.dev`
-- callback URL `https://agents.camelai.dev/console/auth/callback`
+- homepage `https://run.camelai.com`
+- callback URL `https://run.camelai.com/console/auth/callback`
 
 Then run `infra/github-oauth.sh <client-id>` and paste the client secret when
 prompted. Tasks read this secret only at startup, so the script force-rolls the
@@ -93,7 +94,7 @@ service. Old tasks retire as in any deploy, so running turns finish.
 To enable Google sign-in (sign-up is open, so anyone with a verified Google
 address can sign in), create an OAuth client in Google Cloud Console, APIs &
 Services > Credentials, of type Web application, with the authorized redirect URI
-`https://agents.camelai.dev/console/auth/google/callback` and the consent screen's
+`https://run.camelai.com/console/auth/google/callback` and the consent screen's
 scopes `openid`, `email` and `profile`. Then run `infra/google-oauth.sh <client-id>`
 and paste the client secret. Google tenants get starting credit only by verifying a
 card (see docs/operations/billing.md).
