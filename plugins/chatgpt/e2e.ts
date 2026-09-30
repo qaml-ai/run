@@ -28,12 +28,15 @@ const challenge = await fetch(`${base}/mcp`, { method: "POST", headers: { "Conte
 const resourceUrl = /resource_metadata="([^"]+)"/.exec(challenge.headers.get("www-authenticate") ?? "")?.[1];
 check(challenge.status === 401 && resourceUrl, "an unauthenticated /mcp answers 401 naming its resource metadata");
 const resource = await (await fetch(resourceUrl)).json();
+check(resource.resource === `${base}/mcp`, `the resource is the URL reached (${resource.resource})`);
 const issuer = resource.authorization_servers[0];
 const server = await (await fetch(`${issuer}/.well-known/oauth-authorization-server`)).json();
 check(server.issuer === issuer, "the authorization server's issuer is the one the resource names");
 check(server.code_challenge_methods_supported?.includes("S256"), "PKCE S256 is advertised");
 check(server.authorization_response_iss_parameter_supported === true, "iss is returned (so ChatGPT uses its stable redirect URI)");
-step(`discovery: resource ${resource.resource}, issuer ${issuer}, scopes ${resource.scopes_supported}`);
+// The sign-in and consent pages are the authorization endpoint's site, which can differ from the issuer's.
+const pages = new URL(server.authorization_endpoint).origin;
+step(`discovery: resource ${resource.resource}, issuer ${issuer}, pages on ${pages}, scopes ${resource.scopes_supported}`);
 
 // Registration, as ChatGPT registers: a confidential client posting its secret.
 const registered = await fetch(server.registration_endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
@@ -52,12 +55,12 @@ const query = new URLSearchParams({
 const authorize = `${server.authorization_endpoint}?${query}`;
 const signIn = await fetch(authorize);
 check(signIn.status === 200 && /name="token"/.test(await signIn.text()), "the sign-in page offers API-token sign-in");
-const login = await fetch(`${issuer}/oauth/login`, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: issuer }, body: form({ next: `/oauth/authorize?${query}`, token }) });
+const login = await fetch(`${pages}/oauth/login`, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: pages }, body: form({ next: `/oauth/authorize?${query}`, token }) });
 check(login.status === 303, `API-token sign-in answers 303 (got ${login.status})`);
 const cookie = login.headers.get("set-cookie")!.split(";")[0];
 const consent = await fetch(authorize, { headers: { Cookie: cookie } });
 check(/Allow/.test(await consent.text()), "the consent page asks to allow the client");
-const allowed = await fetch(server.authorization_endpoint, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: issuer, Cookie: cookie }, body: form({ ...Object.fromEntries(query), decision: "allow" }) });
+const allowed = await fetch(server.authorization_endpoint, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: pages, Cookie: cookie }, body: form({ ...Object.fromEntries(query), decision: "allow" }) });
 const back = new URL(allowed.headers.get("location") ?? "about:blank");
 check(`${back.origin}${back.pathname}` === REDIRECT && back.searchParams.get("state") === state && back.searchParams.get("iss") === issuer, "consent redirects to ChatGPT with the state and iss");
 step("sign-in with an API token and consent");
@@ -121,7 +124,7 @@ try {
     console.log(`- delete_definition ${definitionKey}: ${result.isError ? result.content[0].text : "deleted"}`);
   }
   await cleanup.close();
-  const revoked = await fetch(`${issuer}/oauth/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form({ client_id: client.client_id, client_secret: client.client_secret, token: tokens.refresh_token }) });
+  const revoked = await fetch(server.revocation_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form({ client_id: client.client_id, client_secret: client.client_secret, token: tokens.refresh_token }) });
   const after = await fetch(resource.resource, { method: "POST", headers: { Authorization: `Bearer ${tokens.access_token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   console.log(`- revoked the grant (${revoked.status}); its access token now gets ${after.status}`);
 }
