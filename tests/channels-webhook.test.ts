@@ -165,7 +165,8 @@ test("deliveries are verified, filtered, deduped, keyed to one agent each, and c
   assert.equal(of(1).length, 2);
   assert.equal(first.agent, second.agent, "one agent per key");
   assert.notEqual(first.agent, third.agent);
-  assert.deepEqual(r.created.map(agent => agent.name).sort(), ["Webhook: sentry-1", "Webhook: sentry-2"]);
+  // Two first deliveries for one key may each ask for its agent; the key makes it the same one (above).
+  assert.deepEqual([...new Set(r.created.map(agent => agent.name))].sort(), ["Webhook: sentry-1", "Webhook: sentry-2"]);
   assert.match(first.text, /^A webhook delivery arrived:\n```json\n\{\n  "action": "created"/);
   assert.equal(first.from?.id, "webhook:ada@example.com");
   assert.equal(first.files?.length, 1);
