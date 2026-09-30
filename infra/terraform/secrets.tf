@@ -11,6 +11,7 @@ locals {
     # so adopting it is a no-op.
     tenants       = "Agent runtime tenants: operator token hashes and provider API keys. Edit with infra/agent-runtime/tenant.sh."
     github-oauth  = "GitHub OAuth app for agent runtime console sign-in"
+    google-oauth  = "Google OAuth client for agent runtime console sign-in. Set with infra/google-oauth.sh."
     stripe        = "Stripe secret key and webhook signing secret for agent runtime credit purchases. Set with infra/stripe.sh."
     tool-search   = "OpenRouter API key for tools.search ranking by meaning (embeddings and Jev). Set with infra/tool-search.sh."
     billing-email = "Shared authentication secret for the Cloudflare billing email Worker and its delivery feedback."

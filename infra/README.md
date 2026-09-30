@@ -25,8 +25,10 @@ Resources (AWS account `904534089871`, `us-west-2`), mostly named
     provider keys tenants set themselves. Losing it makes those keys unreadable.
   - `camelai/agent-runtime/github-oauth`: the console's GitHub OAuth app
     (optional; see below).
+  - `camelai/agent-runtime/google-oauth`: the console's Google OAuth client
+    (optional; Google sign-in is off while it has no value).
 
-  Tasks read session-secret, secrets-key and github-oauth by ARN at startup,
+  Tasks read session-secret, secrets-key, github-oauth and google-oauth by ARN at startup,
   and re-read the tenants secret every 60 s. No secret value is in the task's
   environment.
 - Monitoring:
@@ -47,6 +49,7 @@ history has the cutover runbook.
 - `infra/ecs-deploy.sh`: build, push and deploy (see "Deploying changes").
 - `infra/tenant.sh`: tenants, operator tokens and provider keys in Secrets Manager.
 - `infra/github-oauth.sh`: stores the GitHub OAuth secret, then force-rolls the ECS service.
+- `infra/google-oauth.sh`: stores the Google OAuth client, then force-rolls the ECS service.
 - `infra/config.sh`: settings shared by the scripts above.
 
 ## Adding a person
@@ -86,6 +89,14 @@ https://github.com/organizations/qaml-ai/settings/applications/new with:
 Then run `infra/github-oauth.sh <client-id>` and paste the client secret when
 prompted. Tasks read this secret only at startup, so the script force-rolls the
 service. Old tasks retire as in any deploy, so running turns finish.
+
+To enable Google sign-in (sign-up is open, so anyone with a verified Google
+address can sign in), create an OAuth client in Google Cloud Console, APIs &
+Services > Credentials, of type Web application, with the authorized redirect URI
+`https://agents.camelai.dev/console/auth/google/callback` and the consent screen's
+scopes `openid`, `email` and `profile`. Then run `infra/google-oauth.sh <client-id>`
+and paste the client secret. Google tenants get starting credit only by verifying a
+card (see docs/operations/billing.md).
 
 ## Tenants (admin)
 
