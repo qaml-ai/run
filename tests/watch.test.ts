@@ -239,6 +239,37 @@ test("a watcher starts from the newest page and loads older pages on request", {
   assert.equal(OPERATOR.length > 0, true);
 });
 
+test("a snapshot's history is read before whether a turn runs, so a message never shows with its turn not running", async () => {
+  // The run begins between the watcher's two reads: once history has the message, the run has begun.
+  let begun = false;
+  const encoder = new TextEncoder();
+  const fetch: typeof globalThis.fetch = async input => {
+    const path = new URL(String(input)).pathname + new URL(String(input)).search;
+    if (path.includes("/inputs")) return Response.json([]);
+    if (path.includes("/events")) return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(encoder.encode("event: ready\ndata: {}\n\n"));
+      controller.enqueue(encoder.encode(`id: 5\ndata: ${JSON.stringify({ type: "snapshot", turn: null })}\n\n`));
+    } }), { headers: { "Content-Type": "text/event-stream" } });
+    // Whichever of the two reads comes second sees the run begun: the message in history, and the request running.
+    const was = begun;
+    if (path.includes("/history")) {
+      begun = true;
+      return Response.json({ entries: was ? [{ index: 0, message: { role: "user", content: "hi", timestamp: 1, requestId: "c1" } }] : [], next: null });
+    }
+    if (path.endsWith("/state")) {
+      begun = true;
+      return Response.json({ requests: was ? [{ id: "c1", method: "prompt", state: "running", began: 1 }] : [] });
+    }
+    return new Response(null, { status: 404 });
+  };
+  const seen: { messages: number; running: boolean }[] = [];
+  const watcher = watchAgent({ url: "https://runtime.test", agentId: "client_x", token: "t", fetch, onChange: state => seen.push({ messages: state.messages.length, running: state.running }) });
+  try {
+    await until(() => seen.some(view => view.running || view.messages > 0), "the second read");
+    assert.ok(!seen.some(view => view.messages > 0 && !view.running), `a message showed while no turn ran: ${JSON.stringify(seen)}`);
+  } finally { watcher.close(); }
+});
+
 test("a watcher whose token expires with no getToken stops, and says so", async () => {
   const errors: string[] = [];
   const fetch: typeof globalThis.fetch = async input => String(input).includes("/inputs") ? Response.json([]) : new Response(null, { status: 401 });

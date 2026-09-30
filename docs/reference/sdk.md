@@ -274,6 +274,10 @@ application keeps serving its tools.
 
 ## Unreleased
 
+- `@camelai/run/watch` (and so `createAgentChat`) reads a snapshot's history before
+  asking whether a turn runs. A message sent just as the watcher connected could
+  otherwise show in history with no turn running, and a chat's status went
+  `submitted`, `ready`, `submitted` before the reply streamed.
 - `verifyRuntimeToken` / `serveTools` (`verify_runtime_token` / `serve_tools`)
   with `runtime` set to either of the hosted runtime's URLs,
   `https://run.camelai.com` or `https://agents.camelai.dev`, expect the issuer

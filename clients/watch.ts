@@ -265,12 +265,13 @@ export function watchAgent(options: WatchOptions): Watcher {
         next = turn.start + (turn.count ?? turn.messages.length);
         for (const [offset, message] of turn.messages.entries()) messages.set(turn.start + offset, message);
       } else next = undefined;
-      // No turn in it: none runs, or the token does not show it. Its state says which, where the token reads it.
+      await newest();
+      // No turn in it: none runs, or the token does not show it. Its state says which, where the token reads it: read
+      // after history, so a run that began in between is running here too, never a message in history with no turn.
       if (!turn) {
         const known = await json200("/state").catch(() => undefined) as { requests?: { method: string; state: string; began?: number }[] } | undefined;
         state.running = !!known?.requests?.some(request => request.state === "running" && request.began && ["prompt", "continue", "resume"].includes(request.method));
       }
-      await newest();
       return;
     }
     if (data.type === "response") {
