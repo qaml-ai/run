@@ -12,7 +12,7 @@ import { resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { errorCode, errorFields, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import type { Definitions } from "./definitions.ts";
@@ -30,6 +30,7 @@ import type { Help } from "./help.ts";
 import type { AccountDeletions } from "./account-deletion.ts";
 import { exportAccount } from "./account-export.ts";
 import { Readable } from "node:stream";
+import { clientAddress, type RateLimits } from "./rate-limits.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -73,6 +74,10 @@ export interface ApiContext {
   help?: Help;
   /** Deleting accounts (`DELETE /v1/account`, and the operator's `DELETE /v1/tenants/{id}`). */
   accountDeletions?: AccountDeletions;
+  /** Counts agent creates (POST /v1/agents) against the tenant's rate limit; throws 429 past it. */
+  rateLimits?: Pick<RateLimits, "agentCreate">;
+  /** The caller's address (Get Help's per-source limit); by default the load balancer's, as `clientAddress` reads it without Cloudflare. */
+  clientAddress?: (c: Context) => string | undefined;
 }
 /** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
 type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
@@ -243,7 +248,7 @@ export function api(context: ApiContext) {
     if (principal.via !== "console") throw new HttpError(403, "Get Help is sent from the console");
     const body = await readJson(c.req.raw.body, 64 * 1024);
     const reply = await context.help.submit({ tenant: principal.tenant, ...(principal.login ? { login: principal.login } : {}) }, body,
-      { userAgent: c.req.header("user-agent"), source: clientAddress(c) });
+      { userAgent: c.req.header("user-agent"), source: context.clientAddress ? context.clientAddress(c) : clientAddress(name => c.req.header(name), (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress, false) });
     if (reply.retryAfter) c.header("Retry-After", String(reply.retryAfter));
     return json(c, reply.status, reply.body);
   });
@@ -410,6 +415,7 @@ export function api(context: ApiContext) {
     const { prompt, ...params } = await readJson(c.req.raw.body, 18 * 1024 * 1024, {}) ?? {};
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt));
+    await context.rateLimits?.agentCreate(tenant);
     const created = await context.createAgent(tenant, params, c.req.header("idempotency-key")) as { id: string };
     if (!first) return json(c, 201, created);
     const submit = context.submit ?? clients.submit.bind(clients);
@@ -936,6 +942,7 @@ export function api(context: ApiContext) {
   // A conflicting answer says what the input settled as.
   app.onError((error, c) => {
     const status = errorStatus(error, 400);
+    for (const [name, value] of Object.entries(errorHeaders(error))) c.header(name, value);
     return json(c, status, { error: errorText(error), code: errorCode(error, status), ...errorFields(error) });
   });
   return app;
@@ -949,12 +956,6 @@ function promptRequest(body: z.infer<typeof schema.PromptInput>, fallbackId?: st
   const { requestId, text, whileRunning, ...rest } = body;
   const given = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
   return { id: requestId ?? fallbackId ?? randomUUID(), method: "prompt", params: { text, ...given, ...(whileRunning === "steer" ? { whileRunning } : {}) } };
-}
-
-/** The caller's address: the load balancer's last X-Forwarded-For entry (earlier ones are the client's to write), else the socket's. */
-function clientAddress(c: Context) {
-  const forwarded = c.req.header("x-forwarded-for")?.split(",").map(value => value.trim()).filter(Boolean).at(-1);
-  return forwarded ?? (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
 }
 
 /** Where this runtime is reached, for the next steps a 401 names. */

@@ -9,10 +9,10 @@ export class HttpError extends Error {
   constructor(status: number, message: string, code?: string, details?: Record<string, unknown>) { super(message); this.status = status; if (code) this.code = code; if (details) this.details = details; }
 }
 
-/** An error's fields beside `error` and `code` in a response body: its details, and for a conflicting answer, what the input settled as. */
+/** An error's fields beside `error` and `code` in a response body: its details, for a conflicting answer what the input settled as, and for a rate limit's 429 the limit reached. */
 export function errorFields(error: unknown): Record<string, unknown> {
-  const { details, input } = (error ?? {}) as { details?: Record<string, unknown>; input?: unknown };
-  return { ...(details && typeof details === "object" ? details : {}), ...(input ? { input } : {}) };
+  const { details, input, limit } = (error ?? {}) as { details?: Record<string, unknown>; input?: unknown; limit?: unknown };
+  return { ...(details && typeof details === "object" ? details : {}), ...(input ? { input } : {}), ...(limit ? { limit } : {}) };
 }
 
 /**
@@ -38,6 +38,12 @@ export function errorCode(error: unknown, status: number): string {
   if (typeof own === "string" && /^[A-Z][A-Z0-9_]+$/.test(own)) return own;
   const opening = /^([A-Z][A-Z0-9_]{2,}):/.exec((error as Error | undefined)?.message ?? "")?.[1];
   return opening ?? STATUS_CODES[status] ?? (status >= 500 ? "INTERNAL" : "INVALID_REQUEST");
+}
+
+/** The headers an error answer carries: Retry-After, when the error says when to retry (a rate limit's 429). */
+export function errorHeaders(error: unknown): Record<string, string> {
+  const after = (error as { retryAfter?: unknown } | undefined)?.retryAfter;
+  return typeof after === "number" && Number.isFinite(after) ? { "Retry-After": String(Math.max(1, Math.ceil(after))) } : {};
 }
 
 /** The status to answer an error with: its own, else 503 (retry) when the database is unreachable, else `fallback`. */

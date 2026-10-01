@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { transaction, type Db } from "./db.ts";
+import { transaction, type Db, type Sql } from "./db.ts";
 import type { Tenants } from "./tenants.ts";
 import type { UsageRecord } from "./client-sessions.ts";
 import { accrueUsage, Billing, type UsageCharge } from "./billing.ts";
@@ -122,7 +122,7 @@ export class Accounts {
    * the login and the id). Decide starting credit only when creating the tenant,
    * atomically with its grant. Later sign-ins never reconsider that decision.
    */
-  async tenantForGithub(user: GithubUser | string, options: { minAccountAgeMs?: number } = {}): Promise<string> {
+  async tenantForGithub(user: GithubUser | string, options: { minAccountAgeMs?: number; admit?: (sql: Sql) => Promise<void> } = {}): Promise<string> {
     const { login, id: githubId, createdAt } = typeof user === "string" ? { login: user } as GithubUser : user;
     const linked = this.tenants.byGithub(login);
     if (linked) return linked;
@@ -145,6 +145,8 @@ export class Accounts {
         if (githubId === undefined || createdAt === undefined || !Number.isSafeInteger(createdAt) || createdAt < 0 || createdAt > now) {
           throw new Error("GitHub account details are unavailable; try signing in again");
         }
+        // A new account counts against its source's sign-up limit, in this transaction: a sign-up that fails counts nothing.
+        await options.admit?.(sql);
         const name = login.toLowerCase();
         // A deleted tenant's id is never given out again: its kept ledger rows are under it.
         const candidates = [name, `${name.slice(0, 39 - String(githubId).length)}-${githubId}`, `${name.slice(0, 30)}-${randomBytes(4).toString("hex")}`];
@@ -177,12 +179,13 @@ export class Accounts {
    * else random), so no part of the address shows in it. Google tenants are never linked to GitHub ones or admin tenants,
    * and get no automatic starting credit: a card check unlocks it (src/card-credit.ts).
    */
-  async tenantForGoogle({ sub, email }: GoogleUser): Promise<string> {
+  async tenantForGoogle({ sub, email }: GoogleUser, options: { admit?: (sql: Sql) => Promise<void> } = {}): Promise<string> {
     if (!/^[\x21-\x7e]{1,255}$/.test(sub) || !email.includes("@")) throw new Error("Google did not return a valid account; try signing in again");
     return transaction(this.db, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`google:${sub}`]);
       let row: { id: string; google_email: string | null } | undefined = (await sql.query("select id, google_email from tenants where google_sub = $1", [sub])).rows[0];
       if (!row) {
+        await options.admit?.(sql);
         const hash = sha256(`google:${sub}`);
         for (const candidate of [`u-${hash.slice(0, 16)}`, `u-${hash.slice(0, 32)}`, `u-${randomBytes(16).toString("hex")}`]) {
           if (!validTenant(candidate) || this.tenants.has(candidate)) continue;

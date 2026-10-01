@@ -5,6 +5,36 @@ bytes, MiB = 1024 KiB. Past a size limit the request is refused (400 or 413);
 past a count or rate limit, 409 or 429 (with `Retry-After`). See
 [Errors](errors.md) for what to do about each.
 
+## Rate limits
+
+Past one, the API answers 429 with `code: "RATE_LIMITED"`, `Retry-After` (in
+seconds), and the limit it hit in `limit`:
+`{"name": "runs", "scope": "tenant", "max": 600, "windowSeconds": 60}`. The SDKs
+wait out `Retry-After` and retry.
+
+| Limit (`limit.name`) | Scope | Value |
+| --- | --- | --- |
+| `api_requests`: requests to `/v1/*` | client address | 600 a minute |
+| `auth_requests`: requests to `/console/auth/*` and `/oauth/*` (sign-in, sign-up callbacks, OAuth) | client address | 20 a minute |
+| `signups`: new accounts | client address | 5 a UTC day; past it, sign-in says so instead of making the account |
+| `agent_creates`: `POST /v1/agents` (upserts too) | account | 60 a minute; 10 on free credit |
+| `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
+
+- A client address is the caller's IP address; an IPv6 address counts with the
+  rest of its `/64`. The runtime's own calls (hosted MCP tools calling the API)
+  are not counted.
+- `api_requests` refills continuously (a request comes back every tenth of a
+  second at 600 a minute); the others count in fixed windows (the minute, or the
+  UTC day), so `Retry-After` is the time to the next window.
+- A retried request (the same request id or `Idempotency-Key`) that the runtime
+  answers from its record is not a new run.
+- Operators set every value (see [Configuration](../operations/configuration.md));
+  an admin tenant's `maxAgentCreatesPerMinute` and `maxRunsPerMinute` override
+  the account limits. A self-hosted runtime has no per-address limits unless it
+  sets them, or trusts Cloudflare's `CF-Connecting-IP`.
+- Channel senders and Get Help have limits of their own (below, and in
+  [Errors](errors.md)).
+
 ## Agents
 
 | Limit | Value |

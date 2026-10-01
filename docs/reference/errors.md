@@ -19,7 +19,7 @@ Error bodies are `{"error": "<message, for people>", "code": "<for code>"}`
 (`type: "error"` too on some routes). The message may change; the code does not,
 so switch on `code` (the SDKs' `AgentError.code`). Codes may be added: treat an
 unknown one by its status. A conflict about an input also carries the input as it
-now is (`"input"`). Every 429 and 503 has `Retry-After`; the SDKs honour it and
+now is (`"input"`), and a rate limit's 429 the limit it hit (`"limit"`). Every 429 and 503 has `Retry-After`; the SDKs honour it and
 retry.
 
 | Status | `code` | Meaning |
@@ -41,7 +41,7 @@ retry.
 | 413 | `TOO_LARGE` | The request body is too large |
 | 413 | `HISTORY_TOO_LARGE` | An imported history is over 16 MB of JSON |
 | 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
-| 429 | `RATE_LIMITED` | Too many agents, requests or subscribers at once; retry after `Retry-After` |
+| 429 | `RATE_LIMITED` | Too many: a rate limit (the body's `limit` names it: `{name, scope, max, windowSeconds}`; see [Rate limits](limits.md#rate-limits)), or too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
 | 507 | `STORAGE_LIMIT` | The account's storage limit would be passed; the body has `limit` and `used`, in bytes |
 | 500 | `INTERNAL` | A bug; retry, and report it with the request id |
@@ -62,7 +62,7 @@ In more detail:
 | 413 | Too large: the request body, inline files over 4 MiB, a file over 256 MiB, an upload over a link's `maxBytes` | See [Limits](limits.md); upload large files first and attach them by path |
 | 415 | An upload through a signed link with another content type | Send the type the link names |
 | 422 | A channel's credentials were rejected by the provider (Slack, Telegram, Discord) | Fix the bot token |
-| 429 | Too many: the tenant's agents awake at once, the agent's 32 open requests, event-stream subscribers, or free credit's hourly allowance | Retry after `Retry-After` (the SDKs do, up to 8 times) |
+| 429 | Too many: a [rate limit](limits.md#rate-limits) (requests from one address, agents created or runs started a minute, sign-in requests), the tenant's agents awake at once, the agent's 32 open requests, event-stream subscribers, or free credit's hourly allowance | Retry after `Retry-After` (the SDKs do, up to 8 times). A rate limit's body names it in `limit`; to go faster for good, ask for a higher limit |
 | 500 | A bug | Retry; report it with the request id |
 | 503 | The runtime cannot serve it right now: a node is draining or starting, lost ownership of an agent, has no room for its work, or the database is failing over; also a feature this runtime is not configured for | Retry after `Retry-After` (the SDKs retry); nothing happened |
 | 507 | A volume is full (100,000 files), or the account's storage limit would be passed (`STORAGE_LIMIT`, with `limit` and `used` in bytes) | Delete files, or use another volume; for the account's limit, delete files or volumes, or buy credit (free credit stores 1 GB) |

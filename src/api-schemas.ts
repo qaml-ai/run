@@ -17,6 +17,12 @@ export const ERROR_CODES = {
 export const ApiError = z.object({
   error: z.string().openapi({ description: "What went wrong, for people" }),
   code: z.string().openapi({ description: `What went wrong, for code: ${Object.entries(ERROR_CODES).map(([code, meaning]) => `${code} (${meaning})`).join("; ")}. Others may be added` }),
+  limit: z.object({
+    name: z.string().openapi({ description: "api_requests, auth_requests, signups, agent_creates or runs" }),
+    scope: z.enum(["ip", "tenant"]),
+    max: z.number().int(),
+    windowSeconds: z.number().int(),
+  }).optional().openapi({ description: "On a rate limit's 429: the limit reached. Retry-After says when to retry" }),
 }).openapi("Error");
 export const Deleted = z.object({ deleted: z.literal(true) });
 

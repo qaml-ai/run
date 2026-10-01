@@ -264,6 +264,27 @@ test("console sessions require same-origin mutations; token sign-in sets a sessi
   assert.equal((await call("/console/auth/logout", { body: {}, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1" } })).headers.get("set-cookie")?.includes("Max-Age=0"), true);
 });
 
+test("sign-ups per address per day: behind Cloudflare, a new account past the limit waits a day; existing accounts still sign in", async t => {
+  const github = await fakeGithub(t, { Carol: "active", Dave: "active" });
+  const { call, db } = await runtime(t, github.url, { AGENT_TRUST_CF_CONNECTING_IP: "true", AGENT_RATE_LIMIT_SIGNUPS_PER_IP: "1" });
+  const signIn = async (login: string, ip: string) => {
+    github.signInAs(login);
+    const headers = { "CF-Connecting-IP": ip };
+    const start = await call("/console/auth/github", { headers });
+    const authorize = new URL(start.headers.get("location")!);
+    const cookies = start.headers.getSetCookie().map(value => value.split(";")[0]).join("; ");
+    const callback = await call(`/console/auth/callback?code=abc&state=${authorize.searchParams.get("state")}`, { headers: { ...headers, Cookie: cookies } });
+    return { location: decodeURIComponent(callback.headers.get("location")!), session: callback.headers.getSetCookie().some(value => value.startsWith("ar_session=")) };
+  };
+  assert.equal((await signIn("Carol", "203.0.113.5")).session, true);
+  const refused = await signIn("Dave", "203.0.113.5");
+  assert.equal(refused.session, false);
+  assert.match(refused.location, /Too many new accounts from this network today \(at most 1 a day\)/);
+  assert.equal((await signIn("Carol", "203.0.113.5")).session, true, "an existing account is not a sign-up");
+  assert.equal((await signIn("Dave", "203.0.113.6")).session, true);
+  assert.deepEqual((await db.query("select id from tenants where github is not null order by id")).rows.map(row => row.id), ["carol", "dave"], "the refused attempt made no tenant");
+});
+
 test("GitHub sign-in admits active org members, links admin tenants, and creates new tenants", async t => {
   const github = await fakeGithub(t, { "Bob-Builder": "active", Carol: "active", Mallory: "pending" });
   const { call } = await runtime(t, github.url);

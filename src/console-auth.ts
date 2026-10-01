@@ -3,6 +3,7 @@ import { Hono, type Context } from "hono";
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 import type { Accounts, Principal } from "./accounts.ts";
 import { readText } from "./http.ts";
+import type { Sql } from "./db.ts";
 
 /**
  * Console sign-in. Sessions are HMAC-signed cookies (HttpOnly, Secure, SameSite=Lax).
@@ -25,6 +26,8 @@ export interface ConsoleAuthOptions {
    */
   google?: { clientId: string; clientSecret: string; issuer?: string };
   sessionHours?: number;
+  /** What a sign-in that makes a new account must pass, in the transaction that makes it: the sign-up rate limit for the request's source. */
+  admitSignup?: (c: Context) => ((sql: Sql) => Promise<void>) | undefined;
 }
 export const GOOGLE_ISSUER = "https://accounts.google.com";
 export const CONSOLE_HEADER = "x-agent-runtime-console";
@@ -181,7 +184,7 @@ export class ConsoleAuth {
         const createdAt = user.created_at ? Date.parse(user.created_at) : NaN;
         const tenant = await this.options.accounts.tenantForGithub(
           { login: user.login, id: user.id, ...(Number.isFinite(createdAt) ? { createdAt } : {}) },
-          { minAccountAgeMs: github.minAccountDays === undefined ? undefined : Math.round(github.minAccountDays * 86_400_000) });
+          { minAccountAgeMs: github.minAccountDays === undefined ? undefined : Math.round(github.minAccountDays * 86_400_000), admit: this.options.admitSignup?.(c) });
         return redirect(c, next ?? "/console/", [clearState, clearNext, this.startSession(tenant, user.login, user.name ?? undefined)]);
       } catch (error) {
         return fail(c, (error as Error).message, [clearState, clearNext]);
@@ -228,7 +231,7 @@ export class ConsoleAuth {
         catch { throw new Error("Google's sign-in token did not verify; try again"); }
         if (typeof claims.nonce !== "string" || !same(claims.nonce, nonce) || (claims.azp !== undefined && claims.azp !== google.clientId)) throw new Error("Google's sign-in token did not verify; try again");
         if (claims.email_verified !== true || typeof claims.email !== "string" || typeof claims.sub !== "string") throw new Error("Sign in with a Google account whose email address is verified");
-        const tenant = await this.options.accounts.tenantForGoogle({ sub: claims.sub, email: claims.email });
+        const tenant = await this.options.accounts.tenantForGoogle({ sub: claims.sub, email: claims.email }, { admit: this.options.admitSignup?.(c) });
         return redirect(c, next ?? "/console/", [...clear, this.startSession(tenant, claims.email, typeof claims.name === "string" ? claims.name : undefined)]);
       } catch (error) {
         return fail(c, (error as Error).message, clear);

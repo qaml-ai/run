@@ -83,6 +83,7 @@ id), with no starting credit: its GitHub id's decision, or its card's check, is 
 | A deleted volume's files | until storage collection's grace period passes (`AGENT_GC_GRACE_MS`, a day), once collection is enabled; at once on account deletion |
 | Runtime logs (`/ecs/camelai-agent-runtime`) | 30 days; ids, sizes and error classes only (see "What logs hold" in [architecture](architecture.md)) |
 | Other log groups, and the billing-email Worker's | see [infra/terraform/README.md](../../infra/terraform/README.md#log-retention) |
+| Rate limit counters (`rate_limits`: tenant ids, and client addresses as keyed hashes) | until their window (a minute, or a UTC day for sign-ups) ends, then swept within an hour; per-node request counts are in memory only |
 | Ledger, usage, payment and starting-credit records | kept after deletion, as above |
 
 ## Runbook: a deletion or export request by email

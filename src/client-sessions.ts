@@ -18,7 +18,7 @@ import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { errorCode, errorFields, errorStatus, HttpError, readJson } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
 import { databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
@@ -350,6 +350,8 @@ export interface ClientSessionOptions {
   spendLimit?: (tenant: string) => Promise<Refusal | undefined>;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
+  /** Count a run the tenant starts against its rate limit; throws (429) past it. Checked when a run is accepted, not for retries. */
+  runRate?: (tenant: string) => Promise<void>;
   /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
   onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
   /** Whether the tenant has a webhook endpoint for run events; without it, runs write none. */
@@ -2103,6 +2105,7 @@ export class ClientSessions {
     app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
     app.onError((error, c) => {
       const status = errorStatus(error, 500);
+      for (const [name, value] of Object.entries(errorHeaders(error))) c.header(name, value);
       return json(c, status, { error: errorText(error), code: errorCode(error, status), ...errorFields(error) });
     });
     return app;
@@ -2180,6 +2183,7 @@ export class ClientSessions {
       // A resumed turn acts for whoever the suspended one did.
       if (body.method === "resume") actor = session.requests.get(params.suspension)?.actor;
     } catch (error) { throw new HttpError(400, errorText(error)); }
+    if (isRun && body.method !== "resume") await this.options.runRate?.(session.header.tenant);
     const limited = body.method === "resume" ? undefined : await this.runLimit(session, body.method);
     if (limited) throw limited;
     // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held

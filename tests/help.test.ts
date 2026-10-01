@@ -13,6 +13,7 @@ import { MailTransport, type MailResult, type OutgoingMail } from "../src/mail-t
 import { Tenants } from "../src/tenants.ts";
 import type { Db } from "../src/db.ts";
 import { helpRouteTemplate, type HelpSubmission } from "../shared/help-contract.ts";
+import { clientAddress } from "../src/rate-limits.ts";
 import { testDatabase } from "./database.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -391,4 +392,22 @@ test("GET /v1/help offers the console its verified addresses; POST enforces them
   assert.equal((await typed.json()).code, "INVALID_REQUEST");
   assert.equal((await app.request("/v1/help", { method: "POST", headers, body: JSON.stringify(submission({ email: "owner@example.test" })) })).status, 200);
   assert.equal(sent.find(mail => mail.cc)?.cc, "owner@example.test");
+});
+
+test("POST /v1/help keys its per-source limit on CF-Connecting-IP behind Cloudflare, not on Cloudflare's edge", async t => {
+  const { help, accounts, db } = await setup(t);
+  const consoleAuth = new ConsoleAuth({ accounts, secret: "console-session-secret-with-32-chars!", publicUrl: origin });
+  const context = { accounts, consoleAuth, clients: {} as never, defaultModel: async () => "anthropic/claude-sonnet-5-5", createAgent: async () => ({}), help };
+  const cookie = consoleAuth.session("alice", "octocat").split(";")[0];
+  // Two people behind the same Cloudflare edge: the ALB's last X-Forwarded-For entry is the edge's address for both.
+  const from = (ip: string) => ({ cookie, "x-agent-runtime-console": "1", origin, "content-type": "application/json", "cf-connecting-ip": ip, "x-forwarded-for": `${ip}, 162.158.1.1` });
+  const sources = async () => new Set((await db.query("select source_hash from help_requests")).rows.map(row => row.source_hash));
+  const behindCloudflare = api({ ...context, clientAddress: c => clientAddress(name => c.req.header(name), undefined, true) });
+  for (const ip of ["203.0.113.5", "203.0.113.6"]) assert.equal((await behindCloudflare.request("/v1/help", { method: "POST", headers: from(ip), body: JSON.stringify(submission()) })).status, 200);
+  assert.equal((await sources()).size, 2);
+  // Without trusting Cloudflare (a self-hosted runtime), both count as the edge.
+  await db.query("delete from help_requests");
+  const untrusting = api(context);
+  for (const ip of ["203.0.113.5", "203.0.113.6"]) assert.equal((await untrusting.request("/v1/help", { method: "POST", headers: from(ip), body: JSON.stringify(submission()) })).status, 200);
+  assert.equal((await sources()).size, 1);
 });

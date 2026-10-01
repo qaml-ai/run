@@ -50,7 +50,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorCode, errorFields, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
@@ -68,6 +68,7 @@ import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
 import { publicOrigins } from "./origins.ts";
 import { AccountDeletions } from "./account-deletion.ts";
+import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
 
 // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
@@ -173,7 +174,25 @@ const github = secrets.github && {
 // Its tenants get starting credit only by verifying a card (src/card-credit.ts).
 if (secrets.google && !openSignup) throw new Error("Google sign-in lets anyone sign up; set AGENT_OPEN_SIGNUP=true to enable it, or remove its client");
 const google = secrets.google && { ...secrets.google, issuer: process.env.AGENT_GOOGLE_ISSUER || undefined };
-const consoleAuth = new ConsoleAuth({ accounts, secret: sessionSecret, publicUrl, github, google });
+// Rate limits (src/rate-limits.ts): per client address and per tenant. The per-address API budget is split among the
+// live nodes, recounted every 30 s.
+let liveNodes = 1;
+const countNodes = () => void ownership.livePeers().then(peers => { liveNodes = peers.length + 1; }, error => console.error(JSON.stringify({ type: "node_count_failed", error: errorText(error) })));
+countNodes();
+const nodesTimer = setInterval(countNodes, 30_000);
+nodesTimer.unref();
+const rateLimits = new RateLimits({
+  db, config: rateLimitConfig(), hashKey: sessionSecret, nodes: () => liveNodes,
+  free: tenant => accounts.billing.onFreeCredit(tenant),
+  override: (tenant, limit) => tenants.rateLimit(tenant, limit),
+});
+rateLimits.start();
+/** Who sent a request: its address and the key per-address limits count it under (none for the runtime's own calls). */
+const requestClient = (c: Context) => rateLimits.client(name => c.req.header(name), (c.env as HttpBindings | undefined)?.incoming?.socket?.remoteAddress);
+const consoleAuth = new ConsoleAuth({
+  accounts, secret: sessionSecret, publicUrl, github, google,
+  admitSignup: c => { const { key } = requestClient(c); return sql => rateLimits.signup(sql, key); },
+});
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 
 // Every call to a URL a tenant configured (MCP servers, web_fetch) goes through one guard: public addresses only, but for
@@ -396,13 +415,26 @@ const links = new FileLinks(sessionSecret, publicUrl);
 const browserUrl = process.env.AGENT_BROWSER_URL?.replace(/\/+$/, "");
 
 const FORWARDED = "x-agent-runtime-forwarded";
+/** A forwarded request's proof that a peer sent it, which a client cannot forge: `<timestamp>.<signature>`. */
+const HOP = "x-agent-runtime-hop";
+const hopSignature = (timestamp: string, url: string) => internalSignature(timestamp, `hop:${url}`, "");
+
+/** Whether a peer forwarded this request (and so has counted it against per-address limits). */
+function forwardedByPeer(c: Context) {
+  const [timestamp, signature] = (c.req.header(HOP) ?? "").split(".");
+  if (!timestamp || !signature || !(Math.abs(Date.now() - Number(timestamp)) <= 60_000)) return false;
+  const expected = Buffer.from(hopSignature(timestamp, c.env.incoming.url ?? ""));
+  const given = Buffer.from(signature);
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
 
 /** Stream a request to the node that owns its actor, and stream the answer back (SSE included). */
 function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor?: string) {
   const target = new URL(req.url ?? "/", owner);
   const via = req.headers[FORWARDED];
   // The host it was sent to goes along, so the owner answers as that origin (origins.of).
-  const headers = { ...req.headers, host: target.host, "x-forwarded-host": req.headers["x-forwarded-host"] ?? req.headers.host, [FORWARDED]: typeof via === "string" ? `${via},${node}` : node };
+  const hop = String(Date.now());
+  const headers = { ...req.headers, host: target.host, "x-forwarded-host": req.headers["x-forwarded-host"] ?? req.headers.host, [FORWARDED]: typeof via === "string" ? `${via},${node}` : node, [HOP]: `${hop}.${hopSignature(hop, req.url ?? "/")}` };
   const upstream = httpRequest(target, { method: req.method, headers }, answer => {
     // The node no longer serves the actor (it moved, or the node is draining): look it up afresh next time.
     if (answer.statusCode === 503) ownership.forget(actor);
@@ -459,6 +491,7 @@ const clients = new ClientSessions(supervisor, {
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
   onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
   spendLimit: tenant => accounts.runLimit(tenant),
+  runRate: tenant => rateLimits.run(tenant),
   rerankers,
   creditLimit: tenant => accounts.billing.creditLimit(tenant),
   db, storage, prefix: "client-sessions/", ownership, volumes, links,
@@ -627,6 +660,11 @@ app.use(async (c, next) => {
   if (BrowserTokens.carries(c.req.header("authorization"))) c.env.outgoing.setHeader("Access-Control-Allow-Origin", "*");
   return next();
 });
+// Per-address rate limits, on the node a request reaches first (a request a peer forwarded was counted there).
+app.use(async (c, next) => {
+  if (!forwardedByPeer(c)) await rateLimits.request(c.req.path, requestClient(c).key);
+  return next();
+});
 // One node serves each agent and volume; anything addressed to one another node holds goes there.
 // Forwarding works on the raw request and response, so bodies and SSE stream through unbuffered.
 // A forwarded request goes no further, but for one that reached a draining node: its sender's cached owner can
@@ -694,6 +732,7 @@ app.route("/", channels.app);
 const browserTokens = new BrowserTokens(sessionSecret);
 if (billingMailer) app.route("/", billingMailer.feedback());
 app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+  rateLimits, clientAddress: c => requestClient(c).address,
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
@@ -722,7 +761,7 @@ app.notFound(c => c.json({ type: "error", error: `Not found. The docs' index: ${
 // anything else is a request the runtime could not accept (invalid configuration or tools): 400.
 app.onError((error, c) => {
   const status = errorStatus(error, 400);
-  return c.body(JSON.stringify({ type: "error", error: errorText(error), code: errorCode(error, status), ...errorFields(error) }) + "\n", status as ContentfulStatusCode, { "Content-Type": "application/json" });
+  return c.body(JSON.stringify({ type: "error", error: errorText(error), code: errorCode(error, status), ...errorFields(error) }) + "\n", status as ContentfulStatusCode, { "Content-Type": "application/json", ...errorHeaders(error) });
 });
 
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;
@@ -859,6 +898,8 @@ async function drain(signal: string) {
   webhooks.stop();
   accountDeletions.stop();
   storageGc.stop();
+  rateLimits.stop();
+  clearInterval(nodesTimer);
   clearInterval(tenantsTimer);
   clearInterval(loadTimer);
   clearInterval(sweepTimer);
