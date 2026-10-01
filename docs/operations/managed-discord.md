@@ -70,11 +70,19 @@ Discord offers only servers where they have Manage Server.
 
 The callback checks the state, exchanges the code, and takes the server from the
 token response's `guild`: Discord added the bot there for a user allowed to, which
-is the proof of administration. It reads the user's ID (`identify`), confirms the
-bot's membership with the bot token, and binds the server to the account in one
-transaction, paused and without channels. The console then opens that server's
-settings, where choosing a definition and allowed channels activates it. The
-runtime keeps no Discord user token.
+is the proof of administration. The response's `scope` string is not checked; it
+need not list every scope asked for. Without a `guild`, the redirect's `guild_id`
+is only a hint: the callback then requires that the user owns that server or holds
+Administrator or Manage Server there, read from the server's roles with the bot
+token. It reads the user's ID (`identify`), confirms the bot's membership with the
+bot token (retrying briefly, since the bot joins as the code is exchanged), and
+binds the server to the account in one transaction, paused and without channels.
+Adding Camel to a server it is already in works the same way. The console then
+opens that server's settings, where choosing a definition and allowed channels
+activates it. The runtime keeps no Discord user token. A failed install logs
+`discord_managed_install_failed` with the reason, the token response's field
+names and scope string, whether it had a guild and the redirect a `guild_id`, and
+the exchange's HTTP status; never a token or code.
 
 A server bound to another account is refused unless that binding is
 disconnected; removing Camel from a server disconnects it. So a server's

@@ -331,6 +331,16 @@ export class ManagedDiscord {
     await this.options.db.query(`insert into discord_installations (application_id,guild_id,name,state,updated_at) values ($1,$2,$3,'present',$4) on conflict (application_id,guild_id) do update set name=excluded.name,state='present',updated_at=excluded.updated_at`, [this.options.applicationId, guildId, guild.name ?? "", Date.now()]);
     return guild;
   }
+  /** Whether a user owns the server or holds Administrator or Manage Server there, read with the bot token (roles only; no member intent needed). */
+  private async manages(server: { id: string; owner_id?: string; roles?: { id: string; permissions?: string }[] }, user: string) {
+    if (server.owner_id === user) return true;
+    let member;
+    try { member = await this.bot(`/guilds/${server.id}/members/${user}`); }
+    catch (error) { if (error instanceof HttpError && error.status === 404) return false; throw error; }
+    const held = new Set([server.id, ...(Array.isArray(member.roles) ? member.roles : [])]);
+    const permissions = (server.roles ?? []).filter(role => held.has(role.id)).reduce((bits, role) => bits | (/^\d+$/.test(role.permissions ?? "") ? BigInt(role.permissions!) : 0n), 0n);
+    return (permissions & ((1n << 3n) | (1n << 5n))) !== 0n;
+  }
   private async validateChannels(guildId: string, ids: string[]) {
     for (const id of ids) {
       const channel = await this.bot(`/channels/${id}`);
@@ -456,6 +466,8 @@ export class ManagedDiscord {
     app.get("/console/discord/callback", async c => {
       const state = c.req.query("state") ?? "";
       const done = new URL("/console/channels", this.options.publicUrl);
+      // What a failed install saw, for the log: never a token or code.
+      const seen: Record<string, unknown> = { hint: ID.test(c.req.query("guild_id") ?? "") };
       try {
         const attempt = (await this.options.db.query("delete from discord_setup_attempts where state_hash=$1 and tenant=$2 and session_hash=$3 and expires_at>$4 returning *", [hash(state), tenant(c), this.session(c.req.raw), Date.now()])).rows[0];
         if (!attempt || !state) throw new HttpError(400, "This Discord authorization expired or was started from another session; add Camel to Discord again");
@@ -465,22 +477,32 @@ export class ManagedDiscord {
           method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({ client_id: this.options.applicationId, client_secret: this.options.clientSecret, grant_type: "authorization_code", code, redirect_uri: new URL("/console/discord/callback", this.options.publicUrl).href }), signal: AbortSignal.timeout(15_000),
         });
+        seen.exchange = response.status;
         if (!response.ok) throw new HttpError(403, "Discord could not verify the authorization; add Camel to Discord again");
-        const grant = await response.json() as any;
-        const scopes = String(grant.scope ?? "").split(" ");
-        const guild = String(grant.guild?.id ?? "");
-        if (typeof grant.access_token !== "string" || !scopes.includes("bot") || !scopes.includes("identify") || !ID.test(guild)) throw new HttpError(400, "Discord did not add Camel to a server; choose a server and try again");
+        const grant = await response.json().catch(() => ({})) as any;
+        Object.assign(seen, { fields: Object.keys(grant ?? {}).sort(), scope: typeof grant?.scope === "string" ? grant.scope : null, guild: ID.test(String(grant?.guild?.id ?? "")) });
+        // The token response's guild is Discord's word on where the bot went. Its `scope` lists the user token's scopes, not reliably `bot`, so it is not checked.
+        // Without a guild, the redirect's guild_id is only a hint: the bot must be there, and this user must manage that server (checked below with the bot token).
+        const attested = ID.test(String(grant?.guild?.id ?? "")) ? String(grant.guild.id) : undefined;
+        const guild = attested ?? (ID.test(c.req.query("guild_id") ?? "") ? c.req.query("guild_id")! : "");
+        if (typeof grant?.access_token !== "string" || !ID.test(guild)) throw new HttpError(400, "Discord did not add Camel to a server; choose a server and try again");
         if (attempt.guild_id && attempt.guild_id !== guild) throw new HttpError(400, "Camel was added to a different server than the one chosen; try again");
-        const me = await fetch(`${this.base}/users/@me`, { headers: { Authorization: `Bearer ${grant.access_token}` }, signal: AbortSignal.timeout(15_000) }).then(answer => answer.ok ? answer.json() as Promise<any> : undefined);
+        const me = await fetch(`${this.base}/users/@me`, { headers: { Authorization: `Bearer ${grant.access_token}` }, signal: AbortSignal.timeout(15_000) }).then(answer => answer.ok ? answer.json() as Promise<any> : undefined, () => undefined);
         if (!ID.test(me?.id ?? "")) throw new HttpError(403, "Discord could not verify your identity");
         // With Requires OAuth2 Code Grant on, the bot joins as the code is exchanged: give Discord a moment to show it.
-        for (let attempt = 0; ; attempt++) {
-          try { await this.verifiedInstallation(guild); break; }
-          catch (error) { if (attempt >= 2 || !(error instanceof HttpError && error.status === 404)) throw error; await new Promise(resolve => setTimeout(resolve, 1000)); }
+        let server: any;
+        for (let tries = 0; ; tries++) {
+          try { server = await this.verifiedInstallation(guild); break; }
+          catch (error) { if (tries >= 2 || !(error instanceof HttpError && error.status === 404)) throw error; await new Promise(resolve => setTimeout(resolve, 1000)); }
         }
+        if (!attested && !await this.manages(server, me.id)) throw new HttpError(403, "You must own this Discord server or have Manage Server permission in it");
         await this.bind(tenant(c), guild, me.id);
         done.searchParams.set("discord_server", guild);
-      } catch (error) { done.searchParams.set("discord_error", error instanceof HttpError ? error.message : "Adding Camel to Discord failed; try again"); }
+      } catch (error) {
+        const message = error instanceof HttpError ? error.message : "Adding Camel to Discord failed; try again";
+        this.log("install_failed", { tenant: tenant(c), reason: message, ...seen });
+        done.searchParams.set("discord_error", message);
+      }
       return c.redirect(done.href);
     });
     app.get("/console/discord/bindings", async c => {

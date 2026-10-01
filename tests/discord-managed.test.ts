@@ -23,7 +23,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
   const received: { channel: string; message: Inbound }[] = [];
   const sent: { channel: string; content: string }[] = [];
   const left: string[] = [];
-  const state = { present: true, noGuild: false, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, limitedGet: false, routeLimited: false };
+  const state = { present: true, noGuild: false, scope: "bot", memberRoles: [] as string[] | undefined, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, limitedGet: false, routeLimited: false };
   let gatewayUrl = "";
   const discord = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
@@ -33,7 +33,9 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
     if (url.pathname === "/oauth2/token") {
       const code = new URLSearchParams(raw).get("code") ?? "";
       if (code === "used") return json(400, { error: "invalid_grant" });
-      return json(200, { access_token: "verified-token", scope: "bot identify", expires_in: 3600, ...(state.noGuild ? {} : { guild: { id: code, name: code === guildA ? "Alpha" : "Beta" } }) });
+      // Discord's documented shape: `scope` need not list every scope asked for.
+      return json(200, { token_type: "Bearer", access_token: "verified-token", scope: state.scope, expires_in: 604800, refresh_token: "refresh-secret",
+        ...(state.noGuild ? {} : { guild: { id: code, name: code === guildA ? "Alpha" : "Beta", icon: null, owner_id: "999" } }) });
     }
     if (req.headers.authorization === "Bearer verified-token" && url.pathname === "/users/@me") return json(200, { id: OWNER });
     if (req.headers.authorization !== `Bot ${TOKEN}`) return json(401, {});
@@ -42,8 +44,9 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
     if (url.pathname.startsWith("/guilds/")) {
       const id = url.pathname.split("/")[2];
       if (!state.present) return json(404, {});
+      if (url.pathname.includes("/members/")) return state.memberRoles ? json(200, { user: { id: url.pathname.split("/")[4] }, roles: state.memberRoles }) : json(404, {});
       if (url.pathname.endsWith("/channels")) return json(200, [{ id: id === guildA ? channelA : channelB, name: "test", type: 0 }]);
-      return json(200, { id, name: id === guildA ? "Alpha" : "Beta" });
+      return json(200, { id, name: id === guildA ? "Alpha" : "Beta", owner_id: "999", roles: [{ id, permissions: "1024" }, { id: "role-manager", permissions: "32" }, { id: "role-member", permissions: "3072" }] });
     }
     const channel = url.pathname.split("/")[2];
     if (req.method === "GET" && url.pathname.startsWith("/channels/")) {
@@ -114,7 +117,8 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
     const started = await request("/console/discord/install", "GET", undefined, tenant, cookie);
     assert.equal(started.status, 302);
     const state = new URL(started.headers.get("location")!).searchParams.get("state")!;
-    const callback = await request(`/console/discord/callback?state=${state}&code=${guild}`, "GET", undefined, tenant, cookie);
+    // Discord appends the chosen server and permissions to the redirect.
+    const callback = await request(`/console/discord/callback?code=${guild}&state=${state}&guild_id=${guild}&permissions=274878008320`, "GET", undefined, tenant, cookie);
     return { state, location: new URL(callback.headers.get("location")!) };
   };
   /** Add Camel to a server and finish its setup with one allowed channel open to everyone. */
@@ -187,7 +191,8 @@ test("a replayed, expired, cross-session or cancelled callback binds nothing", a
 test("a callback without a server, for a different server, or where the bot is absent binds nothing", async t => {
   const f = await fixture(t);
   f.state.noGuild = true;
-  assert.match((await f.install()).location.searchParams.get("discord_error")!, /did not add Camel to a server/);
+  const bare = new URL((await f.request("/console/discord/install")).headers.get("location")!).searchParams.get("state");
+  assert.match(new URL((await f.request(`/console/discord/callback?state=${bare}&code=${guildA}`)).headers.get("location")!).searchParams.get("discord_error")!, /did not add Camel to a server/);
   f.state.noGuild = false;
   const started = await f.request("/console/discord/install?guild_id=101");
   const state = new URL(started.headers.get("location")!).searchParams.get("state");
@@ -430,4 +435,35 @@ test("a definition with a self-starting builtin cannot serve a server", async t 
   assert.equal(refused.status, 400); assert.match((await refused.json() as any).error, /cannot use the schedule builtin/);
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-plain", allowedChannelIds: [channelA] })).status, 200);
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-scheduled" })).status, 400);
+});
+
+test("Discord's real token response binds whatever its scope string lists", async t => {
+  const f = await fixture(t);
+  for (const scope of ["bot", "identify bot", "bot identify", "identify", ""]) {
+    f.state.scope = scope;
+    const { location } = await f.install();
+    assert.equal(location.searchParams.get("discord_server"), guildA, `${JSON.stringify(scope)}: ${location.searchParams.get("discord_error")}`);
+  }
+  assert.equal((await f.binding()).length, 1, "installing again into a server Camel is already in keeps one binding");
+});
+
+test("without a guild in the token response, the redirect's guild_id counts only for a user who manages that server", async t => {
+  const f = await fixture(t); f.state.noGuild = true;
+  const logs: string[] = []; const original = console.log;
+  console.log = (line: string) => { logs.push(String(line)); };
+  let refused;
+  try { refused = await f.install(); } finally { console.log = original; }
+  assert.match(refused.location.searchParams.get("discord_error")!, /Manage Server/);
+  assert.equal((await f.binding()).length, 0);
+  const line = JSON.parse(logs.find(entry => entry.includes("discord_managed_install_failed"))!);
+  assert.deepEqual({ fields: line.fields, scope: line.scope, guild: line.guild, hint: line.hint, exchange: line.exchange },
+    { fields: ["access_token", "expires_in", "refresh_token", "scope", "token_type"], scope: "bot", guild: false, hint: true, exchange: 200 });
+  for (const secret of ["verified-token", "refresh-secret", `code=${guildA}`]) assert.ok(!logs.join("\n").includes(secret), `the log leaves out ${secret}`);
+  f.state.memberRoles = undefined;
+  assert.match((await f.install()).location.searchParams.get("discord_error")!, /Manage Server/, "not a member");
+  f.state.memberRoles = ["role-member"];
+  assert.match((await f.install()).location.searchParams.get("discord_error")!, /Manage Server/, "a role without Manage Server");
+  f.state.memberRoles = ["role-member", "role-manager"];
+  assert.equal((await f.install()).location.searchParams.get("discord_server"), guildA);
+  assert.equal((await f.binding())[0].administrator_id, OWNER);
 });
