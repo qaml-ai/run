@@ -57,13 +57,14 @@ export function verifyInteraction(publicKey: string, headers: Headers, body: str
   } catch { return false; }
 }
 
-/** A bounded round-robin queue shared by all guilds on this node, with a conservative global 429 cooldown. */
+/** A bounded round-robin queue shared by all guilds on this node; a global 429 holds all of it. */
 class DiscordRestQueue {
   private queues = new Map<string, { work: () => Promise<unknown>; resolve: (value: any) => void; reject: (reason: unknown) => void }[]>();
   private running = false;
   private blockedUntil = 0;
+  get size() { return [...this.queues.values()].reduce((n, jobs) => n + jobs.length, 0); }
   run<T>(guild: string, work: () => Promise<T>): Promise<T> {
-    if ([...this.queues.values()].reduce((n, jobs) => n + jobs.length, 0) >= 1000) return Promise.reject(new SendError("Managed Discord outbound queue is full", false, 1000));
+    if (this.size >= 1000) return Promise.reject(new SendError("Managed Discord outbound queue is full", false, 1000));
     return new Promise((resolve, reject) => {
       const queue = this.queues.get(guild) ?? [];
       queue.push({ work, resolve, reject }); this.queues.set(guild, queue);
@@ -82,7 +83,7 @@ class DiscordRestQueue {
         while (this.blockedUntil > Date.now()) await new Promise(resolve => setTimeout(resolve, Math.min(30_000, this.blockedUntil - Date.now())));
         try { job.resolve(await job.work()); }
         catch (error) {
-          if (error instanceof SendError && error.retryAfterMs) this.blockedUntil = Math.max(this.blockedUntil, Date.now() + error.retryAfterMs);
+          if (error instanceof SendError && error.global && error.retryAfterMs) this.blockedUntil = Math.max(this.blockedUntil, Date.now() + error.retryAfterMs);
           job.reject(error);
         }
       }
@@ -129,13 +130,14 @@ export class ManagedDiscord {
       const binding = await this.byId(given.bindingId);
       if (!binding) throw new SendError("Managed Discord binding is unavailable", true);
       return this.scheduled(binding.guild_id, async () => {
-        if (!await this.destination(binding.id, conversation, true)) throw new SendError("Managed Discord destination is unavailable or not permitted", true);
+        if (!await this.destination(binding.id, conversation)) throw new SendError("Managed Discord destination is unavailable or not permitted", true);
         return work();
       });
     };
     this.provider = {
       label: "Camel Discord", managed: true, needsCredentials: false,
-      maxMessageLength: this.transport.maxMessageLength, maxFileBytes: this.transport.maxFileBytes, typingMs: this.transport.typingMs,
+      // One bot speaks for every server, so its typing indicator is refreshed less often and never waits in line.
+      maxMessageLength: this.transport.maxMessageLength, maxFileBytes: this.transport.maxFileBytes, typingMs: 30_000,
       defaults: { access: { public: false }, limits: { perSenderPerMinute: 5, turnsPerDay: 100 } },
       setup: async given => {
         const binding = await this.byId(given.bindingId);
@@ -151,7 +153,7 @@ export class ManagedDiscord {
       download: (given, file) => this.transport.download(credentials, file),
       send: (given, conversation, content) => delivery(given, conversation, () => this.transport.send(credentials, conversation, content)),
       sendFile: (given, conversation, file, caption) => delivery(given, conversation, () => this.transport.sendFile(credentials, conversation, file, caption)),
-      typing: (given, conversation) => delivery(given, conversation, () => this.transport.typing!(credentials, conversation)),
+      typing: async (given, conversation) => { if (!this.queue.size) await delivery(given, conversation, () => this.transport.typing!(credentials, conversation)); },
     };
     this.app = this.routes();
     options.ownership?.onFence(() => { this.gateway?.close(); this.gateway = undefined; this.claim = undefined; });
@@ -163,35 +165,31 @@ export class ManagedDiscord {
   private channels() { const channels = this.options.channels(); if (!channels) throw new HttpError(503, "Channels are not available"); return channels; }
   private scheduled<T>(guild: string, work: () => Promise<T>): Promise<T> {
     return this.queue.run(guild, async () => {
-      // Delivery nodes share a fence and cooldown. A 429 commits its cooldown before the durable item retries.
-      const result = await transaction(this.options.db, async sql => {
-        await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`discord-rest:${this.options.applicationId}`]);
-        const key = `${this.options.applicationId}:rest`;
-        const row = (await sql.query("select until_at from discord_setup_cooldowns where key=$1", [key])).rows[0];
-        if (row?.until_at > Date.now()) return { error: new SendError("Discord global delivery cooldown", false, row.until_at - Date.now()) };
-        try { return { value: await work() }; }
-        catch (error) {
-          if (error instanceof SendError && error.retryAfterMs) await sql.query(`insert into discord_setup_cooldowns (key,until_at) values ($1,$2) on conflict (key) do update set until_at=greatest(discord_setup_cooldowns.until_at,excluded.until_at)`, [key, Date.now() + error.retryAfterMs]);
-          return { error };
-        }
-      });
-      if ("error" in result) throw result.error;
-      return result.value;
+      await this.cooldown();
+      try { return await work(); }
+      catch (error) { await this.limited(error); throw error; }
     });
   }
-  private async bot(path: string, scheduled = false) {
-    const key = `${this.options.applicationId}:rest`;
-    if (!scheduled) {
-      const cooldown = (await this.options.db.query("select until_at from discord_setup_cooldowns where key=$1", [key])).rows[0];
-      if (cooldown?.until_at > Date.now()) throw new SendError("Discord global delivery cooldown", false, cooldown.until_at - Date.now());
-    }
+  /** A global Discord rate limit, which any node may have hit, holds every node's requests. */
+  private async cooldown() {
+    const row = (await this.options.db.query("select until_at from discord_setup_cooldowns where key=$1", [`${this.options.applicationId}:rest`])).rows[0];
+    if (row?.until_at > Date.now()) throw new SendError("Discord global delivery cooldown", false, Number(row.until_at) - Date.now(), true);
+  }
+  /** Only a global 429 is shared; a route's own limit just delays the item that met it. */
+  private async limited(error: unknown) {
+    if (!(error instanceof SendError) || !error.global || !error.retryAfterMs) return;
+    await this.options.db.query(`insert into discord_setup_cooldowns (key,until_at) values ($1,$2) on conflict (key) do update set until_at=greatest(discord_setup_cooldowns.until_at,excluded.until_at)`, [`${this.options.applicationId}:rest`, Date.now() + error.retryAfterMs]);
+  }
+  private async bot(path: string) {
+    await this.cooldown();
     const response = await fetch(`${this.base}${path}`, { headers: { Authorization: `Bot ${this.options.botToken}` }, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) {
       if (response.status === 429) {
         const body = await response.json().catch(() => ({})) as any;
-        const retryAfter = Math.max(1000, Number(body.retry_after ?? 1) * 1000);
-        if (!scheduled) await this.options.db.query(`insert into discord_setup_cooldowns (key,until_at) values ($1,$2) on conflict (key) do update set until_at=greatest(discord_setup_cooldowns.until_at,excluded.until_at)`, [key, Date.now() + retryAfter]);
-        throw new SendError("Discord is rate limiting managed requests", false, retryAfter);
+        const global = body.global === true || response.headers.get("x-ratelimit-global") === "true" || response.headers.get("x-ratelimit-scope") === "global";
+        const error = new SendError("Discord is rate limiting managed requests", false, Math.max(1000, Number(body.retry_after ?? 1) * 1000), global);
+        await this.limited(error);
+        throw error;
       }
       throw new HttpError(response.status === 404 ? 404 : 502, response.status === 404 ? "Camel is not installed or cannot access this Discord destination" : `Discord request failed (HTTP ${response.status})`);
     }
@@ -207,14 +205,14 @@ export class ManagedDiscord {
   private async byChannel(channel: string): Promise<Binding | undefined> {
     return (await this.options.db.query(`select b.*, i.state installation_state, i.name guild_name from discord_server_bindings b join discord_installations i using (application_id,guild_id) where b.channel_id=$1 and b.application_id=$2`, [channel, this.options.applicationId])).rows[0];
   }
-  private async destination(bindingId: string, channelId: string, scheduled = false) {
+  private async destination(bindingId: string, channelId: string) {
     if (!ID.test(channelId)) return false;
     let binding = await this.byId(bindingId);
     if (!binding || binding.state !== "active" || !binding.channel_id || binding.installation_state !== "present") return false;
     // An allowed channel was checked against this guild when it was saved, and a channel never changes guild: only threads need a lookup.
     if (binding.allowed_channel_ids.includes(channelId)) return true;
     let channel;
-    try { channel = await this.bot(`/channels/${channelId}`, scheduled); }
+    try { channel = await this.bot(`/channels/${channelId}`); }
     catch (error) { if (error instanceof HttpError && error.status === 404) return false; throw error; }
     if (channel.guild_id !== binding.guild_id || !binding.allowed_channel_ids.some(id => id === channelId || (id === channel.parent_id && [10, 11, 12].includes(channel.type)))) return false;
     // Re-read after the REST request: pause, removal and configuration races must not use a cached grant.
@@ -345,7 +343,7 @@ export class ManagedDiscord {
     });
     if (allowed) void this.scheduled(guild, async () => {
       if (!this.current()) return;
-      const destination = await this.bot(`/channels/${channel}`, true);
+      const destination = await this.bot(`/channels/${channel}`);
       if (!this.current() || (guild === "dm" ? !!destination.guild_id : destination.guild_id !== guild)) return;
       await this.transport.send({ botToken: this.options.botToken }, channel, content);
     }).catch(() => this.log("status_failed"));

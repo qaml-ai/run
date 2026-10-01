@@ -73,7 +73,8 @@ export function discord(options: {
     const status = response.status;
     const retryAfter = Number(answer.retry_after ?? response.headers.get("retry-after"));
     throw new SendError(`Discord ${method} ${path.split("/")[1]} failed: HTTP ${status}${answer.message ? ` ${answer.message}` : ""}`,
-      status >= 400 && status < 500 && status !== 429, retryAfter > 0 ? Math.ceil(retryAfter * 1000) : undefined);
+      status >= 400 && status < 500 && status !== 429, retryAfter > 0 ? Math.ceil(retryAfter * 1000) : undefined,
+      status === 429 && (answer.global === true || response.headers.get("x-ratelimit-global") === "true" || response.headers.get("x-ratelimit-scope") === "global"));
   }
 
   function connect(credentials: Record<string, string>, handlers: GatewayHandlers): Gateway {

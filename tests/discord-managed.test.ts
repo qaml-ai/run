@@ -38,7 +38,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, owned
   const { db } = await testDatabase();
   const received: { channel: string; message: Inbound }[] = [];
   const sent: { channel: string; content: string }[] = [];
-  const state = { manage: true, present: true, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, paginated: false, limitedGet: false };
+  const state = { manage: true, present: true, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, paginated: false, limitedGet: false, routeLimited: false };
   const keypair = generateKeyPairSync("ed25519");
   const publicKey = (keypair.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32).toString("hex");
   let gatewayUrl = "";
@@ -68,6 +68,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, owned
     }
     if (url.pathname.endsWith("/messages")) {
       if (state.limited) return json(429, { retry_after: 0.15, global: true });
+      if (state.routeLimited) return json(429, { retry_after: 0.15, global: false });
       sent.push({ channel, content: JSON.parse(raw).content }); return json(200, { id: "1" });
     }
     return json(204, {});
@@ -368,4 +369,16 @@ test("members without access cost no Discord REST lookup", async t => {
   await f.managed.dispatch("MESSAGE_CREATE", { id: "402", guild_id: guildA, channel_id: "203", type: 0, author: { id: "998" }, mentions: [{ id: APP }], content: "hi", attachments: [] });
   assert.equal((await f.db.query("select count(*) from discord_setup_cooldowns where key=$1", [`${APP}:rest`])).rows[0].count, 0);
   assert.equal(f.received.length, 0);
+});
+
+test("a route's own 429 delays only that send; other servers and nodes keep delivering", async t => {
+  const f = await fixture(t); await f.bind(); const binding = (await f.db.query("select id from discord_server_bindings")).rows[0].id;
+  f.state.routeLimited = true;
+  await assert.rejects(f.managed.provider.send({ bindingId: binding }, channelA, "first"), (error: any) => error.retryAfterMs > 0 && !error.global);
+  assert.equal((await f.db.query("select count(*) from discord_setup_cooldowns where key=$1", [`${APP}:rest`])).rows[0].count, 0);
+  f.state.routeLimited = false;
+  const peer = new ManagedDiscord({ ...f.options, node: "second" }); t.after(() => peer.stop());
+  await peer.provider.send({ bindingId: binding }, channelA, "second");
+  await f.managed.provider.send({ bindingId: binding }, channelA, "third");
+  assert.deepEqual(f.sent.map(item => item.content), ["second", "third"]);
 });

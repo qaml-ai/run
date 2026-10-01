@@ -129,7 +129,12 @@ export interface Gateway { close(): void }
 /** A failed send; permanent failures (blocked bot, unknown chat) are not retried. */
 export class SendError extends Error {
   permanent: boolean; retryAfterMs?: number;
-  constructor(message: string, permanent: boolean, retryAfterMs?: number) { super(message); this.permanent = permanent; this.retryAfterMs = retryAfterMs; }
+  /** A rate limit on the whole bot, not one route: every send through it waits. */
+  global?: boolean;
+  constructor(message: string, permanent: boolean, retryAfterMs?: number, global?: boolean) {
+    super(message); this.permanent = permanent; this.retryAfterMs = retryAfterMs;
+    if (global) this.global = true;
+  }
 }
 
 export interface Channel {
