@@ -122,8 +122,9 @@ using the normal [definition revision mechanism](definitions.md). Configuration
 changes require a current Discord authorization, including changes to a
 definition used by a managed server.
 
-Pause stops new routing and pending sends. Resume requires current administrator
-authorization. Disconnect retains conversation history and stops routing; it
+Pause stops new routing and pending sends. Pause and disconnect need only your
+Camel sign-in, so the paying account can always stop a server; resume requires
+current administrator authorization. Disconnect retains conversation history and stops routing; it
 does not remove Camel from Discord. Removing Camel marks its installation as
 removed, and re-inviting it requires explicit reactivation. A temporary Discord
 server outage is tracked separately from removal. A successful configuration

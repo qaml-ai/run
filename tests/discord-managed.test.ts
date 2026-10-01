@@ -111,6 +111,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, owned
     remove: async (_tenant: string, id: string) => { saved.delete(id); await db.query("delete from channels where id=$1", [id]); },
     get: async (tenant: string, id: string) => { const channel = saved.get(id)!; assert.equal(channel.tenant, tenant); return channel; },
     inbound: async (channel: string, message: Inbound) => { received.push({ channel, message }); return true; },
+    allowed: (channel: Channel, sender: { id: string }) => channel.access.public || channel.access.allow.includes(sender.id),
   } as unknown as Channels;
   const ownership = owned ? new Ownership(db, { node: "first", ttlMs: 60_000 }) : undefined;
   if (ownership) { await ownership.start(); t.after(() => ownership.close()); }
@@ -175,9 +176,8 @@ test("two guilds route to separate tenant channels; outbound text/files/typing r
   await assert.rejects(f.managed.provider.typing!({ bindingId: binding }, channelB), /not permitted/);
   await assert.rejects(f.managed.provider.sendFile({ bindingId: binding }, channelB, { name: "secret", contentType: "text/plain", size: 1, blob: async () => new Blob(["x"]) }), /not permitted/);
   f.state.manage = false;
-  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 403);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { name: "renamed" })).status, 403);
   await assert.rejects(f.managed.authorizeDefinition(new Request("https://camel.test", { headers: { cookie: "ar_session=session-a" } }), "tenant-a", "def-test"), /Manage Server/);
-  f.state.manage = true;
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
   await assert.rejects(f.managed.provider.send({ bindingId: binding }, channelA, "late"), /not permitted/);
   assert.deepEqual(f.sent.map(item => item.content), ["safe", "thread safe"]);
@@ -310,7 +310,9 @@ test("unfunded server mentions produce bounded deterministic status without subm
   const unfunded = new ManagedDiscord({ ...f.options, canStart: async () => "no credit" }); t.after(() => unfunded.stop());
   await unfunded.dispatch("READY", { user: { id: APP }, guilds: [{ id: guildA }] });
   await unfunded.dispatch("MESSAGE_CREATE", { id: "301", guild_id: guildA, channel_id: channelA, type: 0, author: { id: OWNER }, mentions: [{ id: APP }], content: `<@${APP}> hello`, attachments: [] });
-  assert.equal(f.received.length, 0); assert.equal(f.sent.length, 1); assert.match(f.sent[0].content, /balance and spending limits/);
+  assert.equal(f.received.length, 0);
+  for (const deadline = Date.now() + 2000; !f.sent.length && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.sent.length, 1); assert.match(f.sent[0].content, /balance and spending limits/);
 });
 
 test("OAuth continuation tolerates unrelated cookies and cookie ordering changes", async t => {
@@ -337,9 +339,33 @@ test("startup maintenance removes expired OAuth material while retaining active 
 
 test("a global 429 on an inbound destination check fences other delivery nodes", async t => {
   const f = await fixture(t); const a = await f.bind(); f.state.limitedGet = true;
-  await assert.rejects(f.managed.provider.guard!(f.saved.get(a.channelId)!, channelA, "inbound"), /rate limiting/);
+  assert.equal(await f.managed.provider.guard!(f.saved.get(a.channelId)!, channelA, "inbound"), true);
+  await assert.rejects(f.managed.provider.guard!(f.saved.get(a.channelId)!, "203", "inbound"), /rate limiting/);
   const peer = new ManagedDiscord({ ...f.options, node: "other" }); t.after(() => peer.stop());
   f.state.limitedGet = false;
-  await assert.rejects(peer.provider.guard!(f.saved.get(a.channelId)!, channelA, "submit"), /cooldown/);
+  await assert.rejects(peer.provider.guard!(f.saved.get(a.channelId)!, "203", "submit"), /cooldown/);
   assert.equal(f.sent.length, 0);
+});
+
+test("a Gateway reconnect's READY (unavailable guild stubs) does not fence delivery to a present server", async t => {
+  const f = await fixture(t); const a = await f.bind(); await f.ready();
+  await f.managed.dispatch("READY", { user: { id: APP }, guilds: [{ id: guildA, unavailable: true }, { id: guildB, unavailable: true }] });
+  assert.equal(await f.managed.provider.guard!(f.saved.get(a.channelId)!, channelA, "send"), true);
+});
+
+test("the paying account can pause or disconnect a server without a current Discord role", async t => {
+  const f = await fixture(t); await f.bind(); f.state.manage = false;
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
+  assert.equal((await f.db.query("select state from discord_server_bindings")).rows[0].state, "paused");
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "active" })).status, 403);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" }, "tenant-b")).status, 404);
+});
+
+test("members without access cost no Discord REST lookup", async t => {
+  const f = await fixture(t); const a = await f.bind(); await f.ready();
+  f.saved.get(a.channelId)!.access = { public: false, allow: [] };
+  f.state.limitedGet = true;
+  await f.managed.dispatch("MESSAGE_CREATE", { id: "402", guild_id: guildA, channel_id: "203", type: 0, author: { id: "998" }, mentions: [{ id: APP }], content: "hi", attachments: [] });
+  assert.equal((await f.db.query("select count(*) from discord_setup_cooldowns where key=$1", [`${APP}:rest`])).rows[0].count, 0);
+  assert.equal(f.received.length, 0);
 });

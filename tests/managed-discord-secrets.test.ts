@@ -28,12 +28,12 @@ test("managed Discord rejects invalid application credentials without exposing t
     ["AGENT_DISCORD_MANAGED_APPLICATION_ID", "a-server-name"],
     ["AGENT_DISCORD_MANAGED_PUBLIC_KEY", "malformed-signing-key"],
   ]) {
-    await assert.rejects(managedDiscordSecrets({ ...configured, [name]: value }), error => {
-      assert.ok(error instanceof Error);
-      assert.match(error.message, /valid.*botToken, applicationId, clientSecret, publicKey/);
-      assert.equal(error.message.includes(value), false);
-      return true;
-    });
+    const logged: string[] = []; const original = console.error;
+    console.error = (line: string) => { logged.push(line); };
+    try { assert.equal(await managedDiscordSecrets({ ...configured, [name]: value }), undefined); }
+    finally { console.error = original; }
+    assert.match(logged.join("\n"), /valid.*botToken, applicationId, clientSecret, publicKey/);
+    assert.equal(logged.join("\n").includes(value), false);
   }
 });
 

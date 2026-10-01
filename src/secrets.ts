@@ -78,7 +78,11 @@ export async function managedDiscordSecrets(env = process.env) {
   let values: Record<string, unknown>;
   if (env.AGENT_DISCORD_MANAGED_SECRET_ARN) {
     if (names.some(name => env[`AGENT_DISCORD_MANAGED_${name}`])) throw new Error("Set AGENT_DISCORD_MANAGED_SECRET_ARN or managed Discord values, not both");
-    values = JSON.parse((await (await secretReader(env.AGENT_DISCORD_MANAGED_SECRET_ARN, env))()) || "{}");
+    // Like Stripe and Google: a secret Terraform made but nothing has filled yet leaves the integration off.
+    let text = "";
+    try { text = await (await secretReader(env.AGENT_DISCORD_MANAGED_SECRET_ARN, env))(); }
+    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; }
+    try { values = JSON.parse(text || "{}"); } catch { values = {}; }
   } else {
     values = { botToken: env.AGENT_DISCORD_MANAGED_BOT_TOKEN, applicationId: env.AGENT_DISCORD_MANAGED_APPLICATION_ID,
       clientSecret: env.AGENT_DISCORD_MANAGED_CLIENT_SECRET, publicKey: env.AGENT_DISCORD_MANAGED_PUBLIC_KEY };
@@ -90,7 +94,9 @@ export async function managedDiscordSecrets(env = process.env) {
   if (typeof values.botToken !== "string" || !/^[A-Za-z0-9_.-]{50,100}$/.test(values.botToken)
       || typeof values.applicationId !== "string" || !/^\d{1,20}$/.test(values.applicationId)
       || typeof values.clientSecret !== "string" || typeof values.publicKey !== "string" || !/^[a-fA-F0-9]{64}$/.test(values.publicKey)) {
-    throw new Error("Managed Discord credentials must hold valid {botToken, applicationId, clientSecret, publicKey}");
+    // A malformed optional integration must not stop every node from starting: it stays off, and says so.
+    console.error(JSON.stringify({ type: "discord_managed_not_configured", reason: "Managed Discord credentials must hold valid {botToken, applicationId, clientSecret, publicKey}" }));
+    return undefined;
   }
   return { botToken: values.botToken, applicationId: values.applicationId, clientSecret: values.clientSecret, publicKey: values.publicKey };
 }

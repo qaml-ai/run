@@ -459,7 +459,7 @@ export class Channels {
     if (recorded && recorded.item.due <= Date.now()) void this.advance(recorded).catch(error => this.failed(recorded.item, error));
   }
 
-  allowed(channel: Channel, sender: Sender) {
+  allowed(channel: Pick<Channel, "access" | "type">, sender: Sender) {
     if (channel.access.public) return true;
     const username = sender.username?.toLowerCase();
     const allows = this.provider(channel.type).allows;

@@ -103,6 +103,7 @@ export class ManagedDiscord {
   private stopped = true;
   private reconciling = false;
   private dispatchTail: Promise<void> = Promise.resolve();
+  private dispatchBacklog = 0;
   private mutationTail: Promise<void> = Promise.resolve();
   private botId = "";
   private readonly options: ManagedDiscordOptions;
@@ -112,7 +113,14 @@ export class ManagedDiscord {
     this.transport = discord({ apiUrl: this.base, gateway: {
       intents: (1 << 0) | (1 << 9) | (1 << 12),
       dispatch: (event, data) => {
-        this.dispatchTail = this.dispatchTail.then(() => this.dispatch(event, data)).catch(error => this.log("dispatch_failed", { error: error instanceof HttpError ? error.code ?? `HTTP_${error.status}` : "processing_failed" }));
+        // GUILD_MESSAGES delivers every message in every server: only mentions and DMs are queued, and the queue is bounded.
+        if (event === "READY") this.botId = String(data?.user?.id ?? "");
+        else if (event === "MESSAGE_CREATE" && data?.guild_id && !data.mentions?.some((user: any) => user?.id === this.botId)) return;
+        else if (!["MESSAGE_CREATE", "GUILD_CREATE", "GUILD_UPDATE", "GUILD_DELETE"].includes(event)) return;
+        if (this.dispatchBacklog >= 1000) { this.log("dispatch_dropped", { event }); return; }
+        this.dispatchBacklog++;
+        this.dispatchTail = this.dispatchTail.then(() => this.dispatch(event, data)).catch(error => this.log("dispatch_failed", { error: error instanceof HttpError ? error.code ?? `HTTP_${error.status}` : "processing_failed" }))
+          .finally(() => { this.dispatchBacklog--; });
         return this.dispatchTail;
       },
     } });
@@ -203,6 +211,8 @@ export class ManagedDiscord {
     if (!ID.test(channelId)) return false;
     let binding = await this.byId(bindingId);
     if (!binding || binding.state !== "active" || !binding.channel_id || binding.installation_state !== "present") return false;
+    // An allowed channel was checked against this guild when it was saved, and a channel never changes guild: only threads need a lookup.
+    if (binding.allowed_channel_ids.includes(channelId)) return true;
     let channel;
     try { channel = await this.bot(`/channels/${channelId}`, scheduled); }
     catch (error) { if (error instanceof HttpError && error.status === 404) return false; throw error; }
@@ -271,7 +281,8 @@ export class ManagedDiscord {
         await sql.query(`update discord_server_bindings b set state='paused',updated_at=$2 from discord_installations i where b.application_id=i.application_id and b.guild_id=i.guild_id and i.application_id=$1 and i.state='removed' and b.state='active'`, [this.options.applicationId, Date.now()]);
         await sql.query(`delete from channel_items where item->>'channel' in (select b.channel_id from discord_server_bindings b join discord_installations i using(application_id,guild_id) where b.application_id=$1 and i.state='removed')`, [this.options.applicationId]);
       });
-      for (const guild of data.guilds ?? []) if (ID.test(guild?.id)) await this.installation(guild.id, guild.name ?? "", guild.unavailable ? "unavailable" : "present");
+      // READY lists every guild as unavailable until its GUILD_CREATE: that is not an outage, so a present server stays present.
+      for (const guild of data.guilds ?? []) if (ID.test(guild?.id)) await this.installation(guild.id, guild.name ?? "", guild.unavailable ? "unavailable" : "present", true);
       return;
     }
     if (event === "GUILD_CREATE" || event === "GUILD_UPDATE") {
@@ -298,20 +309,23 @@ export class ManagedDiscord {
       await this.status(data.channel_id, data.guild_id, `Camel is paused or unavailable for this server. A server admin can manage it here: ${this.setupUrl(data.guild_id)}`);
       return;
     }
+    const inbound = parseMessage(data, this.botId);
+    if (!inbound) return;
+    const channel = await this.channels().get(binding.tenant, binding.channel_id!).catch(() => undefined);
+    if (!channel || !this.channels().allowed(channel, inbound.sender)) return;
     if (!await this.destination(binding.id, data.channel_id)) return;
     if (await this.options.canStart?.(binding.tenant)) {
       await this.status(data.channel_id, data.guild_id, "Camel cannot start work for this server right now. A server admin can check the account's balance and spending limits in the console.");
       return;
     }
-    const inbound = parseMessage(data, this.botId);
-    if (inbound && this.current()) await this.channels().inbound(binding.channel_id!, inbound);
+    if (this.current()) await this.channels().inbound(binding.channel_id!, inbound);
   }
-  private async installation(guild: string, name: string, state: "present" | "unavailable" | "removed") {
+  private async installation(guild: string, name: string, state: "present" | "unavailable" | "removed", ready = false) {
     if (!this.current()) return;
     await underClaim(this.options.db, this.claim, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`discord-binding:${this.options.applicationId}:${guild}`]);
       const prior = (await sql.query(`select state from discord_installations where application_id=$1 and guild_id=$2 for update`, [this.options.applicationId, guild])).rows[0];
-      await sql.query(`insert into discord_installations (application_id,guild_id,name,state,updated_at) values ($1,$2,$3,$4,$5) on conflict (application_id,guild_id) do update set name=case when excluded.name='' then discord_installations.name else excluded.name end,state=excluded.state,updated_at=excluded.updated_at`, [this.options.applicationId, guild, name, state, Date.now()]);
+      await sql.query(`insert into discord_installations (application_id,guild_id,name,state,updated_at) values ($1,$2,$3,$4,$5) on conflict (application_id,guild_id) do update set name=case when excluded.name='' then discord_installations.name else excluded.name end,state=case when $6 and discord_installations.state='present' then 'present' else excluded.state end,updated_at=excluded.updated_at`, [this.options.applicationId, guild, name, state, Date.now(), ready]);
       if (state === "removed" || prior?.state === "removed") {
         await sql.query(`update discord_server_bindings set state='paused',updated_at=$3 where application_id=$1 and guild_id=$2 and state='active'`, [this.options.applicationId, guild, Date.now()]);
         await sql.query(`delete from channel_items where item->>'channel' in (select channel_id from discord_server_bindings where application_id=$1 and guild_id=$2)`, [this.options.applicationId, guild]);
@@ -329,12 +343,12 @@ export class ManagedDiscord {
       await sql.query("delete from discord_setup_cooldowns where until_at<$1", [now - 60_000]);
       return global.rows[0].count <= 100;
     });
-    if (allowed) await this.scheduled(guild, async () => {
+    if (allowed) void this.scheduled(guild, async () => {
       if (!this.current()) return;
       const destination = await this.bot(`/channels/${channel}`, true);
       if (!this.current() || (guild === "dm" ? !!destination.guild_id : destination.guild_id !== guild)) return;
       await this.transport.send({ botToken: this.options.botToken }, channel, content);
-    });
+    }).catch(() => this.log("status_failed"));
   }
 
   private session(req: Request) { return hash((req.headers.get("cookie") ?? "").split(";").map(value => value.trim()).find(value => value.startsWith("ar_session=")) ?? ""); }
@@ -528,9 +542,16 @@ export class ManagedDiscord {
       if (!parsed.success) throw new HttpError(400, parsed.error.issues[0].message);
       const input = parsed.data; const guildId = c.req.param("guildId"); const account = tenant(c);
       return this.withBindingLock(guildId, async () => {
-        const permission = await this.permission(c.req.raw, account, guildId);
         const binding = await this.byGuild(guildId);
         if (!binding || binding.tenant !== account) throw new HttpError(404, "Discord server binding not found");
+        // The paying account may always stop a server, even after losing its Discord role; anything else needs a current administrator.
+        if (Object.keys(input).length === 1 && (input.state === "paused" || input.state === "disconnected")) {
+          await this.options.db.query("update discord_server_bindings set state=$2,updated_at=$3 where id=$1", [binding.id, input.state, Date.now()]);
+          if (binding.channel_id) await this.options.db.query("delete from channel_items where item->>'channel'=$1", [binding.channel_id]);
+          this.log("binding_updated", { guildId, tenant: account, state: input.state });
+          return c.json(await this.view((await this.byId(binding.id))!));
+        }
+        const permission = await this.permission(c.req.raw, account, guildId);
         if (!binding.channel_id) throw new HttpError(409, "This server setup has not completed; contact the runtime operator");
         // Disconnect and pause remain possible after the bot is physically removed.
         if (input.state !== "paused" && input.state !== "disconnected") await this.verifiedInstallation(guildId);
