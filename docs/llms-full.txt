@@ -2104,7 +2104,12 @@ Members who can interact may invoke the definition's tools using your Camel
 account's credentials. Select tools and allowed members accordingly. Usage is
 billed to the connected account, with its normal credit and spending controls.
 The managed integration offers per-sender rate limits and a daily turn limit;
-it does not yet offer an aggregate dollar budget across a server's agents.
+it does not yet offer an aggregate dollar budget across a server's agents. A
+definition with the `schedule` builtin cannot serve a server (any member could
+have the agent wake itself up outside those limits), and turns you start through
+the API count against the server's daily limit. An account connects at most 10
+servers, or one while on free credit, which also caps each server at 500 turns a
+day.
 
 If Camel is invited before setup, a direct mention returns a setup link without
 creating an agent or calling a model. `/camel setup` returns an ephemeral setup
@@ -2115,15 +2120,20 @@ shared server membership.
 
 Use **Configure** to edit the selected definition, including tools, and apply it to
 existing conversations; the console reports updated, queued or failed outcomes
-using the normal [definition revision mechanism](definitions.md). Configuration
-changes require a current Discord authorization, including changes to a
-definition used by a managed server.
+using the normal [definition revision mechanism](definitions.md). Changing a
+server's configuration requires a current Discord authorization; the definition
+itself is your account's, editable like any other.
 
 Pause stops new routing and pending sends. Pause and disconnect need only your
 Camel sign-in, so the paying account can always stop a server; resume requires
 current administrator authorization. Disconnect retains conversation history and stops routing; it
-does not remove Camel from Discord. Removing Camel marks its installation as
-removed, and re-inviting it requires explicit reactivation. A temporary Discord
+does not remove Camel from Discord. Removing Camel from the server disconnects
+it, and re-inviting it requires explicit reactivation.
+
+A server's current administrators decide who runs Camel there. One who uses
+another camelRun account can pause or disconnect the server from the console,
+then set up a disconnected server (or one Camel was removed from) under their own
+account. The previous account keeps its past conversations but sees no new ones. A temporary Discord
 server outage is tracked separately from removal. A successful configuration
 save is not proof that Discord delivered a reply: test with a fresh mention in
 an allowed channel.
@@ -3663,6 +3673,9 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 | Repeating schedules | `everySeconds` at least 60 |
 | Schedule body | 64 KiB |
 | Channel senders | `perSenderPerMinute` 1–600 (default 10), `turnsPerDay` 1–1,000,000 (default 1,000); `allow` at most 1,000 senders |
+| Channel daily turns | count messages and, since they also post, turns started through the API or a schedule; past the limit those do not post |
+| Camel Discord servers per account | 10, or 1 on free credit (an operator can change either) |
+| A Camel Discord server | `perSenderPerMinute` 1–100 (default 5), `turnsPerDay` 1–10,000 (default 100; at most 500 on free credit); no `schedule` builtin |
 | Webhook endpoints per tenant | 16 |
 | A webhook delivery | 10 s to answer; retried until delivered, for up to 3 days |
 | A rotated webhook secret | keeps signing beside the new one for 24 hours |

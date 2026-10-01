@@ -116,6 +116,9 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 | Repeating schedules | `everySeconds` at least 60 |
 | Schedule body | 64 KiB |
 | Channel senders | `perSenderPerMinute` 1–600 (default 10), `turnsPerDay` 1–1,000,000 (default 1,000); `allow` at most 1,000 senders |
+| Channel daily turns | count messages and, since they also post, turns started through the API or a schedule; past the limit those do not post |
+| Camel Discord servers per account | 10, or 1 on free credit (an operator can change either) |
+| A Camel Discord server | `perSenderPerMinute` 1–100 (default 5), `turnsPerDay` 1–10,000 (default 100; at most 500 on free credit); no `schedule` builtin |
 | Webhook endpoints per tenant | 16 |
 | A webhook delivery | 10 s to answer; retried until delivered, for up to 3 days |
 | A rotated webhook secret | keeps signing beside the new one for 24 hours |

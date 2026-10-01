@@ -11,9 +11,32 @@ Gateway shard. It refuses to connect if Discord recommends more than one shard
 or its session-start allowance is exhausted. Multi-shard identify coordination
 and an aggregate server dollar budget remain follow-up work. The existing tenant
 credit and spending controls still apply, as do the managed server's daily turn
-limit and per-sender rate limit. Outbound scheduling is fair between guilds on
-each runtime node, with a shared database lock and cooldown for delivery across
-nodes. Start with a small pilot and monitor Discord 429 responses.
+limit and per-sender rate limit. Until the budget exists, interim caps hold: an
+account connects at most 10 servers (1 on free credit; `AGENT_DISCORD_MANAGED_SERVERS`,
+`AGENT_DISCORD_MANAGED_FREE_SERVERS`, or a tenant's `maxDiscordServers`), free
+credit allows at most 500 turns per server per day, API and scheduled turns count
+against a server's daily turns, and a definition with the `schedule` builtin
+cannot serve a server.
+
+Outbound sends are fair between servers on each runtime node, and nodes send in
+parallel. Only a global Discord rate limit (`global: true`) pauses every server,
+through a cooldown row all nodes read; a route's own 429 delays just the message
+that met it. Typing indicators refresh every 30 seconds and are skipped while a
+node has sends waiting. Start with a small pilot and monitor Discord 429
+responses (`channel_send_failed` with `HTTP 429`).
+
+### Gateway ownership and failover
+
+One node holds the Gateway, under the ownership claim
+`discord-managed:<applicationId>:shard:0`; every other node retries the claim
+every 10 seconds. A draining node releases it, so a deploy hands over within
+about 10 seconds. A node that dies holds it until its lease lapses
+(`AGENT_LEASE_TTL_MS`, 90 s in production), so a crash leaves Camel deaf for up
+to about 100 seconds. Discord does not replay messages to a new session:
+mentions sent in that gap are not answered. Replies already queued are not lost;
+they are delivered by whichever node drains the channel queue. Two Gateways
+never answer one message twice: a node fences itself before its lease expires,
+and each message is recorded once by its ID.
 
 ## Create the platform application
 
@@ -51,8 +74,9 @@ See [Discord Gateway](https://docs.discord.com/developers/events/gateway).
 
 ## Configure runtime secrets
 
-Set `AGENT_DISCORD_MANAGED_ENABLED=true` and
-`AGENT_DISCORD_MANAGED_SECRET_ARN` to a Secrets Manager secret containing:
+In production, Terraform provides both (below). Elsewhere, set
+`AGENT_DISCORD_MANAGED_ENABLED=true` and `AGENT_DISCORD_MANAGED_SECRET_ARN` to a
+Secrets Manager secret containing:
 
 ```json
 {
@@ -65,10 +89,46 @@ Set `AGENT_DISCORD_MANAGED_ENABLED=true` and
 
 For development, use the four corresponding plain
 `AGENT_DISCORD_MANAGED_APPLICATION_ID`, `_BOT_TOKEN`, `_CLIENT_SECRET` and
-`_PUBLIC_KEY` variables instead. Do not mix plain values with the ARN. The runtime
-also needs console authentication, an encryption key for channels, a public URL,
-and Postgres. Startup applies the additive managed Discord migration.
+`_PUBLIC_KEY` variables instead. Do not use them in production: a sandbox child
+running as the same user can read the environment. Do not mix plain values with
+the ARN. The runtime also needs console authentication, an encryption key for
+channels, a public URL, and Postgres. Startup applies the additive managed
+Discord migration whether or not the integration is enabled.
 See [Configuration](configuration.md).
+
+A secret with no value, or with invalid values, leaves the integration off and
+logs `discord_managed_not_configured`; the runtime still starts. A secret the
+task cannot read (AccessDenied) still stops startup, like every other secret.
+
+### Terraform
+
+`infra/terraform` creates the empty `discord-managed` secret container and
+grants the task role `GetSecretValue` on it whether or not the integration is
+on. The variable `discord_managed_enabled` (default `false`) adds
+`AGENT_DISCORD_MANAGED_ENABLED` and `AGENT_DISCORD_MANAGED_SECRET_ARN` to the task
+definition. Enable it in this order, so the permission exists before any task
+reads the secret:
+
+1. Apply Terraform with `discord_managed_enabled = false` (the default). This
+   creates the secret container and the IAM permission, and changes nothing the
+   runtime does.
+2. Store the application's JSON in the secret:
+
+   ```sh
+   aws secretsmanager put-secret-value --region us-west-2 \
+     --secret-id camelai/agent-runtime/discord-managed --secret-string file://discord.json
+   ```
+
+3. Set `discord_managed_enabled = true` in the deployment's tfvars, plan, read the
+   plan (it should change only the task definition's environment), and apply.
+4. Terraform registers a task definition revision but the service keeps the
+   running one: deploy the running tag (`infra/ecs-deploy.sh <tag>`), or let the
+   next CI deploy pick up the revision.
+5. Watch for `discord_managed_gateway_ready` from one node, then set the
+   Interactions Endpoint URL (below).
+
+To turn it off, set the variable back to `false`, apply and deploy. Bindings
+stay in the database and resume when it is enabled again.
 
 Restart all runtime nodes after credential rotation. Rotating the bot token
 invalidates existing connections; update the platform secret and restart the
@@ -126,12 +186,20 @@ account usage attribution.
 
 Confirm a non-administrator cannot claim a server, a server already bound to
 another account returns a conflict, and an expired Discord authorization cannot
-change policy. Check a thread of an allowed channel, a disallowed channel, a role
+change policy. Check that an administrator signed in to the other account can
+disconnect that server and then set it up, and that the first account sees no
+new conversation. Check that the account can pause its server without a Discord
+role. Check a thread of an allowed channel, a disallowed channel, a role
 mention, and a direct message. Pausing or disconnecting should stop pending sends;
-removal should pause routing, while a temporary unavailable guild should recover
-without being treated as removal. Re-invitation requires explicit reactivation.
-An already accepted agent turn may finish and incur usage after pause or removal;
-its managed Discord reply is suppressed. Pause does not abort active agent turns.
+removing the bot disconnects the server, while a temporary unavailable guild
+should recover without being treated as removal. Re-invitation requires explicit
+reactivation. Deploy during a conversation: replies already queued must still
+arrive. An already accepted agent turn may finish and incur usage after pause or
+removal; its managed Discord reply is suppressed. Pause does not abort active
+agent turns.
+
+For a closed pilot, leave **Public Bot** off in the Developer Portal: only the
+application's owner can then add it to a server. Turn it on for wider rollout.
 
 Review `discord_managed_*` events for Gateway ownership, retries, routing errors
 and installation changes, plus existing channel delivery failures. Saved
