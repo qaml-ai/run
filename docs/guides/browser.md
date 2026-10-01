@@ -22,7 +22,9 @@ return Response.json(await agents.runtime.browserToken(agent.id, { ttlSeconds: 9
   it expires. It is stateless: nothing revokes it sooner, so keep it short.
 - `events` limits the event types it gets (the watcher needs `turn_opened`,
   `message_start`, `message_update` and `message_end` to follow messages);
-  `redact: ["usage.cost"]` leaves provider costs out of everything it reads. It
+  `redact: ["usage.cost"]` leaves every cost out of everything it reads (each
+  message's `usage.cost`, and the provider's own `usage.providerCost` and
+  `providerCreditCost`, in events, snapshots, history and inputs). It
   never gets the runtime's internal events, or a run's result, only whether and
   why a run stopped.
 - It works from any origin, as publishable keys do: the token grants the read,

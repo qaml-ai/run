@@ -74,14 +74,18 @@ export class BrowserTokens {
   }
 }
 
-/** A value without the `cost` of any `usage` in it, however deep: messages, and whatever holds them (agent_end's, turn_end's). */
+/** A cost a `usage` carries: the catalog's (`cost`), the provider's own (`providerCost`, `providerCreditCost`), or any added later. */
+const COST = /cost/i;
+
+/** A value without any cost of any `usage` in it, however deep: messages, and whatever holds them (agent_end's, turn_end's, a snapshot's turn). */
 function withoutCost(value: any): any {
   if (Array.isArray(value)) return value.map(withoutCost);
   if (!value || typeof value !== "object") return value;
   const copy: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (key === "usage" && item && typeof item === "object" && !Array.isArray(item)) { const { cost: _cost, ...usage } = item as Record<string, unknown>; copy[key] = withoutCost(usage); }
-    else copy[key] = withoutCost(item);
+    if (key === "usage" && item && typeof item === "object" && !Array.isArray(item)) {
+      copy[key] = withoutCost(Object.fromEntries(Object.entries(item).filter(([field]) => !COST.test(field))));
+    } else copy[key] = withoutCost(item);
   }
   return copy;
 }

@@ -150,3 +150,40 @@ test("a snapshot shows a token's reader only what its scopes and event list let 
   assert.equal(historic.partial, null);
   gate.resolve();
 });
+
+test("a token that redacts usage.cost reads no cost anywhere: the catalog's or the provider's, in events, snapshots, state, history and inputs", async t => {
+  // The provider reports its own cost (OpenRouter's usage.cost), which the runtime keeps as usage.providerCost and providerCreditCost.
+  const priced = { prompt_tokens: 100, completion_tokens: 20, cost: 0.0123 };
+  const r = await runtime(t, (_body, index) => index % 2 === 0 ? { ...toolCall("js_exec", { code: "return 1" }, `call_${index}`), usage: priced } : { content: "done", usage: priced });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const token = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: { redact: ["usage.cost"] } })).json.token as string;
+  const costs = (value: unknown, path = "$"): string[] => !value || typeof value !== "object" ? []
+    : Object.entries(value).flatMap(([key, item]) => [...(/cost/i.test(key) ? [`${path}.${key}`] : []), ...costs(item, `${path}.${key}`)]);
+
+  const watcher = await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, bearer(token), { query: "snapshot=1" });
+  const done = await r.prompt(agent, "go");
+  await until(() => watcher.frames.some(frame => frame.data.type === "response" && frame.data.id === done.id), "the outcome");
+  // The fixture does carry every kind of cost, as the tenant reads it.
+  const tenants = (await r.call(`/v1/agents/${agent}/history`)).json.messages.find((message: any) => message.role === "assistant");
+  for (const field of ["cost", "providerCost", "providerCreditCost"]) assert.ok(field in tenants.usage, `the tenant reads usage.${field}`);
+
+  // A watcher that joins now starts from a snapshot.
+  const late = await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, bearer(token), { query: "snapshot=1" });
+  await until(() => late.frames.length > 0, "a snapshot");
+  const reads: Record<string, unknown> = {
+    stream: watcher.frames.map(frame => frame.data),
+    snapshot: late.frames.map(frame => frame.data),
+    poll: await (await fetch(`${r.base}/v1/agents/${agent}/events?poll=1`, { headers: { ...bearer(token), "Last-Event-ID": String(watcher.frames.find(frame => frame.id && frame.data.type !== "snapshot")!.id! - 1) } })).json(),
+    state: (await r.call(`/v1/agents/${agent}/state`, { token })).json,
+    history: (await r.call(`/v1/agents/${agent}/history`, { token })).json,
+    page: (await r.call(`/v1/agents/${agent}/history?limit=10`, { token })).json,
+    inputs: (await r.call(`/v1/agents/${agent}/inputs`, { token })).json,
+  };
+  assert.ok((reads.history as any).messages.some((message: any) => message.role === "assistant" && message.usage), "history has usage to check");
+  assert.ok((reads.poll as any).events.some((event: any) => event.data.event?.type === "message_end"), "the poll has messages to check");
+  for (const [read, value] of Object.entries(reads)) assert.deepEqual(costs(value), [], `${read} carries no cost`);
+  // Nothing else a token might try carries one either: it reads none of these.
+  for (const path of [`/v1/agents/${agent}/requests/${done.id}`, `/v1/agents/${agent}/files`, `/v1/agents/${agent}/usage`]) {
+    assert.equal((await r.call(path, { token })).status, 403, path);
+  }
+});
