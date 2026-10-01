@@ -111,9 +111,11 @@ resource "aws_cloudwatch_metric_alarm" "ecs_control_errors" {
   ok_actions          = local.alarm_topics
 }
 
-# A tenant or a node at its agent cap: starts are refused (429 agentsPerTenant,
-# 503 agentsPerNode) because every agent there is busy. A tenant's maxAgents is
-# per node, so this is the signal to raise it or add tasks.
+# A tenant or a node at its agent cap: runs or starts are refused (429 busyAgents
+# or agentsPerTenant, 503 agentsPerNode) because every agent there is busy. A
+# tenant's maxAgents (or AGENT_MAX_AGENTS_PER_TENANT) counts busy agents across the
+# fleet, so this is the signal to raise it or add tasks. Prepaid tenants at their
+# usage tier's limit log busy_limit_reached instead, which this does not count.
 resource "aws_cloudwatch_log_metric_filter" "quota_rejected" {
   name           = "${var.name}-quota-rejected"
   log_group_name = aws_cloudwatch_log_group.runtime.name

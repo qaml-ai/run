@@ -40,6 +40,7 @@ retry.
 | 410 | `GONE` | The agent was deleted or has expired |
 | 413 | `TOO_LARGE` | The request body is too large |
 | 413 | `HISTORY_TOO_LARGE` | An imported history is over 16 MB of JSON |
+| 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
 | 429 | `RATE_LIMITED` | Too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
 | 500 | `INTERNAL` | A bug; retry, and report it with the request id |

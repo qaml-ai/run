@@ -50,14 +50,31 @@ Context overflow is not retried.
 Sessions load lazily and unload after `AGENT_IDLE_MS` (default 5 minutes)
 without activity; the agent's process stops at the same point. When all
 `AGENT_MAX_AGENTS` slots are in use (hosted agents per node, processes or inline;
-`AGENT_MAX_AGENTS_PER_TENANT` per tenant), the least recently active idle
+the tenant's busy-agent limit per tenant), the least recently active idle
 agent is stopped to make room. If none is idle, creating or waking an agent is
 refused with 429 (the tenant's limit) or 503 (the node's), with `Retry-After`;
-the SDKs retry both. A tenant's entry in the tenants file or secret may set its own
-`maxAgents` (a positive integer), which replaces `AGENT_MAX_AGENTS_PER_TENANT` for
-it; it applies from the next tenants reload (SIGHUP, or the secret's refresh every
-minute) to new starts, and agents already running above a lowered limit keep
-running.
+the SDKs retry both.
+
+**Busy agents per tenant, across the fleet.** An agent is busy while it has a run
+open (running or queued). Each tenant may have a number of agents busy at once on
+all nodes together: its entry's `maxAgents` (a positive integer) if set, else for a
+prepaid tenant its [usage tier](../reference/limits.md#usage-tiers)'s
+(`AGENT_USAGE_TIERS`), else `AGENT_MAX_AGENTS_PER_TENANT` (default half of
+`AGENT_MAX_AGENTS`). A run that would pass it gets 429 `BUSY_AGENT_LIMIT`. Each busy
+agent has a row in `busy_agents` naming the node session that holds it, written
+when its first run is accepted and deleted when its last one ends or it unloads.
+Rows count only while that session's heartbeat is live, so a dead or fenced node's
+agents stop counting when its actors become free to take over. Taking a slot is one
+transaction under a per-tenant advisory lock that counts the live rows, reads the
+limit (a prepaid tenant's tier from `credit_accounts.purchased`, in the same
+transaction, so a payment applies to the next run on every node), and inserts:
+nodes racing for a tenant's last slot queue on the lock, so new work never passes
+the limit. Two things may: runs a node takes over from a lost or draining one, and
+resumed turns, take a slot regardless, since they were accepted before; and agents
+already busy when a limit is lowered (a tenants reload, a refund) keep running. Both
+fall back under the limit as those runs end. A `maxAgents` change applies from the
+next tenants reload (SIGHUP, or the secret's refresh every minute). The same limit
+also caps the tenant's agents hosted on any one node, as above.
 
 A tenant's entry may also set `maxMonthlyCost`, a monthly model spend cap in USD
 (`infra/tenant.sh set-spend-limit`; absent means unlimited). Spend is the tenant's

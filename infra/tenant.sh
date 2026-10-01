@@ -7,7 +7,7 @@
 #   tenant.sh rotate-token <tenant>             # replaces the operator token; the old one stops working
 #   tenant.sh remove <tenant>                   # removes the tenant (its agents stay on disk, unreachable: delete them through the API first)
 #   tenant.sh link-github <tenant> <login>      # console sign-in with that GitHub login uses this tenant
-#   tenant.sh set-limit <tenant> <n|default>    # hosted agents per task for this tenant (default: AGENT_MAX_AGENTS_PER_TENANT)
+#   tenant.sh set-limit <tenant> <n|default>    # busy agents across the fleet for this tenant (default: its usage tier, or AGENT_MAX_AGENTS_PER_TENANT)
 #   tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month, e.g. 250 or 99.50 (default: none, unlimited)
 #
 # The operator token is stored at <SECRET_PREFIX>/operator-token/<tenant>. Share it
@@ -105,7 +105,7 @@ for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v
     limit=${3:-}
     [[ "$limit" == default || "$limit" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "Usage: $0 set-limit <tenant> <n|default>  (n: a positive integer)" >&2; exit 2; }
     edit limit; save
-    if [[ "$limit" == default ]]; then echo "$tenant uses the default limit (AGENT_MAX_AGENTS_PER_TENANT)."; else echo "$tenant may have $limit agents hosted per task."; fi
+    if [[ "$limit" == default ]]; then echo "$tenant uses the default limit (its usage tier, or AGENT_MAX_AGENTS_PER_TENANT)."; else echo "$tenant may have $limit agents busy at once across the fleet."; fi
     echo "Agents already running above a lowered limit keep running; it gates new starts."
     reload ;;
   set-spend-limit)

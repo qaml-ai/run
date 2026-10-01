@@ -62,8 +62,11 @@ a running turn ends after the response that spent the last credit, as at the
 render on the platform's key checks credit first, so a `js_exec` loop of them stops
 there rather than at the next model request (a refused render returns the plain page).
 The balance counts this node's unwritten charges
-at once and other nodes' within about five seconds, so the overdraft is about one
-response per node running the tenant's turns.
+at once and other nodes' within about five seconds, and nothing is reserved for a
+response in flight: each running agent checks the balance before its next model
+request, not during one. So the overdraft is about one model response (and the agent
+time around it) per agent of the tenant running a turn when the credit runs out,
+bounded by its [busy-agent limit](../reference/limits.md#usage-tiers).
 
 **Metering storage.** Storage is not listed to charge it. Every object Storage
 creates or deletes (log segments, snapshots and blobs, volume snapshot file maps,
@@ -108,10 +111,20 @@ so webhook retries and races settle once. `startingCredit.cardCheck: {amount}` i
 `GET /v1/billing` says when a check is available. Running with an
 own provider key still requires credit for agent time. A prepaid tenant that
 has never bought credit (grants and adjustments do not count; a full refund puts it
-back) is on **free credit**, with tighter limits: at most `AGENT_FREE_MAX_AGENTS` (2)
-agents at once per node, unless an admin set its `maxAgents`, and at most
+back) is on **free credit**, with tighter limits: the Free usage tier's busy agents
+(8 at once across the runtime, unless an admin set its `maxAgents`), and at most
 `AGENT_FREE_HOURLY_SPEND_USD` ($1) of usage charges in any hour, past which runs get
 429 and a running turn ends as above. Both lift with the first purchase.
+
+**Usage tiers.** A prepaid tenant's busy-agent limit grows with what it has paid for
+credit in total (`credit_accounts.purchased`: purchases net of refunds; grants and
+adjustments do not count): Free 8, $5 or more 25, $50 100, $250 250, $1,000 1,000
+(`AGENT_USAGE_TIERS`; see [limits](../reference/limits.md#usage-tiers)). The tier is
+computed from that row each time an agent becomes busy, in the same transaction that
+counts its busy agents, so it moves up the moment a purchase posts, on every node, with
+nothing cached; a refund can move it back down. A tenant's own `maxAgents` replaces the
+tier. `GET /v1/billing` reports it as `busyAgents: {busy, limit, source, tier, paid,
+next}`, and the console's Billing page shows the tier, the limit and the next threshold.
 
 `GET /v1/billing` has the balance, this month by kind, recent entries and the
 rates and `startingCredit: {status, amount, cardCheck?}` (the recorded award, not current

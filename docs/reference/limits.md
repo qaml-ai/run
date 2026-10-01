@@ -18,8 +18,39 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 | `spendLimit.usd` | 0 to 1,000,000 |
 | `subject` | a string; `context`: at most 4 KB |
 | Mounts | at most 16 per agent |
-| Agents awake at once per tenant | set per deployment (`AGENT_MAX_AGENTS_PER_TENANT`, or the tenant's `maxAgents`); the free tier allows 2. Past it, the least recently active idle agent is stopped to make room; with none idle, 429 |
+| Agents busy at once per account | by [usage tier](#usage-tiers), across the whole runtime (not per node). An agent is busy while it has a run open, running or queued; a busy agent queues more runs without another slot. A run past the limit gets 429 `BUSY_AGENT_LIMIT` (below) |
 | Tools in an agent's catalog | 4,096 tools, 16 MiB of schemas; at most 64 declared directly to the model (the rest are reached from js_exec) |
+
+### Usage tiers
+
+An account's tier comes from what it has paid for credit in total, net of refunds.
+Starting credit and other grants do not count. A payment moves the account up as soon as it lands.
+
+| Tier | Paid in total | Agents busy at once |
+| --- | --- | --- |
+| Free | nothing yet | 8 |
+| Tier 1 | $5 | 25 |
+| Tier 2 | $50 | 100 |
+| Tier 3 | $250 | 250 |
+| Tier 4 | $1,000 | 1,000 |
+
+`GET /v1/billing` has `busyAgents`: the limit, how many are busy now, the tier, and the next one
+(`next: {tier, paid, limit}`); the console's Billing page shows the same. An account whose limit
+the operator set has `source: "tenant"` and no tier. Self-hosted runtimes set the tiers with
+`AGENT_USAGE_TIERS` ([configuration](../operations/configuration.md)).
+
+At the limit, a run (a prompt, `continue` or `execute`) gets 429 with `Retry-After`:
+
+```json
+{
+  "error": "This account has 8 agents busy, the most its usage tier (Free) allows; retry when one finishes. Tier 1 (25 busy agents) applies once the account has paid $5 in total for credit.",
+  "code": "BUSY_AGENT_LIMIT",
+  "busyAgents": { "busy": 8, "limit": 8, "source": "tier", "tier": "Free", "paid": 0, "next": { "tier": "Tier 1", "paid": 5000000, "limit": 25 } }
+}
+```
+
+Amounts are micro-USD. The SDKs retry it after `Retry-After`, like any 429. Creating agents,
+reading them and sending them input do not count; only runs do.
 
 ## Runs and requests
 

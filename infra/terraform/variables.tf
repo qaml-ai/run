@@ -165,7 +165,7 @@ variable "runtime_env" {
     AGENT_TOOL_TIMEOUT_MS       = "60000"
     GITHUB_ORG                  = "qaml-ai"
     # Anyone with a GitHub account may sign in to the console. Their tenant is prepaid: platform keys only
-    # against its credit, with the free limits (AGENT_FREE_*) until it buys some.
+    # against its credit, with the free limits (the Free usage tier, AGENT_FREE_HOURLY_SPEND_USD) until it buys some.
     AGENT_OPEN_SIGNUP = "true"
     AGENT_HOSTING     = "inline"
     # Operator tenants that may post manual credit adjustments (POST /v1/billing/adjustments).

@@ -1,5 +1,21 @@
 # Release notes
 
+## Unreleased — busy agents across the fleet, and usage tiers
+
+A tenant's busy-agent limit now holds across every node together, not per node: an agent is
+busy while it has a run open (running or queued), and a run past the limit gets 429
+`BUSY_AGENT_LIMIT` with `busyAgents: {busy, limit, source, tier?, paid?, next?}` in the body.
+Prepaid tenants get their limit from a usage tier by what they have paid for credit (Free 8,
+$5 25, $50 100, $250 250, $1,000 1,000; `AGENT_USAGE_TIERS`), applied as soon as a payment
+posts. A tenant's `maxAgents` still wins, and now counts across the fleet too, as does
+`AGENT_MAX_AGENTS_PER_TENANT` for tenants that are not prepaid. `GET /v1/billing` and the
+console's Billing page show the tier. `AGENT_FREE_MAX_AGENTS` is replaced by the first tier's
+`busyAgents`; a node with it set refuses to start. Rejections at a tier's limit log
+`busy_limit_reached`; at a `maxAgents` or default limit, `quota_rejected` as before.
+
+Migration 045 adds `busy_agents`. During a rollout, older nodes neither write nor count rows,
+so a tenant's runs on them are limited per node as before.
+
 ## Unreleased — structured output
 
 A prompt takes `output: {schema}` (a JSON Schema for an object). The agent ends the run by calling a
