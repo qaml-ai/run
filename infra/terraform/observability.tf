@@ -13,6 +13,12 @@ variable "spend_alarm_usd_per_hour" {
   default     = 100
 }
 
+variable "tenant_spend_alarm_usd_per_hour" {
+  description = "Model spend (usage.recorded costs) by any one tenant in one hour that raises the tenant spend alarm."
+  type        = number
+  default     = 50
+}
+
 # More than a fifth of turns failed over 10 minutes (with at least 10 turns).
 resource "aws_cloudwatch_metric_alarm" "turn_failures" {
   alarm_name          = "${var.name}-turn-failures"
@@ -152,6 +158,46 @@ resource "aws_cloudwatch_metric_alarm" "model_spend" {
   period              = 3600
   evaluation_periods  = 1
   threshold           = var.spend_alarm_usd_per_hour
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
+# One tenant's model spend in an hour: a runaway loop, or abuse, on one account. A Metrics Insights query
+# picks the top tenant each hour, so new tenants are covered without a metric per tenant.
+resource "aws_cloudwatch_metric_alarm" "tenant_model_spend" {
+  alarm_name          = "${var.name}-tenant-model-spend"
+  alarm_description   = "One tenant's model spend over USD ${var.tenant_spend_alarm_usd_per_hour} in an hour (model_cost by Tenant; the dashboard's cost by tenant says which)"
+  evaluation_periods  = 1
+  threshold           = var.tenant_spend_alarm_usd_per_hour
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+
+  metric_query {
+    id          = "top_tenant"
+    expression  = "SELECT SUM(ModelCostUsd) FROM SCHEMA(AgentRuntime, ServiceName, Tenant) WHERE ServiceName = '${local.service_name}' GROUP BY Tenant ORDER BY SUM() DESC LIMIT 1"
+    label       = "Top tenant's model spend (USD/hour)"
+    period      = 3600
+    return_data = true
+  }
+}
+
+# Model providers refusing for credit (402, "requires more credits, or fewer max_tokens"): on the platform's
+# OpenRouter or Anthropic account this means its balance cannot cover a full max_tokens request, the first sign
+# it is running low. A tenant's own key running dry counts too.
+resource "aws_cloudwatch_metric_alarm" "model_billing_errors" {
+  alarm_name          = "${var.name}-model-billing-errors"
+  alarm_description   = "Model responses refused for credit (model_error ErrorClass billing: provider 402, requires more credits / fewer max_tokens), more than 3 in 15 minutes: top up the platform OpenRouter or Anthropic account"
+  namespace           = "AgentRuntime"
+  metric_name         = "ModelErrors"
+  dimensions          = merge(local.runtime_metric, { ErrorClass = "billing" })
+  statistic           = "Sum"
+  period              = 900
+  evaluation_periods  = 1
+  threshold           = 3
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_topics

@@ -226,6 +226,21 @@ Cloudflare's invocation logs (request metadata) are off in its `wrangler.toml`.
     lines can be found with a Logs Insights query:
     `filter type in ["retiring", "retired"]`.
 
+- **Runtime metrics** (`observability.tf`, us-west-2, namespace `AgentRuntime`),
+  among them:
+  - `-model-spend`: model spend, all tenants, over `spend_alarm_usd_per_hour`
+    ($100) in an hour;
+  - `-tenant-model-spend`: any one tenant's model spend over
+    `tenant_spend_alarm_usd_per_hour` ($50) in an hour. A Metrics Insights query
+    (`SELECT SUM(ModelCostUsd) … GROUP BY Tenant ORDER BY SUM() DESC LIMIT 1`)
+    takes the top tenant each hour; the dashboard's cost by tenant says which;
+  - `-model-billing-errors`: more than 3 model responses refused for credit in
+    15 minutes (`ModelErrors`, `ErrorClass=billing`: provider 402s such as
+    OpenRouter's "requires more credits, or fewer max_tokens"). On the platform
+    keys this is the first sign the OpenRouter or Anthropic balance is low: it
+    cannot cover a full `max_tokens` request. Top the account up. A tenant's own
+    key running dry counts too.
+
   CloudWatch alarms can only notify a topic in their own region, so these use
   the us-west-2 topic `camelai-agent-runtime-alerts` (output
   `alerts_topic_arn_regional`). Subscribe to both topics.
