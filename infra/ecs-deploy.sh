@@ -113,7 +113,6 @@ echo "deployed: $image"
 echo "old tasks retire in the background; follow with:"
 echo "  aws ecs describe-services --region $REGION --cluster $cluster --services $service --query 'services[0].deployments[].[status,rolloutState,runningCount,taskDefinition]'"
 
-# Through the ALB whatever DNS points at (before the cutover it is the EC2 host).
-alb=$(aws elbv2 describe-load-balancers --names "$NAME" --query 'LoadBalancers[0].DNSName' --output text)
-echo "==> https://$HOSTNAME/healthz via $alb"
-curl -fsS --connect-to "$HOSTNAME:443:$alb:443" "https://$HOSTNAME/healthz" && echo
+# Through Cloudflare to the ALB: the ALB admits only Cloudflare's addresses (infra/terraform/alb.tf).
+echo "==> https://$HOSTNAME/healthz"
+curl -fsS "https://$HOSTNAME/healthz" && echo

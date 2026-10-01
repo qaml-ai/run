@@ -8,7 +8,7 @@ else is here.
 | File | Contents |
 |---|---|
 | `runtime.tf` | shared locals, the default VPC lookup, ECR repository and lifecycle policy |
-| `alb.tf` | public ALB, ACM certificate (validated through Cloudflare), target group, listeners, ALB security group |
+| `alb.tf` | public ALB, ACM certificate (validated through Cloudflare), target group, listeners, ALB security group (ingress from Cloudflare's IPv4 ranges only) |
 | `ecs.tf` | ECS cluster, Fargate service, task definition, task and execution roles, task security group, autoscaling, the RDS rule for tasks, log group |
 | `rds.tf` | control-plane Postgres, its subnet group and security group |
 | `state-bucket.tf` | S3 bucket for agent state and the IAM statements for it |
@@ -47,7 +47,7 @@ and the RDS instance also have deletion protection in AWS.
    agents.camelai.dev, run.camelai.com  (Cloudflare CNAMEs, proxied)
                    │
                    ▼
-   ALB camelai-agent-runtime   (default public subnets, 4 AZs)
+   ALB camelai-agent-runtime   (default public subnets, 4 AZs; ingress from Cloudflare's IPv4 ranges only)
      :443  ACM certs (one per name, by SNI), TLS 1.2/1.3, idle timeout 360 s
      :80   301 to https
                    │ target group (ip) :8790, GET /healthz, deregistration 15 s
@@ -59,6 +59,14 @@ and the RDS instance also have deletion protection in AWS.
      └── S3 camelai-agent-runtime-state/agents/*  (task role)
 ```
 
+- **Only Cloudflare reaches the ALB** (`alb.tf`): its security group admits 443
+  and 80 from Cloudflare's IPv4 ranges alone (read from Cloudflare at each plan,
+  so a range it adds shows up as a rule to add), so nothing bypasses Cloudflare
+  and the runtime takes the client's address from `CF-Connecting-IP`
+  (`AGENT_TRUST_CF_CONNECTING_IP`, which its per-address rate limits key on).
+  Nothing calls the ALB's own DNS name: the deploy script, the Route 53 health
+  check, Stripe, SNS and the channels' webhooks all use the hostnames. To reach a
+  task directly while debugging, use ECS Exec, or curl `127.0.0.1:8790` from one.
 - **State bucket** (`camelai-agent-runtime-state`): versioned, all public access
   blocked, SSE-S3, ACLs disabled. Noncurrent versions expire after 30 days
   (`noncurrent_version_days`), expired delete markers are removed, and
@@ -196,7 +204,7 @@ Cloudflare's invocation logs (request metadata) are off in its `wrangler.toml`.
 ## Alarms
 
 - **Route 53** (`monitoring.tf`, us-east-1): an HTTPS health check on
-  `agents.camelai.dev/healthz` (by hostname, so it checks through the ALB). The
+  `agents.camelai.dev/healthz` (by hostname, so it checks through Cloudflare and the ALB). The
   `-healthz` alarm notifies the us-east-1 topic `camelai-agent-runtime-alerts`
   (output `alerts_topic_arn`). Route 53 health check metrics exist only in
   us-east-1, so the alarm and topic live there.
@@ -242,7 +250,7 @@ The script does this:
 5. Waits until the new deployment's tasks are all healthy in the target group
    (at most 30 minutes). It fails if the circuit breaker rolled back or the
    rollout failed.
-6. Checks `/healthz` through the ALB.
+6. Checks `/healthz` through Cloudflare and the ALB.
 
 It does **not** wait for the old tasks to stop. They retire in the background,
 each once its running turns end (at most `AGENT_RETIRE_MAX_MS`, default 6 h),

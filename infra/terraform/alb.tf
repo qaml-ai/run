@@ -36,6 +36,15 @@ resource "aws_acm_certificate_validation" "runtime" {
 
 # --- Security group ---
 
+# Only Cloudflare reaches the load balancer. Both hostnames are proxied (dns.tf, dns-primary.tf), so
+# Cloudflare's addresses are the only legitimate sources: nothing calls the ALB's own name (the deploy
+# script and the Route 53 health check go through Cloudflare). This keeps Cloudflare's protections from
+# being bypassed and lets the runtime trust CF-Connecting-IP for the client's address
+# (AGENT_TRUST_CF_CONNECTING_IP, ecs.tf), which its per-address rate limits key on. The ALB is IPv4
+# only, so only Cloudflare's IPv4 ranges matter. The list is read at each plan: a range Cloudflare adds
+# shows up as a rule to add. (The group's description predates this; changing it would replace the group.)
+data "cloudflare_ip_ranges" "cloudflare" {}
+
 resource "aws_security_group" "alb" {
   name        = "${var.name}-alb"
   description = "Agent runtime load balancer: HTTPS and HTTP redirect from the internet"
@@ -43,14 +52,17 @@ resource "aws_security_group" "alb" {
   tags        = { Name = "${var.name}-alb" }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb" {
-  for_each          = { https = 443, http = 80 }
+resource "aws_vpc_security_group_ingress_rule" "alb_cloudflare" {
+  for_each = {
+    for pair in setproduct(["https", "http"], data.cloudflare_ip_ranges.cloudflare.ipv4_cidrs) :
+    "${pair[0]} ${pair[1]}" => { port = pair[0] == "https" ? 443 : 80, cidr = pair[1], name = upper(pair[0]) }
+  }
   security_group_id = aws_security_group.alb.id
   ip_protocol       = "tcp"
-  from_port         = each.value
-  to_port           = each.value
-  cidr_ipv4         = "0.0.0.0/0"
-  description       = upper(each.key)
+  from_port         = each.value.port
+  to_port           = each.value.port
+  cidr_ipv4         = each.value.cidr
+  description       = "${each.value.name} from Cloudflare"
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_tasks" {

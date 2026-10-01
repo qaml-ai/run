@@ -31,6 +31,8 @@ locals {
     AGENT_S3_BUCKET      = aws_s3_bucket.state.id
     AGENT_S3_PREFIX      = var.state_prefix
     AWS_REGION           = var.region
+    # Only Cloudflare reaches the ALB (alb.tf), so CF-Connecting-IP is the client's address; per-address rate limits key on it.
+    AGENT_TRUST_CF_CONNECTING_IP = "true"
     # Through RDS Proxy (rds-proxy.tf). The bundle holds the RDS CAs and the
     # Amazon Trust Services roots that sign the proxy's certificate.
     AGENT_DATABASE_HOST       = aws_db_proxy.control.endpoint
