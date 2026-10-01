@@ -126,6 +126,53 @@ then reconnects from where it was, and after two streams that deliver nothing it
 polls of at most 25 seconds, which fit any limit. Direct reads keep that load off your servers, so
 they stay the default: use the proxy when policy requires a single origin.
 
+### The route's protocol
+
+The chat talks to your route in plain JSON, so anything that can POST can use it: a native app, a
+test, a script or curl. Each request is `POST <route>` with `Content-Type: application/json`, the
+cookie or header your `authorize` reads, and a body `{ action, thread?, … }`. `thread` (1 to 200
+characters, or null) picks the conversation; with the user, it picks the agent
+(`agentKeyFor(userId, thread)`) unless `authorize` names one.
+
+| `action` | Body | Answer |
+| --- | --- | --- |
+| `token` | | `{ token, expiresAt, agentId, url }`: a browser token that reads the agent (`/v1/agents/:id/{events,history,state,inputs}` at `url`). With `proxy: true`, `{ proxy: true, agentId, token: "", expiresAt }`: read under the route instead. |
+| `send` | `{ text, clientId, data?, whileRunning?, wait? }` | `{ requestId, state, steeredInto? }`, as soon as the message is accepted. `clientId` (8 to 80 letters, digits, `_` and `-`) is the message's id: sending the same one again sends nothing twice. `whileRunning` is `queue` (the default) or `steer`. `data` reaches only your `onSend`. With `wait`, see below. |
+| `wait` | `{ requestId, wait? }` | A message sent before, by its `clientId`, as `send` with `wait` answers. Sends nothing. |
+| `answer` | `{ inputId, answer: { action: "accept" \| "decline" \| "cancel", content? } }` | `{ input, request }`, as `POST /v1/agents/:id/inputs/:inputId` answers. The answer is the user's (`from`). |
+| `stop` | | `{ aborted: true }`: the agent's running turn is stopped. |
+| `link` | `{ path }` | `{ url, expiresAt }`: a download link for a file the agent presented or that is in its own workspace (any mounted path with `linkAnyMountedPath`). |
+
+With `proxy: true` the route also takes `GET <route>[/threads/:thread]/v1/agents/:id/{events,history,state,inputs}`
+(the runtime's read routes, for the user's own agent only) and the file links that `link` gives.
+
+Errors are `{ error: { code, message } }` with the HTTP status: 401 `unauthorized` (`authorize`
+returned null), 400 `invalid_request` or `invalid_json` (the message names the field), 403
+`forbidden_origin` (another site; see `allowedOrigins`), 405, 413 `too_large`, 415
+`unsupported_media_type`, and the runtime's own errors passed on with their status and code
+(`INSUFFICIENT_CREDIT`, `not_found`, …; 502 `runtime_unreachable` when it cannot be reached). A
+`Response` that your `onSend` throws is answered as it is.
+
+#### Waiting for the reply
+
+The chat follows the agent's stream, so it sends without waiting. A caller without the stream
+passes `wait`: `true` (25 seconds) or whole seconds from 1 to 25. The route answers once the run
+ends, with `state: "completed"` and the run's `reply` (its final message's text), `error` (why it
+failed) or `stopped` (`input_required` or `spend_limit`). A run still going when the wait is over
+answers `state: "running"`: ask again with `wait`.
+
+```sh
+curl -s https://app.example.com/api/agent -H "Cookie: session=…" -H "Content-Type: application/json" \
+  -d '{"action":"send","text":"Where is my order?","clientId":"msg_0001","wait":true}'
+# {"requestId":"msg_0001","state":"completed","reply":"It shipped yesterday…"}
+curl -s https://app.example.com/api/agent -H "Cookie: session=…" -H "Content-Type: application/json" \
+  -d '{"action":"wait","requestId":"msg_0001","wait":25}'
+```
+
+Each wait holds a request on your server: keep `wait` under your platform's limit (serverless
+functions cut requests at theirs). Without the handler, the runtime's
+`GET /v1/agents/:id/requests/:requestId?wait=25` does the same with your API key.
+
 ## How it stays secure
 
 - **The API key stays on your server.** The browser gets a *browser token* for one agent: it reads

@@ -91,6 +91,26 @@ test("a send prompts as the user, is idempotent by its client id, and keeps the 
   assert.equal(last.metadata, undefined);
 });
 
+test("a send with wait answers with the reply once the run ends; wait asks again without sending again", async t => {
+  const r = await runtime(t, (_body, index) => ({ role: "assistant", content: `answer ${index}`, delayMs: index === 1 ? 4_000 : 300 }));
+  let sends = 0;
+  const handler = handlerFor(t, r, { onSend: () => { sends++; } });
+  const done = await post(handler, { action: "send", text: "hello", clientId: "cm_wait0001", wait: true });
+  assert.equal(done.status, 200, JSON.stringify(done.json));
+  assert.deepEqual(done.json, { requestId: "cm_wait0001", state: "completed", reply: "answer 0" });
+  // Not done within the wait: still running, and asked about again by its client id, without sending it again.
+  const slow = await post(handler, { action: "send", text: "slowly", clientId: "cm_wait0002", wait: 1 });
+  assert.deepEqual(slow.json, { requestId: "cm_wait0002", state: "running" });
+  const later = await post(handler, { action: "wait", requestId: "cm_wait0002", wait: 25 });
+  assert.deepEqual(later.json, { requestId: "cm_wait0002", state: "completed", reply: "answer 1" });
+  assert.equal(sends, 2, "waiting sends nothing");
+  assert.equal((await post(handler, { action: "wait", requestId: "cm_wait0002" })).json.reply, "answer 1", "without wait: as it is now");
+  assert.equal((await post(handler, { action: "send", text: "x", clientId: "cm_wait0003", wait: 30 })).status, 400);
+  assert.equal((await post(handler, { action: "wait", requestId: "cm_unknown1" })).status, 404);
+  // Another user's agent does not have it.
+  assert.equal((await post(handler, { action: "wait", requestId: "cm_wait0002" }, { cookie: "cookie-bob" })).status, 404);
+});
+
 test("onSend sees the client's data, may rewrite the message or add metadata, and may refuse it", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const seen: unknown[] = [];

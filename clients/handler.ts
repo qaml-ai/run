@@ -14,6 +14,9 @@
  *
  * With `proxy: true`, browsers read their agent through this route too (GET <route>/v1/agents/:id/…),
  * so they only ever talk to your origin: mount it on the route and everything under it.
+ *
+ * Its wire protocol (POST {action: token|send|wait|answer|stop|link, …}) is in docs/frontend.md, "The route's
+ * protocol": `send` with `wait` answers with the reply once the run ends, for callers without the stream.
  */
 import { Agents, type Agent, type AgentConfig } from "./agents.ts";
 import { AgentError, DEFAULT_URL, type CreateAgentOptions, type Sender } from "./typescript.ts";
@@ -101,8 +104,8 @@ export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
   fetch?: typeof globalThis.fetch;
 }
 
-export type HandlerAction = "token" | "send" | "answer" | "stop" | "link" | "read";
-const ACTIONS = new Set<HandlerAction>(["token", "send", "answer", "stop", "link"]);
+export type HandlerAction = "token" | "send" | "wait" | "answer" | "stop" | "link" | "read";
+const ACTIONS = new Set<HandlerAction>(["token", "send", "wait", "answer", "stop", "link"]);
 /** A read the proxy passes through: [thread segment, agent id, route]. */
 const READ = /(?:\/threads\/([^/]+))?\/v1\/agents\/([^/]+)\/(events|history|state|inputs)$/;
 /** A file link the proxy passes through: its runtime path, whose signed token is its only credential. */
@@ -118,6 +121,25 @@ const CLIENT_ID = /^[A-Za-z0-9_-]{8,80}$/;
 const INPUT_ID = /^[A-Za-z0-9_-]{1,100}$/;
 const MAX_BODY = 1024 * 1024;
 const MAX_CACHED = 5000;
+/** The longest a `send` or `wait` with `wait` holds its request, in seconds: the runtime's longest wait. */
+const MAX_WAIT_SECONDS = 25;
+
+/** A `wait` field: true (the longest), or seconds from 1 to 25; undefined when absent or false. */
+function waitSeconds(value: unknown): number | undefined {
+  if (value === undefined || value === false) return undefined;
+  if (value === true) return MAX_WAIT_SECONDS;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_WAIT_SECONDS) return fail(400, "invalid_request", "wait is true, or whole seconds from 1 to 25");
+  return value;
+}
+
+/** What `send` and `wait` answer: the request, and once it ended, its reply, error or why it stopped. Never its other results. */
+function sent(record: { id: string; state: string; steeredInto?: string; error?: string; stopped?: string; outcome?: { result?: { reply?: unknown } } }) {
+  const reply = record.outcome?.result?.reply;
+  return {
+    requestId: record.id, state: record.state, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}),
+    ...(typeof reply === "string" ? { reply } : {}), ...(record.error !== undefined ? { error: record.error } : {}), ...(record.stopped ? { stopped: record.stopped } : {}),
+  };
+}
 
 /**
  * The agent key for a user's thread: a hash of both, so it is a valid key whatever they are, and no
@@ -404,6 +426,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         if (typeof clientId !== "string" || !CLIENT_ID.test(clientId)) fail(400, "invalid_request", "clientId must be 8 to 80 letters, digits, _ and -");
         const whileRunning = body.whileRunning;
         if (whileRunning !== undefined && whileRunning !== "queue" && whileRunning !== "steer") fail(400, "invalid_request", "whileRunning is queue or steer");
+        const wait = waitSeconds(body.wait);
         let metadata: Record<string, string> | undefined;
         const changed = await options.onSend?.({ auth, thread, text: text as string, data: body.data, request });
         if (changed?.text !== undefined) text = changed.text;
@@ -411,7 +434,16 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         const accepted = await call(`${path}/prompt`, {
           text, requestId: clientId, from, ...(metadata ? { metadata } : {}), ...(whileRunning ? { whileRunning } : {}),
         });
-        return { requestId: accepted.id, state: accepted.state, ...(accepted.steeredInto ? { steeredInto: accepted.steeredInto } : {}) };
+        // Waiting, it is answered once its run ends (a steered message's, once the turn it joined does).
+        if (wait === undefined || accepted.state === "completed") return sent(accepted);
+        return sent(await get(`${path}/requests/${encodeURIComponent(accepted.id)}?wait=${wait}`));
+      }
+      case "wait": {
+        // Ask again about a message sent before (its clientId), without sending it again.
+        const requestId = body.requestId;
+        if (typeof requestId !== "string" || !CLIENT_ID.test(requestId)) fail(400, "invalid_request", "requestId must be a message's clientId");
+        const wait = waitSeconds(body.wait) ?? 0;
+        return sent(await get(`${path}/requests/${encodeURIComponent(requestId as string)}${wait ? `?wait=${wait}` : ""}`));
       }
       case "answer": {
         const inputId = body.inputId;

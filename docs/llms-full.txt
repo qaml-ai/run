@@ -129,8 +129,9 @@ AGENT=$(curl -s $BASE/v1/agents -H "$AUTH" -H "Content-Type: application/json" -
   -d '{"systemPrompt": "You are a concise assistant."}' | jq -r .id)
 REQ=$(curl -s $BASE/v1/agents/$AGENT/prompt -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"text": "Write a haiku about durable agents."}' | jq -r .id)
-until curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -e '.state == "completed"' > /dev/null; do sleep 1; done
-curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -r '.outcome.result.reply // .outcome.error'
+# ?wait=25 answers as soon as the run ends (or after 25 s, still running: ask again).
+until RUN=$(curl -s "$BASE/v1/agents/$AGENT/requests/$REQ?wait=25" -H "$AUTH") && jq -e '.state == "completed"' <<< "$RUN" > /dev/null; do :; done
+jq -r '.outcome.result.reply // .error' <<< "$RUN"
 ```
 
 The agent names no model, so it uses your account's default: the first of the
@@ -2458,7 +2459,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `client.prompt(text, { from, actor, files, metadata, whileRunning, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error |
 | `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`) |
 | `client.waitForRequest(id)` | `wait_for_request(id)` | wait for a request already sent, from any process |
-| `client.requestStatus(id)`, `outcomes()` | `request_status(id)`, `outcomes()` | a request's record; every request's state |
+| `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |
 | `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
 | `client.execute(code)` | `execute(code)` | run code in the sandbox with the agent's tools, outside its history |
 | `client.steer(text)` | `steer()` | the legacy `steer` request, which holds the message for the running (or next) turn; new code uses `prompt` with `whileRunning: "steer"` |
@@ -3002,7 +3003,10 @@ effect (a restart cut it short). The same outcome is at
 `GET …/requests/:requestId` and in `GET …/state`, which is what to trust. There,
 an ended request also carries `error` (the runtime's, or the model's from
 `result.error`) and `stopped` on top, so a failed run reads as failed without
-looking inside `result`.
+looking inside `result`. `GET …/requests/:requestId?wait=<seconds>` (at most 25)
+waits for a running request: it answers as soon as the request settles, or when
+the wait ends with it still `running` (ask again), so a caller without the stream
+gets the outcome in one call instead of polling.
 
 A browser token sees an outcome only as `{id, outcome: {stopped?, error?}}`, its
 `error` the model's too.
