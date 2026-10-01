@@ -99,11 +99,15 @@ test("a definition's run limits reach its agents, and an agent's own stay when t
 });
 
 test("a run stops at its time limit before its next model request", async t => {
-  // Each step takes a little over half a second of tool time.
-  const r = await runtime(t, (_body, index) => ({ ...toolCall("js_exec", { code: "const start = Date.now(); while (Date.now() - start < 600) {} return 1" }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } }));
+  // Its first step alone (the tool call) outlasts the 1 s limit, however fast the runner: the check before the second
+  // model request stops it, so there is exactly one response. The clock starts when the run begins, agent start included.
+  const r = await runtime(t, (_body, index) => ({ ...toolCall("js_exec", { code: "const start = Date.now(); while (Date.now() - start < 1500) {} return 1" }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } }));
   const { id } = (await r.call("/v1/agents", { body: { runLimits: { maxSeconds: 1 } } })).json;
   const run = await r.prompt(id, "go");
   assert.equal(run.outcome.result.stopped, "turn_limit");
   assert.equal(run.outcome.result.error, "This run stopped at its time limit of 1 second. Send another message to continue");
-  assert.ok(r.model.bodies.length >= 2 && r.model.bodies.length <= 3, `stopped after about a second (${r.model.bodies.length} responses)`);
+  assert.equal(r.model.bodies.length, 1, "no model request after the limit passed");
+  // The step's tool call ran and is in the history, so the next message continues from it.
+  const history = (await r.call(`/v1/agents/${id}/history`)).json;
+  assert.ok(JSON.stringify(history).includes("call_0"));
 });
