@@ -70,8 +70,11 @@ Before you ship an application on the runtime, check each of these.
 
 ## Operations
 
-- [ ] Your process closes its agents on shutdown (`await agents.close()`, or
-      `await using`), so it exits promptly and releases the agents' tools.
+- [ ] Your process closes its agents on shutdown, on SIGTERM (`await agents.close()`,
+      or `await using`): it finishes the tool calls it is running, hands new
+      ones to the next process, and releases the agents' tools, so a deploy
+      loses no call. A rolling deploy starts the new process with `takeover: true`.
+      See [deploying a tool process](guides/tools.md#deploying-a-tool-process).
 - [ ] You register a [webhook](guides/webhooks.md) endpoint for `run.failed` and
       `input.requested` (and `usage.recorded` to meter spend), verify signatures,
       dedupe by event `id`, and answer within 10 seconds.

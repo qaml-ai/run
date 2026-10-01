@@ -288,7 +288,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 
 | Your situation | Use | How |
 | --- | --- | --- |
-| A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time, and a call running when it restarts is lost |
+| A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time; closing it on SIGTERM finishes its calls, so deploys lose none |
 | Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for. Safe through your deploys and restarts |
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
 | Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
@@ -471,26 +471,56 @@ An existing MCP server (from `@modelcontextprotocol/sdk`) can be attached as is:
 Every process that upserts an agent with `tools` tries to serve them, and only
 one can. Under uvicorn or gunicorn with several workers, Celery, or any fleet of
 instances, the first to connect serves the tools and the others fail with
-`APPLICATION_CONNECTED` (or take them from each other, with `takeover`). And
-while the serving process restarts (a deploy, a crash), runs are refused with
-`APPLICATION_NOT_CONNECTED`, and a call that was running when it went down is
-lost: the model is told its outcome is unknown, and the run lists it in
-`toolErrors` (Python `tool_errors`) with code `connection_lost`.
+`APPLICATION_CONNECTED` (or take them from each other, with `takeover`).
 
 Pick one of these:
 
-- **Served tools (recommended).** Serve the tools over HTTP from your web app
-  (`serveTools` / `serve_tools`, below) and name the server in a definition.
-  Every process, web worker and task then upserts the agent from the definition
-  with no `tools`, and any of them can run it. Served tools are deploy-safe:
-  each call is an HTTP request of its own to whichever instance is up, so a
-  rolling deploy that drains its connections loses no call.
+- **Served tools (recommended for fleets).** Serve the tools over HTTP from your
+  web app (`serveTools` / `serve_tools`, below) and name the server in a
+  definition. Every process, web worker and task then upserts the agent from
+  the definition with no `tools`, and any of them can run it. Each call is an
+  HTTP request of its own to whichever instance is up, so a rolling deploy that
+  drains its connections loses no call.
 - **One tool process.** Run one long-lived process that upserts the agent with
-  its `tools` and stays up. Everywhere else, upsert it with the same `tools` and
+  its `tools`. Everywhere else, upsert it with the same `tools` and
   `attach: false` (`attach=False`), which runs the agent without serving them.
-  Calls running when that process restarts are still lost, so keep it out of
-  frequent deploys.
 
+#### Deploying a tool process
+
+Close the agents when the process is told to stop, and a deploy loses no call:
+
+```ts
+process.once("SIGTERM", () => void agents.close().then(() => process.exit(0)));
+```
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+@asynccontextmanager
+async def lifespan(app):
+    yield
+    await agents.close()  # uvicorn runs this on SIGTERM
+
+app = FastAPI(lifespan=lifespan)
+```
+
+`close()` tells the runtime this process takes no new calls, finishes the
+calls it is running (for up to 25 seconds: `close({ drainMs })`,
+`close(drain=)` in seconds), then disconnects. Meanwhile new calls go to the
+next process: in a rolling deploy, start it with `takeover: true`
+(`takeover=True`), which takes the tools at once while the old process
+finishes its calls; in a stop-then-start deploy, it connects without a
+takeover, since a closing process holds the tools no longer, and calls wait a
+few seconds for it. A takeover alone (without `close()`) also lets the
+replaced process answer the calls it has, for up to 30 seconds.
+
+What a deploy can still lose: a call that outlives the drain, and every call
+running when a process crashes or is killed without `close()`. The model is then
+told, in words it can pass on, that the tool's server disconnected during the
+call and it may or may not have taken effect; the run lists it in `toolErrors`
+(Python `tool_errors`) with code `connection_lost`. Key side effects by
+`context.idempotencyKey` so that checking and retrying is safe.
 ## Served tools: over HTTP, for serverless and many users
 
 A server of yours answers tool calls over HTTP (MCP's Streamable HTTP), and a
@@ -2252,8 +2282,11 @@ Before you ship an application on the runtime, check each of these.
 
 ## Operations
 
-- [ ] Your process closes its agents on shutdown (`await agents.close()`, or
-      `await using`), so it exits promptly and releases the agents' tools.
+- [ ] Your process closes its agents on shutdown, on SIGTERM (`await agents.close()`,
+      or `await using`): it finishes the tool calls it is running, hands new
+      ones to the next process, and releases the agents' tools, so a deploy
+      loses no call. A rolling deploy starts the new process with `takeover: true`.
+      See [deploying a tool process](guides/tools.md#deploying-a-tool-process).
 - [ ] You register a [webhook](guides/webhooks.md) endpoint for `run.failed` and
       `input.requested` (and `usage.recorded` to meter spend), verify signatures,
       dedupe by event `id`, and answer within 10 seconds.
@@ -2306,7 +2339,10 @@ synchronous code (a script, a Django view, a Celery task), run it with
 - `apiKey` defaults to the `CAMELAI_API_KEY` environment variable, `url` to
   `CAMELAI_BASE_URL`, else `https://run.camelai.com`.
 - `agents.close()` closes every agent's connection so the process can exit;
-  their runs go on in the runtime.
+  their runs go on in the runtime. A process serving tools first finishes the
+  calls it is running, up to `drainMs` (Python `drain=`, seconds; default 25 s),
+  while new calls go to another process: call it on SIGTERM. See [deploying a
+  tool process](../guides/tools.md#deploying-a-tool-process).
 - `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
   mounts, `listAgents()`, `browserToken(agentId)`, `inbox()`, `toolSources(agentId)`.
 
@@ -2502,11 +2538,17 @@ the server (the runtime sends `initialize`, `tools/list`, `tools/call` and
 /clients/:id/mcp`, naming its connection). A call goes to one connection, once.
 If the connection drops or the call's deadline passes before its answer arrives,
 the model gets an "outcome unknown" result and the call is never sent again.
+A connection that closes (`close()`) first POSTs a
+`notifications/agent-runtime/draining` notification: the runtime sends it no new
+calls, and it answers those it has before it disconnects. A connection replaced
+by a takeover likewise stays open, up to 30 seconds, until its calls are
+answered, then hears it was replaced.
 
 A connection whose tools differ from those the agent was last given (the ready
 event's `toolsHash`) declares them, between the agent's turns (`syncTools:
 false` to leave them). One connection at a time serves an agent's tools. A second is refused with
-`APPLICATION_CONNECTED` unless it asks to take over (`takeover`); the SDK names
+`APPLICATION_CONNECTED` unless it asks to take over (`takeover`), or the one
+serving them is closing; the SDK names
 its connection when it reconnects, so it keeps its place. A connection that was
 replaced, or finds the tools taken when it reconnects, hears
 `APPLICATION_REPLACED` / `APPLICATION_CONNECTED` on `onError` and goes on
@@ -3421,7 +3463,7 @@ result and carried on.
 | `code` | Meaning | `outcomeUnknown` |
 | --- | --- | --- |
 | `timeout` | No answer (or progress) within the tool's deadline | yes: it may have taken effect |
-| `connection_lost` | The connection the call went out on closed before its answer | yes |
+| `connection_lost` | The connection the call went out on closed before its answer: the process serving the tools crashed, or was stopped without `close()`, or its call outlived `close()`'s drain. See [deploying a tool process](../guides/tools.md#deploying-a-tool-process) | yes |
 | `not_connected` | No process served the agent's tools (no application attached), so the call did not run. Typical for REST, schedules and channels driving an agent whose tools live in a process that is not running: serve them over HTTP instead ([Tools](../guides/tools.md)) | no |
 | `source_unavailable` | Its MCP server could not be reached, listed or authenticated with | no |
 | `failed` | Anything else that kept it from running or answering | no |

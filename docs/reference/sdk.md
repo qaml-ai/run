@@ -39,7 +39,10 @@ synchronous code (a script, a Django view, a Celery task), run it with
 - `apiKey` defaults to the `CAMELAI_API_KEY` environment variable, `url` to
   `CAMELAI_BASE_URL`, else `https://run.camelai.com`.
 - `agents.close()` closes every agent's connection so the process can exit;
-  their runs go on in the runtime.
+  their runs go on in the runtime. A process serving tools first finishes the
+  calls it is running, up to `drainMs` (Python `drain=`, seconds; default 25 s),
+  while new calls go to another process: call it on SIGTERM. See [deploying a
+  tool process](../guides/tools.md#deploying-a-tool-process).
 - `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
   mounts, `listAgents()`, `browserToken(agentId)`, `inbox()`, `toolSources(agentId)`.
 
@@ -235,11 +238,17 @@ the server (the runtime sends `initialize`, `tools/list`, `tools/call` and
 /clients/:id/mcp`, naming its connection). A call goes to one connection, once.
 If the connection drops or the call's deadline passes before its answer arrives,
 the model gets an "outcome unknown" result and the call is never sent again.
+A connection that closes (`close()`) first POSTs a
+`notifications/agent-runtime/draining` notification: the runtime sends it no new
+calls, and it answers those it has before it disconnects. A connection replaced
+by a takeover likewise stays open, up to 30 seconds, until its calls are
+answered, then hears it was replaced.
 
 A connection whose tools differ from those the agent was last given (the ready
 event's `toolsHash`) declares them, between the agent's turns (`syncTools:
 false` to leave them). One connection at a time serves an agent's tools. A second is refused with
-`APPLICATION_CONNECTED` unless it asks to take over (`takeover`); the SDK names
+`APPLICATION_CONNECTED` unless it asks to take over (`takeover`), or the one
+serving them is closing; the SDK names
 its connection when it reconnects, so it keeps its place. A connection that was
 replaced, or finds the tools taken when it reconnects, hears
 `APPLICATION_REPLACED` / `APPLICATION_CONNECTED` on `onError` and goes on

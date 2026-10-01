@@ -112,7 +112,7 @@ result and carried on.
 | `code` | Meaning | `outcomeUnknown` |
 | --- | --- | --- |
 | `timeout` | No answer (or progress) within the tool's deadline | yes: it may have taken effect |
-| `connection_lost` | The connection the call went out on closed before its answer | yes |
+| `connection_lost` | The connection the call went out on closed before its answer: the process serving the tools crashed, or was stopped without `close()`, or its call outlived `close()`'s drain. See [deploying a tool process](../guides/tools.md#deploying-a-tool-process) | yes |
 | `not_connected` | No process served the agent's tools (no application attached), so the call did not run. Typical for REST, schedules and channels driving an agent whose tools live in a process that is not running: serve them over HTTP instead ([Tools](../guides/tools.md)) | no |
 | `source_unavailable` | Its MCP server could not be reached, listed or authenticated with | no |
 | `failed` | Anything else that kept it from running or answering | no |

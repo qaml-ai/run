@@ -86,7 +86,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 
 | Your situation | Use | How |
 | --- | --- | --- |
-| A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time, and a call running when it restarts is lost |
+| A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time; closing it on SIGTERM finishes its calls, so deploys lose none |
 | Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for. Safe through your deploys and restarts |
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
 | Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |

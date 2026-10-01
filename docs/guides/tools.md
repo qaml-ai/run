@@ -96,26 +96,56 @@ An existing MCP server (from `@modelcontextprotocol/sdk`) can be attached as is:
 Every process that upserts an agent with `tools` tries to serve them, and only
 one can. Under uvicorn or gunicorn with several workers, Celery, or any fleet of
 instances, the first to connect serves the tools and the others fail with
-`APPLICATION_CONNECTED` (or take them from each other, with `takeover`). And
-while the serving process restarts (a deploy, a crash), runs are refused with
-`APPLICATION_NOT_CONNECTED`, and a call that was running when it went down is
-lost: the model is told its outcome is unknown, and the run lists it in
-`toolErrors` (Python `tool_errors`) with code `connection_lost`.
+`APPLICATION_CONNECTED` (or take them from each other, with `takeover`).
 
 Pick one of these:
 
-- **Served tools (recommended).** Serve the tools over HTTP from your web app
-  (`serveTools` / `serve_tools`, below) and name the server in a definition.
-  Every process, web worker and task then upserts the agent from the definition
-  with no `tools`, and any of them can run it. Served tools are deploy-safe:
-  each call is an HTTP request of its own to whichever instance is up, so a
-  rolling deploy that drains its connections loses no call.
+- **Served tools (recommended for fleets).** Serve the tools over HTTP from your
+  web app (`serveTools` / `serve_tools`, below) and name the server in a
+  definition. Every process, web worker and task then upserts the agent from
+  the definition with no `tools`, and any of them can run it. Each call is an
+  HTTP request of its own to whichever instance is up, so a rolling deploy that
+  drains its connections loses no call.
 - **One tool process.** Run one long-lived process that upserts the agent with
-  its `tools` and stays up. Everywhere else, upsert it with the same `tools` and
+  its `tools`. Everywhere else, upsert it with the same `tools` and
   `attach: false` (`attach=False`), which runs the agent without serving them.
-  Calls running when that process restarts are still lost, so keep it out of
-  frequent deploys.
 
+#### Deploying a tool process
+
+Close the agents when the process is told to stop, and a deploy loses no call:
+
+```ts
+process.once("SIGTERM", () => void agents.close().then(() => process.exit(0)));
+```
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+@asynccontextmanager
+async def lifespan(app):
+    yield
+    await agents.close()  # uvicorn runs this on SIGTERM
+
+app = FastAPI(lifespan=lifespan)
+```
+
+`close()` tells the runtime this process takes no new calls, finishes the
+calls it is running (for up to 25 seconds: `close({ drainMs })`,
+`close(drain=)` in seconds), then disconnects. Meanwhile new calls go to the
+next process: in a rolling deploy, start it with `takeover: true`
+(`takeover=True`), which takes the tools at once while the old process
+finishes its calls; in a stop-then-start deploy, it connects without a
+takeover, since a closing process holds the tools no longer, and calls wait a
+few seconds for it. A takeover alone (without `close()`) also lets the
+replaced process answer the calls it has, for up to 30 seconds.
+
+What a deploy can still lose: a call that outlives the drain, and every call
+running when a process crashes or is killed without `close()`. The model is then
+told, in words it can pass on, that the tool's server disconnected during the
+call and it may or may not have taken effect; the run lists it in `toolErrors`
+(Python `tool_errors`) with code `connection_lost`. Key side effects by
+`context.idempotencyKey` so that checking and retrying is safe.
 ## Served tools: over HTTP, for serverless and many users
 
 A server of yours answers tool calls over HTTP (MCP's Streamable HTTP), and a
