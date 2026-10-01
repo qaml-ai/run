@@ -9,8 +9,12 @@ code in a sandbox that can only call your tools.
 pip install camelai-run
 ```
 
-Python 3.11 or later. Get an API key from the console at
-<https://run.camelai.com/console> and export it as `CAMELAI_API_KEY`.
+Python 3.11 or later. Create an API key at
+<https://run.camelai.com/console/tokens> and export it as `CAMELAI_API_KEY`.
+
+Coding agents: this version's docs are in the package, next to its code
+(`SKILL.md` and `sdk.md` in `camelai_run`'s directory: `python -c "import camelai_run, os; print(os.path.dirname(camelai_run.__file__))"`).
+To set camelRun up in a project, read <https://run.camelai.com/SKILL.md>.
 
 ```python
 import asyncio
@@ -23,8 +27,7 @@ def weather(city: str) -> dict:
 
 async def main():
     async with Agents() as agents:
-        agent = await agents.upsert("quickstart", model="anthropic/claude-sonnet-5-5",
-                                    instructions="You are a concise assistant.", tools=[weather])
+        agent = await agents.upsert("quickstart", instructions="You are a concise assistant.", tools=[weather])
         run = await agent.run("Should I bring an umbrella in Lisbon today?")
         print(run.text)
 

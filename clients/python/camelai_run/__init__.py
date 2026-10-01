@@ -454,7 +454,7 @@ class AgentRuntime:
         `prompt` (the prompt call's body, {"text", "requestId", ...}) is sent once the agent is made: the answer's "prompt" is
         its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once."""
         if not self.api_key:
-            raise AgentError("Set api_key (or the CAMELAI_API_KEY environment variable): create a key in the console at https://run.camelai.com")
+            raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md")
         import re
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
             raise AgentError(f"An agent's key is 1 to 80 letters, digits, _ and -: {key!r} is not")

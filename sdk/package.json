@@ -56,11 +56,12 @@
   },
   "files": [
     "dist",
+    "docs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "build": "rm -rf dist docs && tsc -p tsconfig.json && node ../scripts/package-docs.mjs docs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

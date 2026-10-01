@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runtime } from "./runtime-server.ts";
 
 test("the docs are served without credentials: llms.txt, llms-full.txt and every page but the operators', pointing at this runtime", async t => {
@@ -82,4 +87,22 @@ test("an unknown path is a 404 that says where to start, and a known one without
   const wrong = await fetch(`${r.base}/v1/me`, { headers: { Authorization: "Bearer art_wrong" } });
   assert.equal(wrong.status, 401);
   assert.match((await wrong.json()).error, /revoked.*\/console\/tokens/);
+});
+
+test("the SDK packages ship this version's skill and SDK reference, with links that work outside the repository", async t => {
+  const out = await mkdtemp(join(tmpdir(), "package-docs-"));
+  t.after(() => rm(out, { recursive: true, force: true }));
+  execFileSync(process.execPath, [fileURLToPath(new URL("../scripts/package-docs.mjs", import.meta.url)), out]);
+  const skill = await readFile(join(out, "SKILL.md"), "utf8");
+  assert.equal(skill, await readFile(new URL("../docs/SKILL.md", import.meta.url), "utf8"));
+  const sdk = await readFile(join(out, "sdk.md"), "utf8");
+  assert.match(sdk, /\]\(https:\/\/run\.camelai\.com\/docs\/guides\/tools\.md\)/);
+  assert.match(sdk, /\]\(https:\/\/github\.com\/qaml-ai\/run\/blob\/main\/examples\//);
+  assert.doesNotMatch(sdk, /\]\((?!https?:|#|mailto:)[^)\s]+\)/, "no relative links");
+  // Both packages build them in: npm's from its build script, PyPI's before `python -m build`.
+  const npm = JSON.parse(await readFile(new URL("../sdk/package.json", import.meta.url), "utf8"));
+  assert.ok(npm.files.includes("docs"));
+  assert.match(npm.scripts.build, /package-docs\.mjs docs/);
+  assert.match(await readFile(new URL("../clients/python/pyproject.toml", import.meta.url), "utf8"), /camelai_run = \["\*\.md"\]/);
+  assert.match(await readFile(new URL("../.github/workflows/publish-python.yml", import.meta.url), "utf8"), /package-docs\.mjs clients\/python\/camelai_run/);
 });

@@ -19,4 +19,9 @@ server = ["cryptography>=42"]
 Homepage = "https://run.camelai.com"
 
 [tool.setuptools]
-py-modules = ["camelai_run"]
+packages = ["camelai_run"]
+
+# The docs for coding agents, for this version: SKILL.md and sdk.md, copied from docs/ before a build
+# (node scripts/package-docs.mjs clients/python/camelai_run).
+[tool.setuptools.package-data]
+camelai_run = ["*.md"]

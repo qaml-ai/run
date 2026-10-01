@@ -31,6 +31,13 @@ test("create-run-app writes the starter, its key (readable only by its owner), a
   assert.match(route, /NODE_ENV === "production" && process\.env\.DEMO_AUTH !== "1"/);
   assert.match(await readFile(join(app, "proxy.ts"), "utf8"), /DEMO_AUTH !== "1"/);
   assert.match(await readFile(join(app, "README.md"), "utf8"), /Add your own sign-in before you deploy/);
+  // The agent gets the account's default model unless the app chooses one.
+  assert.match(route, /\.\.\.\(process\.env\.AGENT_MODEL \? \{ model: process\.env\.AGENT_MODEL \} : \{\}\)/);
+  assert.doesNotMatch(route, /model: "/);
+  // Coding agents in the app read the installed SDK's docs; Claude Code's CLAUDE.md points at the same file.
+  const agents = await readFile(join(app, "AGENTS.md"), "utf8");
+  assert.match(agents, /<!-- BEGIN:camelrun-agent-rules -->[^]*node_modules\/@camelai\/run\/docs\/SKILL\.md[^]*<!-- END:camelrun-agent-rules -->/);
+  assert.equal(await readFile(join(app, "CLAUDE.md"), "utf8"), "@AGENTS.md\n");
   // A directory with something in it is left alone.
   assert.throws(() => execFileSync(process.execPath, [cli, "My App", "--no-install"], { cwd: root, stdio: "pipe" }), /not empty/);
 });

@@ -1,5 +1,9 @@
 node_modules
 dist/
+# The docs the SDK packages ship, copied from docs/ when they build (scripts/package-docs.mjs)
+sdk/docs/
+clients/python/camelai_run/*.md
+clients/python/*.egg-info/
 .agent-runtime/
 __pycache__/
 *.pyc

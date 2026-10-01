@@ -2,8 +2,9 @@
 /**
  * npm create @camelai/run-app [directory] [--api-key <key>] [--base-url <url>] [--no-install]
  *
- * Copies the Next.js starter into `directory` (default: agent-app), writes .env.local with the API key
- * (from --api-key or CAMELAI_API_KEY) and installs its dependencies with the package manager it was run with.
+ * Copies the Next.js starter into `directory` (default: agent-app), with an AGENTS.md (and CLAUDE.md) for coding agents,
+ * writes .env.local with the API key (from --api-key or CAMELAI_API_KEY) and installs its dependencies with the
+ * package manager it was run with.
  */
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -59,7 +60,7 @@ const relative = options.directory ?? "agent-app";
 console.log(`
 Created ${relative}.
 
-  cd ${relative}${options.install ? "" : `\n  ${manager} install`}${options.apiKey ? "" : "\n  # add your API key to .env.local (https://run.camelai.com/console)"}
+  cd ${relative}${options.install ? "" : `\n  ${manager} install`}${options.apiKey ? "" : "\n  # add CAMELAI_API_KEY to .env.local (create one at https://run.camelai.com/console/tokens)"}
   ${manager === "npm" ? "npm run" : manager} dev
 
-Then open http://localhost:3000.`);
+Then open http://localhost:3000. Coding agents: see AGENTS.md.`);

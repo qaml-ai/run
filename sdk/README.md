@@ -9,9 +9,12 @@ model-written code in a sandbox that can only call your tools.
 npm install @camelai/run
 ```
 
-Node 22 or later, Bun, Deno or Cloudflare Workers. Get an API key from the
-console at <https://run.camelai.com/console> and export it as
-`CAMELAI_API_KEY`.
+Node 22 or later, Bun, Deno or Cloudflare Workers. Create an API key at
+<https://run.camelai.com/console/tokens> and export it as `CAMELAI_API_KEY`.
+
+Coding agents: this version's docs are in the package, at
+`node_modules/@camelai/run/docs/SKILL.md` and `docs/sdk.md`. To set camelRun up
+in a project, read <https://run.camelai.com/SKILL.md>.
 
 ```ts
 import { Agents, schema, tool } from "@camelai/run";
@@ -25,7 +28,6 @@ const weather = tool({
 });
 
 const agent = await agents.upsert("quickstart", {
-  model: "anthropic/claude-sonnet-5-5",
   instructions: "You are a concise assistant.",
   tools: { weather },
 });
