@@ -103,6 +103,6 @@ test("the SDK packages ship this version's skill and SDK reference, with links t
   const npm = JSON.parse(await readFile(new URL("../sdk/package.json", import.meta.url), "utf8"));
   assert.ok(npm.files.includes("docs"));
   assert.match(npm.scripts.build, /package-docs\.mjs docs/);
-  assert.match(await readFile(new URL("../clients/python/pyproject.toml", import.meta.url), "utf8"), /camelai_run = \["\*\.md"\]/);
+  assert.match(await readFile(new URL("../clients/python/pyproject.toml", import.meta.url), "utf8"), /camelai_run = \["\*\.md", "py\.typed"\]/);
   assert.match(await readFile(new URL("../.github/workflows/publish-python.yml", import.meta.url), "utf8"), /package-docs\.mjs clients\/python\/camelai_run/);
 });

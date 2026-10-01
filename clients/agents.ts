@@ -115,7 +115,7 @@ export interface Run {
   raw: RunResult | null;
 }
 
-/** An answer's value: approval or url: true (yes/done) or false; question: the label chosen (or labels, or your own words), or a map of question to answer; form: its fields. */
+/** An answer's value: approval or url: true (yes/done) or false; question: the label chosen (or labels, or your own words), or a map of question to answer; form: its fields (a confirmation, a form without fields: true or false). */
 export type InputValue = boolean | string | string[] | Record<string, unknown>;
 export interface AnswerOptions {
   /** Who answers (your user id): checked against who may, when the input names its audience. */
@@ -405,6 +405,11 @@ function answerFor(input: AgentInput, value: InputValue): InputAnswer {
       return { action: "accept", content: { answers: value } };
     }
     case "form":
+      // A confirmation (context.confirm) is a form without fields: true or false answers it.
+      if (typeof value === "boolean") {
+        if (value && Object.keys((input.detail.requestedSchema as { properties?: object } | undefined)?.properties ?? {}).length) throw new AgentError("This form has fields: answer with them, as an object");
+        return value ? { action: "accept", content: {} } : { action: "decline" };
+      }
       if (typeof value !== "object" || value === null || Array.isArray(value)) throw new AgentError("Answer a form with its fields, as an object");
       return { action: "accept", content: value };
   }

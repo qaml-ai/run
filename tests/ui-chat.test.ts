@@ -118,6 +118,9 @@ test("answerValue turns plain values into answers", () => {
   assert.deepEqual(answerValue({ kind: "approval", detail: {} }, false), { action: "decline" });
   assert.deepEqual(answerValue({ kind: "question", detail: { questions: [{ question: "Which?", options: [], multiSelect: false, allowOther: true }] } }, "EU"), { action: "accept", content: { answers: { "Which?": "EU" } } });
   assert.deepEqual(answerValue({ kind: "form", detail: {} }, { a: 1 }), { action: "accept", content: { a: 1 } });
+  assert.deepEqual(answerValue({ kind: "form", detail: { requestedSchema: { type: "object", properties: {} } } }, true), { action: "accept", content: {} }, "a confirmation takes true");
+  assert.deepEqual(answerValue({ kind: "form", detail: { requestedSchema: { type: "object", properties: {} } } }, false), { action: "decline" });
+  assert.throws(() => answerValue({ kind: "form", detail: { requestedSchema: { type: "object", properties: { name: { type: "string" } } } } }, true), /has fields/);
   assert.throws(() => answerValue({ kind: "approval", detail: {} }, "yes"));
   assert.throws(() => answerValue({ kind: "question", detail: { questions: [{ question: "A", options: [], multiSelect: false, allowOther: true }, { question: "B", options: [], multiSelect: false, allowOther: true }] } }, "x"));
 });

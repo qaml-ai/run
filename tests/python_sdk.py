@@ -18,7 +18,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_run import _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
+from camelai_run import _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -617,6 +617,15 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["inputRequests"]["input_2"]["params"]["message"], "Why?")
         done = (await call({"inputResponses": {"input_2": {"action": "accept", "content": {"reason": "old"}}}, "requestState": second["requestState"]}))["result"]
         self.assertEqual(done["structuredContent"], {"archived": "x", "reason": "old"})
+
+    def test_a_confirmation_takes_true_or_false(self):
+        confirm = {"kind": "form", "detail": {"requestedSchema": {"type": "object", "properties": {}}}}
+        self.assertEqual(_answer_for(confirm, True), {"action": "accept", "content": {}})
+        self.assertEqual(_answer_for(confirm, False), {"action": "decline"})
+        form = {"kind": "form", "detail": {"requestedSchema": {"type": "object", "properties": {"reason": {"type": "string"}}}}}
+        with self.assertRaisesRegex(AgentError, "has fields"):
+            _answer_for(form, True)
+        self.assertEqual(_answer_for(form, {"reason": "old"}), {"action": "accept", "content": {"reason": "old"}})
 
     async def test_protected_resource_metadata_and_post_only(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app)) as client:

@@ -24,4 +24,4 @@ packages = ["camelai_run"]
 # The docs for coding agents, for this version: SKILL.md and sdk.md, copied from docs/ before a build
 # (node scripts/package-docs.mjs clients/python/camelai_run).
 [tool.setuptools.package-data]
-camelai_run = ["*.md"]
+camelai_run = ["*.md", "py.typed"]

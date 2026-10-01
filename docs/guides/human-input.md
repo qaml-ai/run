@@ -70,7 +70,7 @@ always offered to the model directly.
 | --- | --- |
 | `approval` | `true` to approve, `false` to decline |
 | `question` | the chosen option's label (or labels, or free text where allowed); for several questions, `{ "<question>": answer, … }` |
-| `form` | the fields, as an object (checked against the form's schema) |
+| `form` | the fields, as an object (checked against the form's schema); a confirmation (`context.confirm`, a form without fields): `true` or `false` |
 | `url` | `true` once the person has done what the page asks, else `false` |
 
 `input.decline()` declines any input. Answering resolves with the resumed run, or,

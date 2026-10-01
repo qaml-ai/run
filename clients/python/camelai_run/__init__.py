@@ -24,6 +24,13 @@ import uuid
 
 import httpx
 
+__all__ = [
+    "Agents", "Agent", "Run", "RunInput", "InputDetail", "RunStream", "StreamPart",
+    "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
+    "AgentError", "RunError",
+    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "DEFAULT_URL",
+    "serve_tools", "verify_runtime_token", "RuntimeTokenError", "TestRuntime",
+]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
 _DEFAULT = object()
 # The hosted runtime; `url` points elsewhere (a self-hosted runtime, or http://127.0.0.1:8790 in development).
@@ -434,7 +441,7 @@ class AgentRuntime:
         file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
         (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `model_headers` non-secret headers for each model call."""
         if not self.api_key:
-            raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to provision an agent")
+            raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers, builtins=builtins)
@@ -479,7 +486,7 @@ class AgentRuntime:
 
     def _operator(self):
         if not self.api_key:
-            raise AgentError("Set api_key or AGENT_RUNTIME_TOKEN to manage definitions, volumes and mounts")
+            raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         return self.api_key
 
     # Definitions: reusable agent configurations with their tool sources (mcpServers, openApi, builtins).
@@ -1307,7 +1314,7 @@ class RunInput(dict):
 
     async def answer(self, value, *, from_=None, throw_on_error=True, timeout=None):
         """approval or url: True (yes, done) or False; question: the label chosen (or labels, or your own words), or a
-        dict of question to answer; form: its fields. `from_`: who answers (your user id, or {"id", "name"?})."""
+        dict of question to answer; form: its fields (a confirmation, a form without fields: True or False). `from_`: who answers (your user id, or {"id", "name"?})."""
         return await self._agent._respond(self, _answer_for(self, value), from_, throw_on_error, timeout)
 
     async def decline(self, *, from_=None, throw_on_error=True, timeout=None):
@@ -1329,6 +1336,11 @@ def _answer_for(input, value):
         if not isinstance(value, dict):
             raise AgentError("Answer a question with the label chosen, or a dict of question to answer")
         return {"action": "accept", "content": {"answers": value}}
+    if isinstance(value, bool):
+        # A confirmation (context.confirm) is a form without fields: True or False answers it.
+        if value and ((input["detail"].get("requestedSchema") or {}).get("properties") or {}):
+            raise AgentError("This form has fields: answer with them, as a dict")
+        return {"action": "accept", "content": {}} if value else {"action": "decline"}
     if not isinstance(value, dict):
         raise AgentError("Answer a form with its fields, as a dict")
     return {"action": "accept", "content": value}

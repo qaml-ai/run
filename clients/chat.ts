@@ -155,6 +155,11 @@ export function answerValue(input: Pick<AgentInput, "kind" | "detail">, value: I
       return { action: "accept", content: { answers: value } };
     }
     case "form":
+      // A confirmation (context.confirm) is a form without fields: true or false answers it.
+      if (typeof value === "boolean") {
+        if (value && Object.keys((input.detail?.requestedSchema as { properties?: object } | undefined)?.properties ?? {}).length) throw new Error("This form has fields: answer with them, as an object");
+        return value ? { action: "accept", content: {} } : { action: "decline" };
+      }
       if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Answer a form with its fields, as an object");
       return { action: "accept", content: value };
     default:
