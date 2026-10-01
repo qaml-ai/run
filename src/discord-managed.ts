@@ -7,6 +7,7 @@ import { discord, parseMessage } from "./channels-discord.ts";
 import { SendError, type Channel, type ChannelInput, type ChannelProvider, type Channels, type Gateway } from "./channels.ts";
 import { transaction, type Db } from "./db.ts";
 import { HttpError, readJson, readText } from "./http.ts";
+import { managedBuiltinsRefusal } from "./builtins.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
 
 const ID = /^\d{1,20}$/;
@@ -33,6 +34,8 @@ export interface ManagedDiscordOptions {
   ownership?: Ownership; node: string; publicUrl: string;
   botToken: string; applicationId: string; clientSecret: string; publicKey: string; apiUrl?: string;
   canStart?: (tenant: string) => Promise<string | HttpError | undefined>;
+  /** The builtins of a tenant's definition, to refuse self-starting ones for a server. */
+  definitionBuiltins?: (tenant: string, definition: string) => Promise<string[] | undefined>;
   /** How many servers the account may connect, and its highest daily turn limit per server. */
   plan?: (tenant: string) => Promise<{ free: boolean; servers: number; turnsPerDay: number }>;
   applyDefinition?: (tenant: string, channel: string, definition: string) => Promise<ApplyResult[]>;
@@ -425,6 +428,10 @@ export class ManagedDiscord {
     const plan = await this.plan(tenant);
     if (limits?.turnsPerDay !== undefined && limits.turnsPerDay > plan.turnsPerDay) throw new HttpError(400, `Turns per server per day can be at most ${plan.turnsPerDay} on this account${plan.free ? " while it is on free credit" : ""}`);
   }
+  private async checkDefinition(tenant: string, definition: string) {
+    const refusal = managedBuiltinsRefusal(await this.options.definitionBuiltins?.(tenant, definition));
+    if (refusal) throw new HttpError(400, refusal);
+  }
   private async checkServers(tenant: string, sql: Pick<Db, "query">, guild: string) {
     const plan = await this.plan(tenant);
     const { rows } = await sql.query("select count(*)::int n from discord_server_bindings where tenant=$1 and application_id=$2 and guild_id<>$3 and state<>'disconnected'", [tenant, this.options.applicationId, guild]);
@@ -524,6 +531,7 @@ export class ManagedDiscord {
       if (!parsed.success) throw new HttpError(400, parsed.error.issues[0].message);
       const input = parsed.data; const account = tenant(c);
       await this.checkLimits(account, input.limits);
+      await this.checkDefinition(account, input.definition);
       // Discord is asked before the lock, so no database connection waits on it.
       const permission = await this.permission(c.req.raw, account, input.guildId);
       await this.verifiedInstallation(input.guildId); await this.validateChannels(input.guildId, input.allowedChannelIds);
@@ -565,7 +573,7 @@ export class ManagedDiscord {
       if (!current.channel_id) throw new HttpError(409, "This server setup has not completed; set it up again");
       // The paying account may always stop its own server, even after losing its Discord role; anything else needs a current administrator.
       const permission = current.tenant === account && stop ? undefined : await this.permission(c.req.raw, account, guildId);
-      if (current.tenant === account) await this.checkLimits(account, input.limits);
+      if (current.tenant === account) { await this.checkLimits(account, input.limits); if (input.definition) await this.checkDefinition(account, input.definition); }
       // Disconnect and pause remain possible after the bot is physically removed.
       if (!stop) await this.verifiedInstallation(guildId);
       if (input.allowedChannelIds) await this.validateChannels(guildId, input.allowedChannelIds);

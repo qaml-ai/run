@@ -121,6 +121,17 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
   await until(async () => (await r.db.query("select count(*)::int n from channel_items where item->>'channel'=$1", [bindings[0].channelId])).rows[0].n === 0, "its reply to be dropped");
   assert.equal(sent.length, paused, "a paused server gets no API turn's reply");
   assert.equal((await fetch(`${r.base}/console/discord/bindings/${GUILDS[0]}`, { method: "PATCH", headers: headers[0], body: JSON.stringify({ state: "active" }) })).status, 200);
+  // API and scheduled turns count against the server's daily turns; past them they do not post.
+  const today = `d${new Date().toISOString().slice(0, 10)}/turns`;
+  await r.db.query("insert into channel_counts (channel, window_key, count) values ($1, $2, 1000000) on conflict (channel, window_key) do update set count = 1000000", [bindings[0].channelId, today]);
+  const over = sent.length;
+  const limited = await r.call(`/v1/agents/${ownAgent}/prompt`, { body: { text: "over the daily limit" } });
+  await until(() => r.logs.some(line => line.includes('"type":"channel_turn_over_limit"') && line.includes(limited.json.id)), "an API turn over the server's daily turns");
+  assert.equal(sent.length, over);
+  await r.db.query("delete from channel_counts where channel = $1 and window_key = $2", [bindings[0].channelId, today]);
+  // A definition a server uses cannot take a builtin that starts runs on its own.
+  const scheduled = await r.call(`/v1/definitions/${bindings[0].channel.definition}`, { method: "PATCH", body: { builtins: ["schedule"] } });
+  assert.equal(scheduled.status, 400); assert.match(scheduled.json.error, /cannot use the schedule builtin/);
 
   const revised = await r.call("/v1/definitions", { body: { name: "Revised", systemPrompt: "Revised-only", builtins: [] } });
   const changed = await fetch(`${r.base}/console/discord/bindings/${GUILDS[0]}`, { method: "PATCH", headers: headers[0], body: JSON.stringify({ definition: revised.json.id }) });

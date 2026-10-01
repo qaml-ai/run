@@ -976,7 +976,13 @@ export class Channels {
     if (waiting) reply.text = [reply.text, askText(waiting)].filter(Boolean).join("\n\n");
     const empty = !reply.text && !reply.files.length;
     if (!record.id.startsWith("in_")) {
-      // Turns not started by a message (schedules, the API) reply to the conversation too.
+      // Turns not started by a message (schedules, the API) count against the channel's daily turns, and past it do not reply.
+      const channel = record.method === "prompt" ? await this.read(binding.channel) : undefined;
+      if (channel && await this.count(channel.id, `d${new Date().toISOString().slice(0, 10)}/turns`) > channel.limits.turnsPerDay) {
+        console.log(JSON.stringify({ type: "channel_turn_over_limit", channel: channel.id, agent: agent.id, request: record.id }));
+        return;
+      }
+      // They reply to the conversation too.
       if (!empty) await this.enqueue(agent, binding, `out_${sha(`${agent.id}:${record.id}`).slice(0, 40)}`, reply.text, reply.files);
       return;
     }

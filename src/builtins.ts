@@ -31,6 +31,16 @@ export const BUILTINS = {
   ask_user: ["ask_user"],
 } as const;
 export type Builtin = keyof typeof BUILTINS;
+/**
+ * Builtins that start runs of their own: on a shared server (the managed Discord bot) any member could
+ * have the agent wake itself up, outside the server's per-sender and daily limits.
+ */
+export const SELF_STARTING_BUILTINS: readonly Builtin[] = ["schedule"];
+/** Why a definition with these builtins cannot serve a managed server, or undefined if it can. */
+export function managedBuiltinsRefusal(builtins: readonly string[] | undefined) {
+  const refused = (builtins ?? []).filter(name => (SELF_STARTING_BUILTINS as readonly string[]).includes(name));
+  return refused.length ? `Camel Discord servers cannot use the ${refused.join(", ")} builtin: any member could start runs outside the server's limits. Remove it from the definition, or use a separate one for the server` : undefined;
+}
 /** `builtins` as a definition or an agent gives them: distinct names of BUILTINS. */
 export function builtinsInput(value: unknown): Builtin[] {
   if (!Array.isArray(value) || new Set(value).size !== value.length || value.some(name => typeof name !== "string" || !Object.hasOwn(BUILTINS, name))) {

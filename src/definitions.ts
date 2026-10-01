@@ -8,7 +8,7 @@ import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
-import { builtinsInput } from "./builtins.ts";
+import { builtinsInput, managedBuiltinsRefusal } from "./builtins.ts";
 import { searchOrder } from "./web-search.ts";
 import { canonical } from "../shared/durable-json.ts";
 import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
@@ -164,6 +164,9 @@ export class Definitions {
   }
 
   private async write(current: Definition, name: string, spec: DefinitionSpec) {
+    // Only a save that adds a self-starting builtin pays for the lookup.
+    const refusal = managedBuiltinsRefusal(spec.builtins);
+    if (refusal && (await this.db.query("select 1 from channels where tenant = $1 and channel->>'definition' = $2 and channel->>'type' = 'discord-managed' limit 1", [current.tenant, current.id])).rowCount) throw new HttpError(400, refusal);
     const next: Definition = { ...current, name, spec, revision: current.revision + 1, updatedAt: Date.now() };
     const { rowCount } = await this.db.query("update definitions set name = $3, spec = $4, revision = $5, updated_at = $6 where id = $1 and tenant = $2 and revision = $7",
       [current.id, current.tenant, name, JSON.stringify(spec), next.revision, next.updatedAt, current.revision]);

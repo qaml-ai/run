@@ -493,6 +493,7 @@ const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
   ...managedDiscordConfig, db, consoleAuth, channels: () => channels, ownership, node, publicUrl,
   apiUrl: process.env.AGENT_DISCORD_API_URL,
   canStart: tenant => accounts.runLimit(tenant),
+  definitionBuiltins: async (tenant, id) => (await definitions.read(tenant, id)).spec.builtins,
   // Interim caps until servers have an aggregate budget: free credit gets one server and 500 turns a day per server.
   plan: async tenant => {
     const free = await accounts.billing.agentLimit(tenant) !== undefined;

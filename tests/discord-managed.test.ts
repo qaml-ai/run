@@ -432,3 +432,14 @@ test("a failed configuration change leaves the server as it was, and edits that 
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
   assert.equal((await f.db.query("select count(*)::int n from channel_items")).rows[0].n, 0);
 });
+
+test("a definition with a self-starting builtin cannot serve a server", async t => {
+  const f = await fixture(t); f.options.definitionBuiltins = async (_tenant, id) => id === "def-scheduled" ? ["web_search", "schedule"] : ["web_search"];
+  const managed = new ManagedDiscord({ ...f.options }); t.after(() => managed.stop());
+  const request = (path: string, method: string, body: unknown) => managed.app.request(`https://camel.test${path}`, { method, headers: { cookie: "ar_session=session-a", "x-test-tenant": "tenant-a", "x-agent-runtime-console": "1", "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  await f.link();
+  const refused = await request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-scheduled", allowedChannelIds: [channelA] });
+  assert.equal(refused.status, 400); assert.match((await refused.json() as any).error, /cannot use the schedule builtin/);
+  assert.equal((await request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-plain", allowedChannelIds: [channelA] })).status, 201);
+  assert.equal((await request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-scheduled" })).status, 400);
+});
