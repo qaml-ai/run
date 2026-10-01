@@ -22,6 +22,7 @@ export const PLUGIN_ROOT = join(here, "plugin");
 const CATEGORIES = ["Productivity", "Creativity", "Developer Tools", "Business & Operations", "Data & Analytics", "Communication", "Education & Research", "Security", "Finance", "Healthcare", "Travel", "Entertainment", "Other"];
 const SUBMISSION_URLS = ["websiteURL", "supportURL", "privacyPolicyURL", "termsOfServiceURL"] as const;
 const ICONS = ["logo", "logoDark", "composerIcon", "composerIconDark"] as const;
+const AI_PLATFORMS = /\b(?:ChatGPT|GPT-?\w*|OpenAI|Codex|Claude|Anthropic|Gemini|Copilot|Llama|Mistral|Grok)\b/i;
 /** API tokens, OAuth tokens and the like: none may be in the ZIP. */
 const SECRET = /\b(?:art|aro|arr|arc|sk|rk)_(?:live_|test_)?[A-Za-z0-9_-]{16,}/;
 
@@ -72,6 +73,10 @@ export function validate(root = PLUGIN_ROOT) {
   if (!oneLine(ui.shortDescription, 30)) errors.push("interface.shortDescription: one line, at most 30 characters");
   if (typeof ui.longDescription !== "string" || !ui.longDescription.trim() || ui.longDescription.length > 4000) errors.push("interface.longDescription: 1 to 4000 characters");
   if (!oneLine(ui.developerName, 80)) errors.push("interface.developerName: one line, at most 80 characters");
+  // The directory rejects a name or description that mentions an AI assistant, model or platform, ChatGPT included.
+  for (const [field, value] of [["description", manifest.description], ["interface.displayName", ui.displayName], ["interface.shortDescription", ui.shortDescription], ["interface.longDescription", ui.longDescription]]) {
+    if (AI_PLATFORMS.test(String(value ?? ""))) errors.push(`${field}: names an AI assistant, model or platform (${AI_PLATFORMS.exec(String(value))![0]})`);
+  }
   if (!CATEGORIES.includes(ui.category)) errors.push(`interface.category: one of ${CATEGORIES.join(", ")}`);
   if (!Array.isArray(ui.capabilities) || ui.capabilities.length > 20 || !ui.capabilities.every((capability: unknown) => oneLine(capability, 120))) errors.push("interface.capabilities: at most 20, each one line of at most 120 characters");
   const prompts: unknown[] = Array.isArray(ui.defaultPrompt) ? ui.defaultPrompt : [ui.defaultPrompt];

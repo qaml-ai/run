@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "camelrun",
   "version": "1.0.0",
-  "description": "Create, deploy and run AI agents on camelRun, camelAI's hosted agent runtime, from ChatGPT and Codex.",
+  "description": "Create, deploy and run AI agents on camelRun, camelAI's hosted agent runtime.",
   "author": {
     "name": "camelAI",
     "email": "support@camelai.com",
@@ -25,7 +25,7 @@
       "interface": {
         "displayName": "camelRun",
         "shortDescription": "Build and run AI agents",
-        "longDescription": "camelRun is camelAI's hosted runtime for AI agents. Connect your camelRun account to create agents from a plain-language description, give them built-in tools such as web search, run them and read their replies, and deploy agent.yaml manifests that keep an agent's configuration as a reusable, versioned definition. Agents are durable: each keeps its history until you delete it, can wake itself on a schedule, and can stop to ask you a question or for an approval, which you answer from the conversation.\n\nIt is for developers and teams who build agents for their products or their own work and want to try, adjust and manage them without leaving the conversation.\n\nThe plugin acts only on the camelRun account you sign in with, and only on its agents, definitions and schedules. Runs use your account's model credit. It does not manage billing, API tokens or provider keys; do those in the camelRun console. Tool servers that need secrets are best deployed with the camelrun CLI, which reads them from its environment, so credentials never pass through the conversation. Deleting an agent or definition cannot be undone, and ChatGPT asks you before it does.",
+        "longDescription": "camelRun is camelAI's hosted runtime for AI agents. Connect your camelRun account to create agents from a plain-language description, give them built-in tools such as web search, run them and read their replies, and deploy agent.yaml manifests that keep an agent's configuration as a reusable, versioned definition. Agents are durable: each keeps its history until you delete it, can wake itself on a schedule, and can stop to ask you a question or for an approval, which you answer from the conversation.\n\nIt is for developers and teams who build agents for their products or their own work and want to try, adjust and manage them without leaving the conversation.\n\nThe plugin acts only on the camelRun account you sign in with, and only on its agents, definitions and schedules. Runs use your account's credit. It does not manage billing, API tokens or provider keys; do those in the camelRun console. Tool servers that need secrets are best deployed with the camelrun CLI, which reads them from its environment, so credentials never pass through the conversation. Deleting an agent or definition cannot be undone, so you are asked to confirm first.",
         "developerName": "camelAI",
         "category": "Developer Tools",
         "capabilities": [
