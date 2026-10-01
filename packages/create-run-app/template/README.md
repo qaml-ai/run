@@ -9,14 +9,15 @@
 A Next.js app with a streaming chat to an agent on [camelRun](https://run.camelai.com).
 
 ```sh
-cp .env.example .env.local   # add your CAMELAI_API_KEY
+cp .env.example .env.local   # add your CAMELAI_API_KEY (https://run.camelai.com/console/tokens)
 npm install
 npm run dev                  # http://localhost:3000
 ```
 
-The agent uses `openrouter/anthropic/claude-sonnet-5.5` (set in `route.ts`, or with `AGENT_MODEL`).
-Your account needs access to it: prepaid credit, or your own OpenRouter key in the console's
-**Models & keys**. `GET /v1/models?available=true` lists the models your key can use.
+The agent uses your account's default model. To choose another, set `AGENT_MODEL` in `.env.local` to
+one your account can use: `npx -y @camelai/camelrun models --available` lists them.
+
+Coding agents working in this app: see `AGENTS.md`.
 
 - `app/api/agent/route.ts`: the route the chat talks to (`createAgentHandler`). It keeps your API key on
   the server, makes each user their own agent, and defines its instructions and tools. Replace the demo

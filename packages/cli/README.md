@@ -16,7 +16,6 @@ revision only when it changed, and `--apply` moves live agents to it between the
 
 ```yaml
 key: support
-model: anthropic/claude-sonnet-5-5
 systemPromptFile: prompts/support.md
 builtins: [web_search, ask_user]
 mcpServers:

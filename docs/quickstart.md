@@ -5,14 +5,36 @@ tool in your own process, and answers you. The runtime keeps the model loop, the
 agent's history and its files; your tools stay in your code, with your
 credentials.
 
+**With a coding agent.** Paste this into Claude Code, Codex, Cursor or any coding
+agent. It installs the SDK, finds your API key without you pasting it into chat,
+and runs your first agent:
+
+```text
+Read https://run.camelai.com/SKILL.md and set up camelRun in this project.
+```
+
+**Try it with no API key.** Connect your coding agent to the hosted MCP server.
+Signing in with GitHub or Google creates your account:
+
+```sh
+claude mcp add --transport http camelrun https://run.camelai.com/mcp   # then /mcp in Claude Code
+codex mcp add camelrun --url https://run.camelai.com/mcp && codex mcp login camelrun
+```
+
+Then ask it to "use camelrun to build me my first agent". See the
+[CLI and MCP server](reference/cli.md).
+
+**Credit.** GitHub accounts older than 30 days start with free credit. Everyone
+else (Google sign-ins, newer GitHub accounts) unlocks the same credit by verifying
+a card on the console's **Billing** page. The card is not charged.
+
+To build it into your app yourself, read on.
+
 ## 1. Get an API key
 
-Sign in to the console at <https://run.camelai.com/console>, then:
-
-- under **Models & keys**, check that a model is marked *Usable*. New accounts
-  start with credit for the platform's models. Or you can add your own provider
-  key.
-- under **API tokens**, create a token, and export it:
+Sign in to the console at <https://run.camelai.com/console> with GitHub or Google.
+Under **API tokens** (<https://run.camelai.com/console/tokens>), create a token,
+and export it:
 
 ```sh
 export CAMELAI_API_KEY=art_...
@@ -53,7 +75,6 @@ const weather = tool({
 
 // The same key is the same agent, with its history, every time you run this.
 const agent = await agents.upsert("quickstart", {
-  model: "anthropic/claude-sonnet-5-5",
   instructions: "You are a concise assistant.",
   tools: { weather },
 });
@@ -81,8 +102,7 @@ def weather(city: str) -> dict:
 
 async def main():
     async with Agents() as agents:  # reads CAMELAI_API_KEY
-        agent = await agents.upsert("quickstart", model="anthropic/claude-sonnet-5-5",
-                                    instructions="You are a concise assistant.", tools=[weather])
+        agent = await agents.upsert("quickstart", instructions="You are a concise assistant.", tools=[weather])
         run = await agent.run("Should I bring an umbrella in Lisbon today?")
         print(run.text)
 
@@ -100,15 +120,27 @@ SDK, or a server of your own, see [Tools](guides/tools.md)):
 BASE=https://run.camelai.com; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
 # The Idempotency-Key is the agent's key: the same key is the same agent.
 AGENT=$(curl -s $BASE/v1/agents -H "$AUTH" -H "Content-Type: application/json" -H "Idempotency-Key: quickstart" \
-  -d '{"model": "anthropic/claude-sonnet-5-5", "systemPrompt": "You are a concise assistant."}' | jq -r .id)
+  -d '{"systemPrompt": "You are a concise assistant."}' | jq -r .id)
 REQ=$(curl -s $BASE/v1/agents/$AGENT/prompt -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"text": "Write a haiku about durable agents."}' | jq -r .id)
 until curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -e '.state == "completed"' > /dev/null; do sleep 1; done
 curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -r '.outcome.result.reply // .outcome.error'
 ```
 
-If you see `No ... API key configured`, pick a model your account can use:
-`GET /v1/models?available=true`, or the console's **Models & keys**.
+The agent names no model, so it uses your account's default: the first of the
+platform's default models your account can use. To choose one (optional), list
+the models you can use, and pass one as `model`:
+
+```sh
+npx -y @camelai/camelrun models --available
+```
+
+```ts
+const agent = await agents.upsert("quickstart", { model: "<a model id from that list>", instructions: "…" });
+```
+
+A model your account can't use fails with `No ... API key configured`: pick one
+from that list, or add the provider's key under **Models & keys**.
 
 ## 4. Stream it
 

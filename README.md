@@ -10,11 +10,19 @@ Live at <https://run.camelai.com> (REST API under `/v1`, described by
 `/v1/openapi.json` and the committed [`openapi.json`](openapi.json); console at
 `/console`).
 
+Set it up with your coding agent (Claude Code, Codex, Cursor…) by pasting:
+
+```text
+Read https://run.camelai.com/SKILL.md and set up camelRun in this project.
+```
+
+Or by hand:
+
 ```ts
 import { Agents } from "@camelai/run";
 
 const agents = new Agents(); // CAMELAI_API_KEY
-const agent = await agents.upsert("support-triage", { model: "anthropic/claude-sonnet-5-5", instructions: "Be concise." });
+const agent = await agents.upsert("support-triage", { instructions: "Be concise." });
 console.log((await agent.run("Which tickets look urgent?")).text);
 await agents.close();
 ```
