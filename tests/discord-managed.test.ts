@@ -4,10 +4,10 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
 import { Ownership } from "../src/ownership.ts";
-import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { ConsoleAuth } from "../src/console-auth.ts";
 import type { Channels, Channel, ChannelInput, Inbound } from "../src/channels.ts";
-import { ManagedDiscord, managesGuild, verifyInteraction, type ManagedDiscordOptions } from "../src/discord-managed.ts";
+import { ManagedDiscord, type ManagedDiscordOptions } from "../src/discord-managed.ts";
 import { HttpError } from "../src/http.ts";
 import { testDatabase } from "./database.ts";
 
@@ -17,43 +17,27 @@ const OWNER = "111";
 const guildA = "101"; const guildB = "102";
 const channelA = "201"; const channelB = "202";
 
-test("Discord management permissions use owner or exact Administrator/Manage Guild bits", () => {
-  assert.equal(managesGuild({ owner: true }), true);
-  assert.equal(managesGuild({ permissions: "32" }), true);
-  assert.equal(managesGuild({ permissions: "8" }), true);
-  for (const permissions of ["0", "16", 32, null, "garbage", "-1"]) assert.equal(managesGuild({ permissions }), false);
-});
-
-test("interaction verification covers timestamp plus exact body and rejects tampering, stale and invalid signatures", () => {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const hex = (publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32).toString("hex");
-  const now = Date.now(); const timestamp = String(Math.floor(now / 1000)); const body = '{"type":1}';
-  const headers = new Headers({ "x-signature-timestamp": timestamp, "x-signature-ed25519": sign(null, Buffer.from(timestamp + body), privateKey).toString("hex") });
-  assert.equal(verifyInteraction(hex, headers, body, now), true);
-  assert.equal(verifyInteraction(hex, headers, body + " ", now), false);
-  assert.equal(verifyInteraction(hex, headers, body, now + 360_000), false);
-  assert.equal(verifyInteraction(hex, new Headers(), body), false);
-});
-
-async function fixture(t: { after(fn: () => Promise<void> | void): void }, owned = false) {
+async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra: Partial<ManagedDiscordOptions> & { owned?: boolean } = {}) {
+  const owned = extra.owned ?? false;
   const { db } = await testDatabase();
   const received: { channel: string; message: Inbound }[] = [];
   const sent: { channel: string; content: string }[] = [];
-  const state = { manage: true, present: true, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, paginated: false, limitedGet: false, routeLimited: false };
-  const keypair = generateKeyPairSync("ed25519");
-  const publicKey = (keypair.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32).toString("hex");
+  const left: string[] = [];
+  const state = { present: true, noGuild: false, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, limitedGet: false, routeLimited: false };
   let gatewayUrl = "";
   const discord = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const json = (status: number, body: unknown) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
     const url = new URL(req.url!, "http://localhost");
-    if (url.pathname === "/oauth2/token") return json(200, { access_token: "verified-token", scope: "identify guilds", expires_in: 3600 });
-    if (req.headers.authorization === "Bearer verified-token") {
-      if (url.pathname === "/users/@me") return json(200, { id: OWNER });
-      if (url.pathname === "/users/@me/guilds" && state.paginated) return json(200, url.searchParams.has("after") ? [{ id: "2000", name: "Later page", permissions: "32" }] : Array.from({ length: 200 }, (_, index) => ({ id: String(1000 + index), permissions: "0" })));
-      if (url.pathname === "/users/@me/guilds") return json(200, [{ id: guildA, name: "Alpha", permissions: state.manage ? "32" : "0" }, { id: guildB, name: "Beta", permissions: state.manage ? "8" : "0" }]);
+    // The authorization code names the server Discord added the bot to (the test's choice).
+    if (url.pathname === "/oauth2/token") {
+      const code = new URLSearchParams(raw).get("code") ?? "";
+      if (code === "used") return json(400, { error: "invalid_grant" });
+      return json(200, { access_token: "verified-token", scope: "bot applications.commands identify", expires_in: 3600, ...(state.noGuild ? {} : { guild: { id: code, name: code === guildA ? "Alpha" : "Beta" } }) });
     }
+    if (req.headers.authorization === "Bearer verified-token" && url.pathname === "/users/@me") return json(200, { id: OWNER });
     if (req.headers.authorization !== `Bot ${TOKEN}`) return json(401, {});
+    if (req.method === "DELETE" && url.pathname.startsWith("/users/@me/guilds/")) { left.push(url.pathname.split("/")[4]); return res.writeHead(204).end(); }
     if (url.pathname === "/gateway/bot") { state.gatewayCalls++; await state.gatewayWait; return json(200, { url: gatewayUrl, shards: state.shards, session_start_limit: { remaining: 100 } }); }
     if (url.pathname.startsWith("/guilds/")) {
       const id = url.pathname.split("/")[2];
@@ -100,6 +84,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, owned
   let managed: ManagedDiscord;
   const channels = {
     create: async (tenant: string, input: ChannelInput, internal?: { sql?: Pick<typeof db, "query"> }) => {
+      if (input.definition === "missing") throw new HttpError(404, "Unknown definition");
       const id = `ch_${randomUUID()}`;
       const account = await managed.provider.setup(input.credentials!, { url: "", secret: "" });
       const channel = { id, tenant, type: input.type!, name: input.name!, definition: input.definition!, access: { public: true, allow: [], ...input.access }, limits: { perSenderPerMinute: 5, turnsPerDay: 100, ...input.limits }, account: account.account, masked: {}, createdAt: Date.now(), updatedAt: Date.now(), sealed: {} } as Channel;
@@ -118,54 +103,132 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, owned
   } as unknown as Channels;
   const ownership = owned ? new Ownership(db, { node: "first", ttlMs: 60_000 }) : undefined;
   if (ownership) { await ownership.start(); t.after(() => ownership.close()); }
-  const options: ManagedDiscordOptions = { db, consoleAuth: auth, channels: () => channels, node: "test", publicUrl: "https://camel.test", botToken: TOKEN, applicationId: APP, clientSecret: "secret", publicKey, apiUrl: base, ownership };
+  const options: ManagedDiscordOptions = { db, consoleAuth: auth, channels: () => channels, node: "test", publicUrl: "https://camel.test", botToken: TOKEN, applicationId: APP, clientSecret: "secret", apiUrl: base, ownership, ...extra };
   managed = new ManagedDiscord(options);
   t.after(() => managed.stop());
   const request = (path: string, method = "GET", body?: unknown, tenant = "tenant-a", cookie = "ar_session=session-a") => managed.app.request(`https://camel.test${path}`, {
     method, headers: { cookie, "x-test-tenant": tenant, "x-agent-runtime-console": "1", "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}),
   });
-  const link = async (tenant = "tenant-a", cookie = "ar_session=session-a") => {
-    const response = await request("/console/discord/authorize", "POST", {}, tenant, cookie); assert.equal(response.status, 200);
-    const { url } = await response.json() as any; const state = new URL(url).searchParams.get("state");
-    const callback = await request(`/console/discord/callback?state=${state}&code=valid`, "GET", undefined, tenant, cookie);
-    assert.match(callback.headers.get("location")!, /discord_connected=1/);
-    return state;
+  /** Start adding Camel from the console, then come back from Discord having added it to `guild`. */
+  const install = async (guild = guildA, tenant = "tenant-a", cookie = "ar_session=session-a") => {
+    const started = await request("/console/discord/install", "GET", undefined, tenant, cookie);
+    assert.equal(started.status, 302);
+    const state = new URL(started.headers.get("location")!).searchParams.get("state")!;
+    const callback = await request(`/console/discord/callback?state=${state}&code=${guild}`, "GET", undefined, tenant, cookie);
+    return { state, location: new URL(callback.headers.get("location")!) };
   };
+  /** Add Camel to a server and finish its setup with one allowed channel open to everyone. */
   const bind = async (guildId = guildA, allowedChannelId = channelA, tenant = "tenant-a", cookie = "ar_session=session-a") => {
-    await link(tenant, cookie);
-    const response = await request("/console/discord/bindings", "POST", { guildId, definition: "def-test", allowedChannelIds: [allowedChannelId], access: { public: true } }, tenant, cookie);
-    assert.equal(response.status, 201, await response.clone().text()); return response.json() as Promise<any>;
+    const { location } = await install(guildId, tenant, cookie);
+    assert.equal(location.searchParams.get("discord_server"), guildId, location.searchParams.get("discord_error") ?? "");
+    const response = await request(`/console/discord/bindings/${guildId}`, "PATCH", { definition: "def-test", allowedChannelIds: [allowedChannelId], access: { public: true } }, tenant, cookie);
+    assert.equal(response.status, 200, await response.clone().text()); return response.json() as Promise<any>;
   };
   const message = (guild = guildA, channel = channelA, id = "301") => managed.dispatch("MESSAGE_CREATE", { id, guild_id: guild, channel_id: channel, type: 0, author: { id: OWNER, username: "admin" }, mentions: [{ id: APP }], content: `<@${APP}> hello`, attachments: [] });
   const ready = () => managed.dispatch("READY", { user: { id: APP }, guilds: [{ id: guildA }, { id: guildB }] });
-  return { db, managed, state, request, bind, link, ready, message, received, sent, saved, keypair, publicKey, auth, base, options, ownership };
+  const binding = async () => (await db.query("select * from discord_server_bindings")).rows;
+  return { db, managed, state, request, bind, install, ready, message, received, sent, saved, left, auth, base, options, ownership, binding };
 }
 
-test("OAuth state is single-use, session-bound, encrypted, and expired grants cannot mutate a server", async t => {
+test("adding Camel starts one Discord authorization: bot, commands and identity, message permissions only, and a single-use state", async t => {
   const f = await fixture(t);
-  const state = await f.link();
-  const token = (await f.db.query("select token from discord_account_links")).rows[0].token;
-  assert.ok(!token.includes("verified-token"));
-  const replay = await f.request(`/console/discord/callback?state=${state}&code=valid`);
-  assert.match(replay.headers.get("location")!, /discord_error=/);
-  const wrongSession = await f.request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-test", allowedChannelIds: [channelA] }, "tenant-a", "ar_session=other");
-  assert.equal(wrongSession.status, 403);
-  await f.db.query("update discord_account_links set expires_at=0");
-  assert.equal((await f.request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-test", allowedChannelIds: [channelA] })).status, 403);
+  const started = await f.request("/console/discord/install?guild_id=101");
+  const url = new URL(started.headers.get("location")!);
+  assert.equal(url.origin + url.pathname, "https://discord.com/oauth2/authorize");
+  assert.equal(url.searchParams.get("scope"), "bot applications.commands identify");
+  assert.equal(url.searchParams.get("response_type"), "code");
+  assert.equal(url.searchParams.get("redirect_uri"), "https://camel.test/console/discord/callback");
+  assert.equal(url.searchParams.get("guild_id"), guildA);
+  const bits = BigInt(url.searchParams.get("permissions")!);
+  for (const bit of [10n, 11n, 15n, 16n, 38n]) assert.notEqual(bits & (1n << bit), 0n);
+  assert.equal(bits & 8n, 0n, "never Administrator");
+  const state = url.searchParams.get("state")!;
+  assert.equal((await f.db.query("select count(*)::int n from discord_setup_attempts where state_hash<>$1", [state])).rows[0].n, 1, "only a hash is stored");
+  // Signed out: sign in first, then come back to the same start URL.
+  const signedOut = await f.managed.app.request("https://camel.test/console/discord/install?guild_id=101");
+  assert.equal(signedOut.status, 302); assert.equal(signedOut.headers.get("location"), "/console/channels?discord_install=1&guild_id=101");
 });
 
-test("claims verify fresh management, bot membership and allowed destination; concurrent or cross-tenant claims conflict", async t => {
-  const f = await fixture(t); await f.link();
-  const body = { guildId: guildA, definition: "def-test", allowedChannelIds: [channelA] };
-  f.state.manage = false; assert.equal((await f.request("/console/discord/bindings", "POST", body)).status, 403);
-  f.state.manage = true; f.state.present = false; assert.equal((await f.request("/console/discord/bindings", "POST", body)).status, 404);
-  f.state.present = true;
-  assert.equal((await f.request("/console/discord/bindings", "POST", { ...body, allowedChannelIds: [channelB] })).status, 400);
-  const responses = await Promise.all([f.request("/console/discord/bindings", "POST", body), f.request("/console/discord/bindings", "POST", body)]);
-  assert.deepEqual(responses.map(response => response.status).sort(), [201, 409]);
-  assert.equal((await f.db.query("select count(*) from channels")).rows[0].count, 1);
-  await f.link("tenant-b", "ar_session=session-b");
-  assert.equal((await f.request("/console/discord/bindings", "POST", body, "tenant-b", "ar_session=session-b")).status, 409);
+test("the callback binds the server Discord added Camel to, after confirming the bot is there", async t => {
+  const f = await fixture(t);
+  const { location } = await f.install();
+  assert.equal(location.pathname, "/console/channels"); assert.equal(location.searchParams.get("discord_server"), guildA);
+  const [binding] = await f.binding();
+  assert.equal(binding.tenant, "tenant-a"); assert.equal(binding.guild_id, guildA); assert.equal(binding.state, "paused");
+  assert.equal(binding.channel_id, null); assert.equal(binding.administrator_id, OWNER);
+  assert.equal((await f.db.query("select state from discord_installations where guild_id=$1", [guildA])).rows[0].state, "present");
+  // Setup finishes in the console: a definition and allowed channels are required, then it is active.
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { access: { public: true } })).status, 400);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-test", allowedChannelIds: [channelB] })).status, 400, "channels of another server");
+  const done = await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-test", allowedChannelIds: [channelA], access: { public: true } });
+  assert.equal(done.status, 200); const view = await done.json() as any;
+  assert.equal(view.state, "active"); assert.ok(view.channelId);
+  await f.ready(); await f.message(); assert.deepEqual(f.received.map(item => item.channel), [view.channelId]);
+});
+
+test("a replayed, expired, cross-session or cancelled callback binds nothing", async t => {
+  const f = await fixture(t);
+  const { state } = await f.install();
+  const replay = await f.request(`/console/discord/callback?state=${state}&code=${guildB}`);
+  assert.match(replay.headers.get("location")!, /discord_error=/);
+  const started = await f.request("/console/discord/install");
+  const other = new URL(started.headers.get("location")!).searchParams.get("state");
+  assert.match((await f.request(`/console/discord/callback?state=${other}&code=${guildB}`, "GET", undefined, "tenant-a", "ar_session=other")).headers.get("location")!, /discord_error=/, "another session");
+  assert.match((await f.request(`/console/discord/callback?state=${other}&code=${guildB}`, "GET", undefined, "tenant-b")).headers.get("location")!, /discord_error=/, "another account");
+  const cancelled = new URL((await f.request("/console/discord/install")).headers.get("location")!).searchParams.get("state");
+  assert.match((await f.request(`/console/discord/callback?state=${cancelled}&error=access_denied`)).headers.get("location")!, /cancelled/);
+  const expired = new URL((await f.request("/console/discord/install")).headers.get("location")!).searchParams.get("state");
+  await f.db.query("update discord_setup_attempts set expires_at=0");
+  assert.match((await f.request(`/console/discord/callback?state=${expired}&code=${guildB}`)).headers.get("location")!, /discord_error=/);
+  assert.match((await f.managed.app.request(`https://camel.test/console/discord/callback?state=x&code=${guildB}`)).headers.get("location")!, /discord_error=.*Sign/, "signed out");
+  assert.deepEqual((await f.binding()).map(row => row.guild_id), [guildA]);
+});
+
+test("a callback without a server, for a different server, or where the bot is absent binds nothing", async t => {
+  const f = await fixture(t);
+  f.state.noGuild = true;
+  assert.match((await f.install()).location.searchParams.get("discord_error")!, /did not add Camel to a server/);
+  f.state.noGuild = false;
+  const started = await f.request("/console/discord/install?guild_id=101");
+  const state = new URL(started.headers.get("location")!).searchParams.get("state");
+  assert.match(new URL((await f.request(`/console/discord/callback?state=${state}&code=${guildB}`)).headers.get("location")!).searchParams.get("discord_error")!, /different server/);
+  f.state.present = false;
+  assert.ok((await f.install()).location.searchParams.get("discord_error"));
+  assert.equal((await f.binding()).length, 0);
+});
+
+test("a server another account runs cannot be bound; added again by its own account it is kept", async t => {
+  const f = await fixture(t); const a = await f.bind();
+  const { location } = await f.install(guildA, "tenant-b", "ar_session=session-b");
+  assert.match(location.searchParams.get("discord_error")!, /connected to another camelRun account/);
+  const [binding] = await f.binding();
+  assert.equal(binding.tenant, "tenant-a"); assert.equal(binding.state, "active"); assert.equal(binding.channel_id, a.channelId);
+  assert.deepEqual(f.left, [], "Camel stays for the account that runs it");
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" }, "tenant-b", "ar_session=session-b")).status, 404);
+  assert.equal((await f.install()).location.searchParams.get("discord_server"), guildA);
+  assert.equal((await f.binding())[0].channel_id, a.channelId);
+});
+
+test("after a disconnect, a fresh install by another account's administrator takes the server over; the old account sees no new conversation", async t => {
+  const f = await fixture(t); const a = await f.bind(); await f.ready();
+  await f.db.query("insert into channel_agents(agent,channel,tenant,conversation) values('agent-a',$1,'tenant-a',$2)", [a.channelId, channelA]);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" })).status, 200);
+  const b = await f.bind(guildA, channelA, "tenant-b", "ar_session=session-b");
+  const [binding] = await f.binding();
+  assert.equal(binding.tenant, "tenant-b"); assert.equal(binding.state, "active"); assert.equal(binding.channel_id, b.channelId);
+  assert.equal((await f.db.query("select count(*)::int n from channels where id=$1", [a.channelId])).rows[0].n, 0);
+  assert.equal((await f.db.query("select count(*)::int n from channel_agents where agent='agent-a'")).rows[0].n, 0);
+  assert.deepEqual((await (await f.request("/console/discord/bindings")).json() as any).bindings, []);
+  await f.message(guildA, channelA, "501");
+  assert.deepEqual(f.received.map(item => item.channel), [b.channelId]);
+});
+
+test("removing Camel disconnects the server, so it can be added again under another account", async t => {
+  const f = await fixture(t); await f.bind(); await f.ready();
+  await f.managed.dispatch("GUILD_DELETE", { id: guildA });
+  assert.equal((await f.binding())[0].state, "disconnected");
+  await f.bind(guildA, channelA, "tenant-b", "ar_session=session-b");
+  assert.equal((await f.binding())[0].tenant, "tenant-b");
 });
 
 test("two guilds route to separate tenant channels; outbound text/files/typing reject cross-guild and disabled destinations", async t => {
@@ -178,52 +241,46 @@ test("two guilds route to separate tenant channels; outbound text/files/typing r
   await assert.rejects(f.managed.provider.send({ bindingId: binding }, channelB, "leak"), /not permitted/);
   await assert.rejects(f.managed.provider.typing!({ bindingId: binding }, channelB), /not permitted/);
   await assert.rejects(f.managed.provider.sendFile({ bindingId: binding }, channelB, { name: "secret", contentType: "text/plain", size: 1, blob: async () => new Blob(["x"]) }), /not permitted/);
-  f.state.manage = false;
-  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { name: "renamed" })).status, 403);
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
   await assert.rejects(f.managed.provider.send({ bindingId: binding }, channelA, "late"), /not permitted/);
   assert.deepEqual(f.sent.map(item => item.content), ["safe", "thread safe"]);
 });
 
-test("invite-first mentions have zero agent submissions with shared cooldown; role mentions ignored and disconnect suppresses setup nudges", async t => {
+test("in a server nobody set up, a mention makes Camel leave; role mentions, DMs and servers being set up are ignored", async t => {
   const f = await fixture(t); await f.ready();
-  await f.message(); await f.message(guildA, channelA, "302");
-  assert.equal(f.received.length, 0); assert.equal(f.sent.length, 1); assert.match(f.sent[0].content, /discord_setup=101/);
   await f.managed.dispatch("MESSAGE_CREATE", { id: "303", guild_id: guildA, channel_id: channelA, type: 0, author: { id: OWNER }, mention_roles: [APP], mentions: [], content: "role hello" });
-  assert.equal(f.sent.length, 1);
-  const a = await f.bind(); await f.message(guildA, channelA, "304"); assert.equal(f.received[0].channel, a.channelId);
-  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" })).status, 200);
-  await f.db.query("delete from discord_setup_cooldowns"); await f.message(guildA, channelA, "305"); assert.equal(f.sent.length, 1);
-  assert.equal((await f.db.query("select count(*) from channels")).rows[0].count, 1, "history/config retained on disconnect");
+  await f.managed.dispatch("MESSAGE_CREATE", { id: "304", channel_id: "999", type: 0, author: { id: OWNER }, mentions: [], content: "a DM" });
+  await f.message();
+  for (const deadline = Date.now() + 2000; !f.left.length && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(f.left, [guildA]); assert.equal(f.sent.length, 0); assert.equal(f.received.length, 0);
+  await f.install(guildB); await f.message(guildB, channelB, "305");
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.deepEqual(f.left, [guildA], "a server being set up keeps Camel"); assert.equal(f.sent.length, 0);
+  assert.equal((await f.db.query("select count(*)::int n from discord_setup_cooldowns")).rows[0].n, 0, "no state for unbound servers");
 });
 
-test("guild unavailability differs from removal; removal cancels queued work and re-invite requires explicit resume", async t => {
+test("guild unavailability differs from removal; removal cancels queued work and re-adding requires explicit resume", async t => {
   const f = await fixture(t); const a = await f.bind(); await f.ready();
   await f.managed.dispatch("GUILD_DELETE", { id: guildA, unavailable: true });
-  assert.equal((await f.db.query("select state from discord_server_bindings")).rows[0].state, "active");
+  assert.equal((await f.binding())[0].state, "active");
   await f.message(); assert.equal(f.received.length, 0);
   await f.managed.dispatch("GUILD_CREATE", { id: guildA, name: "Alpha" }); await f.message(guildA, channelA, "302"); assert.equal(f.received.length, 1);
   await f.db.query("insert into channel_items(id,item,revision,due) values($1,$2,1,0)", [randomUUID(), JSON.stringify({ channel: a.channelId })]);
   await f.managed.dispatch("GUILD_DELETE", { id: guildA });
   assert.equal((await f.db.query("select count(*) from channel_items")).rows[0].count, 0);
-  await f.managed.dispatch("GUILD_CREATE", { id: guildA }); assert.equal((await f.db.query("select state from discord_server_bindings")).rows[0].state, "disconnected");
+  await f.managed.dispatch("GUILD_CREATE", { id: guildA }); assert.equal((await f.binding())[0].state, "disconnected");
   await f.message(guildA, channelA, "303"); assert.equal(f.received.length, 1);
+  assert.equal((await f.install()).location.searchParams.get("discord_server"), guildA);
+  assert.equal((await f.binding())[0].state, "paused", "added again by its account: paused until resumed");
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "active" })).status, 200);
   await f.message(guildA, channelA, "304"); assert.equal(f.received.length, 2);
   await f.managed.dispatch("READY", { user: { id: APP }, guilds: [] });
   assert.equal((await f.db.query("select state from discord_installations where guild_id=$1", [guildA])).rows[0].state, "removed");
 });
 
-test("signed setup interactions acknowledge immediately, are ephemeral, and never submit model work", async t => {
+test("there is no interactions endpoint", async t => {
   const f = await fixture(t);
-  const interaction = async (body: unknown, valid = true) => {
-    const raw = JSON.stringify(body); const timestamp = String(Math.floor(Date.now() / 1000));
-    return f.managed.app.request("https://camel.test/channels/discord-managed/interactions", { method: "POST", headers: { "x-signature-timestamp": timestamp, "x-signature-ed25519": valid ? sign(null, Buffer.from(timestamp + raw), f.keypair.privateKey).toString("hex") : "00".repeat(64) }, body: raw });
-  };
-  assert.equal((await interaction({ type: 1 }, false)).status, 401);
-  assert.deepEqual(await (await interaction({ type: 1 })).json(), { type: 1 });
-  const response = await interaction({ application_id: APP, type: 2, guild_id: guildA, member: { permissions: "32" }, data: { name: "camel", options: [{ name: "setup" }] } });
-  const body = await response.json() as any; assert.equal(body.data.flags, 64); assert.match(body.data.content, /discord_setup=101/); assert.equal(f.received.length, 0);
+  assert.equal((await f.managed.app.request("https://camel.test/channels/discord-managed/interactions", { method: "POST", body: "{}" })).status, 404);
 });
 
 test("startup shard refusal is recoverable and does not break the runtime", async t => {
@@ -232,30 +289,17 @@ test("startup shard refusal is recoverable and does not break the runtime", asyn
   await f.managed.stop();
 });
 
-test("managed invite requests attachment and message permissions without Administrator", async t => {
-  const f = await fixture(t); const config = await (await f.request("/console/discord/config")).json() as any;
-  const bits = BigInt(new URL(config.inviteUrl).searchParams.get("permissions")!);
-  for (const bit of [10n, 11n, 15n, 16n, 38n]) assert.notEqual(bits & (1n << bit), 0n);
-  assert.equal(bits & 8n, 0n);
-});
-
 test("definition switches apply to existing conversations and show exact outcomes", async t => {
-  const f = await fixture(t); const a = await f.bind(); const calls: unknown[] = [];
-  f.options.applyDefinition = async (tenant: string, channel: string, definition: string) => {
+  const calls: unknown[] = [];
+  const f = await fixture(t, { applyDefinition: async (tenant: string, channel: string, definition: string) => {
     calls.push({ tenant, channel, definition }); return [{ agent: "agent-1", requestId: "request-1", status: "queued" as const }];
-  };
+  } });
+  const a = await f.bind();
+  assert.deepEqual(calls, [], "the first setup applies nothing");
   const response = await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-next" });
   assert.equal(response.status, 200); const result = await response.json() as any;
   assert.deepEqual(calls, [{ tenant: "tenant-a", channel: a.channelId, definition: "def-next" }]);
   assert.deepEqual(result.applied, [{ agent: "agent-1", requestId: "request-1", status: "queued" }]);
-});
-
-test("same-tenant retries recover an incomplete reservation without creating duplicate channels", async t => {
-  const f = await fixture(t); await f.ready(); await f.link(); const id = randomUUID();
-  await f.db.query(`insert into discord_server_bindings(id,application_id,guild_id,tenant,state,allowed_channel_ids,administrator_id,created_at,updated_at) values($1,$2,$3,'tenant-a','paused','[]','111',0,0)`, [id, APP, guildA]);
-  const response = await f.request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-test", allowedChannelIds: [channelA] });
-  assert.equal(response.status, 201); assert.equal((await f.db.query("select id,state from discord_server_bindings")).rows[0].id, id);
-  assert.equal((await f.db.query("select count(*) from channels")).rows[0].count, 1);
 });
 
 test("global Discord 429 cooldown is persisted and stops a different delivery node", async t => {
@@ -280,7 +324,7 @@ test("shutdown during Gateway discovery never opens a late connection", async t 
 });
 
 test("one shared Gateway survives ownership handoff with only one live identification per owner", async t => {
-  const f = await fixture(t, true);
+  const f = await fixture(t, { owned: true });
   const peerOwnership = new Ownership(f.db, { node: "second", ttlMs: 60_000 }); await peerOwnership.start(); t.after(() => peerOwnership.close());
   const peer = new ManagedDiscord({ ...f.options, node: "second", ownership: peerOwnership }); t.after(() => peer.stop());
   await f.managed.start();
@@ -292,12 +336,6 @@ test("one shared Gateway survives ownership handoff with only one live identific
   assert.equal(f.state.identified, 2);
 });
 
-test("eligible guild discovery paginates Discord account membership", async t => {
-  const f = await fixture(t); await f.link(); f.state.paginated = true;
-  const response = await f.request("/console/discord/guilds"); assert.equal(response.status, 200);
-  const result = await response.json() as any; assert.deepEqual(result.guilds.map((guild: any) => guild.id), ["2000"]);
-});
-
 test("unfunded server mentions produce bounded deterministic status without submitting agent work", async t => {
   const f = await fixture(t); await f.bind();
   const unfunded = new ManagedDiscord({ ...f.options, canStart: async () => "no credit" }); t.after(() => unfunded.stop());
@@ -306,28 +344,6 @@ test("unfunded server mentions produce bounded deterministic status without subm
   assert.equal(f.received.length, 0);
   for (const deadline = Date.now() + 2000; !f.sent.length && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(f.sent.length, 1); assert.match(f.sent[0].content, /balance and spending limits/);
-});
-
-test("OAuth continuation tolerates unrelated cookies and cookie ordering changes", async t => {
-  const f = await fixture(t);
-  const started = await f.request("/console/discord/authorize", "POST", { guildId: guildA }, "tenant-a", "analytics=one; ar_session=session-a; preference=dark");
-  const { url } = await started.json() as any; const state = new URL(url).searchParams.get("state");
-  const callback = await f.request(`/console/discord/callback?state=${state}&code=valid`, "GET", undefined, "tenant-a", "preference=light; ar_session=session-a; analytics=two");
-  assert.match(callback.headers.get("location")!, /discord_connected=1/);
-  assert.match(callback.headers.get("location")!, /discord_setup=101/);
-  const guilds = await f.request("/console/discord/guilds", "GET", undefined, "tenant-a", "ar_session=session-a; preference=third");
-  assert.equal((await guilds.json() as any).linked, true);
-});
-
-test("startup maintenance removes expired OAuth material while retaining active cooldowns", async t => {
-  const f = await fixture(t); await f.link();
-  await f.db.query("update discord_account_links set expires_at=0");
-  await f.db.query(`insert into discord_setup_attempts(state_hash,tenant,session_hash,expires_at) values('old','tenant-a','old',0)`);
-  await f.db.query("insert into discord_setup_cooldowns(key,until_at) values('old',0),('active',$1)", [Date.now() + 60_000]);
-  f.state.shards = 2; await f.managed.start();
-  assert.equal((await f.db.query("select count(*) from discord_account_links")).rows[0].count, 0);
-  assert.equal((await f.db.query("select count(*) from discord_setup_attempts")).rows[0].count, 0);
-  assert.deepEqual((await f.db.query("select key from discord_setup_cooldowns")).rows.map(row => row.key), ["active"]);
 });
 
 test("a global 429 on an inbound destination check fences other delivery nodes", async t => {
@@ -346,12 +362,16 @@ test("a Gateway reconnect's READY (unavailable guild stubs) does not fence deliv
   assert.equal(await f.managed.provider.guard!(f.saved.get(a.channelId)!, channelA, "send"), true);
 });
 
-test("the paying account can pause or disconnect a server without a current Discord role", async t => {
-  const f = await fixture(t); await f.bind(); f.state.manage = false;
+test("the bound account pauses, resumes and disconnects its server, even with Camel gone; no other account can", async t => {
+  const f = await fixture(t); await f.bind();
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
-  assert.equal((await f.db.query("select state from discord_server_bindings")).rows[0].state, "paused");
-  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "active" })).status, 403);
-  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" }, "tenant-b", "ar_session=session-b")).status, 403);
+  assert.equal((await f.binding())[0].state, "paused");
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "active" })).status, 200);
+  f.state.present = false;
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "active" })).status, 404, "resuming needs Camel in the server");
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" }, "tenant-b", "ar_session=session-b")).status, 404);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" })).status, 200);
 });
 
 test("members without access cost no Discord REST lookup", async t => {
@@ -375,50 +395,6 @@ test("a route's own 429 delays only that send; other servers and nodes keep deli
   assert.deepEqual(f.sent.map(item => item.content), ["second", "third"]);
 });
 
-test("another account's verified administrator can disconnect a server and then take it over; the old account sees no new conversation", async t => {
-  const f = await fixture(t); const a = await f.bind(); await f.ready();
-  await f.link("tenant-b", "ar_session=session-b");
-  const body = { guildId: guildA, definition: "def-b", allowedChannelIds: [channelA], access: { public: true } };
-  assert.equal((await f.request("/console/discord/bindings", "POST", body, "tenant-b", "ar_session=session-b")).status, 409);
-  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { name: "mine now" }, "tenant-b", "ar_session=session-b")).status, 404);
-  const stopped = await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" }, "tenant-b", "ar_session=session-b");
-  assert.equal(stopped.status, 200); assert.deepEqual(await stopped.json(), { guildId: guildA, state: "disconnected" });
-  await f.db.query("insert into channel_agents(agent,channel,tenant,conversation) values('agent-a',$1,'tenant-a',$2)", [a.channelId, channelA]);
-  const taken = await f.request("/console/discord/bindings", "POST", body, "tenant-b", "ar_session=session-b");
-  assert.equal(taken.status, 201, await taken.clone().text());
-  const binding = (await f.db.query("select tenant,state,channel_id from discord_server_bindings")).rows[0];
-  assert.equal(binding.tenant, "tenant-b"); assert.equal(binding.state, "active"); assert.notEqual(binding.channel_id, a.channelId);
-  assert.equal((await f.db.query("select count(*)::int n from channels where id=$1", [a.channelId])).rows[0].n, 0);
-  assert.equal((await f.db.query("select count(*)::int n from channel_agents where agent='agent-a'")).rows[0].n, 0);
-  assert.deepEqual((await (await f.request("/console/discord/bindings")).json() as any).bindings, []);
-  await f.message(guildA, channelA, "501");
-  assert.deepEqual(f.received.map(item => item.channel), [binding.channel_id]);
-});
-
-test("a server whose bot was removed can be taken over without a disconnect", async t => {
-  const f = await fixture(t); await f.bind(); await f.ready();
-  await f.managed.dispatch("GUILD_DELETE", { id: guildA });
-  await f.link("tenant-b", "ar_session=session-b");
-  assert.equal((await f.request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-b", allowedChannelIds: [channelA] }, "tenant-b", "ar_session=session-b")).status, 201);
-  assert.equal((await f.db.query("select tenant from discord_server_bindings")).rows[0].tenant, "tenant-b");
-});
-
-test("free accounts connect one server with at most 500 turns a day; operators can raise the count", async t => {
-  const f = await fixture(t); const plans: Record<string, { free: boolean; servers: number; turnsPerDay: number }> = { "tenant-a": { free: true, servers: 1, turnsPerDay: 500 } };
-  f.options.plan = async tenant => plans[tenant];
-  const capped = new ManagedDiscord({ ...f.options }); t.after(() => capped.stop());
-  const request = (path: string, method: string, body?: unknown) => capped.app.request(`https://camel.test${path}`, { method, headers: { cookie: "ar_session=session-a", "x-test-tenant": "tenant-a", "x-agent-runtime-console": "1", "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
-  await f.link();
-  assert.equal((await request("/console/discord/bindings", "POST", { guildId: guildA, definition: "d", allowedChannelIds: [channelA], limits: { turnsPerDay: 501 } })).status, 400);
-  assert.equal((await request("/console/discord/bindings", "POST", { guildId: guildA, definition: "d", allowedChannelIds: [channelA], limits: { turnsPerDay: 500 } })).status, 201);
-  const second = await request("/console/discord/bindings", "POST", { guildId: guildB, definition: "d", allowedChannelIds: [channelB] });
-  assert.equal(second.status, 409); assert.match((await second.json() as any).error, /at most 1 Discord server/);
-  assert.equal((await request(`/console/discord/bindings/${guildA}`, "PATCH", { limits: { turnsPerDay: 1000 } })).status, 400);
-  assert.equal((await (await request("/console/discord/config", "GET")).json() as any).limits.turnsPerDay, 500);
-  plans["tenant-a"] = { free: false, servers: 2, turnsPerDay: 10_000 };
-  assert.equal((await request("/console/discord/bindings", "POST", { guildId: guildB, definition: "d", allowedChannelIds: [channelB] })).status, 201);
-});
-
 test("a failed configuration change leaves the server as it was, and edits that do not affect delivery keep queued work", async t => {
   const f = await fixture(t); const a = await f.bind();
   await f.db.query("insert into channel_items(id,item,revision,due) values($1,$2,1,0)", [randomUUID(), JSON.stringify({ channel: a.channelId })]);
@@ -433,13 +409,25 @@ test("a failed configuration change leaves the server as it was, and edits that 
   assert.equal((await f.db.query("select count(*)::int n from channel_items")).rows[0].n, 0);
 });
 
+test("free accounts connect one server with at most 500 turns a day; an extra install is refused and Camel leaves it", async t => {
+  const plans: Record<string, { free: boolean; servers: number; turnsPerDay: number }> = { "tenant-a": { free: true, servers: 1, turnsPerDay: 500 } };
+  const f = await fixture(t, { plan: async tenant => plans[tenant] });
+  await f.install();
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "d", allowedChannelIds: [channelA], limits: { turnsPerDay: 501 } })).status, 400);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "d", allowedChannelIds: [channelA], limits: { turnsPerDay: 500 } })).status, 200);
+  assert.match((await f.install(guildB)).location.searchParams.get("discord_error")!, /at most 1 Discord server/);
+  for (const deadline = Date.now() + 2000; !f.left.length && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(f.left, [guildB]); assert.deepEqual((await f.binding()).map(row => row.guild_id), [guildA]);
+  assert.equal((await (await f.request("/console/discord/config")).json() as any).limits.turnsPerDay, 500);
+  plans["tenant-a"] = { free: false, servers: 2, turnsPerDay: 10_000 };
+  assert.equal((await f.install(guildB)).location.searchParams.get("discord_server"), guildB);
+});
+
 test("a definition with a self-starting builtin cannot serve a server", async t => {
-  const f = await fixture(t); f.options.definitionBuiltins = async (_tenant, id) => id === "def-scheduled" ? ["web_search", "schedule"] : ["web_search"];
-  const managed = new ManagedDiscord({ ...f.options }); t.after(() => managed.stop());
-  const request = (path: string, method: string, body: unknown) => managed.app.request(`https://camel.test${path}`, { method, headers: { cookie: "ar_session=session-a", "x-test-tenant": "tenant-a", "x-agent-runtime-console": "1", "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  await f.link();
-  const refused = await request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-scheduled", allowedChannelIds: [channelA] });
+  const f = await fixture(t, { definitionBuiltins: async (_tenant, id) => id === "def-scheduled" ? ["web_search", "schedule"] : ["web_search"] });
+  await f.install();
+  const refused = await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-scheduled", allowedChannelIds: [channelA] });
   assert.equal(refused.status, 400); assert.match((await refused.json() as any).error, /cannot use the schedule builtin/);
-  assert.equal((await request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-plain", allowedChannelIds: [channelA] })).status, 201);
-  assert.equal((await request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-scheduled" })).status, 400);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-plain", allowedChannelIds: [channelA] })).status, 200);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-scheduled" })).status, 400);
 });

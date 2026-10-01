@@ -641,7 +641,7 @@ export class Channels {
     const channel = await this.read(current.item.channel);
     if (!channel) return this.finish(current);
     const phase = current.item.state === "received" ? "submit" : "send";
-    if (await this.provider(channel.type).guard?.(channel, current.item.conversationId, phase) === false) return this.finish(current);
+    if (await this.provider(channel.type).guard?.(channel, current.item.conversationId, phase) === false) return this.fenced(current, phase);
     if (this.provider(channel.type).managed && current.item.inbound && !this.allowed(channel, current.item.inbound.sender)) return this.finish(current);
     if (current.item.state === "received") return this.receive(channel, current);
     if (current.item.state === "submitted") return this.recheck(channel, current);
@@ -805,7 +805,7 @@ export class Channels {
     ];
     for (let index = item.sent ?? 0; index < steps.length; index++) {
       try {
-        if (await provider.guard?.(channel, item.conversationId, "send") === false) return this.finish(current);
+        if (await provider.guard?.(channel, item.conversationId, "send") === false) return this.fenced(current, "send");
         await steps[index]();
       }
       catch (error) {
@@ -861,6 +861,12 @@ export class Channels {
     const channel = await this.read(binding.channel);
     if (!channel) return this.finish(created);
     await this.deliver(channel, created).catch(error => this.failed(created.item, error));
+  }
+
+  /** A paused, disconnected or removed integration drops the item: say so, since nothing reaches the conversation. */
+  private fenced(current: Held, phase: string) {
+    console.log(JSON.stringify({ type: "channel_item_fenced", channel: current.item.channel, item: current.item.id, phase }));
+    return this.finish(current);
   }
 
   /** Count one event in a window, across nodes; returns the new count. */

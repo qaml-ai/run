@@ -42,6 +42,7 @@ export interface AccountDeletionOptions {
 
 /** Tables whose rows go with the tenant, by their `tenant` column (payment, ledger and anti-abuse records are not here). */
 const TENANT_TABLES = [
+  // discord_account_links is no longer written (one-step install); its rows go until a migration drops it.
   "discord_account_links", "discord_setup_attempts", "discord_server_bindings",
   "api_tokens", "oauth_grants", "provider_keys", "key_scope_providers", "model_providers", "definitions",
   "webhook_deliveries", "webhook_endpoints", "usage_webhook_outbox", "usage_webhooks", "idempotency_keys",

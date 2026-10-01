@@ -108,7 +108,6 @@ test("an account exports everything it stores, then deletes it all but the ledge
     serverBindings: [{ id: "carol-binding", applicationId: discordApplication, guildId: discordGuild, guildName: "Carol server",
       channelId: discordChannel, state: "active", installationState: "present", allowedChannelIds: ["444"],
       administratorId: "555", createdAt: 1, updatedAt: 2 }],
-    accountLinks: [{ discordUserId: "555", expiresAt: 900 }],
     setupAttempts: [{ guildId: discordGuild, expiresAt: 600 }],
   });
   const archiveText = [...files.values()].map(file => file.toString("utf8")).join("\n");

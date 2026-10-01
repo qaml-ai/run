@@ -7,7 +7,6 @@ const configured = {
   AGENT_DISCORD_MANAGED_BOT_TOKEN: "fixture-token-".padEnd(60, "x"),
   AGENT_DISCORD_MANAGED_APPLICATION_ID: "999000000000000001",
   AGENT_DISCORD_MANAGED_CLIENT_SECRET: "fixture-client-secret",
-  AGENT_DISCORD_MANAGED_PUBLIC_KEY: "ab".repeat(32),
 };
 
 test("managed Discord credentials alone do not enable the integration", async () => {
@@ -18,7 +17,6 @@ test("managed Discord credentials alone do not enable the integration", async ()
     botToken: configured.AGENT_DISCORD_MANAGED_BOT_TOKEN,
     applicationId: configured.AGENT_DISCORD_MANAGED_APPLICATION_ID,
     clientSecret: configured.AGENT_DISCORD_MANAGED_CLIENT_SECRET,
-    publicKey: configured.AGENT_DISCORD_MANAGED_PUBLIC_KEY,
   });
 });
 
@@ -26,13 +24,12 @@ test("managed Discord rejects invalid application credentials without exposing t
   for (const [name, value] of [
     ["AGENT_DISCORD_MANAGED_BOT_TOKEN", "invalid-bot-token-secret"],
     ["AGENT_DISCORD_MANAGED_APPLICATION_ID", "a-server-name"],
-    ["AGENT_DISCORD_MANAGED_PUBLIC_KEY", "malformed-signing-key"],
   ]) {
     const logged: string[] = []; const original = console.error;
     console.error = (line: string) => { logged.push(line); };
     try { assert.equal(await managedDiscordSecrets({ ...configured, [name]: value }), undefined); }
     finally { console.error = original; }
-    assert.match(logged.join("\n"), /valid.*botToken, applicationId, clientSecret, publicKey/);
+    assert.match(logged.join("\n"), /valid.*botToken, applicationId, clientSecret/);
     assert.equal(logged.join("\n").includes(value), false);
   }
 });

@@ -247,9 +247,9 @@ test("console sessions require same-origin mutations; token sign-in sets a sessi
   assert.equal((await call("/console/auth/token", { body: { token: "wrong" }, headers: { "X-Agent-Runtime-Console": "1" } })).status, 401);
   const signIn = await call("/console/auth/token", { body: { token: alice }, headers: { "X-Agent-Runtime-Console": "1" } });
   assert.equal(signIn.status, 200);
-  const setupNext = "/console/channels?discord_setup=123456789012345678";
+  const setupNext = "/console/discord/install?guild_id=123456789012345678";
   assert.equal((await call("/console/auth/token", { body: { token: alice, next: setupNext }, headers: { "X-Agent-Runtime-Console": "1" } })).json.next, setupNext);
-  for (const next of ["//evil.example/", "/console/channels?discord_setup=1&next=https://evil.example", "/console/channels?discord_setup=abc"]) {
+  for (const next of ["//evil.example/", "/console/discord/install?guild_id=1&next=https://evil.example", "/console/discord/install?guild_id=abc", "/console/channels?discord_setup=123"]) {
     assert.equal((await call("/console/auth/token", { body: { token: alice, next }, headers: { "X-Agent-Runtime-Console": "1" } })).json.next, undefined);
   }
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0];
@@ -283,8 +283,8 @@ test("GitHub sign-in admits active org members, links admin tenants, and creates
   assert.equal(bobSession.location, "/console/");
   // Only the MCP consent and managed server setup routes survive sign-in.
   assert.equal((await signIn("Bob-Builder", "/oauth/authorize?client_id=x&state=y")).location, "/oauth/authorize?client_id=x&state=y");
-  assert.equal((await signIn("Bob-Builder", "/console/channels?discord_setup=123456789012345678")).location, "/console/channels?discord_setup=123456789012345678");
-  assert.equal((await signIn("Bob-Builder", "/console/channels?discord_setup=1&redirect=https://evil.example")).location, "/console/");
+  assert.equal((await signIn("Bob-Builder", "/console/discord/install")).location, "/console/discord/install");
+  assert.equal((await signIn("Bob-Builder", "/console/discord/install?redirect=https://evil.example")).location, "/console/");
   assert.equal((await signIn("Bob-Builder", "https://evil.example/")).location, "/console/");
   assert.equal((await signIn("Bob-Builder", "//evil.example/oauth/authorize?")).location, "/console/");
   assert.equal((await call("/v1/me", { headers: { Cookie: bobSession.session! } })).json.tenant, "bob");

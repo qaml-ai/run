@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { generateKeyPairSync } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { OPERATOR, OTHER_OPERATOR, runtime, until } from "./runtime-server.ts";
 
@@ -14,6 +13,7 @@ const USER = "300000000000000001";
 
 test("managed bot runs isolated tenant agents through the real Gateway and console, and reconfigures existing conversations", async t => {
   const sent: { channel: string; content: string }[] = [];
+  const left: string[] = [];
   const sockets = new Set<WebSocket>();
   let sequence = 0;
   let port = 0;
@@ -21,12 +21,11 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
     let raw = ""; for await (const chunk of req) raw += chunk;
     const url = new URL(req.url!, "http://localhost");
     const json = (status: number, body: unknown) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
-    if (url.pathname === "/oauth2/token") return json(200, { access_token: "test-discord-user", expires_in: 3600, scope: "identify guilds" });
-    if (req.headers.authorization === "Bearer test-discord-user") {
-      if (url.pathname === "/users/@me") return json(200, { id: USER });
-      if (url.pathname === "/users/@me/guilds") return json(200, GUILDS.map((id, i) => ({ id, name: `Server ${i}`, permissions: "32" })));
-    }
+    // The authorization code stands for the server the admin added Camel to.
+    if (url.pathname === "/oauth2/token") return json(200, { access_token: "test-discord-user", expires_in: 3600, scope: "bot applications.commands identify", guild: { id: new URLSearchParams(raw).get("code") } });
+    if (req.headers.authorization === "Bearer test-discord-user" && url.pathname === "/users/@me") return json(200, { id: USER });
     if (req.headers.authorization !== `Bot ${BOT_TOKEN}`) return json(401, {});
+    if (req.method === "DELETE" && url.pathname.startsWith("/users/@me/guilds/")) { left.push(url.pathname.split("/")[4]); return res.writeHead(204).end(); }
     if (url.pathname === "/users/@me") return json(200, { id: APP, username: "Camel", bot: true });
     if (url.pathname === "/gateway/bot") return json(200, { url: `ws://127.0.0.1:${port}`, shards: 1, session_start_limit: { remaining: 100 } });
     if (url.pathname.startsWith("/guilds/")) {
@@ -63,15 +62,13 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening"); port = (server.address() as { port: number }).port;
   t.after(() => { for (const socket of gateway.clients) socket.terminate(); gateway.close(); server.closeAllConnections(); server.close(); });
-  const keys = generateKeyPairSync("ed25519");
-  const publicKey = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
   const r = await runtime(t, body => {
     const system = body.messages.find((message: any) => message.role === "system" || message.role === "developer")?.content;
     return { role: "assistant", content: String(system).includes("Beta-only") ? "Beta answer" : String(system).includes("Revised-only") ? "Revised answer" : "Alpha answer" };
   }, {
     AGENT_DISCORD_MANAGED_ENABLED: "true", AGENT_DISCORD_MANAGED_BOT_TOKEN: BOT_TOKEN,
     AGENT_DISCORD_MANAGED_APPLICATION_ID: APP, AGENT_DISCORD_MANAGED_CLIENT_SECRET: "fixture-client-secret",
-    AGENT_DISCORD_MANAGED_PUBLIC_KEY: publicKey, AGENT_DISCORD_API_URL: `http://127.0.0.1:${port}`,
+    AGENT_DISCORD_API_URL: `http://127.0.0.1:${port}`,
   });
   const mention = (index: number, id: string, text: string) => {
     for (const socket of sockets) socket.send(JSON.stringify({ op: 0, t: "MESSAGE_CREATE", s: ++sequence, d: {
@@ -80,8 +77,10 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
     } }));
   };
   await until(() => r.logs.some(line => line.includes('"type":"discord_managed_gateway_ready"')), "managed Gateway ready");
+  // Before anyone set it up through the console, a mention makes Camel leave the server, without a model call.
   mention(0, "400000000000000001", "hello before setup");
-  await until(() => sent.some(message => message.content.includes("not set up")), "zero-inference setup response");
+  await until(() => left.includes(GUILDS[0]), "Camel leaves a server nobody set up");
+  assert.equal(sent.length, 0);
   assert.equal(r.model.bodies.length, 0);
   assert.equal((await r.db.query("select count(*)::int n from agents")).rows[0].n, 0);
 
@@ -92,15 +91,14 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
     const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1" }, body: JSON.stringify({ token }) });
     const cookie = signIn.headers.getSetCookie().find(value => value.startsWith("ar_session="))!.split(";")[0];
     const h = { Cookie: cookie, "X-Agent-Runtime-Console": "1", "Content-Type": "application/json" }; headers.push(h);
-    const authorize = await fetch(`${r.base}/console/discord/authorize`, { method: "POST", headers: h, body: JSON.stringify({ guildId: GUILDS[i] }) });
-    assert.equal(authorize.status, 200);
-    const { url } = await authorize.json() as any;
-    const state = new URL(url).searchParams.get("state");
-    const callback = await fetch(`${r.base}/console/discord/callback?state=${state}&code=fixture`, { headers: h, redirect: "manual" });
-    assert.match(callback.headers.get("location")!, /discord_connected=1/);
+    const install = await fetch(`${r.base}/console/discord/install`, { headers: h, redirect: "manual" });
+    assert.equal(install.status, 302);
+    const state = new URL(install.headers.get("location")!).searchParams.get("state");
+    const callback = await fetch(`${r.base}/console/discord/callback?state=${state}&code=${GUILDS[i]}`, { headers: h, redirect: "manual" });
+    assert.match(callback.headers.get("location")!, new RegExp(`discord_server=${GUILDS[i]}`));
     const definition = await r.call("/v1/definitions", { token, body: { name: i === 0 ? "Alpha" : "Beta", systemPrompt: i === 0 ? "Alpha-only" : "Beta-only", builtins: [] } });
-    const response = await fetch(`${r.base}/console/discord/bindings`, { method: "POST", headers: h, body: JSON.stringify({ guildId: GUILDS[i], definition: definition.json.id, allowedChannelIds: [CHANNELS[i]], access: { public: true } }) });
-    assert.equal(response.status, 201, await response.clone().text()); bindings.push(await response.json());
+    const response = await fetch(`${r.base}/console/discord/bindings/${GUILDS[i]}`, { method: "PATCH", headers: h, body: JSON.stringify({ definition: definition.json.id, allowedChannelIds: [CHANNELS[i]], access: { public: true } }) });
+    assert.equal(response.status, 200, await response.clone().text()); bindings.push(await response.json());
   }
   mention(0, "400000000000000002", "first Alpha"); mention(1, "400000000000000003", "first Beta");
   await until(() => sent.some(message => message.channel === CHANNELS[0] && message.content === "Alpha answer") && sent.some(message => message.channel === CHANNELS[1] && message.content === "Beta answer"), "two isolated tenant replies");
@@ -118,7 +116,8 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
   const paused = sent.length;
   const quiet = await r.call(`/v1/agents/${ownAgent}/prompt`, { body: { text: "while paused" } });
   await until(async () => (await r.call(`/v1/agents/${ownAgent}/requests/${quiet.json.id}`)).json.state === "completed", "the paused server's API turn to finish");
-  await until(async () => (await r.db.query("select count(*)::int n from channel_items where item->>'channel'=$1", [bindings[0].channelId])).rows[0].n === 0, "its reply to be dropped");
+  // Its reply is queued once the turn has settled, then dropped at delivery.
+  await until(() => r.logs.some(line => line.includes('"type":"channel_item_fenced"') && line.includes(bindings[0].channelId)), "its reply to be dropped");
   assert.equal(sent.length, paused, "a paused server gets no API turn's reply");
   assert.equal((await fetch(`${r.base}/console/discord/bindings/${GUILDS[0]}`, { method: "PATCH", headers: headers[0], body: JSON.stringify({ state: "active" }) })).status, 200);
   // API and scheduled turns count against the server's daily turns; past them they do not post.

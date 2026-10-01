@@ -37,8 +37,8 @@ const GOOGLE_COOKIE = "ar_google";
 const nextPath = (value: string | undefined) => {
   if (!value) return undefined;
   if (/^\/oauth\/authorize\?[^\s]*$/.test(value)) return value;
-  // Only this exact internal setup route can survive signup/sign-in; never arbitrary redirects.
-  if (/^\/console\/channels\?discord_setup=\d{1,20}$/.test(value)) return value;
+  // Adding Camel to Discord (its Install Link) resumes after sign-in; never arbitrary redirects.
+  if (/^\/console\/discord\/install(\?guild_id=\d{1,20})?$/.test(value)) return value;
   return undefined;
 };
 
