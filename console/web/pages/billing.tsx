@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorAlert } from "@/components/common";
 import { needsStartingCredit, StartingCreditHelp } from "@/components/starting-credit";
-import { api, formatMicros, formatNumber, type Billing, type LedgerEntry, type LedgerKind } from "@/lib/api";
+import { api, formatMicros, formatNumber, type Billing, type BusyAgents, type LedgerEntry, type LedgerKind } from "@/lib/api";
 
 const KIND_LABELS: Record<LedgerKind, string> = {
   grant: "Credit grant", purchase: "Purchase", usage: "Agent usage", storage: "Storage", adjustment: "Adjustment", refund: "Refund",
@@ -59,6 +59,18 @@ function AutoSection({ state }: { state: BillingState }) {
       {a.state === "reconcile" && <p className="bg-muted mt-3 px-3 py-2 text-sm">We're checking a recent top-up, so auto top-up is paused for now. Questions? <a className="underline" href="mailto:support@camelai.com">support@camelai.com</a>.</p>}
       {!a.enabled && a.attempt && <p className="text-muted-foreground mt-2 text-xs">New top-ups are off. The pending {formatMicros(a.attempt.total)} top-up may still finish.</p>}
     </>}
+  </section>;
+}
+
+export function TierSection({ busy }: { busy: BusyAgents }) {
+  const next = busy.next;
+  return <section className="border-t py-5">
+    <div className="flex items-center gap-3"><h2 className="text-sm font-semibold">Usage tier</h2>{busy.source === "tier" ? <Badge variant="secondary">{busy.tier}</Badge> : <Badge variant="secondary">Custom</Badge>}</div>
+    <p className="mt-2 text-sm">Up to {formatNumber(busy.limit)} agents busy at once{busy.busy !== undefined && <span className="text-muted-foreground"> · {formatNumber(busy.busy)} busy now</span>}</p>
+    {busy.source === "tier" && (next
+      ? <p className="text-muted-foreground mt-2 text-xs">{next.tier} ({formatNumber(next.limit)} busy agents) once you've paid {formatMicros(next.paid)} in total for credit; {formatMicros(Math.max(0, next.paid - (busy.paid ?? 0)))} to go. It applies as soon as the payment lands.</p>
+      : <p className="text-muted-foreground mt-2 text-xs">The highest tier. Need more? <a className="underline" href="mailto:support@camelai.com">support@camelai.com</a></p>)}
+    {busy.source !== "tier" && <p className="text-muted-foreground mt-2 text-xs">Set for this account.</p>}
   </section>;
 }
 
@@ -118,6 +130,7 @@ export function BillingPage({ state }: { state: BillingState }) {
     {rates && data && <RatesDialog data={data} close={() => setRates(false)} />}
     {!data ? <Skeleton className="h-64 w-full" /> : data.billing === "none" ? <p className="bg-muted p-4 text-sm">This account isn't billed by the runtime. It uses its own or admin-configured provider keys.</p> : <>
       <section className="pb-7"><h2 className="text-muted-foreground text-xs">Balance</h2><p className="mt-1 font-mono text-[44px] leading-tight font-medium tracking-tight">{formatMicros(data.balance)}</p><p className="text-muted-foreground mt-2 text-sm">{formatMicros(-data.month.usage - data.month.storage)} spent this month</p>{data.freeCredit && data.startingCredit.status === "granted" && <Badge variant="secondary" className="mt-3">Starting credit</Badge>}{needsStartingCredit(data) && <div role="status" className="bg-muted text-muted-foreground mt-4 max-w-xl p-3 text-sm"><StartingCreditHelp credit={data.startingCredit} action /></div>}</section>
+      <TierSection busy={data.busyAgents} />
       {data.checkout && <AutoSection state={state} />}
       <BillingAlertsSection alerts={state.alerts} />
       <section className="mt-9"><div className="mb-2 flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-semibold">Activity</h2><p className="text-muted-foreground text-xs">This month: {formatMicros(data.month.purchase + data.month.grant + data.month.adjustment + data.month.refund)} added, {formatMicros(-data.month.usage - data.month.storage)} spent</p></div>{entries.length ? <Activity entries={entries} /> : <p className="text-muted-foreground border-b py-4 text-sm">No credit movements yet.</p>}{cursor != null && entries.length >= 10 && <Button className="mt-3" variant="outline" size="sm" disabled={loading} onClick={() => void loadMore()}>{loading && <Loader2 className="animate-spin" />}Show older</Button>}</section>

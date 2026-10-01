@@ -588,7 +588,7 @@
           },
           "code": {
             "type": "string",
-            "description": "What went wrong, for code: INVALID_REQUEST (400: the request is malformed or invalid); UNAUTHORIZED (401: no valid token); PAYMENT_REQUIRED (402); FORBIDDEN (403: the token may not do this); NOT_FOUND (404); CONFLICT (409); GONE (410); TOO_LARGE (413); RATE_LIMITED (429: retry after Retry-After); UNAVAILABLE (503: retry after Retry-After); INTERNAL (500); SPEND_LIMIT (402: a spend limit (the agent's, or the tenant's monthly cap) is reached); INSUFFICIENT_CREDIT (402: the tenant's prepaid credit is spent); IDEMPOTENCY_CONFLICT (409: the Idempotency-Key or request id was used for another request); IDEMPOTENCY_IN_PROGRESS (409: the first request with this Idempotency-Key is still running; retry); APPLICATION_CONNECTED (409: another connection serves this agent's tools; connect with ?takeover=true to replace it); APPLICATION_NOT_CONNECTED (409: this agent's tools need its application, and none is connected; connect it, or send allowDisconnected: true); REPLAY_GAP (409: the Last-Event-ID is behind the buffer; read state (or ask for a snapshot) and continue from its cursor). Others may be added"
+            "description": "What went wrong, for code: INVALID_REQUEST (400: the request is malformed or invalid); UNAUTHORIZED (401: no valid token); PAYMENT_REQUIRED (402); FORBIDDEN (403: the token may not do this); NOT_FOUND (404); CONFLICT (409); GONE (410); TOO_LARGE (413); RATE_LIMITED (429: retry after Retry-After); UNAVAILABLE (503: retry after Retry-After); INTERNAL (500); BUSY_AGENT_LIMIT (429: the tenant has as many agents busy as it may (the body's busyAgents, a BusyAgents, says the limit, its usage tier and the next); retry after Retry-After); SPEND_LIMIT (402: a spend limit (the agent's, or the tenant's monthly cap) is reached); INSUFFICIENT_CREDIT (402: the tenant's prepaid credit is spent); IDEMPOTENCY_CONFLICT (409: the Idempotency-Key or request id was used for another request); IDEMPOTENCY_IN_PROGRESS (409: the first request with this Idempotency-Key is still running; retry); APPLICATION_CONNECTED (409: another connection serves this agent's tools; connect with ?takeover=true to replace it); APPLICATION_NOT_CONNECTED (409: this agent's tools need its application, and none is connected; connect it, or send allowDisconnected: true); REPLAY_GAP (409: the Last-Event-ID is behind the buffer; read state (or ask for a snapshot) and continue from its cursor). Others may be added"
           }
         },
         "required": [
@@ -2984,6 +2984,9 @@
             "type": "boolean",
             "description": "Whether credit can be bought here (POST /v1/billing/checkout)"
           },
+          "busyAgents": {
+            "$ref": "#/components/schemas/BusyAgents"
+          },
           "startingCredit": {
             "type": "object",
             "properties": {
@@ -3141,11 +3144,70 @@
           "purchased",
           "freeCredit",
           "checkout",
+          "busyAgents",
           "startingCredit",
           "month",
           "recent",
           "rates"
         ]
+      },
+      "BusyAgents": {
+        "type": "object",
+        "properties": {
+          "busy": {
+            "type": "integer",
+            "description": "Agents busy now across the runtime: each has a run open (running or queued)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many may be busy at once; a run past it gets 429 BUSY_AGENT_LIMIT"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "tier",
+              "tenant",
+              "default"
+            ],
+            "description": "tier: the usage tier's (prepaid tenants, by what they have paid); tenant: set for this tenant by the operator; default: the deployment's"
+          },
+          "tier": {
+            "type": "string",
+            "description": "The usage tier, with source tier",
+            "example": "Tier 1"
+          },
+          "paid": {
+            "type": "integer",
+            "description": "What the tenant has paid for credit, net of refunds (starting credit and adjustments do not count); with source tier, in micro-USD (1 USD = 1000000)"
+          },
+          "next": {
+            "type": "object",
+            "properties": {
+              "tier": {
+                "type": "string"
+              },
+              "paid": {
+                "type": "integer",
+                "description": "Paid in total that reaches it, in micro-USD (1 USD = 1000000)"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Its busy-agent limit"
+              }
+            },
+            "required": [
+              "tier",
+              "paid",
+              "limit"
+            ],
+            "description": "The next tier up, if any"
+          }
+        },
+        "required": [
+          "limit",
+          "source"
+        ],
+        "description": "How many agents may be busy at once, and why: a tier moves up as soon as a payment lands"
       },
       "LedgerEntry": {
         "type": "object",

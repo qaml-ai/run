@@ -98,8 +98,14 @@ export interface Usage {
 /** Credit amounts are integer micro-USD. */
 export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustment" | "refund";
 export interface LedgerEntry { id: number; kind: LedgerKind; amount: number; metadata: Record<string, any>; createdAt: number }
+export interface BusyAgents {
+  busy?: number; limit: number; source: "tier" | "tenant" | "default"; tier?: string; paid?: number;
+  next?: { tier: string; paid: number; limit: number };
+}
 export interface Billing {
   billing: "prepaid" | "none"; balance: number; purchased: number; freeCredit: boolean; checkout: boolean;
+  /** How many agents may be busy at once, and why; a prepaid tenant's tier moves up as soon as a payment lands. */
+  busyAgents: BusyAgents;
   /** `cardCheck`: verifying a card (POST /v1/billing/card-check) would add this much starting credit. */
   startingCredit: { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number; cardCheck?: { amount: number } };
   month: { since: number } & Record<LedgerKind, number>;

@@ -7,6 +7,7 @@ const SEND_TEXT = "Send {\"text\": \"...\"}";
 export const ERROR_CODES = {
   INVALID_REQUEST: "400: the request is malformed or invalid", UNAUTHORIZED: "401: no valid token", PAYMENT_REQUIRED: "402", FORBIDDEN: "403: the token may not do this",
   NOT_FOUND: "404", CONFLICT: "409", GONE: "410", TOO_LARGE: "413", RATE_LIMITED: "429: retry after Retry-After", UNAVAILABLE: "503: retry after Retry-After", INTERNAL: "500",
+  BUSY_AGENT_LIMIT: "429: the tenant has as many agents busy as it may (the body's busyAgents, a BusyAgents, says the limit, its usage tier and the next); retry after Retry-After",
   SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent",
   IDEMPOTENCY_CONFLICT: "409: the Idempotency-Key or request id was used for another request", IDEMPOTENCY_IN_PROGRESS: "409: the first request with this Idempotency-Key is still running; retry",
   APPLICATION_CONNECTED: "409: another connection serves this agent's tools; connect with ?takeover=true to replace it",
@@ -613,12 +614,23 @@ export const Ledger = z.object({
   entries: z.array(LedgerEntry).openapi({ description: "Newest first" }),
   next: z.number().int().optional().openapi({ description: "Pass as `before` for the next page" }),
 }).openapi("Ledger");
+export const BusyAgents = z.object({
+  busy: z.number().int().optional().openapi({ description: "Agents busy now across the runtime: each has a run open (running or queued)" }),
+  limit: z.number().int().openapi({ description: "How many may be busy at once; a run past it gets 429 BUSY_AGENT_LIMIT" }),
+  source: z.enum(["tier", "tenant", "default"]).openapi({ description: "tier: the usage tier's (prepaid tenants, by what they have paid); tenant: set for this tenant by the operator; default: the deployment's" }),
+  tier: z.string().optional().openapi({ description: "The usage tier, with source tier", example: "Tier 1" }),
+  paid: micros("What the tenant has paid for credit, net of refunds (starting credit and adjustments do not count); with source tier").optional(),
+  next: z.object({
+    tier: z.string(), paid: micros("Paid in total that reaches it"), limit: z.number().int().openapi({ description: "Its busy-agent limit" }),
+  }).optional().openapi({ description: "The next tier up, if any" }),
+}).openapi("BusyAgents");
 export const Billing = z.object({
   billing: z.enum(["prepaid", "none"]).openapi({ description: "prepaid: runs are paid from credit; none: not billed by the runtime" }),
   balance: micros("Credit left; at zero or below, runs are refused with 402"),
   purchased: micros("Credit bought over the account's life, net of refunds"),
   freeCredit: z.boolean().openapi({ description: "Whether the tenant has only ever had free credit, which comes with tighter limits" }),
   checkout: z.boolean().openapi({ description: "Whether credit can be bought here (POST /v1/billing/checkout)" }),
+  busyAgents: BusyAgents.openapi({ description: "How many agents may be busy at once, and why: a tier moves up as soon as a payment lands" }),
   startingCredit: z.object({
     status: z.enum(["granted", "not_eligible", "not_granted", "not_applicable"]),
     amount: micros("The amount of starting credit actually awarded, independent of the current grant setting"),
