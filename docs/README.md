@@ -21,6 +21,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Definitions](guides/definitions.md): reusable configurations and rolling out changes
    - [Channels](guides/channels.md): Slack, Telegram, Discord, GitHub, email and any service that sends webhooks
    - [Agents as MCP servers](guides/mcp-server.md): connect Claude or Cursor to an agent
+   - [Coming from the OpenAI Agents SDK or LangGraph](guides/migrating.md): each concept mapped, and what camelRun does not have
 4. **[Production checklist](production.md)**
 5. **Reference**
    - [Events](reference/events.md): every event on an agent's stream, and a run's outcome

@@ -72,6 +72,9 @@ credit, tell the user this in one sentence with that link.
 - A Next.js app that wants a chat UI can use `@camelai/run-react` with `createAgentHandler` (see
   https://run.camelai.com/docs/guides/browser.md). For a new app, use `npm create @camelai/run-app`.
 
+- A project already on the OpenAI Agents SDK (`from agents import Agent`, `@openai/agents`) or LangGraph is a port:
+  read https://run.camelai.com/docs/guides/migrating.md first, and say which of its features have no equivalent.
+
 No other package names exist. `@camelai/sdk`, `camelrun-sdk` and `camelai` on PyPI are wrong.
 
 ## 3. Write one agent
