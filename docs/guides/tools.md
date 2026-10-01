@@ -91,6 +91,31 @@ An existing MCP server (from `@modelcontextprotocol/sdk`) can be attached as is:
 `upsert(key, { mcp: await fromMcpServer(server) })` from
 `@camelai/run/mcp`.
 
+### Several processes, workers and deploys
+
+Every process that upserts an agent with `tools` tries to serve them, and only
+one can. Under uvicorn or gunicorn with several workers, Celery, or any fleet of
+instances, the first to connect serves the tools and the others fail with
+`APPLICATION_CONNECTED` (or take them from each other, with `takeover`). And
+while the serving process restarts (a deploy, a crash), runs are refused with
+`APPLICATION_NOT_CONNECTED`, and a call that was running when it went down is
+lost: the model is told its outcome is unknown, and the run lists it in
+`toolErrors` (Python `tool_errors`) with code `connection_lost`.
+
+Pick one of these:
+
+- **Served tools (recommended).** Serve the tools over HTTP from your web app
+  (`serveTools` / `serve_tools`, below) and name the server in a definition.
+  Every process, web worker and task then upserts the agent from the definition
+  with no `tools`, and any of them can run it. Served tools are deploy-safe:
+  each call is an HTTP request of its own to whichever instance is up, so a
+  rolling deploy that drains its connections loses no call.
+- **One tool process.** Run one long-lived process that upserts the agent with
+  its `tools` and stays up. Everywhere else, upsert it with the same `tools` and
+  `attach: false` (`attach=False`), which runs the agent without serving them.
+  Calls running when that process restarts are still lost, so keep it out of
+  frequent deploys.
+
 ## Served tools: over HTTP, for serverless and many users
 
 A server of yours answers tool calls over HTTP (MCP's Streamable HTTP), and a

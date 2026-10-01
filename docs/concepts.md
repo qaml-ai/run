@@ -85,13 +85,14 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 
 | Your situation | Use | How |
 | --- | --- | --- |
-| A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time |
-| Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for |
+| A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time, and a call running when it restarts is lost |
+| Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for. Safe through your deploys and restarts |
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
 | Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
 
 The same `tool({...})` definitions work attached and served, so you can start
-attached and move to served without changing a tool. Every agent also has file
+attached and move to served without changing a tool (see [Several processes,
+workers and deploys](guides/tools.md#several-processes-workers-and-deploys)). Every agent also has file
 tools over its [files](guides/files.md), and `js_exec`, a sandbox where the model
 writes code that calls all of its tools. See [Tools](guides/tools.md).
 

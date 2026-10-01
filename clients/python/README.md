@@ -16,6 +16,9 @@ Coding agents: this version's docs are in the package, next to its code
 (`SKILL.md` and `sdk.md` in `camelai_run`'s directory: `python -c "import camelai_run, os; print(os.path.dirname(camelai_run.__file__))"`).
 To set camelRun up in a project, read <https://run.camelai.com/SKILL.md>.
 
+The SDK is async-only: call it inside `async def`, and from synchronous code (a
+script, a Django view, a Celery task) with `asyncio.run(...)`.
+
 ```python
 import asyncio
 from camelai_run import Agents, tool
@@ -44,6 +47,10 @@ asyncio.run(main())
 - **Tools.** `@tool` takes async or plain functions (plain ones run in a thread),
   `timeout=` in seconds, and `needs_approval=True`. `context.idempotency_key` is
   stable across retries; `context.progress("...")` reports progress.
+- **Where tools run.** Tools given to `upsert` run in that process, and one process
+  at a time serves an agent's tools, only while it runs. With several processes
+  (uvicorn or gunicorn workers, Celery, serverless) or deploys that restart
+  them, serve tools over HTTP with `serve_tools` (below) instead.
 - **People in the loop.** `await run.inputs[0].answer(True, from_="alice")` resumes
   a run waiting on approval.
 - **Events.** `on_event` may be a plain or an async function; it runs in order,
@@ -78,8 +85,17 @@ async def list_todos(context: ToolContext) -> dict:
 app = serve_tools([list_todos], runtime="https://run.camelai.com", tenant="acme")  # uvicorn, or mount in FastAPI
 ```
 
-Name the server in a definition with `mcpServers=[{"name": "todos", "url": ..., "auth": {"type": "runtime"}}]`,
-create agents with `subject=` and `context=`, and run them with `user=`.
+Name the server in a definition, make each user's agent from it, and run it as that user. Any process can do
+this (no `tools` here: the server above answers them), so every web worker and task can:
+
+```python
+definition = await agents.runtime.upsert_definition("todos", name="Todos", mcpServers=[
+    {"name": "todos", "url": "https://todos.example.com/mcp", "auth": {"type": "runtime"}}])
+agent = await agents.upsert(f"todos-{user.id}", definition=definition["id"], subject=user.id, context={"team": user.team})
+run = await agent.run("What's left for this week?", user=user.id)
+```
+
+Definitions take the REST API's field names (`systemPrompt`, `mcpServers`, `openApi`).
 The same `@tool` functions get the same identity when attached to an agent.
 `verify_runtime_token(token, runtime=..., tenant=..., audience=...)` checks a token on its own,
 and `TestRuntime()` signs tokens for tests: `await TestRuntime().call_tool(app, url, "list_todos", {}, subject="alice")`.

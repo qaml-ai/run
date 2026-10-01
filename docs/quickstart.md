@@ -6,11 +6,12 @@ agent's history and its files; your tools stay in your code, with your
 credentials.
 
 **With a coding agent.** Paste this into Claude Code, Codex, Cursor or any coding
-agent. It installs the SDK, finds your API key without you pasting it into chat,
-and runs your first agent:
+agent, saying what the agent should do in place of `<does X>`. It installs the
+SDK, finds your API key without you pasting it into chat, and runs your first
+agent:
 
 ```text
-Read https://run.camelai.com/SKILL.md and set up camelRun in this project.
+Read https://run.camelai.com/SKILL.md, set up camelRun in this project, and build an agent that <does X>.
 ```
 
 **Try it with no API key.** Connect your coding agent to the hosted MCP server.
@@ -59,7 +60,8 @@ pip install camelai-run
 
 ## 3. Run an agent
 
-TypeScript, `quickstart.ts`:
+TypeScript, `quickstart.mts` (`.mts` makes it an ES module, which top-level
+`await` needs; in a project with `"type": "module"`, `.ts` works too):
 
 ```ts
 import { Agents, schema, tool } from "@camelai/run";
@@ -86,10 +88,12 @@ await agents.close();
 ```
 
 ```sh
-npx tsx quickstart.ts
+npx tsx quickstart.mts
 ```
 
-Python, `quickstart.py`:
+Python, `quickstart.py`. The Python SDK is async-only: call it from `async`
+code, and from synchronous code (a script, a Django view, a Celery task) with
+`asyncio.run(...)`:
 
 ```python
 import asyncio
@@ -173,11 +177,14 @@ never loses the run: `run()` (or `stream.result()`) still resolves with it.
   the file again continues the same conversation. See [Concepts](concepts.md).
 - Because the agent has `tools`, this process served them: the runtime called
   `weather` here, over the connection the SDK holds. One process at a time serves
-  an agent's tools. A serverless function or a multi-user backend serves tools
-  over HTTP instead; see [Tools](guides/tools.md).
+  an agent's tools, and only while it runs. Serverless functions, several web
+  workers or task workers, and multi-user backends serve tools over HTTP
+  instead, which also keeps them working through deploys; see [Several
+  processes, workers and deploys](guides/tools.md#several-processes-workers-and-deploys).
 - `run()` resolved with a `Run`: `status` (`completed`, `input_required` or
-  `failed`), `text`, `inputs`, `error`, `toolErrors`. A failed run throws a
-  `RunError` unless you pass `throwOnError: false` (`throw_on_error=False`).
+  `failed`), `text`, `inputs`, `error`, `toolErrors` (Python `tool_errors`). A
+  failed run throws a `RunError` unless you pass `throwOnError: false`
+  (`throw_on_error=False`).
 - `agents.close()` let the process exit. The agent stays in the runtime.
 
 Next: [Concepts](concepts.md), then the guide for what you are building:

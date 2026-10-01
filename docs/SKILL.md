@@ -14,14 +14,20 @@ names, models and verification. The SDK changes faster than your training data. 
 remember. The index is https://run.camelai.com/llms.txt, and the SDK reference is
 https://run.camelai.com/docs/reference/sdk.md.
 
-## 0. Plan first
+## 0. Say the plan, then go
 
-Show the user this, and wait for their OK before doing anything:
+Tell the user this in one message, then start right away. Don't wait for an OK: the only thing to stop for is a
+missing API key (step 1).
 
     Here's how I'll set up camelRun:
     1. Find your camelRun API key, or ask you to add one to .env.local yourself (never in this chat)
-    2. Install the SDK and add one agent with one tool from this project
+    2. Install the SDK and build the agent you asked for, with a tool from this project
     3. Run it once and show you its reply
+
+**What to build.** Build the agent the user asked for ("build an agent that …"). If they named nothing, or the prompt
+still says `<does X>`, don't ask: pick something small and useful in this project (an agent that answers questions
+about its data or code, with one tool that reads it), say what you picked, and build that. Choose sensible defaults
+the same way (the agent's key, its instructions, the account's default model) rather than asking.
 
 **Just trying camelRun, with no code?** The hosted MCP server needs no API key: signing in with GitHub or Google
 creates the account. Offer it, and tell the user the command to run themselves:
@@ -91,6 +97,7 @@ const agent = await agents.upsert("my-project-assistant", {
 Python:
 
 ```python
+import asyncio
 from camelai_run import Agents, tool
 
 @tool
@@ -98,16 +105,29 @@ def lookup_order(id: str) -> dict:
     """The docstring is the tool's description."""
     ...
 
-async with Agents() as agents:  # reads CAMELAI_API_KEY
-    agent = await agents.upsert("my-project-assistant", instructions="…", tools=[lookup_order])
+async def main():
+    async with Agents() as agents:  # reads CAMELAI_API_KEY
+        agent = await agents.upsert("my-project-assistant", instructions="…", tools=[lookup_order])
+
+asyncio.run(main())
 ```
+
+- **ES modules.** The TypeScript uses top-level `await`, which needs an ES module: a `.mts` or `.mjs` file, or
+  `"type": "module"` in `package.json`. In a CommonJS project (no `"type"`, or `"commonjs"`), use `.mts`/`.mjs`
+  rather than changing the project's module type.
+- **Python is async-only.** Every call is `await`ed inside `async def`. From synchronous code (a script, a Django
+  view, a Celery task), run it with `asyncio.run(...)`. Python names are snake_case: `run.tool_errors`,
+  `throw_on_error=False`, `context.idempotency_key`, a stream part's `is_error`.
 
 - **Keys.** `upsert(key, …)` with the same key is the same agent, with its history. Choose a stable key.
 - **Model.** Leave out `model`, and the account's default is used: the first default model the account can use. To
   choose another, list the usable ones with `npx -y @camelai/camelrun models --available`.
 - **Where tools run.** Tools run in the process that called `upsert`, and one process serves an agent's tools at a
-  time. On serverless hosting, serve them over HTTP with `serveTools` from `@camelai/run/server` (see
-  https://run.camelai.com/docs/guides/tools.md).
+  time. With several processes (serverless, uvicorn or gunicorn workers, Celery, several instances), serve them over
+  HTTP instead: `serveTools` from `@camelai/run/server`, or `serve_tools` in Python, named in a definition; then
+  every process upserts the agent from that definition with no `tools`. Served tools also keep working through your
+  deploys and restarts, which tools attached to a process don't. See
+  https://run.camelai.com/docs/guides/tools.md#several-processes-workers-and-deploys.
 
 ## 4. Verify with one real run
 

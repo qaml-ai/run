@@ -31,6 +31,11 @@ const agents = new Agents({ apiKey, url });   // or `await using agents = new Ag
 async with Agents(api_key, url=url) as agents: ...
 ```
 
+The Python SDK is async-only: every call is awaited inside `async def`. From
+synchronous code (a script, a Django view, a Celery task), run it with
+`asyncio.run(...)`. Its names are the TypeScript ones in snake_case
+(`throw_on_error`, `run.tool_errors`, `part.is_error`), as the tables below show.
+
 - `apiKey` defaults to the `CAMELAI_API_KEY` environment variable, `url` to
   `CAMELAI_BASE_URL`, else `https://run.camelai.com`.
 - `agents.close()` closes every agent's connection so the process can exit;
@@ -107,7 +112,8 @@ Run options (`run`, `stream`):
 
 Each of `run.inputs` is the input (`id`, `kind`, `message`, `detail`,
 `responders`, `expiresAt`, …) with `answer(value, { from })` and
-`decline({ from })`, which resolve with the resumed run. See [Human
+`decline({ from })` (Python: a dict with `answer(value, from_=)` and
+`decline(from_=)`), which resolve with the resumed run. See [Human
 input](../guides/human-input.md#answering).
 
 ### Stream parts
@@ -148,14 +154,16 @@ def or_async_def(arg: str, context: ToolContext): ...
 | `confirm`, `ask`, `requireUrl` | `confirm`, `ask`, `require_url` | ask the user; see [Human input](../guides/human-input.md) |
 
 See [Tools](../guides/tools.md) for attached and served tools, identity and
-the definitions' sources, and `serveTools` / `serve_tools`.
+the definitions' sources, and `serveTools` / `serve_tools`. With several
+processes (web workers, task queues, serverless), serve tools over HTTP: see
+[Several processes, workers and deploys](../guides/tools.md#several-processes-workers-and-deploys).
 
 ## Errors
 
 - `AgentError`: `status` (HTTP, or 0), `code` (a stable name where the runtime
   gives one: `APPLICATION_CONNECTED`, `APPLICATION_REPLACED`, `REPLAY_GAP`,
   `spend_limit`, …), `requestId`, `uncertain`, `retryAfterMs` (Python
-  `retry_after`, seconds).
+  `request_id`, `retry_after` in seconds).
 - `RunError extends AgentError`: a failed run, with `run`.
 
 The SDKs retry 429 and 503 (honouring `Retry-After`) and transient failures of

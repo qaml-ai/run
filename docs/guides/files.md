@@ -17,7 +17,8 @@ const run = await agent.run("What changed in Q3?", {
 run = await agent.run("What changed in Q3?", files=[Path("q3.pdf"), screenshot_bytes, {"name": "data.csv", "data": csv}, {"path": "/workspace/notes.md"}])
 ```
 
-A file is bytes, a `Blob` or `File`, `{name, data, contentType?}`, a local path
+A file is bytes, a `Blob` or `File`, `{name, data, contentType?}` (Python
+`{"name", "data", "content_type"?}`), a local path
 (the Node entry `@camelai/run/node`, or a `str`/`Path` in Python), or
 `{path}` for a file already in the agent's mounts. The SDKs upload each first,
 streamed, to `uploads/<run id>/<name>` in the agent's workspace, then send the
@@ -82,7 +83,6 @@ const link = await agent.files.link("/workspace/out/report.pdf", { expiresIn: 36
 await agent.files.upload("/workspace/in/config.json", JSON.stringify(config));
 ```
 Python has the same: `agent.files.download(path)` (`.data`, `.content_type`, `.version`), `list(path=...)`,
-Python has the same: `agent.files.download(path)`, `list(path=...)`,
 `link(path, expires_in=...)`, `upload(path, data)`.
 
 ## Volumes

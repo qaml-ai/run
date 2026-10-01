@@ -10,10 +10,14 @@ Live at <https://run.camelai.com> (REST API under `/v1`, described by
 `/v1/openapi.json` and the committed [`openapi.json`](openapi.json); console at
 `/console`).
 
-Set it up with your coding agent (Claude Code, Codex, Cursor…) by pasting:
+**Self-host it.** The runtime is open source and runs anywhere with Docker: one
+container and Postgres. See [Self-hosting](docs/operations/self-host.md).
+
+Set it up with your coding agent (Claude Code, Codex, Cursor…) by pasting this,
+with what the agent should do in place of `<does X>`:
 
 ```text
-Read https://run.camelai.com/SKILL.md and set up camelRun in this project.
+Read https://run.camelai.com/SKILL.md, set up camelRun in this project, and build an agent that <does X>.
 ```
 
 Or by hand:
