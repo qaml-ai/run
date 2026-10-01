@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { deliveryLine, errorClass, metricLine, observeTurns, recordEventMetrics, recordWatchRefused, setMetricSink, webhookBacklogLine } from "../src/metrics.ts";
 import { webhookEvent } from "../src/webhooks.ts";
@@ -41,6 +42,8 @@ test("model and run errors are sorted into a few classes", () => {
   assert.equal(errorClass("prompt is too long: 250000 tokens > 200000 maximum"), "context_overflow");
   assert.equal(errorClass("401 Unauthorized: invalid x-api-key"), "auth");
   assert.equal(errorClass("402 Insufficient credits"), "billing");
+  // OpenRouter's refusal when the platform account cannot reserve a response's max_tokens (the billing-errors alarm).
+  assert.equal(errorClass("402 This request requires more credits, or fewer max_tokens. You requested up to 128000 tokens, but can only afford 9120."), "billing");
   assert.equal(errorClass("Request timed out"), "timeout");
   assert.equal(errorClass("502 Bad Gateway"), "provider_5xx");
   assert.equal(errorClass("fetch failed: ECONNRESET"), "network");
@@ -110,6 +113,7 @@ test("turn outcomes: a model error, input required, the spend limit, a thrown er
     await turns.wrap(async () => ({ messages: 2, error: "503 Service Unavailable" }))("continue", {});
     await turns.wrap(async () => ({ messages: 2, error: null, stopped: "input_required" }))("resume", {});
     await turns.wrap(async () => ({ messages: 2, error: null, stopped: "spend_limit" }))("prompt", {});
+    await turns.wrap(async () => ({ messages: 2, error: null, stopped: "turn_limit" }))("prompt", {});
     await assert.rejects(turns.wrap(async () => { throw new Error("Session closed"); })("prompt", {}), /Session closed/);
     await turns.wrap(async () => ({ ok: true }))("init", {});
     await turns.wrap(async () => ({ value: 1 }))("execute", {});
@@ -123,7 +127,7 @@ test("turn outcomes: a model error, input required, the spend limit, a thrown er
     await first;
   });
   const outcomes = lines.filter(line => line.type === "turn_metrics").map(line => [line.Outcome, line.ErrorClass]);
-  assert.deepEqual(outcomes, [["failed", "provider_5xx"], ["input_required", "none"], ["spend_limit", "none"], ["failed", "exception"], ["completed", "none"]]);
+  assert.deepEqual(outcomes, [["failed", "provider_5xx"], ["input_required", "none"], ["spend_limit", "none"], ["turn_limit", "none"], ["failed", "exception"], ["completed", "none"]]);
   const noFirstToken = lines.find(line => line.type === "turn_metrics");
   assert.equal(noFirstToken.TimeToFirstTokenMs, undefined, "no token, no time to first token");
 });
@@ -134,6 +138,7 @@ test("run and usage events: counted by tenant as they are written, with runtime 
     webhookEvent("run.started", "chiridion-prod", { agentId: "a", requestId: "r2", method: "continue", resumes: 1 }),
     webhookEvent("run.completed", "chiridion-prod", { agentId: "a", requestId: "r1", usage: null }),
     webhookEvent("run.completed", "chiridion-prod", { agentId: "a", requestId: "r3", usage: null, stopped: "input_required" }),
+    webhookEvent("run.completed", "chiridion-prod", { agentId: "a", requestId: "r5", usage: null, stopped: "turn_limit" }),
     webhookEvent("run.failed", "chiridion-prod", { agentId: "a", requestId: "r2", usage: null, error: "The runtime restarted during this request", uncertain: true }),
     webhookEvent("run.failed", "chiridion-prod", { agentId: "a", requestId: "r4", usage: null, error: "429 Too Many Requests" }),
     webhookEvent("usage.recorded", "chiridion-prod", { agentId: "a", provider: "openrouter", model: "openai/gpt-6-luna", cost: { usd: 0.25, source: "provider" } }),
@@ -147,7 +152,8 @@ test("run and usage events: counted by tenant as they are written, with runtime 
   assert.equal(runs[0].Tenant, "chiridion-prod");
   assert.equal(runs[0].RunsStarted, 2);
   assert.equal(runs[0].RunsResumed, 1);
-  assert.equal(runs[0].RunsCompleted, 2);
+  assert.equal(runs[0].RunsCompleted, 3);
+  assert.equal(runs[0].RunsTurnLimited, 1);
   assert.equal(runs[0].RunsInputRequired, 1);
   assert.equal(runs[0].RunsFailed, 2);
   assert.equal(runs[0].RunsUncertain, 1);
@@ -183,4 +189,27 @@ test("an event stream subscriber refused at a limit: counted by the limit's scop
   const lines = await captured(() => { recordWatchRefused("tenant", "chiridion-prod"); recordWatchRefused("agent", "chiridion-prod"); });
   assert.deepEqual(lines.map(line => [line.type, line.Scope, line.Tenant, line.WatchersRefused]), [["watch_refused", "tenant", "chiridion-prod", 1], ["watch_refused", "agent", "chiridion-prod", 1]]);
   assert.deepEqual(directive(lines[0]).Dimensions.map((set: string[]) => set.filter(name => name !== "ServiceName")), [[], ["Scope"], ["Tenant"]]);
+});
+
+test("the spend and provider-credit alarms read metrics as the runtime emits them", async () => {
+  const terraform = readFileSync(new URL("../infra/terraform/observability.tf", import.meta.url), "utf8");
+  const previous = process.env.AGENT_SERVICE_NAME;
+  process.env.AGENT_SERVICE_NAME = "camelai-agent-runtime";
+  const lines = await captured(() => {
+    recordEventMetrics([webhookEvent("usage.recorded", "acme", { agentId: "a", provider: "openrouter", model: "m", cost: { usd: 2, source: "provider" } })]);
+    const turns = observeTurns(() => ({ provider: "openrouter", id: "m" }));
+    turns.event({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "402 This request requires more credits, or fewer max_tokens" } });
+  }).finally(() => { if (previous === undefined) delete process.env.AGENT_SERVICE_NAME; else process.env.AGENT_SERVICE_NAME = previous; });
+  // The top-tenant query groups ModelCostUsd by the {ServiceName, Tenant} set the runtime writes.
+  const cost = directive(lines.find(line => line.type === "model_cost"));
+  assert.ok(cost.Dimensions.some((set: string[]) => set.join() === "ServiceName,Tenant"));
+  assert.ok(cost.Metrics.some((metric: any) => metric.Name === "ModelCostUsd"));
+  assert.match(terraform, /SELECT SUM\(ModelCostUsd\) FROM SCHEMA\(AgentRuntime, ServiceName, Tenant\) WHERE ServiceName = '\$\{local\.service_name\}' GROUP BY Tenant ORDER BY SUM\(\) DESC LIMIT 1/);
+  assert.match(terraform, /variable "tenant_spend_alarm_usd_per_hour" \{[^}]*default\s+= 50/);
+  // The billing-errors alarm counts ModelErrors in the {ServiceName, ErrorClass} set, class billing.
+  const error = lines.find(line => line.type === "model_error");
+  assert.equal(error.ErrorClass, "billing");
+  assert.ok(directive(error).Dimensions.some((set: string[]) => set.join() === "ServiceName,ErrorClass"));
+  const alarm = terraform.slice(terraform.indexOf('resource "aws_cloudwatch_metric_alarm" "model_billing_errors"')).split("\n}\n")[0];
+  for (const setting of [/metric_name\s+= "ModelErrors"/, /ErrorClass = "billing"/, /period\s+= 900\n/, /threshold\s+= 3\n/, /comparison_operator = "GreaterThanThreshold"/]) assert.match(alarm, setting);
 });
