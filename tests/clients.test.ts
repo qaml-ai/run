@@ -586,7 +586,8 @@ test("runs queue per agent: a busy agent accepts more work, and runs that never 
   assert.equal(config.status, 202);
   const waiting = agent2.execute("return 3", { idempotencyKey: "waiting" }).catch(error => error);
   await sleep(100);
-  await agent2.close();
+  // The process dies with its call running (no drain), as a crash would.
+  await agent2.close({ drainMs: 0 });
   await began; await waiting;
   await f.restartHost();
   const resumed = await new AgentRuntime(f.runtimeOptions).connectAgent(agent2.session, { tools: {} });
