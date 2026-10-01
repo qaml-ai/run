@@ -17,6 +17,7 @@ import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, listenFromEnvironment, migrate } from "./db.ts";
 import { Ownership } from "./ownership.ts";
+import { BusyAgents } from "./busy-agents.ts";
 import { tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
 import { BillingAlerts } from "./billing-alerts.ts";
@@ -49,7 +50,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorCode, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
@@ -81,7 +82,8 @@ function positiveSetting(name: string, fallback: number) {
   if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
   return value;
 }
-// Agents hosted per node and per tenant on a node: processes with AGENT_HOSTING=process, in-process hosts with inline.
+// Agents hosted per node (processes with AGENT_HOSTING=process, in-process hosts with inline), and busy per tenant across
+// the fleet for a tenant with no maxAgents of its own and no usage tier (one not prepaid).
 const maxAgents = positiveSetting("AGENT_MAX_AGENTS", 8);
 const maxAgentsPerTenant = positiveSetting("AGENT_MAX_AGENTS_PER_TENANT", Math.max(1, Math.ceil(maxAgents / 2)));
 const port = Number(process.env.PORT ?? 8790);
@@ -143,7 +145,9 @@ const origins = publicOrigins(process.env, `http://127.0.0.1:${port}`);
 // Prepaid tenants pay from credit at the rates in src/pricing.ts, which the environment may override.
 // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
 const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: process.env.AGENT_STRIPE_API_URL, portalConfiguration: process.env.AGENT_STRIPE_PORTAL_CONFIGURATION });
-const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe });
+const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe, maxAgentsPerTenant });
+// Busy agents per tenant, counted across the fleet: each tenant's own maxAgents, its usage tier, or AGENT_MAX_AGENTS_PER_TENANT.
+const busyAgents = new BusyAgents({ db, ownership, limitFor: (tenant, sql) => accounts.billing.busyLimit(tenant, sql) });
 accounts.billing.autoTopup?.start();
 const billingAlerts = new BillingAlerts(db, accounts);
 const mailConfig = billingMailConfig(process.env, secrets.billingEmailSecret);
@@ -350,8 +354,9 @@ async function submitAnywhere(agent: string, tenant: string, request: { id: stri
   const response = await signedPost(owner, `/internal/agents/${agent}/requests`, { tenant, request }).catch(error => { ownership.forget(agent); throw error; });
   if (!response.ok) {
     ownership.forget(agent);
-    const { error } = await response.json().catch(() => ({})) as { error?: string };
-    throw new HttpError(response.status, error ?? `Owner rejected the request: HTTP ${response.status}`);
+    // Its code and details (a limit, say) reach the caller as the owner gave them.
+    const { type: _type, error, code, ...details } = await response.json().catch(() => ({})) as { type?: string; error?: string; code?: string };
+    throw new HttpError(response.status, error ?? `Owner rejected the request: HTTP ${response.status}`, code, Object.keys(details).length ? details : undefined);
   }
   return response.json();
 }
@@ -419,10 +424,10 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
   runEvents: tenant => subscribers.runs(tenant),
-  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), agentLimitFor: async tenant => {
-    // An admin's limit for the tenant, else, on free credit, the free limit (never above the default).
-    const free = tenants.maxAgents(tenant) === undefined ? await accounts.billing.agentLimit(tenant) : undefined;
-    return tenants.maxAgents(tenant) ?? (free === undefined ? undefined : Math.min(free, maxAgentsPerTenant));
+  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+    // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
+    const { limit, source } = await accounts.billing.busyLimit(tenant);
+    return source === "default" ? undefined : limit;
   },
   apiKeyFor: async (tenant, provider, keyScope) => {
     // A tenant's own endpoint gets identity tokens, and its calls cost the runtime nothing.
@@ -496,7 +501,7 @@ const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
   definitionBuiltins: async (tenant, id) => (await definitions.read(tenant, id)).spec.builtins,
   // Interim caps until servers have an aggregate budget: free credit gets one server and 500 turns a day per server.
   plan: async tenant => {
-    const free = await accounts.billing.agentLimit(tenant) !== undefined;
+    const free = await accounts.billing.onFreeCredit(tenant);
     const servers = tenants.maxDiscordServers(tenant) ?? Number((free ? process.env.AGENT_DISCORD_MANAGED_FREE_SERVERS : process.env.AGENT_DISCORD_MANAGED_SERVERS) ?? (free ? 1 : 10));
     return { free, servers, turnsPerDay: free ? 500 : 10_000 };
   },
@@ -712,7 +717,7 @@ app.notFound(c => c.json({ type: "error", error: `Not found. The docs' index: ${
 // anything else is a request the runtime could not accept (invalid configuration or tools): 400.
 app.onError((error, c) => {
   const status = errorStatus(error, 400);
-  return c.body(JSON.stringify({ type: "error", error: errorText(error), code: errorCode(error, status) }) + "\n", status as ContentfulStatusCode, { "Content-Type": "application/json" });
+  return c.body(JSON.stringify({ type: "error", error: errorText(error), code: errorCode(error, status), ...errorFields(error) }) + "\n", status as ContentfulStatusCode, { "Content-Type": "application/json" });
 });
 
 const server = createAdaptorServer({ fetch: app.fetch }) as Server;

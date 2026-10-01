@@ -12,7 +12,7 @@ import { resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { errorCode, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import type { Definitions } from "./definitions.ts";
@@ -914,7 +914,7 @@ export function api(context: ApiContext) {
   // A conflicting answer says what the input settled as.
   app.onError((error, c) => {
     const status = errorStatus(error, 400);
-    return json(c, status, { error: errorText(error), code: errorCode(error, status), ...((error as { input?: unknown }).input ? { input: (error as { input?: unknown }).input } : {}) });
+    return json(c, status, { error: errorText(error), code: errorCode(error, status), ...errorFields(error) });
   });
   return app;
 }

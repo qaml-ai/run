@@ -3,7 +3,8 @@ import type { Tenants } from "./tenants.ts";
 import { transaction, type Db, type Sql } from "./db.ts";
 import type { Storage } from "../shared/storage.ts";
 import { HttpError } from "./http.ts";
-import { DEFAULT_PRICING, MICROS, storageCharge, type Pricing } from "./pricing.ts";
+import { DEFAULT_PRICING, MICROS, storageCharge, usageTier, type Pricing } from "./pricing.ts";
+import { busyCount, tierLimit, type BusyLimit } from "./busy-agents.ts";
 import type { Stripe } from "./stripe.ts";
 import { AutoTopup } from "./auto-topup.ts";
 import { BillingPayments, stripeId } from "./billing-payments.ts";
@@ -122,6 +123,8 @@ export interface BillingOptions {
   flush?: () => Promise<void>;
   /** Credit purchases through Stripe Checkout; without it, credit only comes from grants and adjustments. */
   stripe?: Stripe;
+  /** Busy agents at once for a tenant that is not prepaid and has no `maxAgents` of its own (AGENT_MAX_AGENTS_PER_TENANT; default 4). */
+  maxAgentsPerTenant?: number;
 }
 
 export class Billing {
@@ -204,10 +207,23 @@ export class Billing {
     return undefined;
   }
 
-  /** Agents a tenant on free credit may have hosted at once on each node; undefined once it has bought credit (or is not prepaid). */
-  async agentLimit(tenant: string): Promise<number | undefined> {
-    if (await this.mode(tenant) !== "prepaid") return undefined;
-    return (await this.account(tenant)).purchased > 0 ? undefined : this.pricing.free.maxAgents;
+  /** Whether a prepaid tenant has never bought credit (or had it all refunded): it has the free limits. */
+  async onFreeCredit(tenant: string) {
+    return await this.mode(tenant) === "prepaid" && (await this.account(tenant)).purchased <= 0;
+  }
+
+  /**
+   * How many agents `tenant` may have busy at once across the fleet: its entry's `maxAgents`, else for a
+   * prepaid tenant its usage tier's, else the deployment's. The tier comes from what the tenant has paid,
+   * read from its account row (in `sql`, the caller's transaction) each time, so a payment applies at once.
+   */
+  async busyLimit(tenant: string, sql: Sql = this.db): Promise<BusyLimit> {
+    const own = this.tenants.maxAgents(tenant);
+    if (own !== undefined) return { limit: own, source: "tenant" };
+    if (await this.mode(tenant) !== "prepaid") return { limit: this.options.maxAgentsPerTenant ?? 4, source: "default" };
+    const paid = Number((await sql.query("select purchased from credit_accounts where tenant = $1", [tenant])).rows[0]?.purchased ?? 0);
+    const { tier, next } = usageTier(this.pricing.tiers, paid);
+    return tierLimit(tier, next, paid);
   }
 
   /** Append entries (see `postLedger`); the balances they move are read afresh next time. */
@@ -311,8 +327,10 @@ export class Billing {
     const { rows } = await this.db.query("select kind, sum(amount) as amount from credit_ledger where tenant = $1 and created_at >= $2 group by kind", [tenant, since]);
     const thisMonth = Object.fromEntries(LEDGER_KINDS.map(kind => [kind, Number(rows.find(row => row.kind === kind)?.amount ?? 0)])) as Record<LedgerKind, number>;
     const pricing = this.pricing;
+    const [limit, busy] = await Promise.all([this.busyLimit(tenant), busyCount(this.db, tenant)]);
     return {
       billing: mode, balance, purchased, freeCredit: mode === "prepaid" && purchased <= 0, checkout: !!this.options.stripe,
+      busyAgents: { busy, ...limit },
       startingCredit: mode === "prepaid" ? await this.startingCredit(tenant) : { status: "not_applicable" as const, amount: 0 },
       month: { since, ...thisMonth },
       recent: (await this.ledger(tenant, { limit: 10 })).entries,

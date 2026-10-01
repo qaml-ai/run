@@ -24,12 +24,15 @@ export interface Pricing {
   startingGrant: number;
   /** Limits on a tenant that has never bought credit. */
   free: {
-    /** Agents it may have hosted at once on each node. */
-    maxAgents: number;
     /** Credit it may spend on model tokens and agent time in any hour. */
     hourlySpend: number;
   };
+  /** Usage tiers by what a tenant has paid for credit, lowest first; the first starts at 0. */
+  tiers: UsageTier[];
 }
+
+/** A usage tier: a tenant that has paid at least `paid` in total (net of refunds) may have `busyAgents` agents busy at once. */
+export interface UsageTier { name: string; paid: number; busyAgents: number }
 
 export const MICROS = 1_000_000;
 export const micros = (usd: number) => Math.round(usd * MICROS);
@@ -44,13 +47,20 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   minPurchase: micros(5),
   maxPurchase: micros(1000),
   startingGrant: micros(5),
-  free: Object.freeze({ maxAgents: 2, hourlySpend: micros(1) }),
+  free: Object.freeze({ hourlySpend: micros(1) }),
+  tiers: Object.freeze([
+    { name: "Free", paid: 0, busyAgents: 8 },
+    { name: "Tier 1", paid: micros(5), busyAgents: 25 },
+    { name: "Tier 2", paid: micros(50), busyAgents: 100 },
+    { name: "Tier 3", paid: micros(250), busyAgents: 250 },
+    { name: "Tier 4", paid: micros(1000), busyAgents: 1000 },
+  ].map(tier => Object.freeze(tier))) as UsageTier[],
 });
 
 /**
  * Rates from the environment, in USD (AGENT_PRICE_AGENT_HOUR_USD, AGENT_PRICE_STORAGE_GB_MONTH_USD,
  * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
- * AGENT_CREDIT_GRANT_USD, AGENT_FREE_MAX_AGENTS, AGENT_FREE_HOURLY_SPEND_USD); unset ones keep the defaults.
+ * AGENT_CREDIT_GRANT_USD, AGENT_FREE_HOURLY_SPEND_USD, AGENT_USAGE_TIERS); unset ones keep the defaults.
  * AGENT_OPENROUTER_CREDIT_MULTIPLIER is the actual dollars paid per dollar of provider credit.
  */
 export function pricingFromEnvironment(env = process.env): Pricing {
@@ -62,8 +72,7 @@ export function pricingFromEnvironment(env = process.env): Pricing {
   };
   const fee = env.AGENT_CREDIT_FEE_PERCENT === undefined ? DEFAULT_PRICING.purchaseFeeBps : Math.round(Number(env.AGENT_CREDIT_FEE_PERCENT) * 100);
   if (!Number.isInteger(fee) || fee < 0 || fee > 10_000) throw new Error("AGENT_CREDIT_FEE_PERCENT must be a percentage between 0 and 100");
-  const maxAgents = Number(env.AGENT_FREE_MAX_AGENTS ?? DEFAULT_PRICING.free.maxAgents);
-  if (!Number.isInteger(maxAgents) || maxAgents < 1) throw new Error("AGENT_FREE_MAX_AGENTS must be a positive integer");
+  if (env.AGENT_FREE_MAX_AGENTS !== undefined) throw new Error("AGENT_FREE_MAX_AGENTS is replaced by AGENT_USAGE_TIERS: set the first tier's busyAgents");
   const openrouterCreditMultiplier = Number(env.AGENT_OPENROUTER_CREDIT_MULTIPLIER ?? DEFAULT_PRICING.openrouterCreditMultiplier);
   if (!Number.isFinite(openrouterCreditMultiplier) || openrouterCreditMultiplier < 0) throw new Error("AGENT_OPENROUTER_CREDIT_MULTIPLIER must be a non-negative number");
   const pricing: Pricing = {
@@ -80,10 +89,37 @@ export function pricingFromEnvironment(env = process.env): Pricing {
     minPurchase: usd("AGENT_CREDIT_MIN_PURCHASE_USD", DEFAULT_PRICING.minPurchase),
     maxPurchase: usd("AGENT_CREDIT_MAX_PURCHASE_USD", DEFAULT_PRICING.maxPurchase),
     startingGrant: usd("AGENT_CREDIT_GRANT_USD", DEFAULT_PRICING.startingGrant),
-    free: { maxAgents, hourlySpend: usd("AGENT_FREE_HOURLY_SPEND_USD", DEFAULT_PRICING.free.hourlySpend) },
+    free: { hourlySpend: usd("AGENT_FREE_HOURLY_SPEND_USD", DEFAULT_PRICING.free.hourlySpend) },
+    tiers: env.AGENT_USAGE_TIERS === undefined ? DEFAULT_PRICING.tiers : usageTiers(env.AGENT_USAGE_TIERS),
   };
   if (pricing.minPurchase < micros(0.5) || pricing.maxPurchase < pricing.minPurchase) throw new Error("AGENT_CREDIT_MIN_PURCHASE_USD must be at least 0.50 (Stripe's minimum) and at most AGENT_CREDIT_MAX_PURCHASE_USD");
   return pricing;
+}
+
+/**
+ * AGENT_USAGE_TIERS: a JSON array of `{name, paidUsd, busyAgents}`, by ascending `paidUsd`, the first at 0
+ * (a tenant that has paid nothing). Each tier's `busyAgents` is a positive integer.
+ */
+export function usageTiers(text: string): UsageTier[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { throw new Error("AGENT_USAGE_TIERS must be JSON: [{\"name\", \"paidUsd\", \"busyAgents\"}, ...]"); }
+  if (!Array.isArray(parsed) || !parsed.length) throw new Error("AGENT_USAGE_TIERS must be a non-empty array of tiers");
+  const tiers = parsed.map((tier: any, index): UsageTier => {
+    if (!tier || typeof tier !== "object" || typeof tier.name !== "string" || !tier.name.trim() || tier.name.length > 40) throw new Error(`AGENT_USAGE_TIERS[${index}] needs a name (at most 40 characters)`);
+    if (typeof tier.paidUsd !== "number" || !Number.isFinite(tier.paidUsd) || tier.paidUsd < 0) throw new Error(`AGENT_USAGE_TIERS[${index}].paidUsd must be a non-negative number of USD`);
+    if (!Number.isSafeInteger(tier.busyAgents) || tier.busyAgents < 1) throw new Error(`AGENT_USAGE_TIERS[${index}].busyAgents must be a positive integer`);
+    return { name: tier.name, paid: micros(tier.paidUsd), busyAgents: tier.busyAgents };
+  });
+  if (tiers[0].paid !== 0) throw new Error("AGENT_USAGE_TIERS must start with a tier at paidUsd 0");
+  if (tiers.some((tier, index) => index > 0 && tier.paid <= tiers[index - 1].paid)) throw new Error("AGENT_USAGE_TIERS must be in ascending paidUsd order");
+  return tiers;
+}
+
+/** The tier a tenant that has paid `paid` (micro-USD, net of refunds) is in, and the next one up, if any. */
+export function usageTier(tiers: UsageTier[], paid: number): { tier: UsageTier; next?: UsageTier } {
+  // The first tier starts at 0: a tenant refunded more than it paid is in it too.
+  const index = Math.max(0, tiers.findLastIndex(tier => paid >= tier.paid));
+  return { tier: tiers[index], ...(index + 1 < tiers.length ? { next: tiers[index + 1] } : {}) };
 }
 
 /** The charge for `ms` of active agent time. */

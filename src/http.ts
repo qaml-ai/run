@@ -4,7 +4,15 @@ export class HttpError extends Error {
   status: number;
   /** A machine-readable code for the error body (see `errorCode`); by default one for its status. */
   code?: string;
-  constructor(status: number, message: string, code?: string) { super(message); this.status = status; if (code) this.code = code; }
+  /** Fields the error body carries beside `error` and `code`, for a caller to act on (a limit and what raises it). */
+  details?: Record<string, unknown>;
+  constructor(status: number, message: string, code?: string, details?: Record<string, unknown>) { super(message); this.status = status; if (code) this.code = code; if (details) this.details = details; }
+}
+
+/** An error's fields beside `error` and `code` in a response body: its details, and for a conflicting answer, what the input settled as. */
+export function errorFields(error: unknown): Record<string, unknown> {
+  const { details, input } = (error ?? {}) as { details?: Record<string, unknown>; input?: unknown };
+  return { ...(details && typeof details === "object" ? details : {}), ...(input ? { input } : {}) };
 }
 
 /**

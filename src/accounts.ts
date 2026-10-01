@@ -70,10 +70,10 @@ export class Accounts {
   private readonly spend = new Map<string, { month: string; cost: number; until: number }>();
   private readonly spendReads = new Map<string, Promise<number>>();
 
-  constructor(options: { tenants: Tenants; db: Db; secretsKey?: string; pricing?: Pricing; publicUrl?: string; stripe?: Stripe }) {
+  constructor(options: { tenants: Tenants; db: Db; secretsKey?: string; pricing?: Pricing; publicUrl?: string; stripe?: Stripe; maxAgentsPerTenant?: number }) {
     this.tenants = options.tenants;
     this.db = options.db;
-    this.billing = new Billing({ db: this.db, tenants: this.tenants, pricing: options.pricing, publicUrl: options.publicUrl, stripe: options.stripe, pending: tenant => this.pendingCharges(tenant), flush: () => this.flushUsage() });
+    this.billing = new Billing({ db: this.db, tenants: this.tenants, pricing: options.pricing, publicUrl: options.publicUrl, stripe: options.stripe, maxAgentsPerTenant: options.maxAgentsPerTenant, pending: tenant => this.pendingCharges(tenant), flush: () => this.flushUsage() });
     if (options.secretsKey !== undefined) {
       if (!/^[a-f0-9]{64}$/.test(options.secretsKey)) throw new Error("AGENT_SECRETS_KEY must be 64 hex characters (32 bytes)");
       this.secretsKey = Buffer.from(options.secretsKey, "hex");

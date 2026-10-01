@@ -18,10 +18,11 @@ import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { errorCode, errorStatus, HttpError, readJson } from "./http.ts";
+import { errorCode, errorFields, errorStatus, HttpError, readJson } from "./http.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
 import { databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
+import type { BusyAgents } from "./busy-agents.ts";
 import { deleteTail } from "./log-tail.ts";
 import { OVERRIDES, type DefinitionRef } from "./definitions.ts";
 import type { Sources, ToolSources } from "./tool-sources.ts";
@@ -104,6 +105,8 @@ type Session = {
   inherited?: Set<string>;
   /** Its row says it has work open (`pending_runs`), as this node last wrote it. */
   pending?: boolean;
+  /** It holds a busy slot (BusyAgents) on this node; `admitting` runs are being accepted, and `busyStep` orders taking and giving it up. */
+  busy?: boolean; admitting?: number; busyStep?: Promise<unknown>;
   /** Given back for a node with room to take: nothing more runs here. */
   handedBack?: true;
   /** The assistant message streaming now, as its latest message_update carried it. */
@@ -329,10 +332,12 @@ export interface ClientSessionOptions {
   customProviders?: (tenant: string, keyScope?: string | null) => Promise<CustomProviders>;
   /** An identity token for `audience` (the runtime's signer), for model calls to a tenant's own endpoint. */
   modelToken?: (audience: string, claims: TokenClaims) => Promise<string>;
-  /** At most this many hosted agents per tenant at once on this node (default: no per-tenant limit). */
+  /** At most this many hosted agents per tenant at once on this node, for a tenant `agentLimitFor` gives none (default: no per-tenant limit). */
   maxAgentsPerTenant?: number;
   /** A tenant's own limit, overriding `maxAgentsPerTenant`; read at each start, so changes apply to the next one. */
   agentLimitFor?: (tenant: string) => Promise<number | undefined> | number | undefined;
+  /** Busy agents per tenant across the fleet: a run takes a slot, and a tenant at its limit gets 429 BUSY_AGENT_LIMIT. */
+  busyAgents?: BusyAgents;
   /** Stop an agent's process, and unload its session, after this long without activity. */
   idleMs?: number;
   retry?: AgentConfig["retry"];
@@ -611,7 +616,42 @@ export class ClientSessions {
   private track(session: Session, record: RequestRecord) {
     session.requests.set(record.id, record);
     if (record.state === "running") session.running.set(record.id, record);
-    else session.running.delete(record.id);
+    else if (session.running.delete(record.id) && session.busy) this.releaseBusy(session);
+  }
+
+  /**
+   * Take a busy slot for the agent unless it holds one: 429 BUSY_AGENT_LIMIT when its tenant is at its
+   * limit, unless `force` (work accepted before: a run taken over, a resumed turn) takes it regardless.
+   */
+  private holdBusy(session: Session, force = false) {
+    const busy = this.options.busyAgents;
+    if (!busy) return Promise.resolve();
+    return this.busyStep(session, async () => {
+      if (session.busy) return;
+      const refused = await busy.hold(session.header.tenant, session.header.id, force);
+      if (refused) throw refused;
+      session.busy = true;
+    });
+  }
+
+  /** Give the agent's busy slot up once it has no run open or being accepted (`unloading`: it is leaving this node). */
+  private releaseBusy(session: Session, unloading = false) {
+    const busy = this.options.busyAgents;
+    if (!busy) return Promise.resolve();
+    return this.busyStep(session, async () => {
+      if (!session.busy || (!unloading && (session.admitting || [...session.running.values()].some(record => RUN_METHODS.includes(record.method))))) return;
+      session.busy = false;
+      // Kept on failure, so a later release (at the latest, the unload) tries again.
+      try { await busy.release(session.header.id); }
+      catch (error) { session.busy = true; throw error; }
+    }).catch(error => console.error(JSON.stringify({ type: "busy_release_failed", agent: session.header.id, error: safeError(error) })));
+  }
+
+  /** Steps that take or give up the agent's busy slot, one at a time in order. */
+  private busyStep(session: Session, step: () => Promise<void>) {
+    const next = (session.busyStep ?? Promise.resolve()).catch(() => {}).then(step);
+    session.busyStep = next;
+    return next;
   }
   private upsertRequest(session: Session, record: RequestRecord) {
     this.track(session, record);
@@ -2063,7 +2103,7 @@ export class ClientSessions {
     app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
     app.onError((error, c) => {
       const status = errorStatus(error, 500);
-      return json(c, status, { error: errorText(error), code: errorCode(error, status), ...((error as { input?: unknown }).input ? { input: (error as { input?: unknown }).input } : {}) });
+      return json(c, status, { error: errorText(error), code: errorCode(error, status), ...errorFields(error) });
     });
     return app;
   }
@@ -2142,45 +2182,58 @@ export class ClientSessions {
     } catch (error) { throw new HttpError(400, errorText(error)); }
     const limited = body.method === "resume" ? undefined : await this.runLimit(session, body.method);
     if (limited) throw limited;
-    // A run of an agent whose tools its application answers needs that application connected: refused now, rather
-    // than a turn whose calls cannot run. An application reconnecting (a process restarting) has a moment to arrive.
-    if (["prompt", "continue", "execute"].includes(body.method) && !allowDisconnected && session.header.definitions.length && !await this.applicationConnected(session)) {
-      if (existing()) return { status: 200, record: visible(existing()!) };
-      throw new HttpError(409, "APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it (the SDKs' connectAgent), or send allowDisconnected: true to run anyway");
+    // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held
+    // until the agent has no run open. A resume continues a turn already accepted. Until the request is taken, the
+    // slot is kept for it (`admitting`) even if the agent's other runs end meanwhile.
+    const admitting = RUN_METHODS.includes(body.method);
+    if (admitting) {
+      session.admitting = (session.admitting ?? 0) + 1;
+      try { await this.holdBusy(session, body.method === "resume"); }
+      catch (error) { session.admitting!--; this.releaseBusy(session); throw error; }
     }
-    const queued = QUEUED_METHODS.includes(body.method);
-    // Status and aborts need no process; queued requests start it (if at all) when their turn comes.
-    if (!queued && !["status", "abort"].includes(body.method)) await this.ensureStarted(session);
-    // Concurrent retries may have waited on the same process startup.
-    const raced = existing();
-    if (raced) return { status: 200, record: visible(raced) };
-    // Attached files are saved and referenced before the request is: its params keep references, never bytes.
-    if (["prompt", "steer"].includes(body.method) && params.files !== undefined) {
-      params = { ...params, files: await this.attach(session, body.id, params.files) };
-      const again = existing();
-      if (again) return { status: 200, record: visible(again) };
+    try {
+      // A run of an agent whose tools its application answers needs that application connected: refused now, rather
+      // than a turn whose calls cannot run. An application reconnecting (a process restarting) has a moment to arrive.
+      if (["prompt", "continue", "execute"].includes(body.method) && !allowDisconnected && session.header.definitions.length && !await this.applicationConnected(session)) {
+        if (existing()) return { status: 200, record: visible(existing()!) };
+        throw new HttpError(409, "APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it (the SDKs' connectAgent), or send allowDisconnected: true to run anyway");
+      }
+      const queued = QUEUED_METHODS.includes(body.method);
+      // Status and aborts need no process; queued requests start it (if at all) when their turn comes.
+      if (!queued && !["status", "abort"].includes(body.method)) await this.ensureStarted(session);
+      // Concurrent retries may have waited on the same process startup.
+      const raced = existing();
+      if (raced) return { status: 200, record: visible(raced) };
+      // Attached files are saved and referenced before the request is: its params keep references, never bytes.
+      if (["prompt", "steer"].includes(body.method) && params.files !== undefined) {
+        params = { ...params, files: await this.attach(session, body.id, params.files) };
+        const again = existing();
+        if (again) return { status: 200, record: visible(again) };
+      }
+      // Work is open: marked before the request is taken (a failed write takes nothing, so a retry starts afresh) and before
+      // it is durable, so a node dying with it leaves it for another's sweep (see `resumeOrphans`).
+      // One write per busy spell: the mark stays until an unload with nothing open clears it.
+      if (queued && !session.pending) {
+        await underClaim(this.db, session.claim, sql => sql.query("update agents set pending_runs = true where id = $1 and not pending_runs", [session.header.id]));
+        session.pending = true;
+        // A retry of the same id may have been taken while this waited.
+        const again = existing();
+        if (again) return { status: 200, record: visible(again) };
+      }
+      const record = this.upsertRequest(session, {
+        startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
+        ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
+        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
+        ...(body.method === "resume" ? { suspension: params.suspension } : {}),
+      });
+      await this.commit(session, true);
+      if (queued) this.enqueue(session, record, params);
+      else void this.run(session, record, params);
+      if (params.whileRunning === "steer") await this.steerTurn(session, params);
+      return { status: 202, record: visible(record) };
+    } finally {
+      if (admitting) { session.admitting!--; this.releaseBusy(session); }
     }
-    // Work is open: marked before the request is taken (a failed write takes nothing, so a retry starts afresh) and before
-    // it is durable, so a node dying with it leaves it for another's sweep (see `resumeOrphans`).
-    // One write per busy spell: the mark stays until an unload with nothing open clears it.
-    if (queued && !session.pending) {
-      await underClaim(this.db, session.claim, sql => sql.query("update agents set pending_runs = true where id = $1 and not pending_runs", [session.header.id]));
-      session.pending = true;
-      // A retry of the same id may have been taken while this waited.
-      const again = existing();
-      if (again) return { status: 200, record: visible(again) };
-    }
-    const record = this.upsertRequest(session, {
-      startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
-      ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-      id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
-      ...(body.method === "resume" ? { suspension: params.suspension } : {}),
-    });
-    await this.commit(session, true);
-    if (queued) this.enqueue(session, record, params);
-    else void this.run(session, record, params);
-    if (params.whileRunning === "steer") await this.steerTurn(session, params);
-    return { status: 202, record: visible(record) };
   }
 
   /**
@@ -2528,8 +2581,11 @@ export class ClientSessions {
           const limited = await this.runLimit(session, record.method);
           if (limited) throw limited;
         }
-        try { await this.ensureStarted(session); }
-        catch (error) {
+        try {
+          // Accepted already (here, or by a node it was taken over from): it takes its busy slot regardless of the limit.
+          await this.holdBusy(session, true);
+          await this.ensureStarted(session);
+        } catch (error) {
           // No room here for a run this node took over: another node with room takes it (see `handBack`).
           if (this.options.ownership && session.inherited?.has(record.id) && [429, 503].includes((error as { status?: number }).status ?? 0)) { await this.handBack(session); return; }
           throw error;
@@ -3008,11 +3064,15 @@ export class ClientSessions {
     // Runs still open (queued ones a drain leaves for the next owner) keep it marked for a sweep to load; none clears the mark.
     await underClaim(this.db, session.claim, sql => sql.query("update agents set last_cursor = $2, cursor_clean = true, pending_runs = $3 where id = $1",
       [session.header.id, session.cursor, session.running.size > 0])).catch(() => {});
+    // Runs left open are its next owner's to count.
+    await this.releaseBusy(session, true);
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
   }
 
   /** This node fenced itself: another node may already be serving the agent, so stop writing, stop the agent, forget it. */
   private async lost(session: Session) {
+    // Its busy row named the fenced session, so it no longer counts.
+    session.busy = false;
     this.fail(session, new Error("This node lost ownership of the agent"));
     this.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);

@@ -74,7 +74,8 @@ test("a full node's sweep leaves an orphaned turn for a node with room, and neve
   });
   const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: "300", AGENT_IDLE_MS: "1000" };
   const a = await c.start("a", env);
-  const b = await c.start("b", { ...env, AGENT_MAX_AGENTS: "1", AGENT_MAX_AGENTS_PER_TENANT: "1" });
+  // B has room for one agent; the tenant may have more busy across the fleet, so only B's capacity is in the way.
+  const b = await c.start("b", { ...env, AGENT_MAX_AGENTS: "1", AGENT_MAX_AGENTS_PER_TENANT: "4" });
   const call = (base: string, path: string, body?: unknown) => fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
   const made = await call(a.url, "/v1/agents", {});
   const orphan = made.id as string;

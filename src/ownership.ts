@@ -73,6 +73,9 @@ export class Ownership {
     this.timer.unref();
   }
 
+  /** This node's current session. Rows it writes under it (busy-agents.ts) count only while its heartbeat is live. */
+  get sessionId() { return this.session; }
+
   /** Called when this node fences itself; everything it served must stop. */
   onFence(listener: (reason: string) => void) { this.fenced.add(listener); }
 

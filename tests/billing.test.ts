@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Accounts } from "../src/accounts.ts";
 import { accrueUsage, postLedger } from "../src/billing.ts";
 import { migrate, type Db } from "../src/db.ts";
-import { DEFAULT_PRICING, micros, pricingFromEnvironment, purchaseFee } from "../src/pricing.ts";
+import { DEFAULT_PRICING, micros, pricingFromEnvironment, purchaseFee, usageTier } from "../src/pricing.ts";
 import { Tenants } from "../src/tenants.ts";
 import { memoryStorage, type Storage } from "../shared/storage.ts";
 import { StorageUsage } from "../src/storage-usage.ts";
@@ -58,10 +58,33 @@ test("pricing: defaults, environment overrides in USD, and the purchase fee in w
   for (const value of ["-1", "NaN", "Infinity", "no"]) assert.throws(() => pricingFromEnvironment({ AGENT_OPENROUTER_CREDIT_MULTIPLIER: value }), /non-negative/);
   assert.equal(purchaseFee(DEFAULT_PRICING, micros(10)), micros(0.55));
   assert.equal(purchaseFee(DEFAULT_PRICING, micros(5)), micros(0.28), "27.5 cents rounds to 28");
-  const custom = pricingFromEnvironment({ AGENT_PRICE_AGENT_HOUR_USD: "0.02", AGENT_CREDIT_FEE_PERCENT: "3", AGENT_FREE_MAX_AGENTS: "1" });
-  assert.deepEqual([custom.agentHour, custom.purchaseFeeBps, custom.free.maxAgents, custom.storageGbMonth], [20_000, 300, 1, 100_000]);
+  const custom = pricingFromEnvironment({ AGENT_PRICE_AGENT_HOUR_USD: "0.02", AGENT_CREDIT_FEE_PERCENT: "3" });
+  assert.deepEqual([custom.agentHour, custom.purchaseFeeBps, custom.storageGbMonth], [20_000, 300, 100_000]);
   assert.throws(() => pricingFromEnvironment({ AGENT_PRICE_AGENT_HOUR_USD: "-1" }), /non-negative/);
   assert.throws(() => pricingFromEnvironment({ AGENT_CREDIT_MIN_PURCHASE_USD: "0.1" }), /at least 0.50/);
+});
+
+test("usage tiers: the defaults, AGENT_USAGE_TIERS, its validation, and which tier an amount paid is in", () => {
+  assert.deepEqual(DEFAULT_PRICING.tiers.map(tier => [tier.name, tier.paid, tier.busyAgents]),
+    [["Free", 0, 8], ["Tier 1", micros(5), 25], ["Tier 2", micros(50), 100], ["Tier 3", micros(250), 250], ["Tier 4", micros(1000), 1000]]);
+  const at = (paid: number) => { const { tier, next } = usageTier(DEFAULT_PRICING.tiers, paid); return [tier.name, next?.name]; };
+  assert.deepEqual(at(0), ["Free", "Tier 1"]);
+  assert.deepEqual(at(-micros(5)), ["Free", "Tier 1"], "refunds beyond purchases stay free");
+  assert.deepEqual(at(micros(4.99)), ["Free", "Tier 1"]);
+  assert.deepEqual(at(micros(5)), ["Tier 1", "Tier 2"]);
+  assert.deepEqual(at(micros(249.99)), ["Tier 2", "Tier 3"]);
+  assert.deepEqual(at(micros(1000)), ["Tier 4", undefined]);
+  assert.deepEqual(at(micros(50_000)), ["Tier 4", undefined]);
+
+  const custom = pricingFromEnvironment({ AGENT_USAGE_TIERS: JSON.stringify([{ name: "Trial", paidUsd: 0, busyAgents: 1 }, { name: "Paid", paidUsd: 10, busyAgents: 3 }]) });
+  assert.deepEqual(custom.tiers, [{ name: "Trial", paid: 0, busyAgents: 1 }, { name: "Paid", paid: micros(10), busyAgents: 3 }]);
+  for (const [tiers, error] of [
+    ["nope", /must be JSON/], ["[]", /non-empty array/], [[{ name: "A", paidUsd: 1, busyAgents: 1 }], /start with a tier at paidUsd 0/],
+    [[{ name: "A", paidUsd: 0, busyAgents: 1 }, { name: "B", paidUsd: 0, busyAgents: 2 }], /ascending/],
+    [[{ name: "A", paidUsd: 0, busyAgents: 0 }], /busyAgents must be a positive integer/], [[{ name: "", paidUsd: 0, busyAgents: 1 }], /needs a name/],
+    [[{ name: "A", paidUsd: -1, busyAgents: 1 }], /non-negative/],
+  ] as const) assert.throws(() => pricingFromEnvironment({ AGENT_USAGE_TIERS: typeof tiers === "string" ? tiers : JSON.stringify(tiers) }), error);
+  assert.throws(() => pricingFromEnvironment({ AGENT_FREE_MAX_AGENTS: "2" }), /replaced by AGENT_USAGE_TIERS/);
 });
 
 test("provider-reported cost wins over the catalog, including zero; invalid amounts cannot poison billing", () => {
@@ -703,14 +726,14 @@ test("only a billing-admin operator can issue the one-time support grant", async
   assert.deepEqual((await user("/v1/billing/ledger")).json.entries[0].metadata, { reason: "Starting credit" });
 });
 
-test("free credit brings fewer agents and an hourly spend limit, both lifted by the first purchase", async t => {
+test("free credit brings fewer busy agents (its usage tier) and an hourly spend limit, both lifted by the first purchase", async t => {
   const github = await fakeGithub(t);
   const { call, base, model } = await runtime(t, (_body, index) => ({
     ...(index < 2 ? toolCall("js_exec", { code: `return ${index}` }, `call_${index}`) : { role: "assistant", content: "finished" }),
     usage: { prompt_tokens: 5000, completion_tokens: 0 },
   }), {
     ...githubEnv(github.url), AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_PRICE_AGENT_HOUR_USD: "0",
-    AGENT_FREE_MAX_AGENTS: "2", AGENT_FREE_HOURLY_SPEND_USD: "0.2", AGENT_MAX_AGENTS_PER_TENANT: "5",
+    AGENT_USAGE_TIERS: JSON.stringify([{ name: "Free", paidUsd: 0, busyAgents: 2 }, { name: "Paid", paidUsd: 5, busyAgents: 5 }]), AGENT_FREE_HOURLY_SPEND_USD: "0.2", AGENT_MAX_AGENTS_PER_TENANT: "1",
     // The held calls are never answered: shut down without draining them.
     AGENT_DRAIN_TIMEOUT_MS: "0",
     STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: "http://127.0.0.1:9",
@@ -732,6 +755,7 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
     await until(() => app.calls.length > 0, "the held call to be sent");
   }
   assert.equal((await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": "c" } })).status, 429, "two agents at once on free credit");
+  assert.deepEqual((await call("/v1/billing", { token })).json.busyAgents, { busy: 2, limit: 2, source: "tier", tier: "Free", paid: 0, next: { tier: "Paid", paid: micros(5), limit: 5 } });
   assert.equal((await call(`/v1/agents/${busy[1].id}`, { method: "DELETE", token })).status, 200);
   const created = await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": "c" } });
   assert.equal(created.status, 201, "deleting one makes room");
@@ -750,6 +774,7 @@ test("free credit brings fewer agents and an hourly spend limit, both lifted by 
   const event = { id: "evt_buy", type: "checkout.session.completed", data: { object: { id: "cs_erin", created: 1, livemode: false, payment_status: "paid", payment_intent: "pi_erin", metadata: { purpose: "agent-runtime-credit", tenant: "erin", credit: "5000000" } } } };
   assert.equal((await call("/v1/billing/stripe/webhook", { body: event, token: null, headers: { "Stripe-Signature": signWebhook(WEBHOOK_SECRET, JSON.stringify(event)) } })).status, 200);
   assert.equal((await call("/v1/billing", { token })).json.freeCredit, false);
+  assert.deepEqual((await call("/v1/billing", { token })).json.busyAgents, { busy: 1, limit: 5, source: "tier", tier: "Paid", paid: micros(5) });
   assert.equal((await prompt(call, agent.id, token)).result.reply, "finished");
   assert.equal((await call("/v1/agents", { body: {}, token, headers: { "Idempotency-Key": "d" } })).status, 201, "a third agent while the other two are busy");
 });

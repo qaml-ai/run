@@ -17,7 +17,7 @@ export interface Tenant {
   apiKeys: Record<string, string>;
   /** GitHub login that signs in to the console as this tenant. */
   github?: string;
-  /** Agents this tenant may have hosted at once on each node; overrides AGENT_MAX_AGENTS_PER_TENANT. */
+  /** Agents this tenant may have busy at once across the fleet (and hosted on any one node); overrides its usage tier and AGENT_MAX_AGENTS_PER_TENANT. */
   maxAgents?: number;
   /** Read-only event-stream subscribers (browser tabs) its agents may have at once on a node; default 1024. */
   maxWatchers?: number;
@@ -119,7 +119,7 @@ export class Tenants {
     return undefined;
   }
 
-  /** The tenant's own hosted-agent limit per node, if its entry sets one. */
+  /** The tenant's own busy-agent limit across the fleet (busy-agents.ts), if its entry sets one. */
   maxAgents(id: string) { return this.byId.get(id)?.maxAgents; }
   maxWatchers(id: string) { return this.byId.get(id)?.maxWatchers; }
   maxDiscordServers(id: string) { return this.byId.get(id)?.maxDiscordServers; }
