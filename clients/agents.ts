@@ -216,8 +216,11 @@ export class Agents {
     return agent;
   }
 
-  /** Close every agent's connection (their runs go on in the runtime). */
-  async close() { await Promise.all([...this.open].map(agent => agent.close())); }
+  /**
+   * Close every agent's connection (their runs go on in the runtime). Tool calls running finish first, for up to
+   * `drainMs` (default 25 s), and new ones go elsewhere: call it on SIGTERM so a deploy loses no call.
+   */
+  async close(options: { drainMs?: number } = {}) { await Promise.all([...this.open].map(agent => agent.close(options))); }
   async [Symbol.asyncDispose]() { await this.close(); }
 }
 
@@ -373,8 +376,8 @@ export class Agent {
   unschedule(id: string) { return this.client.unschedule(id); }
   /** Delete the agent, its history and its files, for good. */
   async delete() { try { await this.client.destroy(); } finally { this.closed(); } }
-  /** Close this process's connection to it (its runs go on in the runtime). */
-  async close() { try { await this.client.close(); } finally { this.closed(); } }
+  /** Close this process's connection to it (its runs go on in the runtime), finishing its tool calls first (see Agents.close). */
+  async close(options: { drainMs?: number } = {}) { try { await this.client.close(options); } finally { this.closed(); } }
   async [Symbol.asyncDispose]() { await this.close(); }
   toJSON() { return { id: this.id }; }
   [INSPECT]() { return `Agent { id: '${this.id}' }`; }

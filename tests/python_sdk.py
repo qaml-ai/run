@@ -110,6 +110,46 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         """A scripted model turn that calls tool `name`."""
         self.script.append({"role": "assistant", "tool_calls": [{"index": 0, "id": call_id or f"call_{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]})
 
+    async def test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running(self):
+        gate, started = asyncio.Event(), asyncio.Event()
+
+        @tool
+        async def slow(value: str) -> dict:
+            """Do something slowly"""
+            started.set()
+            await gate.wait()
+            return {"answer": f"old process {value}"}
+
+        @tool(name="slow")
+        async def slow_next(value: str) -> dict:
+            """Do something slowly"""
+            return {"answer": f"new process {value}"}
+
+        old, fresh = Agents(self.token, url=self.url), Agents(self.token, url=self.url)
+        try:
+            agent = await old.upsert("deploy", tools=[slow])
+            # The run's caller is elsewhere: the process serving the tools is the one deployed.
+            caller = await self.agents.agent(agent.session)
+            self.call("slow", {"value": "x"})
+            running = asyncio.ensure_future(caller.run("go"))
+            await asyncio.wait_for(started.wait(), 10)
+            # The new process takes over, then the old one gets SIGTERM: it finishes the call it has before it disconnects.
+            replacement = await fresh.upsert("deploy", tools=[slow_next], takeover=True)
+            closing = asyncio.ensure_future(old.close())
+            await asyncio.sleep(0.3)
+            self.assertFalse(closing.done(), "close() waits for the call it has")
+            gate.set()
+            run = await running
+            self.assertEqual(run.tool_errors, [])
+            self.assertIn("old process x", json.dumps(self.bodies[-1]))
+            await closing
+            self.call("slow", {"value": "y"})
+            await replacement.run("again")
+            self.assertIn("new process y", json.dumps(self.bodies[-1]))
+        finally:
+            await old.close(drain=0)
+            await fresh.close(drain=0)
+
     async def test_run_resolves_with_a_run_and_the_token_stays_out_of_logs(self):
         agent = await self.make()
         run = await agent.run("hello", user="u1")
@@ -418,7 +458,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         agent.runner = None
         agent.ready.clear()
         await agent.connect()
-        with self.assertRaisesRegex(Exception, "outcome is unknown"):
+        with self.assertRaisesRegex(Exception, "may or may not have taken effect"):
             await asyncio.wait_for(pending, 5)
         release.set()
         await asyncio.sleep(0.2)

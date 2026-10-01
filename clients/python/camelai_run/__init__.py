@@ -37,6 +37,10 @@ _DEFAULT = object()
 DEFAULT_URL = "https://run.camelai.com"
 # Requests one client may wait on at once, and events waiting for a slow on_event (past it, streamed deltas are dropped).
 _MAX_PENDING = 1000
+# How long close() waits, by default, for the tool calls running to finish: inside the usual 30 s from SIGTERM to SIGKILL.
+_DRAIN_SECONDS = 25
+# The attached server says it is shutting down: the runtime sends it no new calls and waits for those it has.
+_DRAINING = "notifications/agent-runtime/draining"
 _MAX_QUEUED_EVENTS = 10_000
 
 
@@ -575,8 +579,9 @@ class AgentRuntime:
         detail = await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}" + (f"?{query}" if query else ""), self._operator())
         return detail["toolSources"]
 
-    async def close(self):
-        await asyncio.gather(*(agent.close() for agent in self.agents))
+    async def close(self, *, drain=None):
+        """Close every agent's connection, each finishing its tool calls first (AgentClient.close)."""
+        await asyncio.gather(*(agent.close(drain=drain) for agent in self.agents))
         await self.http.aclose()
 
     async def __aenter__(self):
@@ -768,6 +773,8 @@ class AgentClient:
         self.ready = asyncio.Event()
         self.runner = None
         self.closed = False
+        # close() in progress: it answers the tool calls it has, then disconnects.
+        self.closing = None
         self.fatal = None
         # on_event's queue, and its dispatcher: events wait here, in order, so the stream never waits on the application.
         self.events = None
@@ -1032,7 +1039,7 @@ class AgentClient:
     async def request(self, method, params=None, *, idempotency_key=None, timeout=None):
         """Send a request and wait for its outcome, however long the run takes: `timeout` (seconds) only stops the
         wait, as cancelling the task does; the request goes on."""
-        if self.closed or self.fatal:
+        if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
         import re
@@ -1228,9 +1235,35 @@ class AgentClient:
             return await self._http(path)
         return await _http(self.http, self.base, self.path + f"{path}?wait={wait}", self.session["token"], timeout=min(wait, 25) + 10)
 
-    async def close(self):
+    async def close(self, *, drain=None):
+        """Close the connection; runs go on in the runtime. A client serving the agent's tools first tells the runtime it
+        is shutting down, so new calls go to another process (one that took over, or the next to connect), and finishes
+        the calls it has, for up to `drain` seconds (default 25; 0 cuts them off): call it on SIGTERM (in an ASGI app's
+        lifespan shutdown, say), and a deploy loses no call."""
         if self.closed:
             return
+        if self.closing is None:
+            self.closing = asyncio.ensure_future(self._shutdown(_DRAIN_SECONDS if drain is None else drain))
+        await asyncio.shield(self.closing)
+
+    async def _drain(self, seconds):
+        """Tell the runtime this connection takes no new calls, and wait up to `seconds` for those running to be answered."""
+        if self.fatal or not self.attach or not self.connection or seconds <= 0:
+            return
+        loop = asyncio.get_running_loop()
+        until = loop.time() + seconds
+        try:
+            await _http(self.http, self.base, self.path + "/mcp", self.session["token"], "POST", {"jsonrpc": "2.0", "method": _DRAINING},
+                        retry=False, headers={"X-Agent-Connection": self.connection})
+        except Exception:
+            pass
+        # A call the runtime sent just before it heard may still be on its way in the stream: give it a moment to arrive.
+        await asyncio.sleep(min(0.1, seconds))
+        while self.active and loop.time() < until:
+            await asyncio.sleep(0.025)
+
+    async def _shutdown(self, drain):
+        await self._drain(drain)
         self.closed = True
         if self.runner:
             self.runner.cancel()
@@ -1257,7 +1290,7 @@ class AgentClient:
         try:
             await self._http("", "DELETE")
         finally:
-            await self.close()
+            await self.close(drain=0)
 
     async def __aenter__(self):
         return self
@@ -1556,10 +1589,10 @@ class Agent:
         finally:
             self._forget()
 
-    async def close(self):
-        """Close this process's connection to it (its runs go on in the runtime)."""
+    async def close(self, *, drain=None):
+        """Close this process's connection to it (its runs go on in the runtime), finishing its tool calls first (see Agents.close)."""
         try:
-            await self.client.close()
+            await self.client.close(drain=drain)
         finally:
             self._forget()
 
@@ -1614,10 +1647,11 @@ class Agents:
         self._open.add(agent)
         return agent
 
-    async def close(self):
-        """Close every agent's connection (their runs go on in the runtime)."""
-        await asyncio.gather(*(agent.close() for agent in list(self._open)))
-        await self.runtime.close()
+    async def close(self, *, drain=None):
+        """Close every agent's connection (their runs go on in the runtime). Tool calls running finish first, for up to
+        `drain` seconds (default 25), and new ones go elsewhere: call it on SIGTERM so a deploy loses no call."""
+        await asyncio.gather(*(agent.close(drain=drain) for agent in list(self._open)))
+        await self.runtime.close(drain=drain)
 
     async def __aenter__(self):
         return self

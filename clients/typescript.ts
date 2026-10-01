@@ -2,7 +2,7 @@ import type { AgentEvent, Message, PresentedFile, ThinkingLevel } from "./types.
 import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
 import { Check } from "typebox/value";
-import { FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
+import { DRAINING_NOTIFICATION, FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
 export { Type as schema };
 export type { SessionCredentials, SessionState };
 export type * from "./types.ts";
@@ -789,6 +789,8 @@ export class VolumeHandle {
 type Pending = { promise: Promise<any>; resolve: (value: any) => void; reject: (error: Error) => void; waiters: number };
 /** Requests one client may wait on at once. */
 const MAX_PENDING = 1000;
+/** How long close() waits, by default, for the tool calls running to finish: inside the usual 30 s from SIGTERM to SIGKILL. */
+const DRAIN_MS = 25_000;
 /** Events waiting for a slow onEvent; past this, streamed deltas are dropped (the messages they build still arrive). */
 const MAX_QUEUED_EVENTS = 10_000;
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
@@ -850,6 +852,8 @@ export class AgentClient {
   private stream?: AbortController;
   private loop?: Promise<void>;
   private closed = false;
+  /** close() in progress: it answers the tool calls it has, then disconnects. */
+  private closing?: Promise<void>;
   private fatal?: Error;
   private ready = Promise.withResolvers<void>();
   /** onEvent's queue: events wait here, in order, so the stream never waits on the application. */
@@ -1084,7 +1088,7 @@ export class AgentClient {
    * `timeoutMs` or `signal` says so, and either only stops the wait (the request goes on).
    */
   async request(method: RequestMethod, params: Record<string, unknown> = {}, options: RequestOptions = {}): Promise<any> {
-    if (this.closed || this.fatal) throw this.fatal ?? new AgentError("Client closed");
+    if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     const id = options.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     options.signal?.throwIfAborted();
@@ -1266,7 +1270,27 @@ export class AgentClient {
   toJSON() { return { id: this.id }; }
   [INSPECT]() { return `AgentClient { id: '${this.id}' }`; }
 
-  async close() {
+  /**
+   * Close the connection; runs go on in the runtime. A client serving the agent's tools first tells the runtime it is
+   * shutting down, so new calls go to another process (one that took over, or the next to connect), and finishes the
+   * calls it has, for up to `drainMs` (default 25 s; 0 to cut them off): call it on SIGTERM, and a deploy loses no call.
+   */
+  close(options: { drainMs?: number } = {}): Promise<void> {
+    return this.closing ??= this.shutdown(options.drainMs ?? DRAIN_MS);
+  }
+
+  /** Tell the runtime this connection takes no new calls, and wait up to `ms` for those running to be answered. */
+  private async drain(ms: number) {
+    if (this.closed || this.fatal || !this.attaching || !this.connection || ms <= 0) return;
+    const until = Date.now() + ms;
+    await this.transport.json(this.path("/mcp"), this.session.token, "POST", { jsonrpc: "2.0", method: DRAINING_NOTIFICATION }, false, { "X-Agent-Connection": this.connection }).catch(() => {});
+    // A call the runtime sent just before it heard may still be on its way in the stream: give it a moment to arrive.
+    await pause(Math.min(100, ms));
+    while (this.active.size && Date.now() < until) await pause(25);
+  }
+
+  private async shutdown(drainMs: number) {
+    await this.drain(drainMs);
     this.closed = true; this.stream?.abort();
     for (const controller of this.active.values()) controller.abort();
     for (const [id, waiter] of this.pending) waiter.reject(new AgentError("Client closed; request may still be running", 0, id));
@@ -1277,7 +1301,7 @@ export class AgentClient {
     await Promise.race([this.dispatching, new Promise(resolve => { timer = setTimeout(resolve, 2000); })]);
     clearTimeout(timer);
   }
-  async destroy() { try { await this.http("", "DELETE"); } finally { await this.close(); } }
+  async destroy() { try { await this.http("", "DELETE"); } finally { await this.close({ drainMs: 0 }); } }
   async [Symbol.asyncDispose]() { await this.close(); }
 }
 
