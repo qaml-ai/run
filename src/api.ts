@@ -520,13 +520,10 @@ export function api(context: ApiContext) {
     return json(c, 202, await submit(c.req.param("id")!, tenant, { id: requestId ?? c.req.header("idempotency-key") ?? randomUUID(), method: "configure", params }));
   });
   route(createRoute({
-    method: "get", path: "/v1/agents/{id}/requests/{requestId}", request: { params: agentId.extend({ requestId: z.string() }) },
+    method: "get", path: "/v1/agents/{id}/requests/{requestId}",
+    request: { params: agentId.extend({ requestId: z.string() }), query: z.object({ wait: z.string().optional().openapi({ description: "Seconds (at most 25) to wait for a running request to settle: it answers as soon as it does, else when the wait ends, still running. Default 0" }) }) },
     responses: { 200: reply("The request and, once settled, its outcome", schema.RequestRecord) },
-  }), async c => {
-    const request = (await clients.inspect(c.req.param("id")!, c.var.principal.tenant)).requests.find(record => record.id === c.req.param("requestId"));
-    if (!request) throw new HttpError(404, "Unknown request");
-    return json(c, 200, request);
-  });
+  }), c => clients.requestFor(c, c.req.param("id")!, c.var.principal.tenant, c.req.param("requestId")!));
 
   const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).optional() });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/inputs", request: { params: agentId, query: inputState }, security: readers, responses: { 200: reply("The agent's human inputs, newest first", z.array(schema.Input)) } }),

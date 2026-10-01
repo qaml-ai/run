@@ -7207,6 +7207,16 @@
             "required": true,
             "name": "requestId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Seconds (at most 25) to wait for a running request to settle: it answers as soon as it does, else when the wait ends, still running. Default 0"
+            },
+            "required": false,
+            "description": "Seconds (at most 25) to wait for a running request to settle: it answers as soon as it does, else when the wait ends, still running. Default 0",
+            "name": "wait",
+            "in": "query"
           }
         ],
         "responses": {

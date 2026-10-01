@@ -1642,6 +1642,37 @@ export class ClientSessions {
   }
 
   /**
+   * One of a tenant's agent's requests (`GET /v1/agents/:id/requests/:requestId`). With `wait` (seconds, at most 25)
+   * and the request still running, it answers once it settles or the wait ends, woken as the events poll is.
+   */
+  async requestFor(c: Context, id: string, tenant: string, requestId: string) {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Agent not found");
+    return this.settled(c as Context<ClientEnv>, session, requestId);
+  }
+
+  /** A request as its record says, waiting first (`?wait=<seconds>`, at most 25) while it runs. */
+  private async settled(c: Context<ClientEnv>, session: Session, requestId: string) {
+    const wait = Number(c.req.query("wait") ?? 0);
+    if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
+    const until = Date.now() + Math.min(wait * 1000, MAX_POLL_WAIT_MS);
+    for (;;) {
+      const record = session.requests.get(requestId);
+      if (!record) throw new HttpError(404, "Unknown request");
+      // Settled, out of time, or the session is no longer here to wake it: as it is now (the caller asks again).
+      if (record.state === "completed" || Date.now() >= until || this.closed || session.fault || this.sessions.get(session.header.id) !== session || gone(c)) return json(c, 200, visible(record));
+      // A waiting request holds a subscriber's place, as a waiting events poll does.
+      const release = this.hold(session.header.tenant, session.watchers.size + session.polls.size);
+      await new Promise<void>(resolve => {
+        const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); release(); resolve(); };
+        const timer = setTimeout(done, until - Date.now());
+        session.polls.add(done);
+        c.env.outgoing.once("close", done);
+      });
+    }
+  }
+
+  /**
    * A tenant's watcher on one of its agents' event streams (or, with `?poll=1`, one poll of it):
    * what `/clients/:id/events?watch=1` gives a holder of the agent's token, for a server that keeps
    * no per-agent tokens. `c.env.outgoing` is the raw response the stream is written to.
@@ -1971,11 +2002,7 @@ export class ClientSessions {
       const { status, record } = await this.accept(c.var.session, await readJson(body(c), FRAME_BYTES));
       return json(c, status, record);
     });
-    app.get(`${agent}/requests/:request`, c => {
-      const record = c.var.session.requests.get(c.req.param("request"));
-      if (!record) throw new HttpError(404, "Unknown request");
-      return json(c, 200, visible(record));
-    });
+    app.get(`${agent}/requests/:request`, c => this.settled(c, c.var.session, c.req.param("request")));
     // The application's JSON-RPC messages to the runtime, on the connection it names.
     app.post(`${agent}/mcp`, async c => {
       const attached = c.var.session.attached;

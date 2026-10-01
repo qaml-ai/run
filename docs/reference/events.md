@@ -104,7 +104,10 @@ effect (a restart cut it short). The same outcome is at
 `GET …/requests/:requestId` and in `GET …/state`, which is what to trust. There,
 an ended request also carries `error` (the runtime's, or the model's from
 `result.error`) and `stopped` on top, so a failed run reads as failed without
-looking inside `result`.
+looking inside `result`. `GET …/requests/:requestId?wait=<seconds>` (at most 25)
+waits for a running request: it answers as soon as the request settles, or when
+the wait ends with it still `running` (ask again), so a caller without the stream
+gets the outcome in one call instead of polling.
 
 A browser token sees an outcome only as `{id, outcome: {stopped?, error?}}`, its
 `error` the model's too.

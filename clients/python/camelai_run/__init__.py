@@ -377,7 +377,7 @@ _RATE_LIMIT_ATTEMPTS = 8
 _UPLOAD_TIMEOUT = 60
 
 
-async def _http(client, base, path, token, method="GET", body=None, retry=True, headers=None):
+async def _http(client, base, path, token, method="GET", body=None, retry=True, headers=None, timeout=None):
     encoded = None if body is None else json.dumps(body, allow_nan=False).encode()
     if encoded and len(encoded) > 1_100_000:
         raise AgentError("Request exceeds transport limit")
@@ -385,7 +385,7 @@ async def _http(client, base, path, token, method="GET", body=None, retry=True, 
     while True:
         try:
             response = await client.request(method, base + path, content=encoded, headers={
-                "Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})})
+                "Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})}, **({"timeout": timeout} if timeout else {}))
             if not response.is_success:
                 try:
                     value = response.json()
@@ -1219,9 +1219,14 @@ class AgentClient:
         """The agent's inputs, newest first: state="pending", say."""
         return await self._http("/inputs" + (f"?state={state}" if state else ""))
 
-    async def request_status(self, request_id):
+    async def request_status(self, request_id, *, wait=None):
+        """A request's record. wait (seconds, at most 25): while it runs, answer once it settles, or when the wait
+        ends with it still running: one call that waits, with no stream connected."""
         from urllib.parse import quote
-        return await self._http(f"/requests/{quote(request_id, safe='')}")
+        path = f"/requests/{quote(request_id, safe='')}"
+        if not wait:
+            return await self._http(path)
+        return await _http(self.http, self.base, self.path + f"{path}?wait={wait}", self.session["token"], timeout=min(wait, 25) + 10)
 
     async def close(self):
         if self.closed:

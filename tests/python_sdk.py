@@ -236,6 +236,10 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(whole, list, "the simple API's history is the list of messages")
         self.assertEqual(page["total"], len(whole))
         self.assertEqual((await agent.client.wait_for_request("py-first"))["reply"], first.text)
+        # A request sent without waiting, then waited on with one long poll.
+        await agent.client._http("/requests", "POST", {"id": "py-waited", "method": "prompt", "params": {"text": "waited"}})
+        waited = await agent.client.request_status("py-waited", wait=25)
+        self.assertEqual((waited["state"], waited["outcome"]["result"]["reply"]), ("completed", "seen"))
 
         @tool
         async def added(value: str) -> str:

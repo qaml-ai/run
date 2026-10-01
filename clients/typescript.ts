@@ -579,14 +579,14 @@ class Transport {
     const fetcher = options.fetch;
     this.fetcher = fetcher ? (input, init) => fetcher(input, init) : globalThis.fetch.bind(globalThis);
   }
-  async json(path: string, token: string, method = "GET", body?: unknown, retry = true, headers: Record<string, string> = {}): Promise<any> {
+  async json(path: string, token: string, method = "GET", body?: unknown, retry = true, headers: Record<string, string> = {}, timeoutMs = 10_000): Promise<any> {
     const data = body === undefined ? undefined : JSON.stringify(body);
     if (data && byteLength(data) > FRAME_BYTES) throw new AgentError("Request exceeds transport limit");
     for (let attempt = 0; ; attempt++) {
       try {
         const response = await this.fetcher(this.base + path, {
           method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers }, body: data,
-          redirect: "manual", signal: AbortSignal.timeout(10_000),
+          redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
         });
         await rejectRedirect(response);
         const value = await (response.ok ? response.json() : response.json().catch(() => ({}))) as any;
@@ -1249,7 +1249,14 @@ export class AgentClient {
   unschedule(id: string) { return this.http(`/schedules/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
   status() { return this.request("status"); }
   abort() { return this.request("abort"); }
-  requestStatus(id: string) { return this.http(`/requests/${encodeURIComponent(id)}`); }
+  /**
+   * A request's record. `wait` (seconds, at most 25): while it runs, answer once it settles, or when the wait ends
+   * with it still running: one call that waits, with no stream connected.
+   */
+  requestStatus(id: string, options: { wait?: number } = {}) {
+    if (!options.wait) return this.http(`/requests/${encodeURIComponent(id)}`);
+    return this.transport.json(this.path(`/requests/${encodeURIComponent(id)}?wait=${options.wait}`), this.session.token, "GET", undefined, true, {}, (Math.min(options.wait, 25) + 10) * 1000);
+  }
   /** Answer an input the agent waits on. `request` is the run resuming its turn, once its last input is answered. */
   answer(inputId: string, answer: InputAnswer): Promise<{ input: AgentInput; request: any | null }> { return this.http(`/inputs/${encodeURIComponent(inputId)}`, "POST", answer); }
   /** The agent's inputs, newest first: `pending` ones, say. */

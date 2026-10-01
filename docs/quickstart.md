@@ -127,8 +127,9 @@ AGENT=$(curl -s $BASE/v1/agents -H "$AUTH" -H "Content-Type: application/json" -
   -d '{"systemPrompt": "You are a concise assistant."}' | jq -r .id)
 REQ=$(curl -s $BASE/v1/agents/$AGENT/prompt -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"text": "Write a haiku about durable agents."}' | jq -r .id)
-until curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -e '.state == "completed"' > /dev/null; do sleep 1; done
-curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -r '.outcome.result.reply // .outcome.error'
+# ?wait=25 answers as soon as the run ends (or after 25 s, still running: ask again).
+until RUN=$(curl -s "$BASE/v1/agents/$AGENT/requests/$REQ?wait=25" -H "$AUTH") && jq -e '.state == "completed"' <<< "$RUN" > /dev/null; do :; done
+jq -r '.outcome.result.reply // .error' <<< "$RUN"
 ```
 
 The agent names no model, so it uses your account's default: the first of the

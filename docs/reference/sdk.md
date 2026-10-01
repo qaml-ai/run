@@ -192,7 +192,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `client.prompt(text, { from, actor, files, metadata, whileRunning, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error |
 | `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`) |
 | `client.waitForRequest(id)` | `wait_for_request(id)` | wait for a request already sent, from any process |
-| `client.requestStatus(id)`, `outcomes()` | `request_status(id)`, `outcomes()` | a request's record; every request's state |
+| `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |
 | `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
 | `client.execute(code)` | `execute(code)` | run code in the sandbox with the agent's tools, outside its history |
 | `client.steer(text)` | `steer()` | the legacy `steer` request, which holds the message for the running (or next) turn; new code uses `prompt` with `whileRunning: "steer"` |
