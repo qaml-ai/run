@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT (shipped in the MIT-licensed SDK, @camelai/run)
 export const FRAME_BYTES = 1_100_000;
+/**
+ * The application's attached server says it is shutting down: a JSON-RPC notification it POSTs on its connection. The
+ * runtime sends it no new tool calls (another connection, or none, takes them) and waits for the ones it has.
+ */
+export const DRAINING_NOTIFICATION = "notifications/agent-runtime/draining";
 /** `uncertain` marks an outcome nobody can confirm (timeout after claim, restart). It is informational, never a gate. */
 export type Outcome = { result: unknown; error?: never; uncertain?: never } | { error: string; uncertain?: boolean; result?: never };
 /** How an outcome ended: its error, the runtime's or the model's (`result.error`), and why its turn stopped early. */

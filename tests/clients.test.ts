@@ -175,7 +175,7 @@ test("a dropped connection ends the tool calls on it as unknown, never running t
   const running = agent.execute('text("before"); return await tools.echo({value:"write"})');
   await entered.promise;
   f.sessions.sessions.get(agent.session.id)!.response!.destroy();
-  await assert.rejects(running, /outcome is unknown/);
+  await assert.rejects(running, /may or may not have taken effect/);
   release.resolve();
   await sleep(200);
   assert.equal(writes, 1, "the call was not sent again");
@@ -221,7 +221,7 @@ test("a run stays in flight until its outcome is durable and published, so a dra
   assert.deepEqual((await running).output, ["done"]);
 });
 
-test("a call goes to one connection: another client is refused while it serves, and one that takes over never runs it; the first one's ends as unknown", async t => {
+test("a call goes to one connection: another client is refused while it serves, and one that takes over never runs it: the first one still answers it", async t => {
   const f = await fixture(t, { timeout: 5000 });
   let executions = 0;
   const entered = Promise.withResolvers<void>();
@@ -235,11 +235,11 @@ test("a call goes to one connection: another client is refused while it serves, 
   const refused = await attach(t, f.url, first.session.id, first.session.token);
   assert.equal(refused.status, 409);
   assert.match(refused.body, /APPLICATION_CONNECTED/);
-  // ...and one that takes over gets calls from then on, never the one in flight.
+  // ...and one that takes over gets calls from then on, never the one in flight: the first still answers that one.
   const second = await attach(t, f.url, first.session.id, first.session.token, () => { executions++; }, "?takeover=true");
   assert.equal(second.status, 200);
-  await assert.rejects(running, /outcome is unknown/);
   gate.resolve();
+  assert.deepEqual((await running).output, ["once"]);
   await sleep(300);
   assert.equal(executions, 1, "the call went to the first client only");
 });

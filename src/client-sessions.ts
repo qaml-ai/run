@@ -128,6 +128,8 @@ type Session = {
   turn?: { requestId: string; start?: number; messages: unknown[]; count: number; bytes: number; truncated?: boolean };
   /** The application's attached MCP server, over the connection `response` is. */
   attached?: AttachedServer;
+  /** Connections another replaced, kept open until the calls they have answer (see `retire`). */
+  retiring?: Set<AttachedServer>;
   /** Tool calls to the application in flight: the agent is busy until they settle. */
   inflight: number;
   /** Which tool server answers each of the running agent's tools. */
@@ -214,6 +216,14 @@ const OUTPUT_FILES = 100;
 const OUTPUT_TOOL_CALLS = 100;
 /** How long a tool call waits for an application to reconnect before failing as not run. */
 const RECONNECT_GRACE_MS = 3_000;
+/**
+ * What the model (and the run's toolErrors) hears of a call whose server disconnected after it was sent: in words it
+ * can pass on to a person, never the transport's ("MCP error -32000: Connection closed").
+ */
+const CONNECTION_LOST = "The server running this tool disconnected during the call (it restarted or lost its connection), so the call may or may not have " +
+  "taken effect. Check whether it did before trying it again; if you cannot check, tell the user it is unknown whether it went through.";
+/** How long a replaced connection stays open for the tool calls it has to answer. */
+const DRAIN_MS = 30_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 /** The most a snapshot's finished messages take; beyond it, a subscriber reads the turn from history. */
 const TURN_SNAPSHOT_BYTES = 1_000_000;
@@ -622,7 +632,7 @@ export class ClientSessions {
     // A failed disk commit must never turn into a successful retry from memory.
     session.fault = new Error(`Session persistence failed: ${errorText(error)}`);
     this.endStreams(session, true);
-    void session.attached?.close();
+    this.closeAttached(session);
   }
 
   /**
@@ -884,6 +894,33 @@ export class ClientSessions {
   }
 
   /**
+   * The application's connection is replaced (a takeover, or a new process while the old one drains): it takes no new
+   * calls, and stays open, up to DRAIN_MS, until the calls it has are answered, so a deploy loses none. Then it hears
+   * it was replaced, and closes.
+   */
+  private retire(session: Session) {
+    const res = session.response, attached = session.attached;
+    session.response = undefined;
+    session.attached = undefined;
+    const replaced = () => { if (res && !res.destroyed) res.end(`event: closed\ndata: ${JSON.stringify({ reason: "replaced" })}\n\n`); };
+    if (!attached || attached.res !== res) { replaced(); void attached?.close(); return; }
+    attached.draining = true;
+    (session.retiring ??= new Set()).add(attached);
+    void attached.settled(DRAIN_MS).then(() => {
+      session.retiring?.delete(attached);
+      replaced();
+      void attached.close();
+    });
+  }
+
+  /** Close the application's connection and those still draining: their calls in flight end as unknown. */
+  private closeAttached(session: Session) {
+    for (const attached of [...session.retiring ?? []]) void attached.close();
+    session.retiring?.clear();
+    void session.attached?.close();
+  }
+
+  /**
    * What a subscriber reads after its cursor (its `Last-Event-ID`): the buffered events after it.
    * Cursor 0 is a new subscriber, which takes whatever is buffered; any other must be contiguous
    * with the buffer, or the events between are gone: 409, and the subscriber recovers from state
@@ -911,7 +948,7 @@ export class ClientSessions {
     // One application serves an agent's tools at a time: another is refused, unless it takes over (or names the connection
     // it held, reconnecting). A connection that serves no tools (it never answered MCP's initialize) holds nothing, nor
     // does one that no longer answers a ping (a half-open socket the server has not seen close).
-    const held = mode === "attach" && session.attached?.open && session.attached.initialized ? session.attached : undefined;
+    const held = mode === "attach" && session.attached?.accepting && session.attached.initialized ? session.attached : undefined;
     if (held && c.req.query("takeover") !== "true" && c.req.header("x-agent-connection") !== held.id && await held.answers()) {
       throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools; reconnect with ?takeover=true to replace it");
     }
@@ -935,8 +972,7 @@ export class ClientSessions {
       res.on("close", () => this.unwatch(res));
       ready = { ...ready, watch: true };
     } else {
-      const replaced = session.response;
-      if (replaced && !replaced.destroyed) replaced.end(`event: closed\ndata: ${JSON.stringify({ reason: "replaced" })}\n\n`);
+      this.retire(session);
       session.response = res;
       res.on("close", () => { if (session.response === res) session.response = undefined; });
     }
@@ -945,7 +981,6 @@ export class ClientSessions {
       // Each connection is a new MCP session with the application's attached server; `connection` names it.
       const attached = new AttachedServer(res);
       ready = { ...ready, connection: attached.id, ...(session.header.toolsHash ? { toolsHash: session.header.toolsHash } : {}) };
-      void session.attached?.close();
       session.attached = attached;
     }
     res.write(`event: ready\ndata: ${JSON.stringify(ready)}\n\n`);
@@ -1260,7 +1295,7 @@ export class ClientSessions {
       if (call.signal.aborted || (error instanceof McpError && error.code === -32042)) throw error;
       const failure = error instanceof ToolFailure ? error
         : error instanceof McpError && error.code === ErrorCode.RequestTimeout ? new ToolFailure("timeout", `${error.message}. Its outcome is unknown: it may or may not have taken effect.`, true)
-        : error instanceof McpError && error.code === ErrorCode.ConnectionClosed ? new ToolFailure("connection_lost", `${error.message}. Its outcome is unknown: it may or may not have taken effect.`, true)
+        : error instanceof McpError && error.code === ErrorCode.ConnectionClosed ? new ToolFailure("connection_lost", CONNECTION_LOST, true)
         : /^Could not connect to MCP server|MCP server .* (?:failed|refused|answered)/.test(errorText(error)) ? new ToolFailure("source_unavailable", errorText(error))
         : new ToolFailure("failed", errorText(error));
       (session.toolErrors ??= []).push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}),
@@ -2005,8 +2040,10 @@ export class ClientSessions {
     app.get(`${agent}/requests/:request`, c => this.settled(c, c.var.session, c.req.param("request")));
     // The application's JSON-RPC messages to the runtime, on the connection it names.
     app.post(`${agent}/mcp`, async c => {
-      const attached = c.var.session.attached;
-      if (!attached?.open || c.req.header("x-agent-connection") !== attached.id) throw new HttpError(409, "Not the agent's current connection; reconnect");
+      // The current connection's, or a replaced one's still answering the calls it has.
+      const named = c.req.header("x-agent-connection"), session = c.var.session;
+      const attached = session.attached?.id === named ? session.attached : [...session.retiring ?? []].find(connection => connection.id === named);
+      if (!attached?.open) throw new HttpError(409, "Not the agent's current connection; reconnect");
       const message = await readJson(body(c), FRAME_BYTES);
       for (const entry of Array.isArray(message) ? message : [message]) attached.receive(entry);
       return json(c, 202, { accepted: true });
@@ -2706,12 +2743,12 @@ export class ClientSessions {
     };
     session.inflight++;
     try {
-      return await attached.client.request({ method: "tools/call", params: callParams(name, args, _meta, { inputResponses, requestState, elicit }) } as never, CallToolResultSchema,
-        { signal, timeout, maxTotalTimeout: Math.max(timeout, TOOL_DEADLINES.maxTotalMs), resetTimeoutOnProgress: true, onprogress: progress => onProgress?.(progress) }) as McpResult;
+      return await attached.track(() => attached.client.request({ method: "tools/call", params: callParams(name, args, _meta, { inputResponses, requestState, elicit }) } as never, CallToolResultSchema,
+        { signal, timeout, maxTotalTimeout: Math.max(timeout, TOOL_DEADLINES.maxTotalMs), resetTimeoutOnProgress: true, onprogress: progress => onProgress?.(progress) })) as McpResult;
     } catch (error) {
       if (!signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout) throw timedOut(timeout);
       if (!signal.aborted && error instanceof McpError && error.code === ErrorCode.ConnectionClosed) {
-        throw new ToolFailure("connection_lost", `${error.message}, after the call was sent to the application. Its outcome is unknown: it may or may not have taken effect.`, true);
+        throw new ToolFailure("connection_lost", CONNECTION_LOST, true);
       }
       throw error;
     } finally { session.inflight--; }
@@ -2720,7 +2757,7 @@ export class ClientSessions {
   /** Whether an application serves the agent's tools, waiting briefly for one that is reconnecting. */
   private async applicationConnected(session: Session) {
     for (const until = Date.now() + RECONNECT_GRACE_MS; ;) {
-      if (session.attached?.open && session.attached.initialized) return true;
+      if (session.attached?.accepting && session.attached.initialized) return true;
       if (Date.now() >= until || this.closed || session.fault) return false;
       await sleep(50);
     }
@@ -2730,7 +2767,7 @@ export class ClientSessions {
   private async attachedServer(session: Session, signal: AbortSignal) {
     for (const until = Date.now() + RECONNECT_GRACE_MS; ;) {
       const attached = session.attached;
-      if (attached?.open && await attached.ready.then(() => true, () => false) && attached.open) return attached;
+      if (attached?.accepting && await attached.ready.then(() => true, () => false) && attached.accepting) return attached;
       if (Date.now() >= until || signal.aborted || this.closed || session.fault) return undefined;
       await sleep(50);
     }
@@ -2779,7 +2816,7 @@ export class ClientSessions {
       this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: queued ? { error: reason } : { error: reason, uncertain: true } });
     }
     // Tool calls in flight end as unknown: the connection they were on is closed.
-    void session.attached?.close();
+    this.closeAttached(session);
     await this.commit(session, true);
   }
 
@@ -2916,6 +2953,8 @@ export class ClientSessions {
         continue;
       }
       for (const res of this.streams(session)) send(res, ": heartbeat\n\n");
+      // A replaced connection still answering its calls is kept alive too, or its client would think the stream dead.
+      for (const attached of session.retiring ?? []) send(attached.res, ": heartbeat\n\n");
       if (session.activeSince !== undefined && now - session.activeSince >= ACTIVE_REPORT_MS) this.reportActive(session, true, now);
       if (this.busy(session) || now - session.lastActive < idleMs) continue;
       if (this.supervisor.agents.has(id)) void this.supervisor.stop(id).catch(() => {});
