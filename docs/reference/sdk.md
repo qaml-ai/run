@@ -294,6 +294,33 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.12.0 (TypeScript) / 0.8.0 (Python), 2026-10-01
+
+- Structured output: `run(text, { output })` (`run(text, output=)`) takes a
+  zod (4.2+), TypeBox or JSON Schema object schema (Python: a pydantic model
+  class or a JSON Schema dict), and `run.output` is the answer, typed and
+  parsed. A run that ends without one fails with `output_missing`; one the
+  schema's own checks reject, with `output_invalid`. See
+  [Structured output](../guides/structured-output.md). Needs a runtime with
+  structured output (run.camelai.com has it).
+- `run.toolCalls` (`run.tool_calls`): the tool calls a run made, each
+  `{ tool, toolCallId?, innerCallId?, ok, code? }`, the first 100.
+- `client.requestStatus(id, { wait })` (`request_status(id, wait=)`) waits up
+  to 25 s for the request to settle. `createAgentHandler`'s `send` takes `wait`
+  (`true` or 1–25 seconds) and returns the reply when the run ends, and a new
+  `wait` action asks about an earlier message without sending it again.
+- `close()` drains: it tells the runtime it is shutting down, finishes the tool
+  calls it is running for up to 25 s (`drainMs` / `drain=`), then disconnects,
+  so a deploy that closes on SIGTERM loses no call. `drainMs: 0` (`drain=0`)
+  closes at once, as before; `destroy()` never waits.
+- A confirmation (`context.confirm`) is answered with `answer(true)` /
+  `answer(True)` or `false`, as the docs show.
+- Python: the package ships `py.typed` and `__all__`, and its missing-key error
+  names `CAMELAI_API_KEY`.
+- `camelrun mcp`: `list_agents` reports `loaded` and `toolsConnected`,
+  `create_agent` is not marked destructive, and its errors no longer suggest
+  CLI commands.
+
 ## 0.11.2 (TypeScript) / 0.7.2 (Python), 2026-10-01
 
 - `@camelai/run` and `camelai-run` ship this version's docs for coding agents:
