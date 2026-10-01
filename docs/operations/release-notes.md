@@ -1,5 +1,17 @@
 # Release notes
 
+## Unreleased — rate limits
+
+The API answers 429 `RATE_LIMITED` with `Retry-After` and the limit reached (`limit: {name, scope, max,
+windowSeconds}`) past a rate limit: per account, agent creates (60 a minute, 10 on free credit) and
+runs started (600 a minute, 60 on free credit); per client address, `/v1/*` requests (600 a minute),
+sign-in and OAuth requests (20 a minute) and new accounts (5 a UTC day). The per-address limits are on
+by default only with `AGENT_TRUST_CF_CONNECTING_IP=true`, for a runtime only Cloudflare reaches; a
+self-hosted runtime sets them itself. Every value is an `AGENT_RATE_LIMIT_*` setting, and admin
+tenants take `maxAgentCreatesPerMinute` and `maxRunsPerMinute`. See [limits](../reference/limits.md#rate-limits).
+
+Migration 047 adds `rate_limits`. Nodes without this release count nothing, so limits hold fully once
+the rollout ends.
 ## Unreleased — busy agents across the fleet, and usage tiers
 
 A tenant's busy-agent limit now holds across every node together, not per node: an agent is
