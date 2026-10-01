@@ -108,7 +108,10 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
     return client.call("DELETE", `/v1/definitions/${await client.definitionId(definition)}`);
   }, destructive);
 
-  tool("list_agents", "List agents", "The account's agents: key, id, model, and whether each is running. Changes nothing.", {}, () => api().get("/v1/agents"), read);
+  tool("list_agents", "List agents", "The account's agents: key, id, name and model. `loaded` is whether the agent is in a runtime's memory now, idle or not; it says nothing about whether a run is going (run_agent and get_run do). `toolsConnected` is whether an application serving its attached tools is connected. Changes nothing.", {}, async () => {
+    const list: any[] = await api().get("/v1/agents");
+    return list.map(({ id, key, name, model, running, connected, expiresAt }) => ({ key, id, name, model, loaded: running, toolsConnected: connected, expiresAt }));
+  }, read);
   tool("get_agent", "Get agent", "An agent's configuration, the definition revision it has, and every source of its tools with what each offers. Changes nothing.", { agent }, async ({ agent }) => {
     const client = api();
     return client.get(`/v1/agents/${enc(await client.agentId(agent))}`);
@@ -124,7 +127,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
       name: z.string().optional(),
       builtins: z.array(z.enum(["web_fetch", "web_search", "schedule", "ask_user"])).optional().describe("Without a definition: tools the runtime answers itself"),
     },
-    ({ key, ...config }) => ops.upsertAgent(api(), key, config), { ...destructive, idempotentHint: true });
+    ({ key, ...config }) => ops.upsertAgent(api(), key, config), { ...add, idempotentHint: true });
   tool("configure_agent", "Configure agent", "Change one agent's model, system prompt, prompt addition or thinking level between its runs, replacing the current values; its history is kept.", {
     agent,
     model: z.string().optional(),

@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
-import { Api, enc } from "./api.ts";
+import { Api, ApiError, enc } from "./api.ts";
 import { DEFAULT_URL, forget, resolve, save } from "./config.ts";
 import { DEFAULT_FILES, template } from "./manifest.ts";
 import { findManifest, loadManifests } from "./manifest-files.ts";
@@ -175,7 +175,8 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);
     }
   } catch (error) {
-    io.err(json && !(error instanceof UsageError) ? JSON.stringify({ error: (error as Error).message, ...("status" in (error as object) ? { status: (error as any).status, code: (error as any).code } : {}) }) : `Error: ${(error as Error).message}`);
+    const message = (error as Error).message + (error instanceof ApiError && error.cliHint ? ` (${error.cliHint})` : "");
+    io.err(json && !(error instanceof UsageError) ? JSON.stringify({ error: message, ...("status" in (error as object) ? { status: (error as any).status, code: (error as any).code } : {}) }) : `Error: ${message}`);
     return 1;
   }
 }

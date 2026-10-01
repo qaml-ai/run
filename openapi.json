@@ -1363,10 +1363,12 @@
             "type": "string"
           },
           "connected": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether an application serving its attached tools (an SDK's upsert with tools) is connected"
           },
           "running": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether it is loaded in a runtime node's memory now, idle or not. It does not mean a turn is going: a request's state says that"
           },
           "expiresAt": {
             "type": [

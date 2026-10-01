@@ -1,8 +1,13 @@
-/** A refused call: the runtime's `error` message, with the HTTP status and its `code` when it gave one. */
+/**
+ * A refused call: the runtime's `error` message, with the HTTP status and its `code` when it gave one. The message
+ * suits every surface; `cliHint` is what to do about it with the CLI, which only the CLI shows (an MCP client's model
+ * would try to run it).
+ */
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
-  constructor(status: number, message: string, code?: string) { super(message); this.status = status; this.code = code; }
+  readonly cliHint?: string;
+  constructor(status: number, message: string, code?: string, cliHint?: string) { super(message); this.status = status; this.code = code; this.cliHint = cliHint; }
 }
 
 export interface Credentials {
@@ -45,7 +50,7 @@ export class Api {
     try { json = text ? JSON.parse(text) : undefined; } catch { json = undefined; }
     if (!response.ok) {
       const message = json?.error ?? json?.message ?? (text.slice(0, 300) || response.statusText);
-      throw new ApiError(response.status, response.status === 401 ? `${message} (check your API key: camelrun login)` : message, json?.code);
+      throw new ApiError(response.status, message, json?.code, response.status === 401 ? "check your API key: camelrun login" : undefined);
     }
     return json as T;
   }
@@ -71,7 +76,7 @@ export class Api {
     if (keyOrId.startsWith("client_")) return keyOrId;
     const agents = await this.get<{ id: string; key: string | null }[]>("/v1/agents");
     const found = agents.find(agent => agent.key === keyOrId);
-    if (!found) throw new ApiError(404, `No agent with key ${JSON.stringify(keyOrId)} (camelrun agents list shows them)`);
+    if (!found) throw new ApiError(404, `No agent with key ${JSON.stringify(keyOrId)} in this account`, undefined, "camelrun agents list shows them");
     return found.id;
   }
 }

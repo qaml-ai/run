@@ -236,8 +236,8 @@ export const AgentSummary = z.object({
   name: z.string().openapi({ description: "Its name; its id when it was given none" }),
   type: z.string(),
   model: z.string(),
-  connected: z.boolean(),
-  running: z.boolean(),
+  connected: z.boolean().openapi({ description: "Whether an application serving its attached tools (an SDK's upsert with tools) is connected" }),
+  running: z.boolean().openapi({ description: "Whether it is loaded in a runtime node's memory now, idle or not. It does not mean a turn is going: a request's state says that" }),
   expiresAt: z.number().nullable(),
   resume: z.object({ failures: z.number(), after: z.number() }).nullable().openapi({ description: "Loads of its unfinished work that failed, or found no room, and when the next may be tried: put off, doubling, at most an hour apart, never for good" }),
 }).openapi("AgentSummary");
