@@ -3581,7 +3581,9 @@ wait out `Retry-After` and retry.
   limited: neither their account limits, nor `api_requests` for requests made
   with their tokens, browser tokens or console sessions. An admin tenant's
   `maxAgentCreatesPerMinute` and `maxRunsPerMinute` set limits for it anyway.
-- Operators set every value (see [Configuration](../operations/configuration.md)). A self-hosted runtime has no per-address limits unless it
+- Operators set every value (see [Configuration](../operations/configuration.md)),
+  and a self-serve account's own with `PUT /v1/tenants/{id}/limits`
+  `{agentCreatesPerMinute, runsPerMinute}` (see [Billing](../operations/billing.md)). A self-hosted runtime has no per-address limits unless it
   sets them, or trusts Cloudflare's `CF-Connecting-IP`.
 - Channel senders and Get Help have limits of their own (below, and in
   [Errors](errors.md)).

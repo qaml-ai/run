@@ -139,7 +139,9 @@ would pass the limit gets 507 `STORAGE_LIMIT` with `{limit, used}` in bytes. A
 billing-admin operator sets another limit for a self-serve tenant with
 `PUT /v1/tenants/{id}/limits` `{maxStorageGb}` (null returns to the plan's; other nodes
 apply it within a minute); an admin tenant's is `maxStorageGb` in the tenants file, and
-an unbilled tenant has none unless that sets one.
+an unbilled tenant has none unless that sets one. The same call takes the tenant's
+[rate limits](../reference/limits.md#rate-limits), `{agentCreatesPerMinute, runsPerMinute}`,
+in place of its plan's (null returns to it).
 
 `GET /v1/billing` has the balance, this month by kind, recent entries and the
 rates and `startingCredit: {status, amount, cardCheck?}` (the recorded award, not current

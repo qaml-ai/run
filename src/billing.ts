@@ -138,7 +138,7 @@ export class Billing {
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
-  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; until: number }>();
+  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; until: number }>();
 
   constructor(options: BillingOptions) {
     this.options = options;
@@ -162,14 +162,20 @@ export class Billing {
     const cached = this.modes.get(tenant);
     if (cached && cached.until > Date.now()) return cached;
     const row = (await this.db.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
-    const maxStorageBytes = row?.limits?.maxStorageBytes;
-    const entry = { mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...(Number.isSafeInteger(maxStorageBytes) ? { maxStorageBytes: maxStorageBytes as number } : {}), until: Date.now() + MODE_CACHE_MS };
+    const set = (key: string) => Number.isSafeInteger(row?.limits?.[key]) ? { [key]: row.limits[key] as number } : {};
+    const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; until: number } = { mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...set("maxStorageBytes"), ...set("agentCreatesPerMinute"), ...set("runsPerMinute"), until: Date.now() + MODE_CACHE_MS };
     this.modes.set(tenant, entry);
     return entry;
   }
 
   /** Forget a self-serve tenant's mode and limits as read, after the operator changed them. */
   forgetLimits(tenant: string) { this.modes.delete(tenant); }
+
+  /** A self-serve tenant's own per-minute rate limit (`tenants.limits`), if the operator set one; admin tenants' are in the tenants file. */
+  async rateLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<number | undefined> {
+    if (this.tenants.billing(tenant)) return undefined;
+    return (await this.row(tenant))[limit === "runs" ? "runsPerMinute" : "agentCreatesPerMinute"];
+  }
 
   /**
    * How many bytes the tenant may store in all, or undefined for no limit; throws 402 when a prepaid tenant's credit is

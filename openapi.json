@@ -3572,6 +3572,12 @@
               },
               "maxBusyAgents": {
                 "type": "integer"
+              },
+              "agentCreatesPerMinute": {
+                "type": "integer"
+              },
+              "runsPerMinute": {
+                "type": "integer"
               }
             },
             "description": "The limits set for the tenant; those absent are its plan's"
@@ -3602,6 +3608,24 @@
             "minimum": 1,
             "maximum": 1000000,
             "description": "Agents the tenant may have busy at once across the runtime, in place of its usage tier's; null returns to the tier's"
+          },
+          "agentCreatesPerMinute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000000,
+            "description": "Agents the tenant may create a minute, in place of its plan's (10 on free credit, else 60); null returns to the plan's"
+          },
+          "runsPerMinute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000000,
+            "description": "Runs the tenant may start a minute, in place of its plan's (60 on free credit, else 600); null returns to the plan's"
           }
         },
         "additionalProperties": false

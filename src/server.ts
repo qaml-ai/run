@@ -184,7 +184,7 @@ nodesTimer.unref();
 const rateLimits = new RateLimits({
   db, config: rateLimitConfig(), hashKey: sessionSecret, nodes: () => liveNodes,
   free: tenant => accounts.billing.onFreeCredit(tenant),
-  override: (tenant, limit) => tenants.rateLimit(tenant, limit),
+  override: (tenant, limit) => tenants.has(tenant) ? tenants.rateLimit(tenant, limit) : accounts.billing.rateLimit(tenant, limit),
   // Admin tenants (the operator's own applications, such as camelAI's) are never rate limited unless their entry sets a limit.
   exempt: tenant => tenants.has(tenant),
 });

@@ -127,8 +127,8 @@ export interface RateLimitOptions {
   nodes: () => number;
   /** Whether a tenant is on free credit, with the lower per-tenant limits. */
   free: (tenant: string) => Promise<boolean>;
-  /** An admin's own per-minute limit for the tenant (its tenants file entry), over the default. */
-  override?: (tenant: string, limit: "agentCreates" | "runs") => number | undefined;
+  /** The per-minute limit set for the tenant (an admin tenant's entry, or a self-serve tenant's `tenants.limits`), over the default. */
+  override?: (tenant: string, limit: "agentCreates" | "runs") => number | undefined | Promise<number | undefined>;
   /**
    * Whether a tenant is exempt from the per-tenant limits unless an override sets one: admin tenants (the tenants file's,
    * such as the operator's own applications), whose traffic is trusted and must never be throttled by default.
@@ -201,7 +201,7 @@ export class RateLimits {
   }
 
   private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string) {
-    const own = this.options.override?.(tenant, limit);
+    const own = await this.options.override?.(tenant, limit);
     if (own === undefined && this.options.exempt?.(tenant)) return;
     const free = own === undefined && await this.options.free(tenant);
     const max = own ?? (free ? this.config[limit === "runs" ? "freeRuns" : "freeAgentCreates"] : this.config[limit]);

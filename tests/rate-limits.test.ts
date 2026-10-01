@@ -228,6 +228,13 @@ test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per ad
   assert.equal(third.status, 429);
   assert.deepEqual(third.json.limit, { name: "runs", scope: "tenant", max: 2, windowSeconds: 60 });
   assert.match(third.json.error, /Too many runs started: at most 2 a minute for this account on free credit/);
+  // The operator raises this self-serve tenant's run limit (tenants.limits); null returns it to the plan's.
+  const raised = await r.call("/v1/tenants/carol/limits", { method: "PUT", body: { runsPerMinute: 4 } });
+  assert.deepEqual(raised.json, { tenant: "carol", limits: { runsPerMinute: 4 } });
+  assert.notEqual((await run(created[1], "run-4")).status, 429);
+  assert.deepEqual((await run(created[1], "run-5")).json.limit, { name: "runs", scope: "tenant", max: 4, windowSeconds: 60 });
+  assert.deepEqual((await r.call("/v1/tenants/carol/limits", { method: "PUT", body: { runsPerMinute: null, agentCreatesPerMinute: 50 } })).json, { tenant: "carol", limits: { agentCreatesPerMinute: 50 } });
+  assert.equal((await r.call("/v1/agents", { body: {}, token: carol })).status, 201);
 });
 
 test("an admin tenant's traffic (camelAI's servers behind a few Cloudflare egress addresses, its users' browser tokens) is never rate limited", async t => {
