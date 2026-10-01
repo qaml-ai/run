@@ -306,12 +306,12 @@ export class Channels {
     if (!provider) throw new HttpError(400, `Unknown channel type ${type}; supported: ${Object.keys(this.options.providers).join(", ")}`);
     return provider;
   }
-  private async read(id: string) {
+  private async read(id: string, sql: Pick<Db, "query"> = this.db) {
     if (!/^ch_[a-f0-9]{20}$/.test(id)) return undefined;
-    return (await this.db.query("select channel from channels where id = $1", [id])).rows[0]?.channel as Channel | undefined;
+    return (await sql.query("select channel from channels where id = $1", [id])).rows[0]?.channel as Channel | undefined;
   }
-  private async owned(tenant: string, id: string) {
-    const channel = await this.read(id);
+  private async owned(tenant: string, id: string, sql?: Pick<Db, "query">) {
+    const channel = await this.read(id, sql);
     if (!channel || channel.tenant !== tenant) throw new HttpError(404, "Unknown channel");
     return channel;
   }
@@ -327,7 +327,8 @@ export class Channels {
   }
   async get(tenant: string, id: string) { return this.view(await this.owned(tenant, id)); }
 
-  async create(tenant: string, input: ChannelInput, internal?: { managed: true }) {
+  /** `internal` is for a managed integration's own setup, which may write within its transaction (`sql`). */
+  async create(tenant: string, input: ChannelInput, internal?: { managed: true; sql?: Pick<Db, "query"> }) {
     if (!this.options.accounts.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store channel credentials");
     const type = input.type ?? "";
     const provider = this.provider(type);
@@ -347,12 +348,12 @@ export class Channels {
       ...(settings.greeting ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), account, masked,
       sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials, secret })), createdAt: now, updatedAt: now,
     };
-    await this.db.query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]).catch(taken);
+    await (internal?.sql ?? this.db).query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]).catch(taken);
     return this.view(channel);
   }
 
-  async update(tenant: string, id: string, input: ChannelInput, internal?: { managed: true }) {
-    const channel = await this.owned(tenant, id);
+  async update(tenant: string, id: string, input: ChannelInput, internal?: { managed: true; sql?: Pick<Db, "query"> }) {
+    const channel = await this.owned(tenant, id, internal?.sql);
     if (this.provider(channel.type).managed && !internal?.managed) throw new HttpError(403, "Manage this integration through its server setup in the console");
     if (input.type !== undefined && input.type !== channel.type) throw new HttpError(400, "A channel's type cannot change");
     const settings = this.settings(this.provider(channel.type), input, id, channel.settings);
@@ -371,7 +372,7 @@ export class Channels {
       // A different bot keeps its webhook pointed here otherwise.
       if (next.account.id !== channel.account.id) await provider.teardown(old).catch(() => {});
     }
-    await this.db.query("update channels set channel = $2 where id = $1", [id, JSON.stringify(next)]).catch(taken);
+    await (internal?.sql ?? this.db).query("update channels set channel = $2 where id = $1", [id, JSON.stringify(next)]).catch(taken);
     return this.view(next);
   }
 

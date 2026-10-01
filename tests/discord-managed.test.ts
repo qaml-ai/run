@@ -8,6 +8,7 @@ import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
 import type { ConsoleAuth } from "../src/console-auth.ts";
 import type { Channels, Channel, ChannelInput, Inbound } from "../src/channels.ts";
 import { ManagedDiscord, managesGuild, verifyInteraction, type ManagedDiscordOptions } from "../src/discord-managed.ts";
+import { HttpError } from "../src/http.ts";
 import { testDatabase } from "./database.ts";
 
 const APP = "999000000000000001";
@@ -98,16 +99,17 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, owned
   const saved = new Map<string, Channel>();
   let managed: ManagedDiscord;
   const channels = {
-    create: async (tenant: string, input: ChannelInput) => {
+    create: async (tenant: string, input: ChannelInput, internal?: { sql?: Pick<typeof db, "query"> }) => {
       const id = `ch_${randomUUID()}`;
       const account = await managed.provider.setup(input.credentials!, { url: "", secret: "" });
       const channel = { id, tenant, type: input.type!, name: input.name!, definition: input.definition!, access: { public: true, allow: [], ...input.access }, limits: { perSenderPerMinute: 5, turnsPerDay: 100, ...input.limits }, account: account.account, masked: {}, createdAt: Date.now(), updatedAt: Date.now(), sealed: {} } as Channel;
-      saved.set(id, channel); await db.query("insert into channels(id,tenant,channel,created_at) values($1,$2,$3,$4)", [id, tenant, JSON.stringify(channel), Date.now()]);
+      saved.set(id, channel); await (internal?.sql ?? db).query("insert into channels(id,tenant,channel,created_at) values($1,$2,$3,$4)", [id, tenant, JSON.stringify(channel), Date.now()]);
       return { ...channel, credentials: {} };
     },
-    update: async (tenant: string, id: string, input: ChannelInput) => {
+    update: async (tenant: string, id: string, input: ChannelInput, internal?: { sql?: Pick<typeof db, "query"> }) => {
+      if (input.definition === "missing") throw new HttpError(404, "Unknown definition");
       const channel = saved.get(id)!; Object.assign(channel, input);
-      await db.query("update channels set channel=$2 where id=$1", [id, JSON.stringify(channel)]); return channel;
+      await (internal?.sql ?? db).query("update channels set channel=$2 where id=$1", [id, JSON.stringify(channel)]); return channel;
     },
     remove: async (_tenant: string, id: string) => { saved.delete(id); await db.query("delete from channels where id=$1", [id]); },
     get: async (tenant: string, id: string) => { const channel = saved.get(id)!; assert.equal(channel.tenant, tenant); return channel; },
@@ -205,7 +207,7 @@ test("guild unavailability differs from removal; removal cancels queued work and
   await f.db.query("insert into channel_items(id,item,revision,due) values($1,$2,1,0)", [randomUUID(), JSON.stringify({ channel: a.channelId })]);
   await f.managed.dispatch("GUILD_DELETE", { id: guildA });
   assert.equal((await f.db.query("select count(*) from channel_items")).rows[0].count, 0);
-  await f.managed.dispatch("GUILD_CREATE", { id: guildA }); assert.equal((await f.db.query("select state from discord_server_bindings")).rows[0].state, "paused");
+  await f.managed.dispatch("GUILD_CREATE", { id: guildA }); assert.equal((await f.db.query("select state from discord_server_bindings")).rows[0].state, "disconnected");
   await f.message(guildA, channelA, "303"); assert.equal(f.received.length, 1);
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "active" })).status, 200);
   await f.message(guildA, channelA, "304"); assert.equal(f.received.length, 2);
@@ -359,7 +361,7 @@ test("the paying account can pause or disconnect a server without a current Disc
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
   assert.equal((await f.db.query("select state from discord_server_bindings")).rows[0].state, "paused");
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "active" })).status, 403);
-  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" }, "tenant-b")).status, 404);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" }, "tenant-b", "ar_session=session-b")).status, 403);
 });
 
 test("members without access cost no Discord REST lookup", async t => {
@@ -381,4 +383,62 @@ test("a route's own 429 delays only that send; other servers and nodes keep deli
   await peer.provider.send({ bindingId: binding }, channelA, "second");
   await f.managed.provider.send({ bindingId: binding }, channelA, "third");
   assert.deepEqual(f.sent.map(item => item.content), ["second", "third"]);
+});
+
+test("another account's verified administrator can disconnect a server and then take it over; the old account sees no new conversation", async t => {
+  const f = await fixture(t); const a = await f.bind(); await f.ready();
+  await f.link("tenant-b", "ar_session=session-b");
+  const body = { guildId: guildA, definition: "def-b", allowedChannelIds: [channelA], access: { public: true } };
+  assert.equal((await f.request("/console/discord/bindings", "POST", body, "tenant-b", "ar_session=session-b")).status, 409);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { name: "mine now" }, "tenant-b", "ar_session=session-b")).status, 404);
+  const stopped = await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "disconnected" }, "tenant-b", "ar_session=session-b");
+  assert.equal(stopped.status, 200); assert.deepEqual(await stopped.json(), { guildId: guildA, state: "disconnected" });
+  await f.db.query("insert into channel_agents(agent,channel,tenant,conversation) values('agent-a',$1,'tenant-a',$2)", [a.channelId, channelA]);
+  const taken = await f.request("/console/discord/bindings", "POST", body, "tenant-b", "ar_session=session-b");
+  assert.equal(taken.status, 201, await taken.clone().text());
+  const binding = (await f.db.query("select tenant,state,channel_id from discord_server_bindings")).rows[0];
+  assert.equal(binding.tenant, "tenant-b"); assert.equal(binding.state, "active"); assert.notEqual(binding.channel_id, a.channelId);
+  assert.equal((await f.db.query("select count(*)::int n from channels where id=$1", [a.channelId])).rows[0].n, 0);
+  assert.equal((await f.db.query("select count(*)::int n from channel_agents where agent='agent-a'")).rows[0].n, 0);
+  assert.deepEqual((await (await f.request("/console/discord/bindings")).json() as any).bindings, []);
+  await f.message(guildA, channelA, "501");
+  assert.deepEqual(f.received.map(item => item.channel), [binding.channel_id]);
+});
+
+test("a server whose bot was removed can be taken over without a disconnect", async t => {
+  const f = await fixture(t); await f.bind(); await f.ready();
+  await f.managed.dispatch("GUILD_DELETE", { id: guildA });
+  await f.link("tenant-b", "ar_session=session-b");
+  assert.equal((await f.request("/console/discord/bindings", "POST", { guildId: guildA, definition: "def-b", allowedChannelIds: [channelA] }, "tenant-b", "ar_session=session-b")).status, 201);
+  assert.equal((await f.db.query("select tenant from discord_server_bindings")).rows[0].tenant, "tenant-b");
+});
+
+test("free accounts connect one server with at most 500 turns a day; operators can raise the count", async t => {
+  const f = await fixture(t); const plans: Record<string, { free: boolean; servers: number; turnsPerDay: number }> = { "tenant-a": { free: true, servers: 1, turnsPerDay: 500 } };
+  f.options.plan = async tenant => plans[tenant];
+  const capped = new ManagedDiscord({ ...f.options }); t.after(() => capped.stop());
+  const request = (path: string, method: string, body?: unknown) => capped.app.request(`https://camel.test${path}`, { method, headers: { cookie: "ar_session=session-a", "x-test-tenant": "tenant-a", "x-agent-runtime-console": "1", "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  await f.link();
+  assert.equal((await request("/console/discord/bindings", "POST", { guildId: guildA, definition: "d", allowedChannelIds: [channelA], limits: { turnsPerDay: 501 } })).status, 400);
+  assert.equal((await request("/console/discord/bindings", "POST", { guildId: guildA, definition: "d", allowedChannelIds: [channelA], limits: { turnsPerDay: 500 } })).status, 201);
+  const second = await request("/console/discord/bindings", "POST", { guildId: guildB, definition: "d", allowedChannelIds: [channelB] });
+  assert.equal(second.status, 409); assert.match((await second.json() as any).error, /at most 1 Discord server/);
+  assert.equal((await request(`/console/discord/bindings/${guildA}`, "PATCH", { limits: { turnsPerDay: 1000 } })).status, 400);
+  assert.equal((await (await request("/console/discord/config", "GET")).json() as any).limits.turnsPerDay, 500);
+  plans["tenant-a"] = { free: false, servers: 2, turnsPerDay: 10_000 };
+  assert.equal((await request("/console/discord/bindings", "POST", { guildId: guildB, definition: "d", allowedChannelIds: [channelB] })).status, 201);
+});
+
+test("a failed configuration change leaves the server as it was, and edits that do not affect delivery keep queued work", async t => {
+  const f = await fixture(t); const a = await f.bind();
+  await f.db.query("insert into channel_items(id,item,revision,due) values($1,$2,1,0)", [randomUUID(), JSON.stringify({ channel: a.channelId })]);
+  const failed = await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "missing", allowedChannelIds: [channelA, "203"] });
+  assert.equal(failed.status, 404);
+  const binding = (await f.db.query("select state,allowed_channel_ids from discord_server_bindings")).rows[0];
+  assert.equal(binding.state, "active"); assert.deepEqual(binding.allowed_channel_ids, [channelA]);
+  assert.equal((await f.db.query("select count(*)::int n from channel_items")).rows[0].n, 1);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { name: "Renamed", definition: "def-two" })).status, 200);
+  assert.equal((await f.db.query("select count(*)::int n from channel_items")).rows[0].n, 1);
+  assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
+  assert.equal((await f.db.query("select count(*)::int n from channel_items")).rows[0].n, 0);
 });

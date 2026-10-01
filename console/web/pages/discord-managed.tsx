@@ -92,7 +92,16 @@ export function ManagedDiscordDialog({ config, binding, onClose, onSaved }: {
     } catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
   }
-  const ready = guilds.data?.linked && selectedGuild && (binding || !selectedGuild.bindingState) && installed && definition && allowedChannels.length > 0 && (publicAccess || ids(allow).length > 0) && Number.isInteger(perMinute) && perMinute >= 1 && perMinute <= 100 && Number.isInteger(perDay) && perDay >= 1 && perDay <= 10_000;
+  const maxPerDay = config.limits?.turnsPerDay ?? 10_000;
+  // Another account's server: its administrators may disconnect it there, then set it up here.
+  const elsewhere = !binding && !!selectedGuild?.bindingState && !selectedGuild.owned;
+  async function disconnectElsewhere() {
+    setBusy(true); setError("");
+    try { await api(guildPath(guildId), { method: "PATCH", body: { state: "disconnected" } }); await guilds.reload(); }
+    catch (caught) { setError((caught as Error).message); }
+    finally { setBusy(false); }
+  }
+  const ready = guilds.data?.linked && selectedGuild && (binding || !selectedGuild.bindingState || (elsewhere && selectedGuild.bindingState === "disconnected")) && installed && definition && allowedChannels.length > 0 && (publicAccess || ids(allow).length > 0) && Number.isInteger(perMinute) && perMinute >= 1 && perMinute <= 100 && Number.isInteger(perDay) && perDay >= 1 && perDay <= maxPerDay;
   const selectedDefinition = definitions.data?.find(entry => entry.id === definition);
   const inviteUrl = config.inviteUrl && `${config.inviteUrl}${config.inviteUrl.includes("?") ? "&" : "?"}guild_id=${encodeURIComponent(guildId)}&disable_guild_select=true`;
   return <>
@@ -120,12 +129,16 @@ export function ManagedDiscordDialog({ config, binding, onClose, onSaved }: {
             <div className="space-y-2"><Label htmlFor="managed-discord-server">Server you manage</Label>
               <select id="managed-discord-server" className="h-9 w-full border bg-background px-3 text-sm" value={guildId} disabled={!!binding} onChange={event => { setGuildId(event.target.value); setAllowedChannels([]); }}>
                 <option value="">Choose a server</option>
-                {guilds.data.guilds.map(guild => <option key={guild.id} value={guild.id} disabled={!!guild.bindingState && (!guild.owned || !binding)}>{guild.name}{guild.bindingState ? guild.owned ? " — configure from your server list" : " — connected to another account" : ""}</option>)}
+                {guilds.data.guilds.map(guild => <option key={guild.id} value={guild.id} disabled={!!guild.bindingState && guild.owned && !binding}>{guild.name}{guild.bindingState ? guild.owned ? " — configure from your server list" : guild.bindingState === "disconnected" ? " — disconnected from another account" : " — connected to another account" : ""}</option>)}
               </select>
               {!guilds.data.guilds.length && <p className="text-sm">No eligible servers. Your Discord account needs ownership, Administrator or Manage Server permission.</p>}
             </div>
+            {elsewhere && selectedGuild?.bindingState !== "disconnected" && <div className="border p-3 space-y-2 text-sm">
+              <p>This server is connected to another camelRun account. As its administrator you can disconnect it from that account, then set it up here. That account keeps its past conversations but sees no new ones.</p>
+              <ConfirmButton size="sm" label="Disconnect from the other account" title={`Disconnect ${selectedGuild?.name} from the other account?`} description="Camel stops answering in this server until it is set up again." confirm="Disconnect" onConfirm={disconnectElsewhere} />
+            </div>}
             {guildId && !installed && <div className="border p-3 space-y-2 text-sm"><p>Install Camel in this server, then refresh to verify the installation.</p>{inviteUrl && <a className="underline" href={inviteUrl} target="_blank" rel="noreferrer">Invite Camel to this server</a>}</div>}
-            {guildId && installed && <>
+            {guildId && installed && !(elsewhere && selectedGuild?.bindingState !== "disconnected") && <>
               <div className="space-y-2"><Label htmlFor="managed-discord-definition">Prompt, model and tools</Label>
                 <select id="managed-discord-definition" className="h-9 w-full border bg-background px-3 text-sm" value={definition} onChange={event => setDefinition(event.target.value)}><option value="">Choose a definition</option>{definitions.data?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select>
                 <ErrorAlert error={definitions.error} />
@@ -142,7 +155,7 @@ export function ManagedDiscordDialog({ config, binding, onClose, onSaved }: {
                 <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={publicAccess} onChange={event => setPublicAccess(event.target.checked)} />Allow every member in selected channels</label>
                 <p className="text-muted-foreground text-xs">Allowed members can invoke these tools using your account's credentials. Conversations are shared with channel participants, and usage is billed to your Camel account.</p>
               </div>
-              <div className="flex flex-wrap gap-4"><div className="space-y-2"><Label htmlFor="managed-discord-rate">Turns per member per minute</Label><Input id="managed-discord-rate" type="number" min={1} max={100} step={1} value={perMinute} onChange={event => setPerMinute(Number(event.target.value))} /></div><div className="space-y-2"><Label htmlFor="managed-discord-daily">Turns per server per day</Label><Input id="managed-discord-daily" type="number" min={1} max={10_000} step={1} value={perDay} onChange={event => setPerDay(Number(event.target.value))} /></div></div>
+              <div className="flex flex-wrap gap-4"><div className="space-y-2"><Label htmlFor="managed-discord-rate">Turns per member per minute</Label><Input id="managed-discord-rate" type="number" min={1} max={100} step={1} value={perMinute} onChange={event => setPerMinute(Number(event.target.value))} /></div><div className="space-y-2"><Label htmlFor="managed-discord-daily">Turns per server per day</Label><Input id="managed-discord-daily" type="number" min={1} max={maxPerDay} step={1} value={perDay} onChange={event => setPerDay(Number(event.target.value))} /></div></div>
             </>}
           </>}
           <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={busy || !ready}>{busy && <Loader2 className="animate-spin" />}{binding?.state === "disconnected" ? "Save and reactivate" : binding ? "Save configuration" : "Save and activate"}</Button></DialogFooter>

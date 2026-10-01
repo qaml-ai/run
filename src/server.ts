@@ -505,6 +505,12 @@ const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
   ...managedDiscordConfig, db, consoleAuth, channels: () => channels, ownership, node, publicUrl,
   apiUrl: process.env.AGENT_DISCORD_API_URL,
   canStart: tenant => accounts.runLimit(tenant),
+  // Interim caps until servers have an aggregate budget: free credit gets one server and 500 turns a day per server.
+  plan: async tenant => {
+    const free = await accounts.billing.agentLimit(tenant) !== undefined;
+    const servers = tenants.maxDiscordServers(tenant) ?? Number((free ? process.env.AGENT_DISCORD_MANAGED_FREE_SERVERS : process.env.AGENT_DISCORD_MANAGED_SERVERS) ?? (free ? 1 : 10));
+    return { free, servers, turnsPerDay: free ? 500 : 10_000 };
+  },
   applyDefinition: async (tenant, channelId, definitionId) => {
     const definition = await definitions.read(tenant, definitionId);
     const { rows } = await db.query("select ca.agent from channel_agents ca join agents a on a.id = ca.agent where ca.channel = $1 and ca.tenant = $2 and not a.revoked", [channelId, tenant]);

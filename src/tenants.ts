@@ -21,6 +21,8 @@ export interface Tenant {
   maxAgents?: number;
   /** Read-only event-stream subscribers (browser tabs) its agents may have at once on a node; default 1024. */
   maxWatchers?: number;
+  /** Discord servers this tenant may connect to the managed Camel bot; overrides the plan's default. */
+  maxDiscordServers?: number;
   /** Model spend (USD, list prices) this tenant may reach per UTC month; absent means unlimited. */
   maxMonthlyCost?: number;
   /** "prepaid": pays from credit (src/billing.ts), and may use the platform's keys. Admin tenants default to "none", unbilled. */
@@ -83,12 +85,14 @@ export class Tenants {
       if (tenant.github !== undefined && (typeof tenant.github !== "string" || !/^[A-Za-z0-9-]{1,39}$/.test(tenant.github))) throw new Error(`Tenant ${tenant.id} has an invalid github login`);
       if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
       if (tenant.maxWatchers !== undefined && (!Number.isSafeInteger(tenant.maxWatchers) || tenant.maxWatchers < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxWatchers: a positive integer, or absent for the default`);
+      if (tenant.maxDiscordServers !== undefined && (!Number.isSafeInteger(tenant.maxDiscordServers) || tenant.maxDiscordServers < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxDiscordServers: a non-negative integer, or absent for the default`);
       if (tenant.maxMonthlyCost !== undefined && (typeof tenant.maxMonthlyCost !== "number" || !Number.isFinite(tenant.maxMonthlyCost) || tenant.maxMonthlyCost < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxMonthlyCost: a non-negative number of USD, or absent for no limit`);
       if (tenant.billing !== undefined && tenant.billing !== "prepaid" && tenant.billing !== "none") throw new Error(`Tenant ${tenant.id} has an invalid billing: "prepaid", "none", or absent for none`);
       if (tenant.modelEndpoints !== undefined) validEndpoints(tenant.id, tenant.modelEndpoints);
       next.set(tenant.id, {
         id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}),
         ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}), ...(tenant.maxWatchers !== undefined ? { maxWatchers: tenant.maxWatchers } : {}), ...(tenant.maxMonthlyCost !== undefined ? { maxMonthlyCost: tenant.maxMonthlyCost } : {}),
+        ...(tenant.maxDiscordServers !== undefined ? { maxDiscordServers: tenant.maxDiscordServers } : {}),
         ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
       });
     }
@@ -118,6 +122,7 @@ export class Tenants {
   /** The tenant's own hosted-agent limit per node, if its entry sets one. */
   maxAgents(id: string) { return this.byId.get(id)?.maxAgents; }
   maxWatchers(id: string) { return this.byId.get(id)?.maxWatchers; }
+  maxDiscordServers(id: string) { return this.byId.get(id)?.maxDiscordServers; }
 
   /** The tenant's monthly spend cap in USD, if its entry sets one. */
   maxMonthlyCost(id: string) { return this.byId.get(id)?.maxMonthlyCost; }

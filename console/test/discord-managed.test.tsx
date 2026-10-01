@@ -19,7 +19,9 @@ let managedBindings: ManagedDiscordBinding[];
 let listedChannels: Channel[];
 let assigned: string[];
 let responseBinding: ManagedDiscordBinding;
+let elsewhere: "active" | "disconnected" | null;
 beforeEach(() => {
+  elsewhere = null;
   calls = []; enabled = true; linked = true; installed = true; managedBindings = []; listedChannels = []; assigned = [];
   responseBinding = binding;
   vi.stubGlobal("location", { ...location, pathname: "/console/channels", search: "", assign: (url: string) => assigned.push(url) });
@@ -28,7 +30,7 @@ beforeEach(() => {
     calls.push({ path, method, body: init?.body ? JSON.parse(init.body as string) : undefined, headers: new Headers(init?.headers) });
     if (path === "/console/discord/config") return json({ ...config, enabled });
     if (path === "/console/discord/authorize") return json({ url: "https://discord.com/oauth2/authorize?state=verified" });
-    if (path === "/console/discord/guilds") return json({ linked, guilds: linked ? [{ id: guildId, name: "Team server", installed, owned: true, installationState: installed ? "present" : null, bindingState: null }] : [] });
+    if (path === "/console/discord/guilds") return json({ linked, guilds: linked ? [{ id: guildId, name: "Team server", installed, owned: !elsewhere, installationState: installed ? "present" : null, bindingState: elsewhere }] : [] });
     if (path === `/console/discord/guilds/${guildId}/channels`) return json({ channels: [{ id: channelId, name: "camel-test", type: 0 }] });
     if (path === "/v1/definitions") return json([{ id: "definition-1", name: "Helpful assistant", model: "model-1", revision: 1, createdAt: 1, updatedAt: 1 }]);
     if (path === "/v1/channels") return json(listedChannels);
@@ -153,5 +155,20 @@ describe("managed Discord sign-in continuation", () => {
     expect(consoleLoginUrl("google")).toBe("/console/auth/google");
     expect(discordSetupNext("/console/channels", "?discord_setup=https://evil.example")).toBeUndefined();
     expect(discordSetupNext("/other", `?discord_setup=${guildId}`)).toBeUndefined();
+  });
+
+  it("lets a server's administrator disconnect it from another account, then set it up here", async () => {
+    elsewhere = "active";
+    render(<ManagedDiscordDialog config={{ ...config, limits: { servers: 1, turnsPerDay: 500 } }} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await screen.findByLabelText("Server you manage");
+    fireEvent.change(screen.getByLabelText("Server you manage"), { target: { value: guildId } });
+    expect(await screen.findByText(/connected to another camelRun account/)).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "#camel-test" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect from the other account" }));
+    elsewhere = "disconnected";
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(calls.some(call => call.path === `/console/discord/bindings/${guildId}` && call.method === "PATCH" && call.body.state === "disconnected")).toBe(true));
+    expect(await screen.findByRole("checkbox", { name: "#camel-test" })).toBeTruthy();
+    expect(screen.getByLabelText("Turns per server per day").getAttribute("max")).toBe("500");
   });
 });

@@ -33,6 +33,8 @@ export interface ManagedDiscordOptions {
   ownership?: Ownership; node: string; publicUrl: string;
   botToken: string; applicationId: string; clientSecret: string; publicKey: string; apiUrl?: string;
   canStart?: (tenant: string) => Promise<string | HttpError | undefined>;
+  /** How many servers the account may connect, and its highest daily turn limit per server. */
+  plan?: (tenant: string) => Promise<{ free: boolean; servers: number; turnsPerDay: number }>;
   applyDefinition?: (tenant: string, channel: string, definition: string) => Promise<ApplyResult[]>;
 }
 
@@ -139,10 +141,10 @@ export class ManagedDiscord {
       // One bot speaks for every server, so its typing indicator is refreshed less often and never waits in line.
       maxMessageLength: this.transport.maxMessageLength, maxFileBytes: this.transport.maxFileBytes, typingMs: 30_000,
       defaults: { access: { public: false }, limits: { perSenderPerMinute: 5, turnsPerDay: 100 } },
+      // Only verified server setup creates these channels (Channels refuses `managed` providers otherwise), inside its own transaction.
       setup: async given => {
-        const binding = await this.byId(given.bindingId);
-        if (!binding) throw new HttpError(403, "Create this channel through verified Discord server setup");
-        return { account: { id: options.applicationId, guildId: binding.guild_id, username: "Camel" }, masked: {} };
+        if (typeof given.bindingId !== "string" || !ID.test(given.guildId ?? "")) throw new HttpError(403, "Create this channel through verified Discord server setup");
+        return { account: { id: options.applicationId, guildId: given.guildId, username: "Camel" }, masked: {} };
       },
       teardown: async () => {},
       guard: async (channel, conversation, phase) => {
@@ -199,8 +201,8 @@ export class ManagedDiscord {
     if (!id) return undefined;
     return (await this.options.db.query(`select b.*, i.state installation_state, i.name guild_name from discord_server_bindings b join discord_installations i using (application_id,guild_id) where b.id=$1 and b.application_id=$2`, [id, this.options.applicationId])).rows[0];
   }
-  private async byGuild(guild: string): Promise<Binding | undefined> {
-    return (await this.options.db.query(`select b.*, i.state installation_state, i.name guild_name from discord_server_bindings b join discord_installations i using (application_id,guild_id) where b.guild_id=$1 and b.application_id=$2`, [guild, this.options.applicationId])).rows[0];
+  private async byGuild(guild: string, sql: Pick<Db, "query"> = this.options.db): Promise<Binding | undefined> {
+    return (await sql.query(`select b.*, i.state installation_state, i.name guild_name from discord_server_bindings b join discord_installations i using (application_id,guild_id) where b.guild_id=$1 and b.application_id=$2`, [guild, this.options.applicationId])).rows[0];
   }
   private async byChannel(channel: string): Promise<Binding | undefined> {
     return (await this.options.db.query(`select b.*, i.state installation_state, i.name guild_name from discord_server_bindings b join discord_installations i using (application_id,guild_id) where b.channel_id=$1 and b.application_id=$2`, [channel, this.options.applicationId])).rows[0];
@@ -276,7 +278,7 @@ export class ManagedDiscord {
       const ids = (Array.isArray(data.guilds) ? data.guilds : []).filter((guild: any) => ID.test(guild?.id)).map((guild: any) => guild.id);
       await underClaim(this.options.db, this.claim, async sql => {
         await sql.query(`update discord_installations set state='removed',updated_at=$3 where application_id=$1 and guild_id<>all($2::text[])`, [this.options.applicationId, ids, Date.now()]);
-        await sql.query(`update discord_server_bindings b set state='paused',updated_at=$2 from discord_installations i where b.application_id=i.application_id and b.guild_id=i.guild_id and i.application_id=$1 and i.state='removed' and b.state='active'`, [this.options.applicationId, Date.now()]);
+        await sql.query(`update discord_server_bindings b set state='disconnected',updated_at=$2 from discord_installations i where b.application_id=i.application_id and b.guild_id=i.guild_id and i.application_id=$1 and i.state='removed' and b.state<>'disconnected'`, [this.options.applicationId, Date.now()]);
         await sql.query(`delete from channel_items where item->>'channel' in (select b.channel_id from discord_server_bindings b join discord_installations i using(application_id,guild_id) where b.application_id=$1 and i.state='removed')`, [this.options.applicationId]);
       });
       // READY lists every guild as unavailable until its GUILD_CREATE: that is not an outage, so a present server stays present.
@@ -324,8 +326,9 @@ export class ManagedDiscord {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`discord-binding:${this.options.applicationId}:${guild}`]);
       const prior = (await sql.query(`select state from discord_installations where application_id=$1 and guild_id=$2 for update`, [this.options.applicationId, guild])).rows[0];
       await sql.query(`insert into discord_installations (application_id,guild_id,name,state,updated_at) values ($1,$2,$3,$4,$5) on conflict (application_id,guild_id) do update set name=case when excluded.name='' then discord_installations.name else excluded.name end,state=case when $6 and discord_installations.state='present' then 'present' else excluded.state end,updated_at=excluded.updated_at`, [this.options.applicationId, guild, name, state, Date.now(), ready]);
+      // Removing the bot disconnects the server: reactivating it is explicit, and any verified administrator may set it up again.
       if (state === "removed" || prior?.state === "removed") {
-        await sql.query(`update discord_server_bindings set state='paused',updated_at=$3 where application_id=$1 and guild_id=$2 and state='active'`, [this.options.applicationId, guild, Date.now()]);
+        await sql.query(`update discord_server_bindings set state='disconnected',updated_at=$3 where application_id=$1 and guild_id=$2 and state<>'disconnected'`, [this.options.applicationId, guild, Date.now()]);
         await sql.query(`delete from channel_items where item->>'channel' in (select channel_id from discord_server_bindings where application_id=$1 and guild_id=$2)`, [this.options.applicationId, guild]);
       }
     });
@@ -405,14 +408,35 @@ export class ManagedDiscord {
       if (channel.guild_id !== guildId || ![0, 5, 10, 11, 12, 15, 16].includes(channel.type)) throw new HttpError(400, "Allowed channels must be message channels or threads in this Discord server");
     }
   }
-  private withBindingLock<T>(guild: string, work: () => Promise<T>): Promise<T> {
-    // Reserve at most one mutation connection per node: Channels uses the same pool for its own durable writes.
+  /** One server's binding and channel writes commit together. At most one mutation connection per node: Channels shares the pool. */
+  private withBindingLock<T>(guild: string, work: (sql: Pick<Db, "query">) => Promise<T>): Promise<T> {
     const result = this.mutationTail.then(() => transaction(this.options.db, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`discord-binding:${this.options.applicationId}:${guild}`]);
-      return work();
+      return work(sql);
     }));
     this.mutationTail = result.then(() => {}, () => {});
     return result;
+  }
+  /** The previous account's channel goes, so its agents keep their history but see no new conversation. */
+  private async release(binding: Binding, sql: Pick<Db, "query">) {
+    if (binding.channel_id) {
+      for (const table of ["channel_items"]) await sql.query(`delete from ${table} where item->>'channel'=$1`, [binding.channel_id]);
+      for (const table of ["channel_agents", "channel_conversations", "channel_seen", "channel_counts"]) await sql.query(`delete from ${table} where channel=$1`, [binding.channel_id]);
+      await sql.query("delete from channels where id=$1 and tenant=$2", [binding.channel_id, binding.tenant]);
+    }
+  }
+  /** Servers per account, and the daily turn ceiling, by plan (operators can override the server count per tenant). */
+  private async checkLimits(tenant: string, limits?: { turnsPerDay?: number }) {
+    const plan = await this.plan(tenant);
+    if (limits?.turnsPerDay !== undefined && limits.turnsPerDay > plan.turnsPerDay) throw new HttpError(400, `Turns per server per day can be at most ${plan.turnsPerDay} on this account${plan.free ? " while it is on free credit" : ""}`);
+  }
+  private async checkServers(tenant: string, sql: Pick<Db, "query">, guild: string) {
+    const plan = await this.plan(tenant);
+    const { rows } = await sql.query("select count(*)::int n from discord_server_bindings where tenant=$1 and application_id=$2 and guild_id<>$3 and state<>'disconnected'", [tenant, this.options.applicationId, guild]);
+    if (rows[0].n >= plan.servers) throw new HttpError(409, `This account can connect at most ${plan.servers} Discord server${plan.servers === 1 ? "" : "s"}${plan.free ? " while it is on free credit" : ""}; disconnect one first`);
+  }
+  private async plan(tenant: string) {
+    return await this.options.plan?.(tenant) ?? { free: false, servers: 10, turnsPerDay: 10_000 };
   }
   private async view(binding: Binding) {
     return {
@@ -436,13 +460,14 @@ export class ManagedDiscord {
       await next();
     });
     const tenant = (c: any): string => c.get("tenant");
-    app.get("/console/discord/config", c => {
+    app.get("/console/discord/config", async c => {
       const invite = new URL("https://discord.com/oauth2/authorize");
       invite.searchParams.set("client_id", this.options.applicationId);
       invite.searchParams.set("scope", "bot applications.commands");
       invite.searchParams.set("permissions", "274878008320");
       invite.searchParams.set("integration_type", "0");
-      return c.json({ enabled: true, applicationId: this.options.applicationId, inviteUrl: invite.href, setupPath: "/console/channels" });
+      const plan = await this.plan(tenant(c));
+      return c.json({ enabled: true, applicationId: this.options.applicationId, inviteUrl: invite.href, setupPath: "/console/channels", limits: { servers: plan.servers, turnsPerDay: plan.turnsPerDay } });
     });
     app.post("/console/discord/authorize", async c => {
       const body = z.object({ guildId: snowflake.optional() }).strict().parse(await readJson(c.req.raw.body, 4096, {}));
@@ -507,63 +532,68 @@ export class ManagedDiscord {
       const parsed = createSchema.safeParse(await readJson(c.req.raw.body, 16_384));
       if (!parsed.success) throw new HttpError(400, parsed.error.issues[0].message);
       const input = parsed.data; const account = tenant(c);
-      return this.withBindingLock(input.guildId, async () => {
-        const permission = await this.permission(c.req.raw, account, input.guildId);
-        await this.verifiedInstallation(input.guildId); await this.validateChannels(input.guildId, input.allowedChannelIds);
-        const now = Date.now(); const bindingId = randomUUID();
-        let binding = await this.byGuild(input.guildId);
-        if (binding) {
-          if (binding.tenant !== account) throw new HttpError(409, "This Discord server is already connected to another Camel account");
-          if (binding.channel_id) throw new HttpError(409, "This server already has a binding; update or reconnect it");
-          // A process may have stopped between reservation and channel persistence. Reuse its binding ID safely.
-          await this.options.db.query("update discord_server_bindings set allowed_channel_ids=$2,administrator_id=$3,updated_at=$4 where id=$1", [binding.id, JSON.stringify(input.allowedChannelIds), permission.userId, now]);
-        } else {
-          binding = (await this.options.db.query(`insert into discord_server_bindings (id,application_id,guild_id,tenant,state,allowed_channel_ids,administrator_id,created_at,updated_at) values ($1,$2,$3,$4,'paused',$5,$6,$7,$7) returning *`, [bindingId, this.options.applicationId, input.guildId, account, JSON.stringify(input.allowedChannelIds), permission.userId, now])).rows[0] as Binding;
+      await this.checkLimits(account, input.limits);
+      // Discord is asked before the lock, so no database connection waits on it.
+      const permission = await this.permission(c.req.raw, account, input.guildId);
+      await this.verifiedInstallation(input.guildId); await this.validateChannels(input.guildId, input.allowedChannelIds);
+      const binding = await this.withBindingLock(input.guildId, async sql => {
+        const now = Date.now();
+        let binding = await this.byGuild(input.guildId, sql);
+        if (binding && binding.tenant !== account) {
+          // A verified administrator may take over a server its previous account disconnected, or whose bot was removed (which disconnects it).
+          if (binding.state !== "disconnected") throw new HttpError(409, "This Discord server is connected to another camelRun account. As its administrator you can disconnect it there first, then set it up here");
+          await this.release(binding, sql);
+          await sql.query("update discord_server_bindings set tenant=$2,channel_id=null,state='paused',updated_at=$3 where id=$1", [binding.id, account, now]);
+          this.log("binding_taken_over", { guildId: input.guildId, from: binding.tenant, tenant: account });
+          binding = { ...binding, tenant: account, channel_id: null, state: "paused" };
         }
-        let channelId: string | undefined;
-        try {
-          const orphan = (await this.options.db.query(`select id from channels where tenant=$1 and channel->>'type'='discord-managed' and channel->'account'->>'guildId'=$2`, [account, input.guildId])).rows[0];
-          const channel = orphan ? await this.channels().update(account, orphan.id, { definition: input.definition, name: input.name, access: input.access, limits: input.limits }, { managed: true }) : await this.channels().create(account, { type: "discord-managed", definition: input.definition, name: input.name ?? `Camel · ${permission.guild.name}`, access: input.access, limits: input.limits, credentials: { bindingId: binding.id } }, { managed: true });
-          channelId = channel.id;
-          await this.options.db.query("update discord_server_bindings set channel_id=$2,state=case when $3::text='active' and not exists (select 1 from discord_installations i where i.application_id=discord_server_bindings.application_id and i.guild_id=discord_server_bindings.guild_id and i.state='present') then 'paused' else $3 end,updated_at=$4 where id=$1", [binding.id, channel.id, input.state ?? "active", Date.now()]);
-        } catch (error) {
-          if (channelId) await this.channels().remove(account, channelId, { managed: true }).catch(() => {});
-          await this.options.db.query("delete from discord_server_bindings where id=$1 and channel_id is null", [binding.id]);
-          throw error;
-        }
-        this.log("binding_created", { guildId: input.guildId, tenant: account });
-        return c.json(await this.view((await this.byId(binding!.id))!), 201);
+        if (binding?.channel_id) throw new HttpError(409, "This server already has a binding; update or reconnect it");
+        await this.checkServers(account, sql, input.guildId);
+        if (binding) await sql.query("update discord_server_bindings set allowed_channel_ids=$2,administrator_id=$3,updated_at=$4 where id=$1", [binding.id, JSON.stringify(input.allowedChannelIds), permission.userId, now]);
+        else binding = (await sql.query(`insert into discord_server_bindings (id,application_id,guild_id,tenant,state,allowed_channel_ids,administrator_id,created_at,updated_at) values ($1,$2,$3,$4,'paused',$5,$6,$7,$7) returning *`, [randomUUID(), this.options.applicationId, input.guildId, account, JSON.stringify(input.allowedChannelIds), permission.userId, now])).rows[0] as Binding;
+        const fields = { definition: input.definition, name: input.name, access: input.access, limits: input.limits };
+        // A channel left by an interrupted setup is reused, never duplicated.
+        const orphan = (await sql.query(`select id from channels where tenant=$1 and channel->>'type'='discord-managed' and channel->'account'->>'guildId'=$2`, [account, input.guildId])).rows[0];
+        const channel = orphan
+          ? await this.channels().update(account, orphan.id, fields, { managed: true, sql })
+          : await this.channels().create(account, { type: "discord-managed", ...fields, name: input.name ?? `Camel · ${permission.guild.name}`, credentials: { bindingId: binding.id, guildId: input.guildId } }, { managed: true, sql });
+        await sql.query("update discord_server_bindings set channel_id=$2,state=case when $3::text='active' and not exists (select 1 from discord_installations i where i.application_id=discord_server_bindings.application_id and i.guild_id=discord_server_bindings.guild_id and i.state='present') then 'paused' else $3 end,updated_at=$4 where id=$1", [binding.id, channel.id, input.state ?? "active", Date.now()]);
+        return binding;
       });
+      this.log("binding_created", { guildId: input.guildId, tenant: account });
+      return c.json(await this.view((await this.byId(binding.id))!), 201);
     });
     app.patch("/console/discord/bindings/:guildId", async c => {
       const parsed = inputSchema.safeParse(await readJson(c.req.raw.body, 16_384));
       if (!parsed.success) throw new HttpError(400, parsed.error.issues[0].message);
       const input = parsed.data; const guildId = c.req.param("guildId"); const account = tenant(c);
-      return this.withBindingLock(guildId, async () => {
-        const binding = await this.byGuild(guildId);
-        if (!binding || binding.tenant !== account) throw new HttpError(404, "Discord server binding not found");
-        // The paying account may always stop a server, even after losing its Discord role; anything else needs a current administrator.
-        if (Object.keys(input).length === 1 && (input.state === "paused" || input.state === "disconnected")) {
-          await this.options.db.query("update discord_server_bindings set state=$2,updated_at=$3 where id=$1", [binding.id, input.state, Date.now()]);
-          if (binding.channel_id) await this.options.db.query("delete from channel_items where item->>'channel'=$1", [binding.channel_id]);
-          this.log("binding_updated", { guildId, tenant: account, state: input.state });
-          return c.json(await this.view((await this.byId(binding.id))!));
-        }
-        const permission = await this.permission(c.req.raw, account, guildId);
-        if (!binding.channel_id) throw new HttpError(409, "This server setup has not completed; contact the runtime operator");
-        // Disconnect and pause remain possible after the bot is physically removed.
-        if (input.state !== "paused" && input.state !== "disconnected") await this.verifiedInstallation(guildId);
-        if (input.allowedChannelIds) await this.validateChannels(guildId, input.allowedChannelIds);
+      const stop = Object.keys(input).length === 1 && (input.state === "paused" || input.state === "disconnected");
+      const current = await this.byGuild(guildId);
+      // Another account's server is visible only to its verified administrators, and only to stop it.
+      if (!current || (current.tenant !== account && !stop)) throw new HttpError(404, "Discord server binding not found");
+      if (!current.channel_id) throw new HttpError(409, "This server setup has not completed; set it up again");
+      // The paying account may always stop its own server, even after losing its Discord role; anything else needs a current administrator.
+      const permission = current.tenant === account && stop ? undefined : await this.permission(c.req.raw, account, guildId);
+      if (current.tenant === account) await this.checkLimits(account, input.limits);
+      // Disconnect and pause remain possible after the bot is physically removed.
+      if (!stop) await this.verifiedInstallation(guildId);
+      if (input.allowedChannelIds) await this.validateChannels(guildId, input.allowedChannelIds);
+      const state = await this.withBindingLock(guildId, async sql => {
+        const binding = await this.byGuild(guildId, sql);
+        if (!binding || binding.id !== current.id || binding.tenant !== current.tenant || binding.channel_id !== current.channel_id) throw new HttpError(409, "This server's setup changed meanwhile; reload and try again");
+        const state = input.state ?? binding.state;
+        if (state !== "disconnected" && binding.state === "disconnected") await this.checkServers(binding.tenant, sql, guildId);
         const update: ChannelInput = { ...(input.definition ? { definition: input.definition } : {}), ...(input.name ? { name: input.name } : {}), ...(input.access ? { access: input.access } : {}), ...(input.limits ? { limits: input.limits } : {}) };
-        // Fence queued work before updating policy, so no turn observes a mixture of old and new grants.
-        await this.options.db.query("update discord_server_bindings set state='paused',updated_at=$2 where id=$1", [binding.id, Date.now()]);
-        await this.options.db.query("delete from channel_items where item->>'channel'=$1", [binding.channel_id]);
-        await this.channels().update(account, binding.channel_id, update, { managed: true });
-        const applied = input.definition && this.options.applyDefinition ? await this.options.applyDefinition(account, binding.channel_id, input.definition) : undefined;
-        await this.options.db.query(`update discord_server_bindings set state=case when $2::text='active' and not exists (select 1 from discord_installations i where i.application_id=discord_server_bindings.application_id and i.guild_id=discord_server_bindings.guild_id and i.state='present') then 'paused' else $2 end,allowed_channel_ids=$3,administrator_id=$4,updated_at=$5 where id=$1`, [binding.id, input.state ?? binding.state, JSON.stringify(input.allowedChannelIds ?? binding.allowed_channel_ids), permission.userId, Date.now()]);
-        this.log("binding_updated", { guildId, tenant: account, state: input.state ?? binding.state });
-        return c.json({ ...await this.view((await this.byId(binding.id))!), ...(applied ? { applied } : {}) });
+        if (Object.keys(update).length) await this.channels().update(binding.tenant, binding.channel_id!, update, { managed: true, sql });
+        await sql.query(`update discord_server_bindings set state=case when $2::text='active' and not exists (select 1 from discord_installations i where i.application_id=discord_server_bindings.application_id and i.guild_id=discord_server_bindings.guild_id and i.state='present') then 'paused' else $2 end,allowed_channel_ids=$3,administrator_id=coalesce($4,administrator_id),updated_at=$5 where id=$1`, [binding.id, state, JSON.stringify(input.allowedChannelIds ?? binding.allowed_channel_ids), permission?.userId ?? null, Date.now()]);
+        // Only a stopped server's queued work is cancelled; every other change is rechecked as each item proceeds.
+        if (state !== "active") await sql.query("delete from channel_items where item->>'channel'=$1", [binding.channel_id]);
+        return state;
       });
+      this.log("binding_updated", { guildId, tenant: current.tenant, by: account, state });
+      if (current.tenant !== account) return c.json({ guildId, state });
+      const applied = input.definition && this.options.applyDefinition ? await this.options.applyDefinition(account, current.channel_id, input.definition) : undefined;
+      return c.json({ ...await this.view((await this.byId(current.id))!), ...(applied ? { applied } : {}) });
     });
     app.post("/channels/discord-managed/interactions", async c => {
       const body = await readText(c.req.raw.body, 64 * 1024);
