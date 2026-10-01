@@ -78,6 +78,8 @@ test("busy limits: a tenant's own maxAgents wins, prepaid tenants get their tier
       payg: { tokenSha256: sha("payg-token-at-least-24-chars!!"), apiKeys: {}, billing: "prepaid" },
       vip: { tokenSha256: sha("vip-token-at-least-24-chars!!!"), apiKeys: {}, billing: "prepaid", maxAgents: 3 },
       ops: { tokenSha256: sha("ops-token-at-least-24-chars!!!"), apiKeys: {} },
+      // An operator tenant like chiridion-prod: unbilled, with its own limit, and nothing ever paid.
+      operator: { tokenSha256: sha("operator-token-at-least-24-chars"), apiKeys: {}, billing: "none", maxAgents: 600 },
     },
   };
   const accountsOn = async () => {
@@ -93,6 +95,10 @@ test("busy limits: a tenant's own maxAgents wins, prepaid tenants get their tier
   assert.deepEqual(await tier(here, "payg"), ["Free", 8, "Tier 1", micros(5)]);
   assert.deepEqual(await tier(here, "ops"), ["default", 40], "not prepaid: the deployment's default");
   assert.deepEqual(await tier(here, "vip"), ["tenant", 3], "the tenant's own limit");
+  // An unbilled operator tenant with its own limit keeps it: never a tier, though it has paid nothing.
+  assert.deepEqual(await tier(here, "operator"), ["tenant", 600]);
+  assert.deepEqual(errorFields(busyLimitError(await here.billing.busyLimit("operator"), 600)), { busyAgents: { busy: 600, limit: 600, source: "tenant" } });
+  assert.deepEqual((await here.billing.summary("operator")).busyAgents, { busy: 0, limit: 600, source: "tenant" });
 
   // Starting credit and adjustments are not payments.
   await here.billing.post([{ tenant: "payg", kind: "grant", amount: micros(5), key: "g1" }, { tenant: "payg", kind: "adjustment", amount: micros(100), key: "adj1" }]);
