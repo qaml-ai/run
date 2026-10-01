@@ -794,7 +794,7 @@
               "admin",
               "platform"
             ],
-            "description": "tenant: set by the tenant; admin: set by the runtime operator; platform: the platform's key, billed to prepaid credit"
+            "description": "tenant: set by the tenant; admin: set by the runtime operator; platform: the platform's key, which a prepaid tenant pays for from credit (an admin tenant uses it unbilled, unless its entry sets platformKeys: false)"
           },
           "last4": {
             "type": "string"
@@ -1488,6 +1488,13 @@
               }
             ],
             "description": "The first prompt's request, when one was given: accepted, or refused (spend limit, capacity, model) with why, the agent made regardless; send it again with POST /v1/agents/{id}/prompt"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Builtins the agent has that its tenant cannot use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key)"
           }
         },
         "required": [
@@ -4035,7 +4042,7 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
           },
           "webSearch": {
             "type": "object",
@@ -4110,6 +4117,13 @@
           },
           "updatedAt": {
             "type": "number"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "On a save: builtins its agents could not use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key)"
           }
         },
         "required": [
@@ -4417,7 +4431,7 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
           },
           "webSearch": {
             "type": "object",
@@ -4889,7 +4903,7 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
           },
           "webSearch": {
             "type": [

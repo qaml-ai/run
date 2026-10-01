@@ -35,7 +35,7 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
   }), async c => {
     const definitions = service();
     const key = c.req.header("idempotency-key"), input = await parse(schema.DefinitionInput, c);
-    return json(c, 201, definitions.view(key !== undefined ? await definitions.upsert(c.var.principal.tenant, key, input) : await definitions.create(c.var.principal.tenant, input)));
+    return json(c, 201, await definitions.saved(key !== undefined ? await definitions.upsert(c.var.principal.tenant, key, input) : await definitions.create(c.var.principal.tenant, input)));
   });
   route(createRoute({ method: "get", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition", schema.Definition) } }),
     async c => json(c, 200, await service().get(c.var.principal.tenant, c.req.param("id")!)));
@@ -49,8 +49,8 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
     const submit = context().submit;
     if (input.apply === "all" && !submit) throw new HttpError(404, "Applying definitions is not enabled on this runtime");
     const updated = await definitions.update(tenant, c.req.param("id")!, input);
-    if (input.apply !== "all") return json(c, 200, definitions.view(updated));
-    return json(c, 200, { ...definitions.view(updated), applied: await definitions.apply(updated, (agent, request) => submit!(agent, tenant, request)) });
+    if (input.apply !== "all") return json(c, 200, await definitions.saved(updated));
+    return json(c, 200, { ...await definitions.saved(updated), applied: await definitions.apply(updated, (agent, request) => submit!(agent, tenant, request)) });
   });
   route(createRoute({ method: "delete", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition is deleted; agents made from it keep their configuration", schema.Deleted) } }), async c => {
     await service().remove(c.var.principal.tenant, c.req.param("id")!);

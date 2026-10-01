@@ -37,7 +37,7 @@ export const Me = z.object({
 
 const KeyStatus = z.object({
   provider: z.string(),
-  source: z.enum(["tenant", "admin", "platform"]).openapi({ description: "tenant: set by the tenant; admin: set by the runtime operator; platform: the platform's key, billed to prepaid credit" }),
+  source: z.enum(["tenant", "admin", "platform"]).openapi({ description: "tenant: set by the tenant; admin: set by the runtime operator; platform: the platform's key, which a prepaid tenant pays for from credit (an admin tenant uses it unbilled, unless its entry sets platformKeys: false)" }),
   last4: z.string().optional(),
   setAt: z.number().optional(),
 }).openapi("KeyStatus");
@@ -285,6 +285,7 @@ export const AgentCreated = z.looseObject({
   expiresAt: z.number().nullable(),
   prompt: z.union([RequestRecord, z.object({ error: z.object({ status: z.number(), code: z.string(), message: z.string() }) })]).optional()
     .openapi({ description: "The first prompt's request, when one was given: accepted, or refused (spend limit, capacity, model) with why, the agent made regardless; send it again with POST /v1/agents/{id}/prompt" }),
+  warnings: z.array(z.string()).optional().openapi({ description: "Builtins the agent has that its tenant cannot use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key)" }),
 }).openapi("AgentCreated");
 
 const Sender = z.strictObject({ id: z.string(), name: z.string().optional(), username: z.string().optional() });
@@ -492,7 +493,7 @@ const definitionFields = {
   limits: DefinitionLimits,
   runLimits: RunLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
-  builtins: z.array(Builtin).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer" }),
+  builtins: z.array(Builtin).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer" }),
   webSearch: z.object({
     providers: z.array(z.enum(["exa", "brave", "parallel"])).min(1).max(3).openapi({ description: "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited", example: ["brave"] }),
   }).strict().openapi({ description: "Pin web_search to providers of your choosing instead of the runtime's order (exa, brave, parallel by default)" }),
@@ -522,6 +523,7 @@ export const Definition = z.object({
   openApi: z.array(OpenApi).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
+  warnings: z.array(z.string()).optional().openapi({ description: "On a save: builtins its agents could not use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key)" }),
 }).openapi("Definition");
 export const ApplyResult = z.object({
   agent: z.string(),

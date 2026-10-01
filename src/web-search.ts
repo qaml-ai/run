@@ -9,8 +9,8 @@ import { readableText } from "./html-text.ts";
  * behind `SearchProvider`; a search tries them in order (Exa, Brave, Parallel by default;
  * see bench/search/REPORT.md for why), each with the tenant's key for it, falling through
  * to the next when one is down, slow or out of quota. A key is a provider key like a
- * model's (the tenant's own, else an admin's, else for a prepaid tenant the platform's,
- * billed at that provider's price per search). `content` is the page's text when the API
+ * model's (the tenant's own, else an admin's, else the platform's, which a prepaid tenant
+ * pays for at that provider's price per search). `content` is the page's text when the API
  * returns it with the results (Exa's highlights, Parallel's excerpts, Firecrawl's scraped
  * markdown): the model gets it in place of the snippet, within SEARCH.content per result and
  * SEARCH.contentTotal per search, as those query-focused excerpts are much of what Exa is chosen for.
@@ -206,6 +206,16 @@ export function searchProvidersFromEnvironment(env = process.env): { providers: 
   return { providers, order };
 }
 
+const SEARCH_NAMES: Record<string, string> = { exa: "Exa", brave: "Brave", parallel: "Parallel" };
+
+/** Why web_search cannot search for a tenant without a key for any of `providers`, and how to give it one: the console's way, then the API's. */
+export function webSearchUnavailable(providers: readonly string[]) {
+  const names = providers.map(id => SEARCH_NAMES[id] ?? id);
+  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : names[0];
+  const put = providers.length === 1 ? `PUT /v1/providers/${providers[0]}/key` : "PUT /v1/providers/<provider>/key";
+  return `Web search isn't available for this account: add ${/^[aeiou]/i.test(list) ? "an" : "a"} ${list} key under Models & keys (${put})`;
+}
+
 /** A list of search provider ids, checked: known ones, each once, at least one. */
 export function searchOrder(ids: unknown, name: string): SearchProviderId[] {
   const known = (id: unknown): id is SearchProviderId => SEARCH_PROVIDERS.includes(id as SearchProviderId);
@@ -270,8 +280,7 @@ export class WebSearch {
       }
     }
     if (failures.length) throw new Error(`Web search failed: ${failures.join("; ")}`);
-    const keyHelp = unkeyed.length === 1 ? `a ${unkeyed[0]} API key (PUT /v1/providers/${unkeyed[0]}/key)` : `an API key for one of ${unkeyed.join(", ")} (PUT /v1/providers/<provider>/key)`;
-    throw new Error(`Web search is not set up for this tenant: it needs ${keyHelp}`);
+    throw new Error(webSearchUnavailable(unkeyed));
   }
 
   private async attempt(provider: SearchProvider, query: SearchQuery, key: string, signal: AbortSignal): Promise<SearchResult[]> {

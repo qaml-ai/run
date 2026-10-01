@@ -85,6 +85,8 @@ export class Definitions {
   private readonly customProviders?: (tenant: string) => Promise<CustomProviders>;
   /** Lists MCP servers as a definition is saved (ToolSources.listed). */
   listMcp?: (tenant: string, definition: string, servers: McpServerSpec[]) => Promise<ToolSourceView[]>;
+  /** Builtins of a saved spec the tenant cannot use (no key for them), as warnings for the save's answer. */
+  builtinWarnings?: (tenant: string, spec: DefinitionSpec) => Promise<string[]>;
   constructor(options: { db: Db; accounts?: Accounts; outbound?: Outbound; customProviders?: (tenant: string) => Promise<CustomProviders> }) {
     this.db = options.db;
     this.accounts = options.accounts;
@@ -105,6 +107,12 @@ export class Definitions {
   view({ tenant: _tenant, spec, ...definition }: Definition) {
     const { channel: _channel, mcpServers, openApi, ...visible } = spec;
     return { ...definition, ...visible, ...(mcpServers ? { mcpServers: mcpServers.map(mcpServerView) } : {}), ...(openApi ? { openApi: openApi.map(openApiView) } : {}) };
+  }
+
+  /** What a save answers: the definition as callers see it, with `warnings` about builtins its tenant cannot use. */
+  async saved(definition: Definition) {
+    const warnings = await this.builtinWarnings?.(definition.tenant, definition.spec) ?? [];
+    return { ...this.view(definition), ...(warnings.length ? { warnings } : {}) };
   }
 
   async list(tenant: string) {

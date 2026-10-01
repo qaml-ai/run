@@ -208,9 +208,14 @@ export class Accounts {
     return (await this.db.query("select provider, sealed, last4, set_at from provider_keys where tenant = $1", [tenant])).rows as { provider: string; sealed: Sealed; last4: string; set_at: number }[];
   }
 
+  /** Whether the tenant's agents may fall back to the platform's keys: an admin tenant's entry says (Tenants.usesPlatformKeys), a self-serve tenant if prepaid. */
+  private async usesPlatformKeys(tenant: string) {
+    return this.tenants.usesPlatformKeys(tenant) ?? (await this.billing.mode(tenant) === "prepaid");
+  }
+
   /**
-   * The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid tenant,
-   * the platform's.
+   * The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid or an
+   * admin tenant (`usesPlatformKeys`), the platform's.
    */
   async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource } | undefined> {
     const stored = this.secretsKey && validTenant(tenant) ? (await this.db.query("select sealed from provider_keys where tenant = $1 and provider = $2", [tenant, provider])).rows[0] : undefined;
@@ -218,7 +223,7 @@ export class Accounts {
     const admin = this.tenants.apiKey(tenant, provider);
     if (admin) return { key: admin, source: "admin" };
     const platform = this.tenants.platformKey(provider);
-    if (platform && await this.billing.mode(tenant) === "prepaid") return { key: platform, source: "platform" };
+    if (platform && await this.usesPlatformKeys(tenant)) return { key: platform, source: "platform" };
     return undefined;
   }
 
@@ -226,16 +231,16 @@ export class Accounts {
 
   async keyStatus(tenant: string): Promise<KeyStatus[]> {
     const statuses = new Map<string, KeyStatus>();
-    if (await this.billing.mode(tenant) === "prepaid") for (const provider of this.tenants.platformProviders()) statuses.set(provider, { provider, source: "platform" });
+    if (await this.usesPlatformKeys(tenant)) for (const provider of this.tenants.platformProviders()) statuses.set(provider, { provider, source: "platform" });
     for (const provider of this.tenants.providers(tenant)) statuses.set(provider, { provider, source: "admin" });
     for (const key of await this.storedKeys(tenant)) statuses.set(key.provider, { provider: key.provider, source: "tenant", last4: key.last4, setAt: key.set_at });
     return [...statuses.values()].sort((a, b) => a.provider.localeCompare(b.provider));
   }
 
-  /** Providers an agent of `tenant` can call (its own key, an admin key, or for a prepaid tenant the platform's). */
+  /** Providers an agent of `tenant` can call (its own key, an admin key, or the platform's where it may use them). */
   async keyedProviders(tenant: string): Promise<(provider: string) => boolean> {
     const own = this.canStoreKeys && validTenant(tenant) ? new Set((await this.storedKeys(tenant)).map(key => key.provider)) : new Set<string>();
-    const platform = await this.billing.mode(tenant) === "prepaid";
+    const platform = await this.usesPlatformKeys(tenant);
     const endpoints = this.tenants.modelEndpoints(tenant) ?? {};
     return provider => own.has(provider) || !!this.tenants.apiKey(tenant, provider) || (platform && !!this.tenants.platformKey(provider)) || Object.hasOwn(endpoints, provider);
   }

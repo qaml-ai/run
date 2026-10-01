@@ -99,6 +99,23 @@ test("a `*` provider key is rejected in a tenant's apiKeys and in platformKeys",
   assert.equal(tenants.apiKey("acme", "openai"), undefined);
 });
 
+test("admin tenants use the platform's keys unless an unbilled one sets platformKeys: false; a prepaid one always may", async () => {
+  const token = (name: string) => createHash("sha256").update(name).digest("hex");
+  let secret = JSON.stringify({ tenants: {
+    ops: { tokenSha256: token("ops") }, own: { tokenSha256: token("own"), billing: "none", platformKeys: false }, payg: { tokenSha256: token("payg"), billing: "prepaid" },
+  } });
+  const tenants = new Tenants({ read: async () => secret });
+  await tenants.reload();
+  assert.deepEqual(["ops", "own", "payg", "u-self-serve"].map(id => tenants.usesPlatformKeys(id)), [true, false, true, undefined]);
+  for (const bad of ["no", null, 0]) {
+    secret = JSON.stringify({ tenants: { ops: { tokenSha256: token("ops"), platformKeys: bad } } });
+    await assert.rejects(tenants.reload(), /invalid platformKeys/, JSON.stringify(bad));
+  }
+  secret = JSON.stringify({ tenants: { payg: { tokenSha256: token("payg"), billing: "prepaid", platformKeys: false } } });
+  await assert.rejects(tenants.reload(), /prepaid, so it pays for the platform's keys/);
+  assert.equal(tenants.usesPlatformKeys("own"), false, "the last good tenants stay in force");
+});
+
 test("a catalog model with a routing variant resolves like its base model and keeps the variant in its id", () => {
   const plain = resolveModel("openrouter/anthropic/claude-sonnet-5");
   const nitro = resolveModel("openrouter/anthropic/claude-sonnet-5:nitro");

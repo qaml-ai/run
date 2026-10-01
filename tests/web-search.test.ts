@@ -16,7 +16,8 @@ const ADMIN_KEYED = "admin-keyed-operator-token-at-least-24";
 const tenantsFile = {
   tenants: {
     payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
-    own: { tokenSha256: sha(OWN), apiKeys: { openrouter: "fixture-model-key" } },
+    // An operator's tenant that keeps to its own keys: no fallback to the platform's.
+    own: { tokenSha256: sha(OWN), apiKeys: { openrouter: "fixture-model-key" }, platformKeys: false },
     ops: { tokenSha256: sha(OPS), apiKeys: { openrouter: "fixture-model-key" } },
   },
   platformKeys: { openrouter: "fixture-platform-model-key", brave: "platform-brave-key" },
@@ -111,11 +112,11 @@ test("web_search uses the tenant's own search key, else the platform's billed to
   };
   const lastResult = () => toolResults(r.model.bodies.at(-1)).at(-1);
 
-  // A tenant without a search key: a model key under `*` never stands in for one.
+  // A tenant without a search key that may not use the platform's (platformKeys: false): it is told how to add one.
   const own = await make(OWN, ["web_search", "web_fetch"]);
   const tools = r.model.bodies.length;
   await r.prompt(own, "look it up", OWN);
-  assert.match(toolResults(r.model.bodies[tools + 1]).at(-1), /Web search is not set up for this tenant: it needs a brave API key \(PUT \/v1\/providers\/brave\/key\)/);
+  assert.match(toolResults(r.model.bodies[tools + 1]).at(-1), /Web search isn't available for this account: add a Brave key under Models & keys \(PUT \/v1\/providers\/brave\/key\)/);
   assert.equal(brave.searches.length, 0);
   const listed = (await r.call("/v1/providers", { token: OWN })).json.find((provider: any) => provider.id === "brave");
   assert.deepEqual(listed, { id: "brave", kind: "search", models: 0, apiKey: true, key: null });
@@ -263,8 +264,8 @@ test("web_search skips providers without a key, keeps to a definition's own orde
   await assert.rejects(all.run({ query: "q" }, ["bing"]), /webSearch.providers must list one or more of exa, brave, parallel/);
 
   const none = webSearch(fake.env, {});
-  await assert.rejects(none.run(), /Web search is not set up for this tenant: it needs an API key for one of exa, brave, parallel \(PUT \/v1\/providers\/<provider>\/key\)/);
-  await assert.rejects(none.run({ query: "q" }, ["exa"]), /it needs a exa API key \(PUT \/v1\/providers\/exa\/key\)/);
+  await assert.rejects(none.run(), /Web search isn't available for this account: add an Exa, Brave or Parallel key under Models & keys \(PUT \/v1\/providers\/<provider>\/key\)/);
+  await assert.rejects(none.run({ query: "q" }, ["exa"]), /add an Exa key under Models & keys \(PUT \/v1\/providers\/exa\/key\)/);
   assert.throws(() => searchProvidersFromEnvironment({ AGENT_WEB_SEARCH_PROVIDERS: "exa,exa" }), /AGENT_WEB_SEARCH_PROVIDERS must list/);
   assert.deepEqual(searchProvidersFromEnvironment({}).order, ["exa", "brave", "parallel"]);
 });
@@ -313,6 +314,55 @@ test("a search key the operator set for a tenant (its apiKeys) is used, and is n
   assert.equal(brave.searches.at(-1)!.token, "admin-brave-key");
   const usage = await until(async () => (await r.call("/v1/usage", { token: ADMIN_KEYED })).json.days.find((day: any) => day.model === "brave/web_search"), "the search's usage");
   assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 0, 0]);
+});
+
+test("an operator's tenant without a key of its own searches on the platform's, recorded as platform usage and never charged; its own key wins; platformKeys: false keeps the refusal", async t => {
+  const brave = await fakeBrave(t);
+  const r = await runtime(t, researcher, {
+    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_BRAVE_SEARCH_URL: brave.url, AGENT_WEB_SEARCH_PROVIDERS: "brave",
+    AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_USD: "0.25",
+  }, tenantsFile);
+  const make = async (token: string) => {
+    const definition = (await r.call("/v1/definitions", { body: { name: "Researcher", builtins: ["web_search"] }, token })).json;
+    return { definition, agent: (await r.call("/v1/agents", { body: { definition: definition.id }, token })).json };
+  };
+  const braveUsage = (token: string) => until(async () => (await r.call("/v1/usage", { token })).json.days.find((day: any) => day.model === "brave/web_search"), "the search's usage");
+
+  // Unbilled, with a model key but no search key: the platform's brave key answers, and the save warns of nothing.
+  const ops = await make(OPS);
+  assert.equal(ops.definition.warnings, undefined);
+  assert.equal(ops.agent.warnings, undefined);
+  await r.prompt(ops.agent.id, "look it up", OPS);
+  assert.equal(brave.searches.at(-1)!.token, "platform-brave-key");
+  const usage = await braveUsage(OPS);
+  assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 1, 0.25], "recorded as the platform's");
+  const billing = (await r.call("/v1/billing", { token: OPS })).json;
+  assert.deepEqual([billing.billing, billing.balance], ["none", 0], "never charged");
+  assert.ok(!(await r.call("/v1/billing/ledger", { token: OPS })).json.entries.some((entry: any) => entry.kind === "usage"));
+  assert.equal((await r.call("/v1/providers", { token: OPS })).json.find((provider: any) => provider.id === "brave").key.source, "platform");
+
+  // Its own key wins over the platform's.
+  assert.equal((await r.call("/v1/providers/brave/key", { method: "PUT", body: { apiKey: "own-ops-brave-key" }, token: OPS })).status, 200);
+  await r.prompt(ops.agent.id, "look it up again", OPS);
+  assert.equal(brave.searches.at(-1)!.token, "own-ops-brave-key");
+  const after = await until(async () => { const day = await braveUsage(OPS); return day.responses === 2 && day; }, "the second search's usage");
+  assert.deepEqual([after.platformResponses, after.platformCost], [1, 0.25], "the search on its own key is not the platform's");
+
+  // platformKeys: false: no fallback, and saving a definition or an agent with web_search says why it will not search.
+  const searches = brave.searches.length;
+  const own = await make(OWN);
+  const hint = /^Web search isn't available for this account: add a Brave key under Models & keys \(PUT \/v1\/providers\/brave\/key\)$/;
+  assert.match(own.definition.warnings?.[0], hint);
+  assert.match(own.agent.warnings?.[0], hint);
+  const direct = (await r.call("/v1/agents", { body: { builtins: ["web_search", "web_fetch"] }, token: OWN })).json;
+  assert.match(direct.warnings?.[0], hint);
+  assert.equal((await r.call("/v1/agents", { body: { builtins: ["web_fetch"] }, token: OWN })).json.warnings, undefined, "web_fetch works without a renderer key");
+  const patched = await r.call(`/v1/definitions/${own.definition.id}`, { method: "PATCH", body: { builtins: ["web_fetch"] }, token: OWN });
+  assert.equal(patched.json.warnings, undefined);
+  await r.prompt(own.agent.id, "look it up", OWN);
+  assert.match(toolResults(r.model.bodies.at(-1)).at(-1), hint);
+  assert.equal(brave.searches.length, searches);
+  assert.ok(!(await r.call("/v1/providers", { token: OWN })).json.some((provider: any) => provider.key?.source === "platform"));
 });
 
 test("js_exec's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request", async t => {

@@ -62,7 +62,7 @@ import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
-import { builtinsInput } from "./builtins.ts";
+import { builtinsInput, builtinWarnings } from "./builtins.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
@@ -210,9 +210,10 @@ const mcp = new McpConnections({ outbound });
 const signer = new RuntimeSigner({ db, accounts, issuer: origins.issuer });
 // OAuth for the hosted MCP endpoints, under the same issuer.
 const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, origins, github: !!github, google: !!google });
-// web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else (prepaid) the
-// platform's, whose calls are charged to credit at that provider's price. js_exec can make many calls between two
-// model requests, so spent or rate-limited credit refuses the platform's key at each call, not only at the next request.
+// web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else the platform's (for a
+// prepaid tenant, or an admin tenant without platformKeys: false), whose calls a prepaid tenant pays for at that
+// provider's price. js_exec can make many calls between two model requests, so spent or rate-limited credit refuses
+// the platform's key at each call, not only at the next request.
 const webKey = async (tenant: string, provider: string) => {
   const resolved = await accounts.providerKey(tenant, provider);
   if (!resolved) return undefined;
@@ -238,6 +239,9 @@ const modelProviders = new ModelProviders({ db, accounts, outbound });
 const definitions = new Definitions({ db, accounts, outbound, customProviders: tenant => modelProviders.resolvable(tenant) });
 // Saving a definition lists its MCP servers, as its agents would.
 definitions.listMcp = (tenant, id, servers) => toolSources.listed(tenant, id, servers);
+// Saving a definition, an agent or a managed Discord server warns of builtins the tenant has no key for.
+const warningsFor = (tenant: string, given: Parameters<typeof builtinWarnings>[0]) => builtinWarnings(given, search.options.order, () => accounts.keyedProviders(tenant));
+definitions.builtinWarnings = (tenant, spec) => warningsFor(tenant, sources(spec));
 const keyScopes = new KeyScopes({ db, accounts, outbound });
 const defaults = defaultModels(model);
 /** The model an agent of `tenant` that names none gets: the first default its key scope or tenant has a key for, else the first. */
@@ -301,6 +305,8 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
     { keyScope, spendLimit, builtins, ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) }, steps);
   outcome.agent = made_.id;
   outcome.upsert = !!reconfigure;
+  const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
+  if (warnings.length) made_.warnings = warnings;
   if (!reconfigure) return made_;
   // The key's agent exists: bring it to this configuration between its turns. Every upsert queues its own request, so
   // the last one sent wins; one whose configuration the agent has already changes nothing when it runs.
@@ -548,6 +554,7 @@ const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
   apiUrl: process.env.AGENT_DISCORD_API_URL,
   canStart: tenant => accounts.runLimit(tenant),
   definitionBuiltins: async (tenant, id) => (await definitions.read(tenant, id)).spec.builtins,
+  definitionWarnings: async (tenant, id) => warningsFor(tenant, sources((await definitions.read(tenant, id)).spec)),
   // Interim caps until servers have an aggregate budget: free credit gets one server and 500 turns a day per server.
   plan: async tenant => {
     const free = await accounts.billing.onFreeCredit(tenant);

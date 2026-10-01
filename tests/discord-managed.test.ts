@@ -437,6 +437,17 @@ test("a definition with a self-starting builtin cannot serve a server", async t 
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-scheduled" })).status, 400);
 });
 
+test("saving a server whose definition has a builtin the account cannot use answers with its warning", async t => {
+  const hint = "Web search isn't available for this account: add an Exa, Brave or Parallel key under Models & keys (PUT /v1/providers/<provider>/key)";
+  const f = await fixture(t, { definitionWarnings: async (_tenant, id) => id === "def-unkeyed" ? [hint] : [] });
+  await f.install();
+  const saved = await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-unkeyed", allowedChannelIds: [channelA] });
+  assert.equal(saved.status, 200);
+  assert.deepEqual((await saved.json() as any).warnings, [hint]);
+  const keyed = await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { definition: "def-plain" });
+  assert.equal((await keyed.json() as any).warnings, undefined);
+});
+
 test("Discord's real token response binds whatever its scope string lists", async t => {
   const f = await fixture(t);
   for (const scope of ["bot", "identify bot", "bot identify", "identify", ""]) {

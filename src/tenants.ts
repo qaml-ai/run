@@ -34,8 +34,10 @@ export interface Tenant {
   maxMonthlyCost?: number;
   /** GB (10^9 bytes) it may store in all, as the storage charge counts them; absent: the plan's for a prepaid tenant, else unlimited. */
   maxStorageGb?: number;
-  /** "prepaid": pays from credit (src/billing.ts), and may use the platform's keys. Admin tenants default to "none", unbilled. */
+  /** "prepaid": pays from credit (src/billing.ts) for what runs on the platform's keys. Admin tenants default to "none", unbilled. */
   billing?: "prepaid" | "none";
+  /** false: an unbilled tenant's agents never fall back to the platform's keys (the file's `platformKeys`), only its own and its apiKeys. */
+  platformKeys?: boolean;
   /** The tenant's own pass-through model endpoints, by the provider name its models are named under (`<name>/<provider>/<model id>`). */
   modelEndpoints?: Record<string, ModelEndpoint>;
 }
@@ -45,7 +47,7 @@ const validTenantId = (value: unknown): value is string => typeof value === "str
 
 export class Tenants {
   private byId = new Map<string, Tenant>();
-  /** The platform's own provider keys (the file's `platformKeys`): prepaid tenants without a key of their own use them. */
+  /** The platform's own provider keys (the file's `platformKeys`): tenants without a key of their own use them (`usesPlatformKeys`). */
   private platform: Record<string, string> = {};
   private readonly file?: string;
   private readonly read?: () => Promise<string>;
@@ -104,6 +106,8 @@ export class Tenants {
       if (tenant.maxMonthlyCost !== undefined && (typeof tenant.maxMonthlyCost !== "number" || !Number.isFinite(tenant.maxMonthlyCost) || tenant.maxMonthlyCost < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxMonthlyCost: a non-negative number of USD, or absent for no limit`);
       if (tenant.maxStorageGb !== undefined && (typeof tenant.maxStorageGb !== "number" || !Number.isFinite(tenant.maxStorageGb) || tenant.maxStorageGb < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxStorageGb: a non-negative number of GB, or absent for the default`);
       if (tenant.billing !== undefined && tenant.billing !== "prepaid" && tenant.billing !== "none") throw new Error(`Tenant ${tenant.id} has an invalid billing: "prepaid", "none", or absent for none`);
+      if (tenant.platformKeys !== undefined && typeof tenant.platformKeys !== "boolean") throw new Error(`Tenant ${tenant.id} has an invalid platformKeys: false, or absent to use the platform's keys`);
+      if (tenant.platformKeys === false && tenant.billing === "prepaid") throw new Error(`Tenant ${tenant.id} is prepaid, so it pays for the platform's keys: platformKeys: false is for unbilled tenants`);
       if (tenant.modelEndpoints !== undefined) validEndpoints(tenant.id, tenant.modelEndpoints);
       next.set(tenant.id, {
         id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}),
@@ -112,7 +116,7 @@ export class Tenants {
         ...(tenant.maxAgentCreatesPerMinute !== undefined ? { maxAgentCreatesPerMinute: tenant.maxAgentCreatesPerMinute } : {}),
         ...(tenant.maxRunsPerMinute !== undefined ? { maxRunsPerMinute: tenant.maxRunsPerMinute } : {}),
         ...(tenant.maxRunResponses !== undefined ? { maxRunResponses: tenant.maxRunResponses } : {}), ...(tenant.maxRunSeconds !== undefined ? { maxRunSeconds: tenant.maxRunSeconds } : {}),
-        ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
+        ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.platformKeys === false ? { platformKeys: false } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
       });
     }
     this.byId = next;
@@ -156,6 +160,13 @@ export class Tenants {
 
   /** How an admin tenant is billed; undefined for tenants not in the file. */
   billing(id: string) { const tenant = this.byId.get(id); return tenant && (tenant.billing ?? "none"); }
+
+  /**
+   * Whether an admin tenant's agents fall back to the platform's keys when they have no key of their own: a
+   * prepaid one pays for them from credit; an unbilled one (an operator's) uses them unbilled, its usage still
+   * recorded as the platform's, unless its entry says `platformKeys: false`. Undefined for tenants not in the file.
+   */
+  usesPlatformKeys(id: string) { const tenant = this.byId.get(id); return tenant && (tenant.billing === "prepaid" || tenant.platformKeys !== false); }
 
   /** The tenant's own model endpoints, if its entry has any. */
   modelEndpoints(id: string) { return this.byId.get(id)?.modelEndpoints; }

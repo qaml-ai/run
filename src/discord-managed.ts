@@ -36,6 +36,8 @@ export interface ManagedDiscordOptions {
   canStart?: (tenant: string) => Promise<string | HttpError | undefined>;
   /** The builtins of a tenant's definition, to refuse self-starting ones for a server. */
   definitionBuiltins?: (tenant: string, definition: string) => Promise<string[] | undefined>;
+  /** Builtins of a tenant's definition it cannot use (no key for them), as warnings for the setup's answer. */
+  definitionWarnings?: (tenant: string, definition: string) => Promise<string[]>;
   /** How many servers the account may connect, and its highest daily turn limit per server. */
   plan?: (tenant: string) => Promise<{ free: boolean; servers: number; turnsPerDay: number }>;
   applyDefinition?: (tenant: string, channel: string, definition: string) => Promise<ApplyResult[]>;
@@ -547,7 +549,8 @@ export class ManagedDiscord {
       });
       this.log("binding_updated", { guildId, tenant: account, state: input.state, setup });
       const applied = !setup && channelId && input.definition && this.options.applyDefinition ? await this.options.applyDefinition(account, channelId, input.definition) : undefined;
-      return c.json({ ...await this.view((await this.byId(current.id))!), ...(applied ? { applied } : {}) });
+      const warnings = input.definition ? await this.options.definitionWarnings?.(account, input.definition) ?? [] : [];
+      return c.json({ ...await this.view((await this.byId(current.id))!), ...(applied ? { applied } : {}), ...(warnings.length ? { warnings } : {}) });
     });
     app.onError((error, c) => {
       const status = error instanceof HttpError ? error.status : error instanceof SendError ? 503 : error instanceof z.ZodError ? 400 : 500;

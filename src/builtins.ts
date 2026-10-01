@@ -2,7 +2,7 @@ import type { ToolDefinition } from "./protocol.ts";
 import type { Outbound } from "./outbound.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import type { Claim } from "./ownership.ts";
-import { FRESHNESS, SEARCH, type WebSearch } from "./web-search.ts";
+import { FRESHNESS, SEARCH, webSearchUnavailable, type WebSearch } from "./web-search.ts";
 import { isShell, type WebRender } from "./web-render.ts";
 import { readableText } from "./html-text.ts";
 import type { McpResult } from "./mcp-results.ts";
@@ -40,6 +40,16 @@ export const SELF_STARTING_BUILTINS: readonly Builtin[] = ["schedule"];
 export function managedBuiltinsRefusal(builtins: readonly string[] | undefined) {
   const refused = (builtins ?? []).filter(name => (SELF_STARTING_BUILTINS as readonly string[]).includes(name));
   return refused.length ? `Camel Discord servers cannot use the ${refused.join(", ")} builtin: any member could start runs outside the server's limits. Remove it from the definition, or use a separate one for the server` : undefined;
+}
+/**
+ * What builtins a definition or agent enables cannot do for its tenant, as warnings for its save: web_search
+ * without a key (the tenant's, an admin's or the platform's) for any provider it would try, `order` unless
+ * the definition pins its own. web_fetch works without its renderer's key, so it is never warned about.
+ */
+export async function builtinWarnings(sources: { builtins?: readonly string[]; webSearch?: { providers: readonly string[] } } | undefined, order: readonly string[], keyed: () => Promise<(provider: string) => boolean>): Promise<string[]> {
+  if (!sources?.builtins?.includes("web_search")) return [];
+  const providers = sources.webSearch?.providers ?? order;
+  return providers.some(await keyed()) ? [] : [webSearchUnavailable(providers)];
 }
 /** `builtins` as a definition or an agent gives them: distinct names of BUILTINS. */
 export function builtinsInput(value: unknown): Builtin[] {
