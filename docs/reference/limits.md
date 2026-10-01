@@ -101,7 +101,9 @@ reading them and sending them input do not count; only runs do.
 | `metadata` | at most 16 keys of 1–64 characters, string values of at most 512 characters |
 | `configure` body | 1 MiB |
 | Provider retries within a turn | 3 attempts, backing off from 2 s (overload, rate limits, 5xx, dropped streams); context overflow is not retried |
-| Wait | none: a run may take as long as it takes, or wait on people for days. The SDKs have no default timeout |
+| Model responses in one run | 1,000, compaction summaries included; `runLimits.maxResponses` lowers it for an agent or a definition, and the operator sets the maximum (`AGENT_MAX_RUN_RESPONSES`). At it, the turn stops before its next model request: `stopped: "turn_limit"` |
+| A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`). `stopped: "turn_limit"` too; send another message to continue |
+| Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
 
 ## Files
@@ -196,5 +198,6 @@ reading them and sending them input do not count; only runs do.
 | Limit | Value |
 | --- | --- |
 | An agent's spend limit | from when it is set: new prompts are refused, and a running turn stops after the response that crossed it (`stopped: "spend_limit"`) |
+| Run limits | 1,000 model responses and 2 hours a run (see [Runs and requests](#runs-and-requests)): `stopped: "turn_limit"` |
 | A tenant's monthly cap (`maxMonthlyCost`) | 402 for new runs once reached |
 | Prepaid credit | 402 at a zero balance, for runs and for storing files; free credit allows $1 of usage per hour (429 past it) |

@@ -116,7 +116,7 @@ export class AgentSupervisor {
     rpc.handler = async (method, params) => {
       if (method === "cancel-tools") return this.cancelTools(handle);
       if (method === "transcript") return this.transcriptRequest(handle, params);
-      if (method === "spend-limit") return (await handle.bridge.spendLimit?.()) ?? null;
+      if (method === "run-limit") return (await handle.bridge.runLimit?.()) ?? null;
       if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
       if (method === "model-auth") return this.modelAuth(handle);
@@ -195,7 +195,7 @@ export class AgentSupervisor {
       emit: event => { for (const listener of handle.listeners) listener(structuredClone(event)); },
       tool: (name, args, call) => this.dispatchTool(handle, { name, args: structuredClone(args), ...call }),
       cancelTools: async () => this.cancelTools(handle),
-      spendLimit: async () => handle.bridge.spendLimit?.(),
+      runLimit: async () => handle.bridge.runLimit?.(),
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),
       file: ref => this.file(handle, structuredClone(ref)),
       modelAuth: () => this.modelAuth(handle),

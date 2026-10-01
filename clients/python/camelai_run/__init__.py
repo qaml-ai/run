@@ -435,7 +435,7 @@ class AgentRuntime:
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, on_input=None, builtins=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -443,12 +443,14 @@ class AgentRuntime:
         idempotency_key of yours, else one day).
         `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
         file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
-        (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `model_headers` non-secret headers for each model call."""
+        (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `run_limits`
+        ({"maxResponses": n, "maxSeconds": n}) the most one run may take, within the runtime's maximums (1,000 responses and
+        2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call."""
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
-                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers, builtins=builtins)
+                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
@@ -592,10 +594,10 @@ class AgentRuntime:
 
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
-                  subject=None, context=None, key_scope=None, spend_limit=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None, prompt=None):
+                  subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None, prompt=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
-                "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "modelHeaders": model_headers,
+                "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "builtins": builtins, "prompt": prompt}
     return {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
 
@@ -1557,7 +1559,8 @@ class Agent:
     def _to_run(self, request_id, result, output=None):
         result = result or {}
         error = ({"code": result.get("code") or "model_error", "message": result["error"]} if result.get("error")
-                 else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit" else None)
+                 else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit"
+                 else {"code": "turn_limit", "message": "The run reached its limit of model responses or time; send another message to continue"} if result.get("stopped") == "turn_limit" else None)
         # The runtime checked the output against the JSON Schema; a pydantic model parses it too (validators, types).
         value = result.get("output")
         if value is not None and not error:
@@ -1659,7 +1662,7 @@ class Agents:
         self._open = set()
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
-                     key_scope=None, spend_limit=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
+                     key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
@@ -1670,8 +1673,8 @@ class Agents:
         without serving them (another process does); takeover=True replaces the process serving them now."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-                                                  subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, model_headers=model_headers,
-                                                  mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins)
+                                                  subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
+                                                  model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, _sync=False)
 

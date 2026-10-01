@@ -68,7 +68,7 @@ your side.
 | `FileSearchTool` (vector stores) | No equivalent. Agents have files and file tools, not vector search |
 | `MCPServerStreamableHttp` | `mcpServers` in a [definition](definitions.md): the runtime calls the server itself. A local MCP server object can be attached with `fromMcpServer` (TypeScript) |
 | Tracing (`trace()`, the traces dashboard) | The event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](webhooks.md), and `GET /v1/agents/:id/history`. No OpenTelemetry export |
-| `max_turns` | No turn cap. `spend_limit={"usd": …}` on a run, or on the agent, bounds what it spends |
+| `max_turns` | `run_limits={"maxResponses": n}` on the agent (at most 1,000 model responses and 2 hours a run by default); a run that reaches it stops with `stopped: "turn_limit"`. `spend_limit={"usd": …}` on a run, or on the agent, bounds what it spends |
 | `ModelSettings` (temperature, top_p) | Not settable. `thinking_level` is |
 
 ## LangGraph

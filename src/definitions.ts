@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Db } from "./db.ts";
-import type { ToolDefinition } from "./protocol.ts";
+import type { RunLimits, ToolDefinition } from "./protocol.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { errorText } from "./protocol.ts";
-import { configurationUpdate, resolveModel, type CustomProviders } from "./session-config.ts";
+import { configurationUpdate, resolveModel, runLimitsInput, type CustomProviders } from "./session-config.ts";
 import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
@@ -28,6 +28,8 @@ export interface DefinitionSpec {
   systemPrompt?: string;
   thinkingLevel?: string;
   limits?: { ttlSeconds?: number | null };
+  /** The most one run of its agents may take (model responses, seconds), within the runtime's maximums. */
+  runLimits?: RunLimits;
   mounts?: unknown[];
   /** Remote MCP servers whose tools the runtime calls; credentials sealed. */
   mcpServers?: McpServerSpec[];
@@ -56,9 +58,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "fileTools"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "fileTools", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
@@ -233,10 +235,10 @@ export class Definitions {
     const ttlSeconds = params.ttlSeconds !== undefined ? params.ttlSeconds : spec.limits?.ttlSeconds;
     const mounts = params.mounts !== undefined ? params.mounts : spec.mounts;
     const overrides = OVERRIDES.filter(key => params[key] !== undefined);
-    const own = (key: "model" | "systemPrompt" | "thinkingLevel" | "fileTools") => params[key] ?? spec[key];
+    const own = (key: "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits") => params[key] ?? spec[key];
     return {
       params: {
-        ...Object.fromEntries((["model", "systemPrompt", "thinkingLevel", "fileTools"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
+        ...Object.fromEntries((["model", "systemPrompt", "thinkingLevel", "fileTools", "runLimits"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
         tools: params.tools ?? [], name: params.name ?? definition.name, ...(params.type !== undefined ? { type: params.type } : {}),
         ...(ttlSeconds !== undefined ? { ttlSeconds } : {}), ...(mounts !== undefined ? { mounts } : {}),
         ...Object.fromEntries(["initialMessages", "systemPromptAppend"].filter(key => params[key] !== undefined).map(key => [key, params[key]])),
@@ -275,6 +277,7 @@ export class Definitions {
     }
     if (spec.description !== undefined && (typeof spec.description !== "string" || !spec.description.trim() || spec.description.length > 1000)) throw new HttpError(400, "description must contain 1–1000 characters");
     if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");
+    if (spec.runLimits !== undefined && !runLimitsInput(spec.runLimits)) delete spec.runLimits;
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
     if (spec.builtins !== undefined) builtinsInput(spec.builtins);
     if (spec.webSearch !== undefined) {

@@ -1427,7 +1427,7 @@ Every event is an envelope:
 | Type | When | `data` |
 | --- | --- | --- |
 | `run.started` | A run (`method`: `prompt`, `continue`, `resume`, `execute`) began | `agentId`, `requestId`, `method`, `actor`, `metadata`; `resumes` when a node resumed a turn whose node was lost |
-| `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, or `spend_limit`) if it stopped early; `replyIndex` and `messageCount`; `steeredInto` for a message a running turn took |
+| `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, `spend_limit` or `turn_limit`) if it stopped early; `replyIndex` and `messageCount`; `steeredInto` for a message a running turn took |
 | `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
@@ -1699,6 +1699,26 @@ spent that, before its next model request; the agent's own limit is unchanged,
 and still counts the run. To give each prompt what is left of a budget you keep,
 send it with the prompt instead of reconfiguring the agent.
 
+## Run limits
+
+A run also stops at **1,000 model responses** (compaction summaries count) or
+**2 hours** from when it began, whichever comes first, so a model that never stops
+calling tools ends on its own. Like a spend limit, the turn ends after the response
+that reached the limit (its tool calls run and are recorded), before the next model
+request, with `stopped: "turn_limit"` and `code: "turn_limit"`; the reason is in
+`error`, e.g. `This run stopped at its limit of 1000 model responses. Send another
+message to continue`. The history stays valid: the next message picks up from there.
+The SDKs' `run()` fails with code `turn_limit`.
+
+Lower them for an agent with `runLimits: {"maxResponses": n, "maxSeconds": n}` (the
+SDKs' `runLimits`, `run_limits=` in Python) when you make it, or with
+`PATCH /v1/agents/:id/configuration` (`null` removes them), or for every agent of a
+[definition](definitions.md) with its `runLimits`. An agent's own stay when its
+definition is applied. Values above the runtime's maximums count as the maximums,
+which its operator sets (`AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS`). Only you
+can set them, not the agent's own token. They are counted on the node running the
+turn: a turn resumed on another node after its node was lost counts again from there.
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/custom-models.md -->
@@ -1907,7 +1927,7 @@ If the tunnel's address changes, save the provider again with the new
 
 A definition is a reusable agent configuration: name, model, system prompt,
 thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
-limits (`ttlSeconds`) and mounts. Manage them with the SDKs
+limits (`ttlSeconds`), run limits (`runLimits`, see [Run limits](models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
 (`agents.runtime.upsertDefinition`, `createDefinition`, `updateDefinition`,
 `definition(s)`, `deleteDefinition`; `upsert_definition` and so on in Python),
 `/v1/definitions`, or the console's Definitions page, and make agents from one.
@@ -1944,7 +1964,7 @@ leaves alone:
  "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
 ```
 
-- `model` and `thinkingLevel` given at creation, or later through
+- `model`, `thinkingLevel` and `runLimits` given at creation, or later through
   `PATCH /v1/agents/:id/configuration`, and `fileTools` given at creation, are
   the agent's own: an apply changes every other field and keeps them.
 - `systemPromptAppend` is text the model reads after the definition's prompt
@@ -2361,7 +2381,7 @@ your side.
 | `FileSearchTool` (vector stores) | No equivalent. Agents have files and file tools, not vector search |
 | `MCPServerStreamableHttp` | `mcpServers` in a [definition](definitions.md): the runtime calls the server itself. A local MCP server object can be attached with `fromMcpServer` (TypeScript) |
 | Tracing (`trace()`, the traces dashboard) | The event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](webhooks.md), and `GET /v1/agents/:id/history`. No OpenTelemetry export |
-| `max_turns` | No turn cap. `spend_limit={"usd": …}` on a run, or on the agent, bounds what it spends |
+| `max_turns` | `run_limits={"maxResponses": n}` on the agent (at most 1,000 model responses and 2 hours a run by default); a run that reaches it stops with `stopped: "turn_limit"`. `spend_limit={"usd": …}` on a run, or on the agent, bounds what it spends |
 | `ModelSettings` (temperature, top_p) | Not settable. `thinking_level` is |
 
 ## LangGraph
@@ -2661,7 +2681,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `definition` | `definition=` | make it from a definition (its model, prompt and tool sources) |
 | `thinkingLevel` | `thinking_level=` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
-| `keyScope`, `spendLimit`, `modelHeaders` | `key_scope=`, `spend_limit=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
+| `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
 | `name` | `name=` | a label, shown in the console |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
@@ -3498,6 +3518,7 @@ Messages (`message` fields, and history) are one of:
 | `compaction_usage` *internal* | `provider`, `model`, `usage`, `timestamp` | what the summary's model call used |
 | `context_trimmed` | `retainedMessages`, `omittedMessages` | older messages were left out of a model request to fit it |
 | `spend_limit_reached` *internal* | `message` | the agent (or tenant) reached its spend limit; the turn stops after this response's tool calls |
+| `turn_limit_reached` *internal* | `message` | the run reached its limit of model responses or time (`runLimits`); the turn stops after this response's tool calls |
 
 ## Run outcomes
 
@@ -3510,8 +3531,8 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `replyIndex` | that message's index in the agent's history |
 | `messages` | how many messages the agent's history holds after the run |
 | `error` | the model's error (a provider refusal after retries), or `null` |
-| `code` | a stable name for `error`, where the runtime gives one: `output_missing` (a structured run ended without its output) |
-| `stopped` | why the run stopped early: `input_required` (it waits on `inputs`) or `spend_limit` (with the reason in `error`) |
+| `code` | a stable name for `error`, where the runtime gives one: `output_missing` (a structured run ended without its output), `spend_limit`, `turn_limit` |
+| `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](../guides/models-and-keys.md#run-limits)), with the reason in `error` |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |
@@ -3650,7 +3671,9 @@ reading them and sending them input do not count; only runs do.
 | `metadata` | at most 16 keys of 1–64 characters, string values of at most 512 characters |
 | `configure` body | 1 MiB |
 | Provider retries within a turn | 3 attempts, backing off from 2 s (overload, rate limits, 5xx, dropped streams); context overflow is not retried |
-| Wait | none: a run may take as long as it takes, or wait on people for days. The SDKs have no default timeout |
+| Model responses in one run | 1,000, compaction summaries included; `runLimits.maxResponses` lowers it for an agent or a definition, and the operator sets the maximum (`AGENT_MAX_RUN_RESPONSES`). At it, the turn stops before its next model request: `stopped: "turn_limit"` |
+| A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`). `stopped: "turn_limit"` too; send another message to continue |
+| Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
 
 ## Files
@@ -3745,6 +3768,7 @@ reading them and sending them input do not count; only runs do.
 | Limit | Value |
 | --- | --- |
 | An agent's spend limit | from when it is set: new prompts are refused, and a running turn stops after the response that crossed it (`stopped: "spend_limit"`) |
+| Run limits | 1,000 model responses and 2 hours a run (see [Runs and requests](#runs-and-requests)): `stopped: "turn_limit"` |
 | A tenant's monthly cap (`maxMonthlyCost`) | 402 for new runs once reached |
 | Prepaid credit | 402 at a zero balance, for runs and for storing files; free credit allows $1 of usage per hour (429 past it) |
 
@@ -3849,6 +3873,7 @@ A run ends in one of three ways: it answered, it waits on people
 | `output_missing` | `result.code` (with `result.error`) | A run sent with `output` ended without the model calling `final_output`: it answered in prose twice, the second time after a reminder. `text` has what it said. Send the prompt again, make the instructions say what the answer is for, or use a stronger model |
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
 | `spend_limit` | `result.stopped: "spend_limit"` | The agent's spend limit (or the tenant's monthly cap) stopped the turn after the response that crossed it; its tool calls ran. Raise the limit and send the next message |
+| `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](../guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
 | `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent's model has no key, the agent was deleted, code execution failed, a queued run refused for credit |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
 

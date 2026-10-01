@@ -61,6 +61,8 @@ export interface AgentConfig {
   keyScope?: string;
   /** The most it may spend on model calls from now on (USD). */
   spendLimit?: { usd: number };
+  /** The most one run may take: model responses, and seconds (within the runtime's 1,000 and 2 hours by default). */
+  runLimits?: { maxResponses?: number; maxSeconds?: number };
   modelHeaders?: Record<string, string>;
   mounts?: Mount[];
   name?: string;
@@ -360,7 +362,8 @@ export class Agent {
   private async toRun<T>(id: string, result: RunResult | undefined, schema?: OutputSchema): Promise<Run<T>> {
     const raw = result ?? null;
     let error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error }
-      : raw?.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it (configure spendLimit) to go on" } : null;
+      : raw?.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it (configure spendLimit) to go on" }
+      : raw?.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : null;
     // The runtime checked the output against the JSON Schema; a Standard Schema parses it too (refinements, transforms).
     let output = raw?.output as T | undefined;
     const standard = (schema as StandardOutputSchema<T> | undefined)?.["~standard"];

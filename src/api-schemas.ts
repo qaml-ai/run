@@ -134,7 +134,7 @@ export const WebhookEvents = {
   "run.started": envelope("run.started", z.object({ ...runFacts, resumes: z.number().optional().openapi({ description: "Set when a node resumed a turn whose node was lost" }) }), "A run began"),
   "run.completed": envelope("run.completed", z.object({
     ...runFacts, usage: runUsage,
-    stopped: z.enum(["input_required", "spend_limit"]).optional().openapi({ description: "Why it stopped early: waiting on input (inputIds), or a spend limit" }),
+    stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why it stopped early: waiting on input (inputIds), a spend limit, or the run's own limits (turn_limit: its model responses or time, see runLimits)" }),
     inputIds: z.array(z.string()).optional(),
     replyIndex: z.number().optional().openapi({ description: "The final assistant message's index in the agent's history" }),
     messageCount: z.number().optional().openapi({ description: "Messages in the agent's history after it" }),
@@ -190,6 +190,13 @@ export const SpendLimitInput = z.object({ usd: z.number().min(0).max(1_000_000) 
   description: "The most the agent may spend on model calls (their token cost, compaction included) from when this is set: a new value starts counting from zero. At it, new prompts get 402 and a running turn ends with stopped \"spend_limit\"",
 });
 
+export const RunLimits = z.strictObject({
+  maxResponses: z.number().int().min(1).max(1_000_000).optional().openapi({ description: "Model responses one run may make, compaction summaries included; default and at most the runtime's maximum (1,000 unless its operator set another)" }),
+  maxSeconds: z.number().int().min(1).max(31_536_000).optional().openapi({ description: "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another)" }),
+}).openapi("RunLimits", {
+  description: "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those",
+});
+
 export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeaders", {
   description: "Non-secret headers sent on each of the agent's model calls, after a key scope entry's, e.g. cf-aig-metadata. At most 20 and 8 KB; never authorization, x-api-key, x-goog-api-key, cf-aig-authorization, chatgpt-account-id, x-agent-runtime-identity, x-amz-* or transport headers",
 });
@@ -235,6 +242,7 @@ export const AgentInput = z.object({
   builtins: z.array(Builtin).max(8).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
   spendLimit: SpendLimitInput.optional(),
+  runLimits: RunLimits.optional().openapi({ description: "The most one run may take (model responses, seconds); an agent from a definition gets the definition's unless this is given" }),
   modelHeaders: ModelHeaders.optional(),
   prompt: PromptInput.optional().openapi({ description: "A first prompt, as POST /v1/agents/{id}/prompt takes it, sent once the agent is made: it runs as soon as the agent has started, so a new conversation needs one call. Give it a requestId: a retry of the create (same Idempotency-Key) with the same requestId makes no second agent and sends no second prompt" }),
 }).openapi("AgentInput");
@@ -269,7 +277,7 @@ export const RequestRecord = z.object({
   steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares" }),
   outcome: Outcome.optional().openapi({ description: "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?}, without arguments or results. result.output is a structured answer, for a prompt sent with output" }),
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
-  stopped: z.enum(["input_required", "spend_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
+  stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
 }).openapi("RequestRecord");
 export const AgentCreated = z.looseObject({
   id: z.string(),
@@ -334,6 +342,7 @@ export const AgentDetail = AgentSummary.extend({
   modelHeaders: ModelHeaders.nullable(),
   builtins: z.array(Builtin).openapi({ description: "The tools the runtime answers itself: its own, or its definition's" }),
   spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
+  runLimits: RunLimits.nullable().openapi({ description: "Its own run limits, as set; null: the runtime's" }),
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
   requests: z.array(RequestRecord),
@@ -352,7 +361,7 @@ export const EventPoll = z.object({
 export const BrowserTokenInput = z.object({
   ttlSeconds: z.number().int().min(5).max(3600).optional().openapi({ description: "How long it lives: 5 to 3600 seconds, default 900. Nothing revokes it sooner" }),
   scopes: z.array(z.enum(["events", "state", "history", "inputs"])).optional().openapi({ description: "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default all four" }),
-  events: z.array(z.string()).max(64).optional().openapi({ description: "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (codemode, compaction_usage, spend_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped" }),
+  events: z.array(z.string()).max(64).optional().openapi({ description: "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (codemode, compaction_usage, spend_limit_reached, turn_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped" }),
   redact: z.array(z.enum(["usage.cost"])).optional().openapi({ description: "Fields it does not see: usage.cost, a response's provider cost, in messages, snapshots and history" }),
   subject: z.string().max(200).optional().openapi({ description: "Whom it is for, in your app (a user id)" }),
 }).openapi("BrowserTokenInput");
@@ -481,6 +490,7 @@ const definitionFields = {
   thinkingLevel: ThinkingLevel,
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }),
   limits: DefinitionLimits,
+  runLimits: RunLimits,
   mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
   builtins: z.array(Builtin).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, billed per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer" }),
   webSearch: z.object({
@@ -532,6 +542,7 @@ export const ConfigureInput = z.object({
   thinkingLevel: ThinkingLevel.optional(),
   keyScope: z.string().nullable().optional().openapi({ description: "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it" }),
   spendLimit: SpendLimitInput.nullable().optional().openapi({ description: "A new budget from now, applied at once, ahead of queued runs; null removes it" }),
+  runLimits: RunLimits.nullable().optional().openapi({ description: "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied" }),
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
   builtins: z.array(Builtin).max(8).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
 }).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it" });

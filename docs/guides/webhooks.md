@@ -31,7 +31,7 @@ Every event is an envelope:
 | Type | When | `data` |
 | --- | --- | --- |
 | `run.started` | A run (`method`: `prompt`, `continue`, `resume`, `execute`) began | `agentId`, `requestId`, `method`, `actor`, `metadata`; `resumes` when a node resumed a turn whose node was lost |
-| `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, or `spend_limit`) if it stopped early; `replyIndex` and `messageCount`; `steeredInto` for a message a running turn took |
+| `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, `spend_limit` or `turn_limit`) if it stopped early; `replyIndex` and `messageCount`; `steeredInto` for a message a running turn took |
 | `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |

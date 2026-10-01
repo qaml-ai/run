@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { executeCode, presentResult } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type ToolBridge } from "./protocol.ts";
+import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -32,8 +32,8 @@ export interface HostIO {
   tool(name: string, args: Record<string, unknown>, call?: CallContext): Promise<any>;
   /** Abort the application tool calls this agent has in flight. */
   cancelTools(): Promise<unknown>;
-  /** Why the tenant may not spend more on models (a reached cap), if so. */
-  spendLimit(): Promise<string | undefined>;
+  /** Why the running turn must end before its next model request (a reached spend cap, or the run's own limits), if so. */
+  runLimit(): Promise<RunStop | undefined>;
   /** The agent's transcript, which its supervisor writes. */
   transcript: AppendLog<TranscriptRecord>;
   /** `tools.search`, answered by the supervisor (which holds the rerankers); without it, code searches here. */
@@ -63,7 +63,7 @@ export function createAgentHost(hostIO: HostIO) {
   let active: AbortController | undefined;
   let persistenceError: unknown;
   /** Why the current run ended early: a spend limit, or tool calls waiting on a person's input. */
-  let stopped: { stopped: "spend_limit" | "input_required"; error?: string } | undefined;
+  let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string } | undefined;
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
   let dropped = new WeakSet<AgentMessage>();
   let summary: { state: CompactionState; message: AgentMessage } | undefined;
@@ -556,7 +556,7 @@ export function createAgentHost(hostIO: HostIO) {
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
         transformContext: (messages, signal) => contextFor(messages, signal),
-        // A turn with calls waiting on a person suspends; a tenant past its spend cap stops before the next model request, after this response's tool results.
+        // A turn with calls waiting on a person suspends; one past a spend cap or its run's limits (responses, time) stops before the next model request, after this response's tool results.
         finishTurn: async turn => {
           if (transcript.awaiting.length) {
             stopped = { stopped: "input_required" };
@@ -569,12 +569,12 @@ export function createAgentHost(hostIO: HostIO) {
             return { action: "end" };
           }
           if (!turn.toolResults.length && !agent!.hasQueuedMessages()) return;
-          let reason: string | undefined;
-          try { reason = await io.spendLimit(); }
+          let limit: RunStop | undefined;
+          try { limit = await io.runLimit(); }
           catch { return; /* Unknown spend never stops a turn. */ }
-          if (!reason) return;
-          stopped = { stopped: "spend_limit", error: reason };
-          io.emit({ type: "spend_limit_reached", message: reason });
+          if (!limit) return;
+          stopped = { stopped: limit.stopped, error: limit.message, code: limit.stopped };
+          io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
           return { action: "end" };
         },
         sessionId: config.id,

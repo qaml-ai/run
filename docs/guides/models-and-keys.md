@@ -198,3 +198,23 @@ A run can have a budget of its own: `spendLimit: {"usd": n}` on
 spent that, before its next model request; the agent's own limit is unchanged,
 and still counts the run. To give each prompt what is left of a budget you keep,
 send it with the prompt instead of reconfiguring the agent.
+
+## Run limits
+
+A run also stops at **1,000 model responses** (compaction summaries count) or
+**2 hours** from when it began, whichever comes first, so a model that never stops
+calling tools ends on its own. Like a spend limit, the turn ends after the response
+that reached the limit (its tool calls run and are recorded), before the next model
+request, with `stopped: "turn_limit"` and `code: "turn_limit"`; the reason is in
+`error`, e.g. `This run stopped at its limit of 1000 model responses. Send another
+message to continue`. The history stays valid: the next message picks up from there.
+The SDKs' `run()` fails with code `turn_limit`.
+
+Lower them for an agent with `runLimits: {"maxResponses": n, "maxSeconds": n}` (the
+SDKs' `runLimits`, `run_limits=` in Python) when you make it, or with
+`PATCH /v1/agents/:id/configuration` (`null` removes them), or for every agent of a
+[definition](definitions.md) with its `runLimits`. An agent's own stay when its
+definition is applied. Values above the runtime's maximums count as the maximums,
+which its operator sets (`AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS`). Only you
+can set them, not the agent's own token. They are counted on the node running the
+turn: a turn resumed on another node after its node was lost counts again from there.

@@ -11,7 +11,7 @@ import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, sessionConfig } from "./session-config.ts";
-import { ClientSessions, spendInput } from "./client-sessions.ts";
+import { ClientSessions, RUN_LIMITS, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
@@ -135,6 +135,10 @@ const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: proces
 const model = configuredModel();
 const toolTimeoutMs = Number(process.env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
 if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
+// The most one run may take, whatever its agent sets (runLimits): model responses, and seconds from when it began.
+const runLimits = { maxResponses: Number(process.env.AGENT_MAX_RUN_RESPONSES ?? RUN_LIMITS.maxResponses), maxSeconds: Number(process.env.AGENT_MAX_RUN_SECONDS ?? RUN_LIMITS.maxSeconds) };
+if (!Number.isSafeInteger(runLimits.maxResponses) || runLimits.maxResponses < 1) throw new Error("AGENT_MAX_RUN_RESPONSES must be a positive integer");
+if (!Number.isSafeInteger(runLimits.maxSeconds) || runLimits.maxSeconds < 1) throw new Error("AGENT_MAX_RUN_SECONDS must be a positive integer");
 const idleMs = Number(process.env.AGENT_IDLE_MS ?? 5 * 60_000);
 if (!Number.isInteger(idleMs) || idleMs < 1000) throw new Error("AGENT_IDLE_MS must be an integer of at least 1000");
 // Endpoints beyond the default model's and Pi's published ones that may receive a provider key.
@@ -463,7 +467,7 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
   runEvents: tenant => subscribers.runs(tenant),
-  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, runLimits, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
     // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
     const { limit, source } = await accounts.billing.busyLimit(tenant);
     return source === "default" ? undefined : limit;
@@ -502,7 +506,7 @@ const clients = new ClientSessions(supervisor, {
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
     const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
-    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false }, sources: sources(spec) };
+    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, runLimits: spec.runLimits ?? null }, sources: sources(spec) };
   },
   sources: toolSources,
   inputs,

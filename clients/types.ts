@@ -92,6 +92,7 @@ export type AgentEvent =
   | { type: "compaction_end"; reason: string; skipped?: boolean; error?: string; tokensBefore?: number; summarizedMessages?: number; keptMessages?: number }
   | { type: "context_trimmed"; retainedMessages: number; omittedMessages: number }
   | { type: "spend_limit_reached"; message: string }
+  | { type: "turn_limit_reached"; message: string }
   | { type: "turn_resumed" | "turn_recovered"; reason: string }
   /** An event too large for the stream (`was` its type, e.g. message_end); history has the message. */
   | { type: "event_omitted"; reason: string; was?: string }

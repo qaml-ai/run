@@ -183,9 +183,10 @@
                 "type": "string",
                 "enum": [
                   "input_required",
-                  "spend_limit"
+                  "spend_limit",
+                  "turn_limit"
                 ],
-                "description": "Why it stopped early: waiting on input (inputIds), or a spend limit"
+                "description": "Why it stopped early: waiting on input (inputIds), a spend limit, or the run's own limits (turn_limit: its model responses or time, see runLimits)"
               },
               "inputIds": {
                 "type": "array",
@@ -1567,7 +1568,8 @@
             "type": "string",
             "enum": [
               "input_required",
-              "spend_limit"
+              "spend_limit",
+              "turn_limit"
             ],
             "description": "Why an ended run stopped early (outcome.result.stopped)"
           }
@@ -1677,6 +1679,9 @@
           "spendLimit": {
             "$ref": "#/components/schemas/SpendLimitInput"
           },
+          "runLimits": {
+            "$ref": "#/components/schemas/RunLimits"
+          },
           "modelHeaders": {
             "$ref": "#/components/schemas/ModelHeaders"
           },
@@ -1740,6 +1745,25 @@
         ],
         "additionalProperties": false,
         "description": "The most the agent may spend on model calls (their token cost, compaction included) from when this is set: a new value starts counting from zero. At it, new prompts get 402 and a running turn ends with stopped \"spend_limit\""
+      },
+      "RunLimits": {
+        "type": "object",
+        "properties": {
+          "maxResponses": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000,
+            "description": "Model responses one run may make, compaction summaries included; default and at most the runtime's maximum (1,000 unless its operator set another)"
+          },
+          "maxSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 31536000,
+            "description": "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another)"
+          }
+        },
+        "additionalProperties": false,
+        "description": "The most one run may take (model responses, seconds); an agent from a definition gets the definition's unless this is given"
       },
       "ModelHeaders": {
         "type": "object",
@@ -1997,6 +2021,20 @@
                   "spent"
                 ]
               },
+              "runLimits": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/RunLimits"
+                  },
+                  {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "description": "Its own run limits, as set; null: the runtime's"
+                  }
+                ]
+              },
               "cursor": {
                 "type": "number"
               },
@@ -2031,6 +2069,7 @@
               "modelHeaders",
               "builtins",
               "spendLimit",
+              "runLimits",
               "cursor",
               "events",
               "requests"
@@ -2349,7 +2388,7 @@
               "type": "string"
             },
             "maxItems": 64,
-            "description": "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (codemode, compaction_usage, spend_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped"
+            "description": "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (codemode, compaction_usage, spend_limit_reached, turn_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped"
           },
           "redact": {
             "type": "array",
@@ -2456,6 +2495,28 @@
             ],
             "additionalProperties": false,
             "description": "A new budget from now, applied at once, ahead of queued runs; null removes it"
+          },
+          "runLimits": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "maxResponses": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000,
+                "description": "Model responses one run may make, compaction summaries included; default and at most the runtime's maximum (1,000 unless its operator set another)"
+              },
+              "maxSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 31536000,
+                "description": "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another)"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied"
           },
           "modelHeaders": {
             "type": [
@@ -3926,6 +3987,16 @@
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
           },
+          "runLimits": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunLimits"
+              },
+              {
+                "description": "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those"
+              }
+            ]
+          },
           "mounts": {
             "type": "array",
             "items": {
@@ -4297,6 +4368,16 @@
           },
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
+          },
+          "runLimits": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunLimits"
+              },
+              {
+                "description": "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those"
+              }
+            ]
           },
           "mounts": {
             "type": "array",
@@ -4747,6 +4828,20 @@
                   "object",
                   "null"
                 ]
+              }
+            ]
+          },
+          "runLimits": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunLimits"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those"
               }
             ]
           },

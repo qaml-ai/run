@@ -2,7 +2,7 @@
 
 A definition is a reusable agent configuration: name, model, system prompt,
 thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
-limits (`ttlSeconds`) and mounts. Manage them with the SDKs
+limits (`ttlSeconds`), run limits (`runLimits`, see [Run limits](models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
 (`agents.runtime.upsertDefinition`, `createDefinition`, `updateDefinition`,
 `definition(s)`, `deleteDefinition`; `upsert_definition` and so on in Python),
 `/v1/definitions`, or the console's Definitions page, and make agents from one.
@@ -39,7 +39,7 @@ leaves alone:
  "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
 ```
 
-- `model` and `thinkingLevel` given at creation, or later through
+- `model`, `thinkingLevel` and `runLimits` given at creation, or later through
   `PATCH /v1/agents/:id/configuration`, and `fileTools` given at creation, are
   the agent's own: an apply changes every other field and keeps them.
 - `systemPromptAppend` is text the model reads after the definition's prompt

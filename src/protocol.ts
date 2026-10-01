@@ -8,11 +8,14 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 /** A tool call from the model: its id, its place in js_exec's code if made there, and the history index of the assistant message that made it. */
 export type CallContext = { toolCallId: string; innerCallId?: string; messageIndex?: number };
 import type { HistoryChunk } from "./history-pages.ts";
+export type RunLimits = { maxResponses?: number; maxSeconds?: number };
+/** Why a turn ended early on a limit: spend (the agent's, the run's or the tenant's), or the run's responses or time. */
+export type RunStop = { stopped: "spend_limit" | "turn_limit"; message: string };
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: CallContext): Promise<unknown>;
-  /** Why the agent's tenant may not spend more on models, if it has reached a limit. */
-  spendLimit?(): Promise<string | undefined> | string | undefined;
+  /** Why the running turn must end before its next model request: a spend limit reached, or the run's own limits (`RunStop`). */
+  runLimit?(): Promise<RunStop | undefined> | RunStop | undefined;
   /** Answer a `tools.search` query over the agent's code-mode tools, with the operator's rerankers. */
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes (base64), for a model request that shows the file. */
@@ -50,6 +53,8 @@ export interface AgentConfig {
   mounts?: { path: string; mode: "ro" | "rw" }[];
   initialMessages?: AgentMessage[];
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  /** The most one run may take, set by the tenant: model responses and seconds. The runtime's maximums apply over them (client-sessions.ts). */
+  runLimits?: RunLimits | null;
   /** Headers the tenant set for every model call of this agent (non-secret, never auth headers). */
   modelHeaders?: Record<string, string> | null;
   /** Host policy for retrying transient provider errors. */

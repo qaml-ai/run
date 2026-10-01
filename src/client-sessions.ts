@@ -4,7 +4,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import type { AgentConfig, Credentials, ToolDefinition } from "./protocol.ts";
+import type { AgentConfig, Credentials, RunLimits, ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
@@ -348,6 +348,11 @@ export interface ClientSessionOptions {
    * accepted (402), when it starts, and after each model response in a turn that would continue.
    */
   spendLimit?: (tenant: string) => Promise<Refusal | undefined>;
+  /**
+   * The most one run may take, whatever its agent asks (`runLimits`): model responses (compaction summaries count) and
+   * wall time from when it began. Default 1,000 responses and 2 hours (`RUN_LIMITS`).
+   */
+  runLimits?: Required<RunLimits>;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
   /** Count a run the tenant starts against its rate limit; throws (429) past it. Checked when a run is accepted, not for retries. */
@@ -375,7 +380,7 @@ export interface ClientSessionOptions {
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
-export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools">; sources?: Sources };
+export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits">; sources?: Sources };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
@@ -401,6 +406,12 @@ export function spendInput(value: unknown): number | null {
   return usd;
 }
 const dollars = (usd: number) => `$${Number(usd.toFixed(6))}`;
+/** The runtime's maximums for one run, which an agent's own `runLimits` may lower (ClientSessionsOptions.runLimits). */
+export const RUN_LIMITS: Readonly<Required<RunLimits>> = Object.freeze({ maxResponses: 1_000, maxSeconds: 2 * 3_600 });
+const duration = (seconds: number) => {
+  const [count, unit] = seconds % 3_600 === 0 ? [seconds / 3_600, "hour"] : seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+};
 /** A model response's cost as the runtime counts it. */
 const responseCost = (usage: any) => usageCost(usage).usd;
 /** A provider key and whether it is the platform's rather than the tenant's own. */
@@ -1155,9 +1166,11 @@ export class ClientSessions {
       const definitions = await steps.time("tools", this.toolset(session));
       const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
         definitions,
-        spendLimit: async () => {
+        runLimit: async () => {
           const limited = await this.agentSpendLimit(session) ?? this.runSpendLimit(session) ?? await this.options.spendLimit?.(session.header.tenant);
-          return typeof limited === "string" ? limited : limited?.message;
+          if (limited) return { stopped: "spend_limit" as const, message: typeof limited === "string" ? limited : limited.message };
+          const turn = this.turnLimit(session);
+          return turn ? { stopped: "turn_limit" as const, message: turn } : undefined;
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
         file: ref => this.fileData(session, ref),
@@ -1515,7 +1528,7 @@ export class ClientSessions {
     if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key`);
     return {
       provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
-      systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, name: metadata.name ?? null, type: metadata.type ?? null,
+      systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, runLimits: config.runLimits ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
       // Only a definition's own fields are the agent's: the rest follow its definition.
       ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: builtins ?? [] },
     };
@@ -1532,6 +1545,7 @@ export class ClientSessions {
     if (target.fileTools !== undefined && target.fileTools !== (current.fileTools !== false)) changes.fileTools = target.fileTools;
     if ("systemPrompt" in target && differs(current.systemPrompt, target.systemPrompt)) changes.systemPrompt = target.systemPrompt;
     if ("modelHeaders" in target && differs(current.modelHeaders, target.modelHeaders)) changes.modelHeaders = target.modelHeaders;
+    if ("runLimits" in target && differs(current.runLimits, target.runLimits)) changes.runLimits = target.runLimits;
     if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
     if (target.builtins !== undefined && differs(header.sources?.builtins ?? [], target.builtins)) changes.builtins = target.builtins;
     return changes;
@@ -1714,7 +1728,7 @@ export class ClientSessions {
       ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
       ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
       builtins: session.header.sources?.builtins ?? [],
-      spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }),
+      spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
@@ -2127,7 +2141,7 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "modelHeaders", "builtins", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "runLimits", "modelHeaders", "builtins", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
@@ -2735,6 +2749,23 @@ export class ClientSessions {
       const spent = session.usage?.get(id)?.costUsd ?? 0;
       if (session.running.has(id) && spent >= usd) return `This run has reached its spend limit of ${dollars(usd)} (${dollars(spent)} spent)`;
     }
+    return undefined;
+  }
+
+  /**
+   * Why the running run may not make another model request: it has made as many responses, or run as long, as the
+   * agent's `runLimits` allow, within the runtime's. Counted on this node: a turn resumed after its node was lost
+   * counts again from its resume.
+   */
+  private turnLimit(session: Session): string | undefined {
+    const run = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
+    if (!run) return undefined;
+    const most = this.options.runLimits ?? RUN_LIMITS, own = session.header.config.runLimits ?? {};
+    const maxResponses = Math.min(own.maxResponses ?? most.maxResponses, most.maxResponses);
+    const maxSeconds = Math.min(own.maxSeconds ?? most.maxSeconds, most.maxSeconds);
+    const responses = session.usage?.get(run.id)?.responses ?? 0;
+    if (responses >= maxResponses) return `This run stopped at its limit of ${maxResponses} model responses. Send another message to continue`;
+    if (Date.now() - run.began! >= maxSeconds * 1000) return `This run stopped at its time limit of ${duration(maxSeconds)}. Send another message to continue`;
     return undefined;
   }
 

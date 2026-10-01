@@ -186,9 +186,9 @@ dimension sets listed:
 
 | line (`type`) | when | metrics | dimensions |
 | --- | --- | --- | --- |
-| `turn_metrics` | a turn (prompt, continue, resume) ends | `Turns`, `TurnDurationMs`, `TimeToFirstTokenMs`, `ModelResponses`, `ModelRetries`, `ToolCalls`, `ToolErrors` | `Outcome` (completed, failed, input_required, spend_limit), `ErrorClass`, `Provider`+`Model` |
+| `turn_metrics` | a turn (prompt, continue, resume) ends | `Turns`, `TurnDurationMs`, `TimeToFirstTokenMs`, `ModelResponses`, `ModelRetries`, `ToolCalls`, `ToolErrors` | `Outcome` (completed, failed, input_required, spend_limit, turn_limit), `ErrorClass`, `Provider`+`Model` |
 | `model_error` | a model response fails (retried or not) | `ModelErrors` | `Provider`+`Model`, `ErrorClass` |
-| `run_events` | run events are written to the outbox | `RunsStarted`, `RunsResumed`, `RunsCompleted`, `RunsInputRequired`, `RunsSpendLimited`, `RunsFailed`, `RunsUncertain` | `Tenant` |
+| `run_events` | run events are written to the outbox | `RunsStarted`, `RunsResumed`, `RunsCompleted`, `RunsInputRequired`, `RunsSpendLimited`, `RunsTurnLimited`, `RunsFailed`, `RunsUncertain` | `Tenant` |
 | `run_failed` | the same, per failed run | `RunsFailedByClass` | `ErrorClass`, `Tenant`+`ErrorClass` |
 | `model_cost` | usage events are written | `ModelCostUsd`, `ModelUsageEvents` | `Tenant`, `Provider`+`Model` |
 | `webhook_delivered` / `webhook_failed` | a delivery succeeds / fails | `WebhooksDelivered`, `WebhookDeliveryLagMs`, `WebhookAttempts` / `WebhooksFailed` | `Kind` (endpoint, usage) |

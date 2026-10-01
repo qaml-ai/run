@@ -158,7 +158,7 @@ returned null), 400 `invalid_request` or `invalid_json` (the message names the f
 The chat follows the agent's stream, so it sends without waiting. A caller without the stream
 passes `wait`: `true` (25 seconds) or whole seconds from 1 to 25. The route answers once the run
 ends, with `state: "completed"` and the run's `reply` (its final message's text), `error` (why it
-failed) or `stopped` (`input_required` or `spend_limit`). A run still going when the wait is over
+failed) or `stopped` (`input_required`, `spend_limit` or `turn_limit`). A run still going when the wait is over
 answers `state: "running"`: ask again with `wait`.
 
 ```sh

@@ -227,6 +227,7 @@ Messages (`message` fields, and history) are one of:
 | `compaction_usage` *internal* | `provider`, `model`, `usage`, `timestamp` | what the summary's model call used |
 | `context_trimmed` | `retainedMessages`, `omittedMessages` | older messages were left out of a model request to fit it |
 | `spend_limit_reached` *internal* | `message` | the agent (or tenant) reached its spend limit; the turn stops after this response's tool calls |
+| `turn_limit_reached` *internal* | `message` | the run reached its limit of model responses or time (`runLimits`); the turn stops after this response's tool calls |
 
 ## Run outcomes
 
@@ -239,8 +240,8 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `replyIndex` | that message's index in the agent's history |
 | `messages` | how many messages the agent's history holds after the run |
 | `error` | the model's error (a provider refusal after retries), or `null` |
-| `code` | a stable name for `error`, where the runtime gives one: `output_missing` (a structured run ended without its output) |
-| `stopped` | why the run stopped early: `input_required` (it waits on `inputs`) or `spend_limit` (with the reason in `error`) |
+| `code` | a stable name for `error`, where the runtime gives one: `output_missing` (a structured run ended without its output), `spend_limit`, `turn_limit` |
+| `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](../guides/models-and-keys.md#run-limits)), with the reason in `error` |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |

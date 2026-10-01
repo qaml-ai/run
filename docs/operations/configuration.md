@@ -20,6 +20,7 @@
 | `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
 | `AGENT_GC_ENABLED`, `AGENT_GC_DRY_RUN` | storage garbage collection: `true` to run it (default off), and `true` to only log what it would delete (see [Storage garbage collection](persistence.md#storage-garbage-collection)) |
 | `AGENT_GC_GRACE_MS`, `AGENT_GC_INTERVAL_MS`, `AGENT_GC_POLL_MS` | how long a chunk must stay unreferenced before it is deleted (default 86400000, a day), how often each tenant is collected (default 21600000, 6 h), and how often a node looks for a tenant due (default 60000) |
+| `AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS` | the most one run may take: model responses (default 1000) and seconds from when it began (default 7200); agents' and definitions' `runLimits` may only lower them. At either, the turn stops with `stopped: "turn_limit"` |
 | `AGENT_DRAIN_TIMEOUT_MS` | how long SIGTERM waits for running turns before handing them off (default 100000; see [Draining](architecture.md#draining)) |
 | `AGENT_ECS_SERVICE`, `AGENT_ECS_CLUSTER` | the ECS service this task belongs to, for retirement (see [Deploys](architecture.md#deploys)); the cluster defaults to the task's own; without the service, tasks never retire |
 | `AGENT_RETIRE_WAIT_MS` | how long a superseded task waits for the new deployment to run all its tasks before retiring anyway, once a peer has joined (default 600000, 10 min) |

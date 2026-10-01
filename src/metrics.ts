@@ -126,7 +126,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
 
   function finish(current: NonNullable<typeof turn>, method: string, result: any, thrown: unknown) {
     const error = thrown !== undefined ? "exception" : typeof result?.error === "string" && result.error ? errorClass(result.error) : "none";
-    const outcome = error !== "none" ? "failed" : result?.stopped === "input_required" ? "input_required" : result?.stopped === "spend_limit" ? "spend_limit" : "completed";
+    const outcome = error !== "none" ? "failed" : result?.stopped === "input_required" ? "input_required" : result?.stopped === "spend_limit" || result?.stopped === "turn_limit" ? result.stopped : "completed";
     const { provider = "unknown", id = "unknown" } = model() ?? {};
     emit("turn_metrics", {
       dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },
@@ -183,7 +183,7 @@ export function recordEventMetrics(events: WebhookEvent[]) {
     const counts = runs.get(event.tenant) ?? {};
     const add = (name: string) => { counts[name] = (counts[name] ?? 0) + 1; };
     if (event.type === "run.started") { add("RunsStarted"); if (data.resumes) add("RunsResumed"); }
-    if (event.type === "run.completed") { add("RunsCompleted"); if (data.stopped === "input_required") add("RunsInputRequired"); if (data.stopped === "spend_limit") add("RunsSpendLimited"); }
+    if (event.type === "run.completed") { add("RunsCompleted"); if (data.stopped === "input_required") add("RunsInputRequired"); if (data.stopped === "spend_limit") add("RunsSpendLimited"); if (data.stopped === "turn_limit") add("RunsTurnLimited"); }
     if (event.type === "run.failed") {
       add("RunsFailed");
       if (data.uncertain) add("RunsUncertain");

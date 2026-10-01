@@ -8,7 +8,7 @@ export type BrowserScope = typeof BROWSER_SCOPES[number];
 /** Fields a token may hide from its reader. */
 export const BROWSER_REDACTIONS = ["usage.cost"] as const;
 /** Events a browser never gets unless its token lists them: the runtime's own bookkeeping. */
-const INTERNAL_EVENTS = new Set(["codemode", "compaction_usage", "spend_limit_reached"]);
+const INTERNAL_EVENTS = new Set(["codemode", "compaction_usage", "spend_limit_reached", "turn_limit_reached"]);
 /** A token lives this long by default, and between these bounds (seconds). */
 export const BROWSER_TOKEN_SECONDS = { default: 900, min: 5, max: 3600 };
 const PREFIX = "abt_";

@@ -1,5 +1,5 @@
 import { getModel } from './pi-catalog.ts';
-import type { AgentConfig } from './protocol.ts';
+import type { AgentConfig, RunLimits } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';
 import { attachedTools } from './mcp-results.ts';
@@ -166,6 +166,16 @@ export function modelHeadersInput(value: unknown): Record<string, string> | null
   return Object.keys(value).length ? value as Record<string, string> : null;
 }
 
+/** An agent's or definition's `runLimits`: `{maxResponses?, maxSeconds?}`, positive integers. Null (or `{}`) for none. */
+export function runLimitsInput(value: unknown): RunLimits | null {
+  if (value === null) return null;
+  const valid = (key: string, max: number) => (value as Record<string, unknown>)[key] === undefined || (Number.isSafeInteger((value as Record<string, unknown>)[key]) && ((value as Record<string, number>)[key]) >= 1 && ((value as Record<string, number>)[key]) <= max);
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => key !== 'maxResponses' && key !== 'maxSeconds') || !valid('maxResponses', 1_000_000) || !valid('maxSeconds', 31_536_000)) {
+    throw new HttpError(400, 'runLimits must be {maxResponses?, maxSeconds?} with positive integers (or null)');
+  }
+  return Object.keys(value).length ? value as RunLimits : null;
+}
+
 /** Only operator-authenticated provisioning may choose a model, and only among trusted endpoints. */
 export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, allowedBaseUrls: string[] = [], endpoints?: ModelEndpoints, custom?: CustomProviders): SessionConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid session configuration');
@@ -189,6 +199,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
     ...(input.systemPrompt !== undefined || defaultPrompt !== undefined ? { systemPrompt: input.systemPrompt !== undefined ? input.systemPrompt : defaultPrompt } : {}),
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
     ...(input.systemPromptAppend !== undefined ? { systemPromptAppend: input.systemPromptAppend } : {}),
+    ...(input.runLimits !== undefined ? { runLimits: input.runLimits } : {}),
   });
   if (input.initialMessages !== undefined) validateInitialMessages(input.initialMessages);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
@@ -199,13 +210,14 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'runLimits'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
   // Replaced whole; null or {} removes them.
   if (input.modelHeaders !== undefined) input = { ...input, modelHeaders: modelHeadersInput(input.modelHeaders) };
+  if (input.runLimits !== undefined) input = { ...input, runLimits: runLimitsInput(input.runLimits) };
   // The application's attached MCP server's tools/list replaces its tools.
   if (input.mcp !== undefined) {
     const { mcp, ...rest } = input;

@@ -77,7 +77,8 @@ export function summarize(agent: string, record: any): RunSummary {
   const result = outcome.result ?? {};
   const failure = outcome.error ? { code: outcome.uncertain ? "uncertain" : "runtime_error", message: outcome.error }
     : result.error ? { code: result.code ?? "model_error", message: result.error }
-    : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it to go on" } : undefined;
+    : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it to go on" }
+    : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : undefined;
   const status = failure ? "failed" : result.stopped === "input_required" ? "input_required" : "completed";
   return {
     ...base, status,

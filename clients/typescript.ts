@@ -324,6 +324,8 @@ export interface CreateAgentOptions extends AgentOptions {
   keyScope?: string;
   /** The most the agent may spend on model calls from now on (USD); PATCH /v1/agents/:id/configuration sets a new one. */
   spendLimit?: { usd: number };
+  /** The most one run may take: model responses, and seconds; the runtime's maximums (1,000 and 2 hours by default) apply over them. At either, the run stops with `stopped: "turn_limit"`. */
+  runLimits?: { maxResponses?: number; maxSeconds?: number };
   /** Non-secret headers for each of its model calls, e.g. cf-aig-metadata; never auth headers. */
   modelHeaders?: Record<string, string>;
   systemPrompt?: string;
@@ -435,7 +437,7 @@ export type WebhookEvent = { id: string; created: number } & (
       balance: number; threshold: number; previousBalance?: number; source: "balance" | "threshold_changed";
     } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
-  | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; stopped?: "input_required" | "spend_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
+  | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
   | { type: "run.failed"; data: RunFacts & { usage: RunUsage | null; error: string; uncertain?: boolean; steeredInto?: string } }
   | { type: "input.requested"; data: { agentId: string; requestId: string; inputId: string; toolCallId: string; kind: AgentInput["kind"]; expiresAt: number } }
   | { type: "input.resolved"; data: { agentId: string; requestId: string; inputId: string; state: Exclude<AgentInput["state"], "pending"> } }
@@ -496,7 +498,7 @@ export interface RunResult {
   /** The model's error, or null. */
   error: string | null;
   /** Why it stopped early: waiting on human input (`inputs`), or its spend limit. */
-  stopped?: "input_required" | "spend_limit";
+  stopped?: "input_required" | "spend_limit" | "turn_limit";
   inputs?: AgentInput[];
   replyIndex?: number;
   /** Messages in the agent's history after it. */
@@ -504,7 +506,7 @@ export interface RunResult {
   files?: AgentFile[];
   presented?: PresentedFile[];
   usage?: RunUsage | null;
-  /** A stable name for `error`, where the runtime gives one (output_missing: a structured run ended without its output). */
+  /** A stable name for `error`, where the runtime gives one (output_missing: a structured run ended without its output; spend_limit, turn_limit: a limit stopped it). */
   code?: string;
   /** A prompt sent with `output`: the answer, which fits its schema. */
   output?: unknown;
@@ -647,7 +649,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "prompt"] as const;
   return Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]]));
 }
 
