@@ -353,7 +353,11 @@ it is made from (whose builtins it then has):
   in order (Exa, Brave, Parallel; a definition can pin its own with
   `"webSearch": {"providers": ["brave"]}`). Your own key for a provider
   (`PUT /v1/providers/<provider>/key`) is used first; otherwise the platform's,
-  charged per search.
+  charged per search on prepaid credit. Saving a definition or an agent with
+  `web_search` when none of its providers has a key answers with `warnings`
+  saying which keys would set it up, and the console shows them; a search then
+  fails with the same text ("Web search isn't available for this account: add
+  an Exa, Brave or Parallel key under Models & keys").
 - `schedule`, `list_schedules`, `cancel_schedule` let the agent manage its own
   wake-ups (100 per agent, at most a year ahead, repeats at least a minute apart).
 - `ask_user` lets the model ask the user 1 to 4 multiple-choice questions; the

@@ -3,10 +3,23 @@
 Tenants created by console sign-in pay from **prepaid credit**, like OpenRouter;
 admin tenants from the tenants file are unbilled unless their entry sets
 `"billing": "prepaid"` (the default is `"none"`). Tenants that signed up before
-billing existed stay unbilled. A prepaid tenant without a provider key of its own
-runs on the platform's keys, the tenants file's top-level `platformKeys`
+billing existed stay unbilled. A tenant without a provider key of its own runs on
+the platform's keys, the tenants file's top-level `platformKeys`
 (`{"anthropic": "...", "openrouter": "..."}`, like a tenant's `apiKeys`: one key
-per provider, never a `*` wildcard), and pays for:
+per provider, never a `*` wildcard), if it is prepaid or an admin tenant:
+
+- An **admin tenant** (`"billing": "none"`, the operator's own, e.g. a product
+  built on the runtime) uses them for every provider it has no key for, its own
+  or its entry's `apiKeys` (models, web search, page rendering), and is never
+  charged. Its usage is still recorded as the platform's (`platformResponses`
+  and `platformCost` in `/v1/usage`), and its model spend counts in the model-spend
+  metrics and alarms, so the operator sees what it costs.
+  An entry with `"platformKeys": false` opts out: that tenant uses only its own
+  keys and its `apiKeys`, and a builtin without one tells it which key to add.
+  Use it for an outside operator's tenant that should never spend on the platform's
+  accounts. (A prepaid entry cannot opt out: it pays for what it uses.)
+
+A **prepaid tenant** pays for:
 
 - **Model usage** on the platform's keys, at the provider's reported cost, or the
   model catalog's estimate when no cost is reported, turns and compaction alike.

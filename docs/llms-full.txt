@@ -729,7 +729,11 @@ it is made from (whose builtins it then has):
   in order (Exa, Brave, Parallel; a definition can pin its own with
   `"webSearch": {"providers": ["brave"]}`). Your own key for a provider
   (`PUT /v1/providers/<provider>/key`) is used first; otherwise the platform's,
-  charged per search.
+  charged per search on prepaid credit. Saving a definition or an agent with
+  `web_search` when none of its providers has a key answers with `warnings`
+  saying which keys would set it up, and the console shows them; a search then
+  fails with the same text ("Web search isn't available for this account: add
+  an Exa, Brave or Parallel key under Models & keys").
 - `schedule`, `list_schedules`, `cancel_schedule` let the agent manage its own
   wake-ups (100 per agent, at most a year ahead, repeats at least a minute apart).
 - `ask_user` lets the model ask the user 1 to 4 multiple-choice questions; the
@@ -1525,9 +1529,22 @@ when the agent is made and stays its model. `GET /v1/me` says which
 
 A model call uses, in order: the key of the agent's [key scope](#key-scopes) for
 the model's provider, else your account's own key for the provider
-(`PUT /v1/providers/:provider/key`, or the console), else, for prepaid accounts,
-the platform's key, charged to your credit. Agents cannot be made on a provider
-none of these has a key for.
+(`PUT /v1/providers/:provider/key`, or the console), else one the runtime's
+operator set for your account, else the platform's key: for prepaid accounts,
+charged to your credit, and for the operator's own (unbilled) accounts, free
+but still counted as platform usage. Agents cannot be made on a provider none
+of these has a key for. Web search and `web_fetch`'s page rendering take their
+keys (`exa`, `brave`, `parallel`, `firecrawl`) the same way, without key scopes.
+
+| Account | Order a key is taken in |
+|---|---|
+| Signed up (prepaid) | key scope's, own, platform's (charged to credit) |
+| Signed up before billing (unbilled) | key scope's, own; never the platform's |
+| Admin tenant from the tenants file (`billing` `none`) | key scope's, own, the admin's `apiKeys`, platform's (unbilled, recorded as platform usage) |
+| Admin tenant with `"platformKeys": false` | key scope's, own, the admin's `apiKeys`; never the platform's |
+| Admin tenant with `"billing": "prepaid"` | key scope's, own, the admin's `apiKeys`, platform's (charged to credit) |
+
+A provider with your own key never uses the platform's, whatever the account.
 
 ## Your own model endpoint
 
@@ -1659,7 +1676,7 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
   its Messages API for prompt caching: the same rule as on a tenant's endpoint.
 - Each model call, compaction summaries included, takes the key of the agent's
   scope for the model's provider, else the tenant's own key, else an admin's,
-  else (prepaid) the platform's. It is read at the call, so a changed key applies
+  else the platform's (see the table above). It is read at the call, so a changed key applies
   to every agent of the scope from its next call, within five seconds. An agent may be
   created on a provider only its scope has a key for.
 - Scope keys are the tenant's own: no platform token charge, like a tenant's key
