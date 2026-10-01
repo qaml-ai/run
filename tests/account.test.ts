@@ -81,7 +81,6 @@ test("an account exports everything it stores, then deletes it all but the ledge
   })]);
   await r.db.query(`insert into discord_server_bindings (id,application_id,guild_id,tenant,channel_id,state,allowed_channel_ids,administrator_id,created_at,updated_at)
     values ('carol-binding',$1,$2,$3,$4,'active','["444"]','555',1,2),('other-binding',$1,'999000000000000003','bob',null,'paused','[]','other-admin',1,2)`, [discordApplication, discordGuild, tenant, discordChannel]);
-  await r.db.query("insert into discord_account_links (tenant,session_hash,discord_user_id,token,expires_at) values ($1,'private-discord-session-hash','555','private-encrypted-discord-token',900),('bob','other-session-hash','other-user','other-private-token',800)", [tenant]);
   await r.db.query("insert into discord_setup_attempts (state_hash,tenant,session_hash,guild_id,expires_at) values ('private-discord-state-hash',$1,'private-discord-session-hash',$2,600)", [tenant, discordGuild]);
 
   // The export: a zip of all of it, streamed.
@@ -111,7 +110,7 @@ test("an account exports everything it stores, then deletes it all but the ledge
     setupAttempts: [{ guildId: discordGuild, expiresAt: 600 }],
   });
   const archiveText = [...files.values()].map(file => file.toString("utf8")).join("\n");
-  for (const secret of ["private-discord-session-hash", "private-encrypted-discord-token", "private-discord-state-hash", "other-private-token", "other-binding", "other-user", "Other server"]) {
+  for (const secret of ["private-discord-session-hash", "private-discord-state-hash", "other-binding", "Other server"]) {
     assert.equal(archiveText.includes(secret), false, `export excludes ${secret}`);
   }
 
@@ -136,7 +135,7 @@ test("an account exports everything it stores, then deletes it all but the ledge
 
   // Gone: everything but the ledger, usage, payment and starting-credit records.
   const count = async (sql: string, params: unknown[] = [tenant]) => Number((await r.db.query(sql, params)).rows[0].count);
-  for (const table of ["api_tokens", "provider_keys", "definitions", "webhook_endpoints", "schedules", "volumes", "channels", "billing_recipients", "chunk_touches", "oauth_grants", "agent_inputs", "discord_server_bindings", "discord_account_links", "discord_setup_attempts"]) {
+  for (const table of ["api_tokens", "provider_keys", "definitions", "webhook_endpoints", "schedules", "volumes", "channels", "billing_recipients", "chunk_touches", "oauth_grants", "agent_inputs", "discord_server_bindings", "discord_setup_attempts"]) {
     assert.equal(await count(`select count(*) from ${table} where tenant = $1`), 0, table);
   }
   assert.equal(await count("select count(*) from tenants where id = $1"), 0);
@@ -148,7 +147,6 @@ test("an account exports everything it stores, then deletes it all but the ledge
   assert.equal(await count("select count(*) from starting_credit_decisions where github_id = 4242 and tenant = $1"), 1, "the starting-credit record stays");
   assert.equal(await count("select count(*) from discord_installations where application_id=$1 and guild_id=$2", [discordApplication, discordGuild]), 1, "platform installation remains after the tenant binding is removed");
   assert.equal(await count("select count(*) from discord_server_bindings where tenant=$1", ["bob"]), 1, "another tenant's server binding remains");
-  assert.equal(await count("select count(*) from discord_account_links where tenant=$1", ["bob"]), 1, "another tenant's Discord link remains");
   assert.equal(await count("select count(*) from billing_stripe_customers where tenant = $1"), 1, "which customer paid stays");
 
   // The same GitHub account signs up again: a new, empty tenant under a new id, with no second starting credit.
