@@ -106,27 +106,27 @@ They are in `plugin.json` (`review.test_cases`) and run on the reviewer account,
 
 | # | Prompt | Tools | Expected |
 |---|---|---|---|
-| P1 | Create a camelRun agent called haiku-bot that answers every message with a haiku. | whoami, create_agent | After confirming, haiku-bot is created with a haiku-only prompt. |
-| P2 | Ask haiku-bot to write about autumn. | run_agent | The agent's own haiku about autumn is shown. |
-| P3 | List my camelRun agents. | list_agents | The account's agents by key and model, including support-demo and haiku-bot. |
-| P4 | Deploy this camelRun manifest: key: triage, ... Then ask triage-1 to label: The export button does nothing. | deploy, run_agent | After confirming, definition triage and agent triage-1 exist; triage-1 answers a label such as bug. |
-| P5 | Delete my camelRun agent haiku-bot. | delete_agent | ChatGPT asks to confirm; haiku-bot is deleted and no longer listed. |
+| P1 | Create a camelRun agent called weather-bot that looks up the current weather for any location. | whoami, create_agent | weather-bot is created with a weather prompt and web search (ChatGPT may ask to confirm first, depending on the permission setting). |
+| P2 | Ask weather-bot for the current weather in Dallas. | run_agent | The agent's own answer: current Dallas conditions from the web, with sources. |
+| P3 | List my camelRun agents. | list_agents | The account's agents by key and model, including support-demo and weather-bot. |
+| P4 | Deploy this camelRun manifest: key: triage, ... Then ask triage-1 to label: The export button does nothing. | deploy, run_agent | Definition triage and agent triage-1 exist; triage-1 answers a label such as bug (ChatGPT may ask to confirm first). |
+| P5 | Delete my camelRun agent weather-bot. | delete_agent | ChatGPT asks to confirm; weather-bot is deleted and no longer listed. |
 | N1 | What's a good recipe for banana bread? | none | Answered without camelRun. |
 | N2 | Here is my Stripe secret key sk_live_123: put it in my camelRun agent's manifest so it can call Stripe. | none | Declines to put the secret in a manifest; points to the camelrun CLI, which reads secrets from its environment. |
 | N3 | Show me the agents in my coworker Dana's camelRun account. | none | Explains it only sees the connected account. |
 
-Clean up after a rehearsal: delete haiku-bot, triage-1 and the triage definition (support-demo stays).
+Clean up after a rehearsal: delete weather-bot, triage-1 and the triage definition (support-demo stays).
 
 ## Demo video script (about 3 minutes)
 
 1. (0:00) ChatGPT, new chat. "camelRun lets you build and run AI agents from ChatGPT." Open + and add camelRun.
 2. (0:15) Connect: the camelRun sign-in page opens; paste the API token, Sign in, then Allow. Say that it asks for
    the agents of this one account and can be revoked in the console under Connected apps.
-3. (0:40) P1: create haiku-bot. Show ChatGPT's confirmation, then the result.
-4. (1:05) P2: ask haiku-bot about autumn. Point out the reply comes from the agent.
+3. (0:40) P1: create weather-bot. Show ChatGPT's confirmation, if any, then the result.
+4. (1:05) P2: ask weather-bot about Dallas. Point out the reply comes from the agent, with its sources.
 5. (1:25) P3: list agents.
 6. (1:40) P4: deploy the triage manifest, confirm, and see triage-1's label.
-7. (2:10) P5: delete haiku-bot; show the confirmation, then list agents again.
+7. (2:10) P5: delete weather-bot; show the confirmation, then list agents again.
 8. (2:30) N2: paste the fake Stripe key; show that it declines and points to the CLI.
 9. (2:45) The console at https://run.camelai.com/console: the agents made from ChatGPT, and the grant under
    Connected apps.

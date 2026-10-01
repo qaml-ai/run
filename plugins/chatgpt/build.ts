@@ -23,6 +23,7 @@ const CATEGORIES = ["Productivity", "Creativity", "Developer Tools", "Business &
 const SUBMISSION_URLS = ["websiteURL", "supportURL", "privacyPolicyURL", "termsOfServiceURL"] as const;
 const ICONS = ["logo", "logoDark", "composerIcon", "composerIconDark"] as const;
 const AI_PLATFORMS = /\b(?:ChatGPT|GPT-?\w*|OpenAI|Codex|Claude|Anthropic|Gemini|Copilot|Llama|Mistral|Grok)\b/i;
+const MODEL_ID = /\b(?:openai|anthropic|openrouter|google)\/[\w.-]+|\b(?:gpt|claude|gemini)-[\w.-]+/i;
 /** API tokens, OAuth tokens and the like: none may be in the ZIP. */
 const SECRET = /\b(?:art|aro|arr|arc|sk|rk)_(?:live_|test_)?[A-Za-z0-9_-]{16,}/;
 
@@ -137,6 +138,13 @@ export function validate(root = PLUGIN_ROOT) {
     }
   }
   for (const [index, test] of negative.entries()) if (!test.description || !test.prompt) errors.push(`review.test_cases.negative[${index}]: description and prompt`);
+  // The directory's check also reads the test cases, and flags a model or provider id there as naming another AI platform.
+  for (const [kind, tests] of [["positive", positive], ["negative", negative]] as const) {
+    for (const [index, test] of tests.entries()) {
+      const id = MODEL_ID.exec(Object.values(test).join(" "));
+      if (id) errors.push(`review.test_cases.${kind}[${index}]: names a model or provider (${id[0]})`);
+    }
+  }
   if ("test_credentials" in review || "reviewer_instructions" in review) errors.push("review: reviewer credentials and instructions go in the dashboard, never the ZIP");
   if (!review.demo_recording_url) warnings.push("review.demo_recording_url is missing: required to submit an MCP plugin for review");
   else if (!https(review.demo_recording_url)) errors.push("review.demo_recording_url: an https URL");

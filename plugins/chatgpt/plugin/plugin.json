@@ -58,33 +58,33 @@
           "positive": [
             {
               "description": "Create an agent from a plain-language description",
-              "prompt": "Create a camelRun agent called haiku-bot that answers every message with a haiku.",
+              "prompt": "Create a camelRun agent called weather-bot that looks up the current weather for any location.",
               "tools_triggered": "whoami, create_agent",
-              "expected_behavior": "After the reviewer confirms, creates the agent with key haiku-bot and a system prompt asking for haiku replies, and reports that haiku-bot is ready."
+              "expected_behavior": "ChatGPT may ask the reviewer to confirm, depending on their plugin permission setting. The call creates the agent with key weather-bot, a system prompt for weather lookups and the web_search built-in, and ChatGPT reports that weather-bot is ready."
             },
             {
               "description": "Run an agent and show its reply",
-              "prompt": "Ask haiku-bot to write about autumn.",
+              "prompt": "Ask weather-bot for the current weather in Dallas.",
               "tools_triggered": "run_agent",
-              "expected_behavior": "Sends the message to haiku-bot and shows its reply: a haiku about autumn, returned by the agent rather than written by ChatGPT."
+              "expected_behavior": "Sends the message to weather-bot and shows its reply: current conditions for Dallas that the agent found on the web, with its sources, returned by the agent rather than written by ChatGPT."
             },
             {
               "description": "List the account's agents",
               "prompt": "List my camelRun agents.",
               "tools_triggered": "list_agents",
-              "expected_behavior": "Lists the test account's agents by key with their model, including the pre-created demo agent support-demo and haiku-bot if it was created."
+              "expected_behavior": "Lists the test account's agents by key with their model, including the pre-created demo agent support-demo and weather-bot if it was created."
             },
             {
               "description": "Deploy an agent manifest",
               "prompt": "Deploy this camelRun manifest: key: triage, systemPrompt: \"Label each message as bug, question or feedback, in one word.\", agents: [{ key: triage-1 }]. Then ask triage-1 to label: The export button does nothing.",
               "tools_triggered": "deploy, run_agent",
-              "expected_behavior": "After the reviewer confirms, deploys the triage definition and its agent triage-1, then runs triage-1, which answers with a label such as bug."
+              "expected_behavior": "ChatGPT may ask the reviewer to confirm, depending on their plugin permission setting. The call deploys the triage definition and its agent triage-1, then runs triage-1, which answers with a label such as bug."
             },
             {
               "description": "Delete an agent after confirmation",
-              "prompt": "Delete my camelRun agent haiku-bot.",
+              "prompt": "Delete my camelRun agent weather-bot.",
               "tools_triggered": "delete_agent",
-              "expected_behavior": "ChatGPT asks the reviewer to confirm; after confirming, haiku-bot is deleted and no longer appears when listing agents."
+              "expected_behavior": "ChatGPT asks the reviewer to confirm; after confirming, weather-bot is deleted and no longer appears when listing agents."
             }
           ],
           "negative": [
@@ -105,6 +105,7 @@
             }
           ]
         },
+        "demo_recording_url": "https://youtu.be/pCybvPoVrfU",
         "commerce": false,
         "commerce_description": "The plugin does not sell products or process payments."
       },
