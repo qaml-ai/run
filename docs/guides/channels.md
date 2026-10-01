@@ -20,7 +20,7 @@ the channel.
 | `telegram` | `botToken` | webhook, registered for you | a chat |
 | `slack` | `botToken` (`xoxb-…`), `signingSecret` | webhook, pasted into the app | a thread started by an @mention, or a DM |
 | `discord` | `botToken` | the Gateway (a WebSocket) | a DM, or a channel or thread where the bot is @mentioned |
-| `discord-managed` | none from the customer; verified Discord server setup in the console | Camel's shared Gateway | an allowed server channel or thread where Camel is @mentioned |
+| `discord-managed` | none from the customer; one Discord authorization from the console | Camel's shared Gateway | an allowed server channel or thread where Camel is @mentioned |
 | `github` | `appId`, `privateKey`, `webhookSecret` | webhook, pasted into the GitHub App | a pull request or issue |
 | `webhook` | `secret`, optional `replyUrl` | webhook, pasted into the sending service | whatever the `key` template names (one agent by default) |
 | `email` | none | SES, on the runtime's domain | an email thread |
@@ -89,21 +89,22 @@ random webhook secret are stored encrypted; the API returns only masked values.
 ## Add the Camel Discord bot
 
 When the runtime operator enables the managed Discord integration, the console's
-Channels page offers **Add Camel bot** alongside the existing channel setup.
-Invite Camel, connect your Discord account, and select a server you own or can
-manage. You do not need to create a Discord application or copy a bot token.
-The console verifies your Discord permissions and that Camel is installed;
-knowing a server ID or following a setup link does not grant configuration access.
-One server belongs to one Camel account at a time.
+Channels page offers **Add Camel to Discord** alongside the existing channel
+setup. It opens Discord, where you choose a server you own or have Manage Server
+in and authorize Camel; that single step adds the bot and connects the server to
+your camelRun account. You do not need to create a Discord application or copy a
+bot token. Back in the console, the server's settings open. One server belongs to
+one camelRun account at a time.
 
 Choose an existing definition, or create one with the prompt, model and tools
 you want. Select allowed channels explicitly, then choose which members may
-interact: a Discord user-ID allowlist or all members. Channels start with none
-selected. Each channel or thread has its own persistent agent, with history
-shared by the people using that conversation. Every new turn requires a direct
-mention of the Camel bot user; a same-named role mention does not count.
+interact: a Discord user-ID allowlist or all members. Saving activates the
+server; until then Camel does not answer there. Each channel or thread has its
+own persistent agent, with history shared by the people using that
+conversation. Every new turn requires a direct mention of the Camel bot user; a
+same-named role mention does not count. Direct messages are ignored.
 
-Members who can interact may invoke the definition's tools using your Camel
+Members who can interact may invoke the definition's tools using your camelRun
 account's credentials. Select tools and allowed members accordingly. Usage is
 billed to the connected account, with its normal credit and spending controls.
 The managed integration offers per-sender rate limits and a daily turn limit;
@@ -114,34 +115,25 @@ the API count against the server's daily limit. An account connects at most 10
 servers, or one while on free credit, which also caps each server at 500 turns a
 day.
 
-If Camel is invited before setup, a direct mention returns a setup link without
-creating an agent or calling a model. `/camel setup` returns an ephemeral setup
-or management link. Setup requires a server administrator to sign in to the
-console and authorize Discord. Earlier messages are never replayed after setup.
-Direct messages return a help link; they do not choose a Camel account from
-shared server membership.
-
 Use **Configure** to edit the selected definition, including tools, and apply it to
 existing conversations; the console reports updated, queued or failed outcomes
-using the normal [definition revision mechanism](definitions.md). Changing a
-server's configuration requires a current Discord authorization; the definition
-itself is your account's, editable like any other.
+using the normal [definition revision mechanism](definitions.md).
 
-Pause stops new routing and pending sends. Pause and disconnect need only your
-Camel sign-in, so the paying account can always stop a server; resume requires
-current administrator authorization. Disconnect retains conversation history and stops routing; it
-does not remove Camel from Discord. Removing Camel from the server disconnects
-it, and re-inviting it requires explicit reactivation.
+Pause stops new routing and pending sends; resume requires Camel to be in the
+server. Disconnect retains conversation history and stops routing; it does not
+remove Camel from Discord. Removing Camel from the server disconnects it, and
+adding it again requires explicit reactivation. A temporary Discord server
+outage is tracked separately from removal. A successful configuration save is
+not proof that Discord delivered a reply: test with a fresh mention in an
+allowed channel.
 
-A server's current administrators decide who runs Camel there. One who uses
-another camelRun account can pause or disconnect the server from the console,
-then set up a disconnected server (or one Camel was removed from) under their own
-account. The previous account keeps its past conversations but sees no new ones. A temporary Discord
-server outage is tracked separately from removal. A successful configuration
-save is not proof that Discord delivered a reply: test with a fresh mention in
-an allowed channel.
+A server's administrators decide who runs Camel there. To move a server to
+another camelRun account, remove Camel from the server, then add it again from
+that account. The previous account keeps its past conversations but sees no new
+ones. If Camel finds itself in a server nobody added through camelRun, it leaves
+when mentioned.
 
-Managed channels are created through verified console setup, rather than generic
+Managed channels are created through console setup, rather than generic
 `POST /v1/channels`. The existing `discord` provider and customer-owned bot flow
 remain available. Operators can find the platform setup and pilot boundaries in
 [Managed Discord operations](../operations/managed-discord.md).

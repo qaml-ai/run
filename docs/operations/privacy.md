@@ -14,8 +14,8 @@ or a file chunk in memory at a time:
 - `agents/<id>/history/<index>.json`: its whole history, a page of whole turns per file, named by the page's first message index
 - `definitions.json`, `channels.json`, `webhooks.json`, `tokens.json`, `keys.json`, `oauth-grants.json`: as the API lists them,
   so secrets, keys and tokens are left out (keys show their last four characters)
-- `discord.json`: managed server bindings, installation names and states, allowed channels, administrator IDs,
-  linked Discord user IDs and authorization/setup expiry times; never OAuth tokens or session/state hashes
+- `discord.json`: managed server bindings, installation names and states, allowed channels, the Discord IDs of
+  the administrators who added Camel, and pending setup expiry times; never OAuth tokens or session/state hashes
 - `volumes/<id>/volume.json` and `volumes/<id>/files/...`: every volume's files (agents' workspaces included)
 - `billing/ledger.jsonl` (newest first) and `billing/usage.json` (per day and model)
 
@@ -52,7 +52,7 @@ refused (409) while an automatic top-up payment is in flight.
    Stripe, where accounting needs them. That is simpler and more complete than detaching each card.
 5. The remaining rows go in one transaction: API tokens, OAuth grants and tokens, provider keys, key
    scopes, custom providers, definitions, webhooks and their deliveries, idempotency answers, billing
-   contacts, settings and events, Get Help requests, managed Discord bindings and OAuth links/setup attempts,
+   contacts, settings and events, Get Help requests, managed Discord bindings and setup attempts,
    storage and collection rows, and the tenant row. Platform Discord installation metadata remains independently
    of account deletion; it no longer names the deleted tenant or its administrator.
 

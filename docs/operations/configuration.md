@@ -37,9 +37,9 @@
 | `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
 | `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead, and allows Google sign-in (see [Billing](billing.md)) |
 | `AGENT_DISCORD_MANAGED_ENABLED` | `true` enables the hosted Camel Discord integration; off by default. Requires the platform application settings below; see [Managed Discord](managed-discord.md) |
-| `AGENT_DISCORD_MANAGED_APPLICATION_ID`, `AGENT_DISCORD_MANAGED_PUBLIC_KEY` | Discord application ID and hex Ed25519 public key for verified setup interactions |
+| `AGENT_DISCORD_MANAGED_APPLICATION_ID` | the Discord application's ID |
 | `AGENT_DISCORD_MANAGED_BOT_TOKEN`, `AGENT_DISCORD_MANAGED_CLIENT_SECRET` | platform bot token and OAuth client secret, server-side only; never customer channel credentials. Restart after rotating them |
-| `AGENT_DISCORD_MANAGED_SECRET_ARN` | instead of the four plain managed Discord values: Secrets Manager JSON `{botToken, applicationId, clientSecret, publicKey}`, read at startup; do not set both forms. A secret with no value, or invalid values, leaves the integration off (`discord_managed_not_configured`) |
+| `AGENT_DISCORD_MANAGED_SECRET_ARN` | instead of the three plain managed Discord values: Secrets Manager JSON `{botToken, applicationId, clientSecret}` (other fields are ignored), read at startup; do not set both forms. A secret with no value, or invalid values, leaves the integration off (`discord_managed_not_configured`) |
 | `AGENT_DISCORD_MANAGED_SERVERS`, `AGENT_DISCORD_MANAGED_FREE_SERVERS` | Discord servers an account may connect to the managed bot (default 10), and while on free credit (default 1); a tenant's `maxDiscordServers` overrides both |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | optional: console sign-in with Google (a Google Cloud OAuth client of type Web application, redirect URI `<AGENT_PUBLIC_URL>/console/auth/google/callback`, scopes `openid email profile`). Off unless set; needs `AGENT_OPEN_SIGNUP=true`, since it admits any Google account with a verified address. Development values |
 | `AGENT_GOOGLE_OAUTH_SECRET_ARN` | instead: a Secrets Manager secret holding `{clientId, clientSecret}`, read at startup; while it has no value, Google sign-in is off |
