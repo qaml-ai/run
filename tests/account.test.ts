@@ -62,11 +62,29 @@ test("an account exports everything it stores, then deletes it all but the ledge
   const volume = (await as("/v1/volumes", { body: { name: "notes" } })).json.id;
   const put = await fetch(`${r.base}/v1/volumes/${volume}/files/plans/secret.txt`, { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain" }, body: "the secret plan" });
   assert.equal(put.status, 201);
-  assert.equal((await as("/v1/definitions", { body: { name: "helper", systemPrompt: "Be brief" } })).status, 201);
+  const definition = await as("/v1/definitions", { body: { name: "helper", systemPrompt: "Be brief" } });
+  assert.equal(definition.status, 201);
   assert.equal((await as("/v1/webhooks", { body: { url: "https://hooks.example.com/runs", events: ["run.completed"] } })).status, 201);
   await r.db.query("insert into billing_stripe_customers (tenant, livemode, request_id, customer, created_at) values ($1, false, gen_random_uuid(), 'cus_carol', 1)", [tenant]);
   await r.db.query("insert into credit_accounts (tenant, balance, stripe_customer) values ($1, 0, 'cus_gone') on conflict (tenant) do update set stripe_customer = 'cus_gone'", [tenant]);
   await r.db.query("insert into billing_recipients (id, tenant, email, confirmation_hash, confirmation_expires, created_at) values (gen_random_uuid(), $1, 'carol@example.com', 'hash', 1, 1)", [tenant]);
+
+  // Managed Discord metadata survives feature disablement, so exports and deletion still cover it.
+  // Only the application-wide installation remains after account deletion.
+  const discordApplication = "999000000000000001", discordGuild = "999000000000000002";
+  const discordChannel = "ch_dddddddddddddddddddd";
+  await r.db.query("insert into discord_installations (application_id,guild_id,name,state,updated_at) values ($1,$2,'Carol server','present',2),($1,'999000000000000003','Other server','present',2)", [discordApplication, discordGuild]);
+  await r.db.query("insert into channels(id,tenant,channel,created_at) values ($1,$2,$3,1)", [discordChannel, tenant, JSON.stringify({
+    id: discordChannel, tenant, type: "discord-managed", name: "Camel · Carol server", definition: definition.json.id,
+    access: { public: false, allow: ["555"] }, limits: { perSenderPerMinute: 5, turnsPerDay: 100 },
+    account: { id: discordApplication, guildId: discordGuild }, masked: {}, sealed: {}, createdAt: 1, updatedAt: 2,
+  })]);
+  await r.db.query(`insert into discord_server_bindings (id,application_id,guild_id,tenant,channel_id,state,allowed_channel_ids,administrator_id,created_at,updated_at)
+    values ('carol-binding',$1,$2,$3,$4,'active','["444"]','555',1,2),('other-binding',$1,'999000000000000003','bob',null,'paused','[]','other-admin',1,2)`, [discordApplication, discordGuild, tenant, discordChannel]);
+  await r.db.query("insert into discord_account_links (tenant,session_hash,discord_user_id,token,expires_at) values ($1,'private-discord-session-hash','555','private-encrypted-discord-token',900),('bob','other-session-hash','other-user','other-private-token',800)", [tenant]);
+  await r.db.query("insert into discord_setup_attempts (state_hash,tenant,session_hash,guild_id,expires_at) values ('private-discord-state-hash',$1,'private-discord-session-hash',$2,600)", [tenant, discordGuild]);
+  assert.equal((await as(`/v1/definitions/${definition.json.id}`, { method: "PATCH", body: { systemPrompt: "Unauthorized managed change" } })).status, 403,
+    "disabling the managed transport does not bypass server configuration authorization");
 
   // The export: a zip of all of it, streamed.
   const exported = await fetch(`${r.base}/v1/account/export`, { headers: { Authorization: `Bearer ${token}` } });
@@ -88,6 +106,17 @@ test("an account exports everything it stores, then deletes it all but the ledge
   assert.match(text("billing/ledger.jsonl"), /"kind":"grant"/);
   assert.ok(!files.has("keys.json") || !text("keys.json").includes("sk-or-carol-own-key"), "keys never leave");
   assert.ok(!text("tokens.json").includes(token), "tokens never leave");
+  assert.deepEqual(JSON.parse(text("discord.json")), {
+    serverBindings: [{ id: "carol-binding", applicationId: discordApplication, guildId: discordGuild, guildName: "Carol server",
+      channelId: discordChannel, state: "active", installationState: "present", allowedChannelIds: ["444"],
+      administratorId: "555", createdAt: 1, updatedAt: 2 }],
+    accountLinks: [{ discordUserId: "555", expiresAt: 900 }],
+    setupAttempts: [{ guildId: discordGuild, expiresAt: 600 }],
+  });
+  const archiveText = [...files.values()].map(file => file.toString("utf8")).join("\n");
+  for (const secret of ["private-discord-session-hash", "private-encrypted-discord-token", "private-discord-state-hash", "other-private-token", "other-binding", "other-user", "Other server"]) {
+    assert.equal(archiveText.includes(secret), false, `export excludes ${secret}`);
+  }
 
   // Deletion is the console's, signed in, with the account named; admin tenants and other operators cannot.
   assert.equal((await as("/v1/account", { method: "DELETE", body: { confirm: tenant } })).status, 403, "not with an API token");
@@ -110,7 +139,7 @@ test("an account exports everything it stores, then deletes it all but the ledge
 
   // Gone: everything but the ledger, usage, payment and starting-credit records.
   const count = async (sql: string, params: unknown[] = [tenant]) => Number((await r.db.query(sql, params)).rows[0].count);
-  for (const table of ["api_tokens", "provider_keys", "definitions", "webhook_endpoints", "schedules", "volumes", "channels", "billing_recipients", "chunk_touches", "oauth_grants", "agent_inputs"]) {
+  for (const table of ["api_tokens", "provider_keys", "definitions", "webhook_endpoints", "schedules", "volumes", "channels", "billing_recipients", "chunk_touches", "oauth_grants", "agent_inputs", "discord_server_bindings", "discord_account_links", "discord_setup_attempts"]) {
     assert.equal(await count(`select count(*) from ${table} where tenant = $1`), 0, table);
   }
   assert.equal(await count("select count(*) from tenants where id = $1"), 0);
@@ -120,6 +149,9 @@ test("an account exports everything it stores, then deletes it all but the ledge
   assert.equal(existsSync(join(r.root, "chunks", tenant)), false, "file contents are gone");
   assert.ok(await count("select count(*) from credit_ledger where tenant = $1") > 0, "the ledger stays");
   assert.equal(await count("select count(*) from starting_credit_decisions where github_id = 4242 and tenant = $1"), 1, "the starting-credit record stays");
+  assert.equal(await count("select count(*) from discord_installations where application_id=$1 and guild_id=$2", [discordApplication, discordGuild]), 1, "platform installation remains after the tenant binding is removed");
+  assert.equal(await count("select count(*) from discord_server_bindings where tenant=$1", ["bob"]), 1, "another tenant's server binding remains");
+  assert.equal(await count("select count(*) from discord_account_links where tenant=$1", ["bob"]), 1, "another tenant's Discord link remains");
   assert.equal(await count("select count(*) from billing_stripe_customers where tenant = $1"), 1, "which customer paid stays");
 
   // The same GitHub account signs up again: a new, empty tenant under a new id, with no second starting credit.

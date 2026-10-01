@@ -352,6 +352,8 @@ export interface ClientSessionOptions {
   /** Called with time an agent spent in runs (model calls and tool execution), at least every minute while one runs. */
   onActive?: (tenant: string, agentId: string, ms: number) => void;
   hooks?: SessionHooks;
+  /** Authorize external configuration requests; trusted internal definition application is separate. */
+  authorizeConfiguration?: (request: Request, tenant: string, agent: string) => Promise<void>;
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
   /** Signs links to the agent's files (`POST /clients/:id/links`, `present_file`). */
@@ -2034,7 +2036,9 @@ export class ClientSessions {
       return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].map(visible) });
     });
     app.post(`${agent}/requests`, async c => {
-      const { status, record } = await this.accept(c.var.session, await readJson(body(c), FRAME_BYTES));
+      const input = await readJson(body(c), FRAME_BYTES);
+      if (input?.method === "configure") await this.options.authorizeConfiguration?.(c.req.raw, c.var.session.header.tenant, c.var.session.header.id);
+      const { status, record } = await this.accept(c.var.session, input);
       return json(c, status, record);
     });
     app.get(`${agent}/requests/:request`, c => this.settled(c, c.var.session, c.req.param("request")));
@@ -2374,6 +2378,10 @@ export class ClientSessions {
 
   private async execute(session: Session, record: RequestRecord, params: any, method: RequestMethod = record.method) {
     const id = session.header.id;
+    // Managed channel prompts queue behind definition changes; a failed change must not run old tools.
+    if (record.method === "prompt" && params.requiredDefinition !== undefined && params.requiredDefinition !== session.header.definition?.id) {
+      throw new HttpError(409, "The server configuration has not applied to this conversation; retry after applying it");
+    }
     // An agent still starting answers nothing yet: wait for it (should it fail, it is not running).
     await session.starting?.catch(() => {});
     const live = this.supervisor.agents.has(id);
@@ -2382,7 +2390,7 @@ export class ClientSessions {
     if (record.method === "abort") await this.cancelInputs(session, "aborted");
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
-      const applied = params.definition !== undefined ? await this.definitionUpdate(session) : undefined;
+      const applied = params.definition !== undefined ? await this.definitionUpdate(session, params.definition) : undefined;
       // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
       // Of its target, only what the agent does not have already is applied.
       const { provisionHash, name, type, toolsHash: declared, ...asked } = params;
@@ -2484,13 +2492,14 @@ export class ClientSessions {
   }
 
   /** The configuration an agent takes from its definition's current revision; tools added at creation stay. */
-  private async definitionUpdate(session: Session) {
+  private async definitionUpdate(session: Session, target?: { id: string }) {
     const current = session.header.definition;
     if (!current) throw new Error("This agent was not made from a definition");
-    const resolved = await this.options.definitionFor!(session.header.tenant, current.id);
+    const id = target?.id ?? current.id;
+    const resolved = await this.options.definitionFor!(session.header.tenant, id);
     // The attached server's tools stay, as does the agent's own configuration; the tools list is rebuilt with the definition's sources.
     const config = Object.fromEntries(Object.entries(resolved.config).filter(([key]) => !session.header.overrides?.includes(key))) as Partial<DefinitionConfig["config"]>;
-    return { update: { ...config, tools: session.header.definitions }, definition: { ...current, revision: resolved.revision }, sources: resolved.sources };
+    return { update: { ...config, tools: session.header.definitions }, definition: { id, revision: resolved.revision }, sources: resolved.sources };
   }
 
   /** Finish a run whose node was lost: continue its turn, or take the answer it had already reached. */

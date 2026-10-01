@@ -34,7 +34,7 @@ function parseList(label: string, text: string): { value?: unknown[]; error?: st
   } catch { return { error: `${label} is not valid JSON` }; }
 }
 
-export function DefinitionDialog({ definition, onClose, onSaved, forChannel = false }: { definition?: Definition; onClose: () => void; onSaved: () => void; forChannel?: boolean }) {
+export function DefinitionDialog({ definition, onClose, onSaved, forChannel = false }: { definition?: Definition; onClose: () => void; onSaved: (saved?: Definition) => void; forChannel?: boolean }) {
   const [name, setName] = useState(definition?.name ?? "");
   const [model, setModel] = useState(definition?.model ?? "");
   const models = useApi<Model[]>("/v1/models");
@@ -81,11 +81,11 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
     try {
       if (definition) {
         const updated = await api<Definition & { applied?: typeof applied }>(`/v1/definitions/${definition.id}`, { method: "PATCH", body });
-        onSaved();
+        onSaved(updated);
         if (updated.applied) { setApplied(updated.applied); return; }
       } else {
-        await api<Definition>("/v1/definitions", { body });
-        onSaved();
+        const created = await api<Definition>("/v1/definitions", { body });
+        onSaved(created);
       }
       onClose();
     } catch (caught) { setError((caught as Error).message); }

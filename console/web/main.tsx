@@ -21,6 +21,7 @@ import { setHelpTenant } from "@/lib/help-context";
 import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { consoleLoginUrl, discordSetupNext } from "@/lib/discord-setup";
 import { AccountPage } from "@/pages/account";
 import { AgentsPage } from "@/pages/agents";
 import { AgentPage } from "@/pages/agent";
@@ -150,6 +151,7 @@ function GoogleMark({ className }: { className?: string }) {
 }
 
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
+  const next = discordSetupNext(location.pathname, location.search);
   const methods = useApi<{ github: boolean; google?: boolean; token: boolean; org?: string; open?: boolean }>("/console/auth/methods");
   const providers = !!(methods.data?.github || methods.data?.google);
   const [token, setToken] = useState("");
@@ -159,7 +161,14 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
-    try { await api("/console/auth/token", { body: { token: token.trim() } }); history.replaceState(null, "", "/console/"); onSignedIn(); }
+    try {
+      const signedIn = await api<{ next?: string }>("/console/auth/token", { body: { token: token.trim(), ...(next ? { next } : {}) } });
+      const accepted = signedIn.next?.match(/^\/console\/channels\?(.*)$/);
+      const destination = accepted ? discordSetupNext("/console/channels", `?${accepted[1]}`) : undefined;
+      history.replaceState(null, "", destination ?? "/console/");
+      dispatchEvent(new PopStateEvent("popstate"));
+      onSignedIn();
+    }
     catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
   }
@@ -175,8 +184,8 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />
         {providers && (
           <div className="flex flex-col gap-3">
-            {methods.data!.github && <PixelButton size="hero" href="/console/auth/github" className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>}
-            {methods.data!.google && <PixelButton size="hero" href="/console/auth/google" className="w-full"><GoogleMark className="size-3.5" />Continue with Google</PixelButton>}
+            {methods.data!.github && <PixelButton size="hero" href={consoleLoginUrl("github", next)} className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>}
+            {methods.data!.google && <PixelButton size="hero" href={consoleLoginUrl("google", next)} className="w-full"><GoogleMark className="size-3.5" />Continue with Google</PixelButton>}
             <p className="text-muted-foreground text-center text-xs text-balance">{!methods.data!.github
               ? "Any Google account can sign up."
               : methods.data!.open

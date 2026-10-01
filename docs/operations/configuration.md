@@ -36,6 +36,10 @@
 | `AGENT_STRIPE_SECRET_ARN` | instead: a Secrets Manager secret holding `{secretKey, webhookSecret}`, read at startup; while it has no value, purchases are off |
 | `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
 | `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead, and allows Google sign-in (see [Billing](billing.md)) |
+| `AGENT_DISCORD_MANAGED_ENABLED` | `true` enables the hosted Camel Discord integration; off by default. Requires the platform application settings below; see [Managed Discord](managed-discord.md) |
+| `AGENT_DISCORD_MANAGED_APPLICATION_ID`, `AGENT_DISCORD_MANAGED_PUBLIC_KEY` | Discord application ID and hex Ed25519 public key for verified setup interactions |
+| `AGENT_DISCORD_MANAGED_BOT_TOKEN`, `AGENT_DISCORD_MANAGED_CLIENT_SECRET` | platform bot token and OAuth client secret, server-side only; never customer channel credentials. Restart after rotating them |
+| `AGENT_DISCORD_MANAGED_SECRET_ARN` | instead of the four plain managed Discord values: Secrets Manager JSON `{botToken, applicationId, clientSecret, publicKey}`, read at startup; do not set both forms |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | optional: console sign-in with Google (a Google Cloud OAuth client of type Web application, redirect URI `<AGENT_PUBLIC_URL>/console/auth/google/callback`, scopes `openid email profile`). Off unless set; needs `AGENT_OPEN_SIGNUP=true`, since it admits any Google account with a verified address. Development values |
 | `AGENT_GOOGLE_OAUTH_SECRET_ARN` | instead: a Secrets Manager secret holding `{clientId, clientSecret}`, read at startup; while it has no value, Google sign-in is off |
 | `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` | private signup eligibility policy; required when GitHub starting credit is enabled, supplied through deployment configuration |

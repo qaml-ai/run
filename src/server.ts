@@ -40,6 +40,7 @@ import { applicationTools } from "./mcp-results.ts";
 import { telegram } from "./channels-telegram.ts";
 import { slack } from "./channels-slack.ts";
 import { discord } from "./channels-discord.ts";
+import { ManagedDiscord } from "./discord-managed.ts";
 import { github as githubChannel } from "./channels-github.ts";
 import { webhook } from "./channels-webhook.ts";
 import { email, emailReceiver, type EmailOptions } from "./channels-email.ts";
@@ -53,7 +54,7 @@ import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
-import { runtimeSecrets } from "./secrets.ts";
+import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
@@ -453,6 +454,7 @@ const clients = new ClientSessions(supervisor, {
   db, storage, prefix: "client-sessions/", ownership, volumes, links,
   get scheduler() { return scheduler; },
   get hooks() { return channels.hooks; },
+  authorizeConfiguration: (req, tenant, id) => authorizeManagedAgent(req, tenant, id),
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
     const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
@@ -487,6 +489,40 @@ const emailOptions: EmailOptions | undefined = process.env.AGENT_EMAIL_DOMAIN ? 
   db, domain: process.env.AGENT_EMAIL_DOMAIN, topics: (process.env.AGENT_EMAIL_SNS_TOPICS ?? "").split(",").map(topic => topic.trim()).filter(Boolean),
   ...(process.env.AGENT_EMAIL_BUCKET ? { bucket: process.env.AGENT_EMAIL_BUCKET } : {}), region: process.env.AGENT_EMAIL_REGION ?? process.env.AWS_REGION,
 } : undefined;
+async function authorizeManagedDefinition(req: Request, tenant: string, id: string) {
+  if (managedDiscord) return managedDiscord.authorizeDefinition(req, tenant, id);
+  const { rowCount } = await db.query(`select 1 from discord_server_bindings b join channels c on c.id=b.channel_id
+    where b.tenant=$1 and (c.channel->>'definition'=$2 or exists (
+      select 1 from channel_agents ca join agents a on a.id=ca.agent where ca.channel=c.id and a.header->'definition'->>'id'=$2)) limit 1`, [tenant, id]);
+  if (rowCount) throw new HttpError(403, "Managed Discord is disabled; enable it to verify server management permissions");
+}
+async function authorizeManagedAgent(req: Request, tenant: string, id: string) {
+  const { rows } = await db.query("select c.channel->>'definition' as definition from channel_agents ca join channels c on c.id = ca.channel where ca.agent = $1 and ca.tenant = $2 and c.channel->>'type' = 'discord-managed'", [id, tenant]);
+  if (rows[0]) await authorizeManagedDefinition(req, tenant, rows[0].definition);
+}
+const managedDiscordConfig = await managedDiscordSecrets();
+const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
+  ...managedDiscordConfig, db, consoleAuth, channels: () => channels, ownership, node, publicUrl,
+  apiUrl: process.env.AGENT_DISCORD_API_URL,
+  canStart: tenant => accounts.runLimit(tenant),
+  applyDefinition: async (tenant, channelId, definitionId) => {
+    const definition = await definitions.read(tenant, definitionId);
+    const { rows } = await db.query("select ca.agent from channel_agents ca join agents a on a.id = ca.agent where ca.channel = $1 and ca.tenant = $2 and not a.revoked", [channelId, tenant]);
+    const requestId = `managed_apply_${randomUUID().replaceAll("-", "")}`;
+    const queue = rows.map(({ agent }) => agent as string);
+    const results: { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }[] = [];
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+      for (let agent; (agent = queue.shift());) {
+        try {
+          const record = await submitAnywhere(agent, tenant, { id: requestId, method: "configure", params: { definition: { id: definition.id, revision: definition.revision } } });
+          if (record.outcome?.error !== undefined) throw new Error(record.outcome.error);
+          results.push({ agent, requestId, status: record.state === "completed" ? "updated" : "queued" });
+        } catch (error) { results.push({ agent, requestId, status: "failed", error: errorText(error) }); }
+      }
+    }));
+    return results.sort((a, b) => a.agent.localeCompare(b.agent));
+  },
+}) : undefined;
 // Messaging channels: webhooks (or a gateway socket one node holds) in, replies out through a durable queue any node can drain.
 const channels = new Channels({
   db, accounts, definitions, node, publicUrl, ownership,
@@ -494,6 +530,7 @@ const channels = new Channels({
     telegram: telegram({ apiUrl: process.env.AGENT_TELEGRAM_API_URL }),
     slack: slack({ apiUrl: process.env.AGENT_SLACK_API_URL }),
     discord: discord({ apiUrl: process.env.AGENT_DISCORD_API_URL }),
+    ...(managedDiscord ? { "discord-managed": managedDiscord.provider } : {}),
     github: githubChannel({ apiUrl: process.env.AGENT_GITHUB_API_URL }),
     webhook: webhook({ outbound }),
     ...(emailOptions ? { email: email(emailOptions) } : {}),
@@ -515,6 +552,7 @@ const channels = new Channels({
   ...(process.env.AGENT_CHANNEL_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_CHANNEL_RETRY_MS) } : {}),
 });
 channels.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
+void managedDiscord?.start().catch(error => console.error(JSON.stringify({ type: "discord_managed_start_failed", error: safeError(error) })));
 // Accounts being deleted, continued by whichever node claims each (and started at once on a request).
 const accountDeletions = new AccountDeletions({
   db, accounts, storage, volumes, channels, stripe, deleteAgent: deleteAnywhere,
@@ -631,6 +669,8 @@ app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
 });
 app.all("/internal/*", c => c.body(null, 404));
 app.route("/", consoleAuth.app);
+if (managedDiscord) app.route("/", managedDiscord.app);
+else app.get("/console/discord/config", c => c.json({ enabled: false }, 200, { "Cache-Control": "no-store" }));
 app.route("/", oauth.app);
 // The hosted MCP endpoints: their tools call this node's REST API locally, as the caller.
 const loopbackHost = !process.env.HOST || ["0.0.0.0", "::", "127.0.0.1", "localhost"].includes(process.env.HOST) ? "127.0.0.1" : process.env.HOST.includes(":") ? `[${process.env.HOST}]` : process.env.HOST;
@@ -648,7 +688,9 @@ app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
 if (billingMailer) app.route("/", billingMailer.feedback());
-app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions,
+  authorizeDefinition: authorizeManagedDefinition,
+  authorizeAgentConfiguration: authorizeManagedAgent, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);
@@ -810,6 +852,7 @@ async function drain(signal: string) {
   console.log(JSON.stringify({ type: "drain_started", signal, node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
   scheduler.stop();
   channels.stop();
+  await managedDiscord?.stop();
   webhooks.stop();
   accountDeletions.stop();
   storageGc.stop();

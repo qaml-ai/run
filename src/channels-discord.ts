@@ -49,7 +49,12 @@ export function parseMessage(message: any, botId: string, ignored?: (reason: str
  * Send Messages, Send Messages in Threads, Attach Files and Read Message History (the
  * console's invite link asks for these). `apiUrl` is configurable so tests run against a fake.
  */
-export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number } = {}): ChannelProvider {
+export function discord(options: {
+  apiUrl?: string;
+  handshakeTimeoutMs?: number;
+  /** Managed transports retain raw guild lifecycle/message context before tenant routing. */
+  gateway?: { intents?: number; shard?: [number, number]; dispatch?(event: string, data: any): Promise<void> | void };
+} = {}): ChannelProvider {
   const base = (options.apiUrl ?? "https://discord.com/api/v10").replace(/\/+$/, "");
   const token = (credentials: Record<string, string>) => {
     const value = credentials.botToken;
@@ -141,7 +146,7 @@ export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number 
           clearTimeout(heartbeat);
           heartbeat = setTimeout(beat, interval * Math.random());
           if (session) send(6, { token: token(credentials), session_id: session.id, seq: sequence });
-          else send(2, { token: token(credentials), intents: INTENTS, properties: { os: "linux", browser: "agent-runtime", device: "agent-runtime" } });
+          else send(2, { token: token(credentials), intents: options.gateway?.intents ?? INTENTS, ...(options.gateway?.shard ? { shard: options.gateway.shard } : {}), properties: { os: "linux", browser: "agent-runtime", device: "agent-runtime" } });
         } else if (payload.op === 11) {
           acked = true;
           lastAckAt = Date.now();
@@ -159,6 +164,10 @@ export function discord(options: { apiUrl?: string; handshakeTimeoutMs?: number 
           if (!payload.d) { session = undefined; sequence = null; }
           ws.close(RECONNECT);
         } else if (payload.op === 0) {
+          if (options.gateway?.dispatch) {
+            void Promise.resolve().then(() => options.gateway!.dispatch!(payload.t, payload.d))
+              .catch(error => log("dispatch_failed", { error: safeError(error) }));
+          }
           if (payload.t === "READY") {
             botId = String(payload.d.user.id);
             session = { id: payload.d.session_id, url: payload.d.resume_gateway_url };

@@ -34,7 +34,13 @@ const STATE_COOKIE = "ar_oauth_state";
 const NEXT_COOKIE = "ar_next";
 /** Google sign-in's state, nonce and PKCE verifier, between the redirect and the callback. */
 const GOOGLE_COOKIE = "ar_google";
-const nextPath = (value: string | undefined) => value && /^\/oauth\/authorize\?[^\s]*$/.test(value) ? value : undefined;
+const nextPath = (value: string | undefined) => {
+  if (!value) return undefined;
+  if (/^\/oauth\/authorize\?[^\s]*$/.test(value)) return value;
+  // Only this exact internal setup route can survive signup/sign-in; never arbitrary redirects.
+  if (/^\/console\/channels\?discord_setup=\d{1,20}$/.test(value)) return value;
+  return undefined;
+};
 
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -231,12 +237,12 @@ export class ConsoleAuth {
     // Operator or API token sign-in, for tenants an admin created without GitHub or Google.
     app.post("/console/auth/token", async c => {
       if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
-      let token = "";
-      try { token = JSON.parse(await readText(c.req.raw.body, 4096)).token; }
+      let token = "", next: string | undefined;
+      try { const body = JSON.parse(await readText(c.req.raw.body, 4096)); token = body.token; next = nextPath(body.next); }
       catch { return json(c, 400, { error: "Send {\"token\": \"...\"}" }); }
       const principal = typeof token === "string" ? await this.options.accounts.authenticate(`Bearer ${token}`) : undefined;
       if (!principal) return json(c, 401, { error: "Unknown token" });
-      return json(c, 200, { tenant: principal.tenant }, [await this.tokenSession(principal.tenant)]);
+      return json(c, 200, { tenant: principal.tenant, ...(next ? { next } : {}) }, [await this.tokenSession(principal.tenant)]);
     });
     app.post("/console/auth/logout", c => {
       if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });

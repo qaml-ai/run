@@ -42,6 +42,7 @@ export interface AccountDeletionOptions {
 
 /** Tables whose rows go with the tenant, by their `tenant` column (payment, ledger and anti-abuse records are not here). */
 const TENANT_TABLES = [
+  "discord_account_links", "discord_setup_attempts", "discord_server_bindings",
   "api_tokens", "oauth_grants", "provider_keys", "key_scope_providers", "model_providers", "definitions",
   "webhook_deliveries", "webhook_endpoints", "usage_webhook_outbox", "usage_webhooks", "idempotency_keys",
   "agent_inputs", "schedules", "channel_agents", "volume_watchers", "channels",
@@ -134,7 +135,7 @@ export class AccountDeletions {
     const ids = async (query: string) => (await db.query(query, [tenant])).rows.map(row => row.id as string);
     // Channels first, so no message makes the tenant a new agent meanwhile; each is torn down at its provider.
     for (const id of await ids("select id from channels where tenant = $1")) {
-      if (channels) await channels.remove(tenant, id);
+      if (channels) await channels.remove(tenant, id, { managed: true });
       await db.query("delete from channel_conversations where channel = $1", [id]);
     }
     // Agents are revoked where they run, then purged (their logs, history, files' pins, schedules and threads).

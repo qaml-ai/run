@@ -7,6 +7,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Architecture](architecture.md): control and data planes, ownership, logs, draining, deploys, turn handoff
 - [Release notes](release-notes.md): rollout requirements and incompatible changes
 - [Configuration](configuration.md): environment variables, starting a runtime
+- [Managed Discord](managed-discord.md): the shared Camel application, onboarding, platform secrets and pilot checks
 - [Self-hosting](self-host.md): the image, Docker Compose, storage, networking
 - [Persistence](persistence.md): transcripts, history chunks, journals, retries, idle unload, limits per node and tenant
 - [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe

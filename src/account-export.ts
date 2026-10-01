@@ -35,6 +35,7 @@ webhooks.json              your webhook endpoints (signing secrets left out)
 tokens.json                your API tokens' names and prefixes (never the tokens)
 keys.json                  which provider keys are set (the last four characters, never the keys)
 oauth-grants.json          the applications you let act for your account
+discord.json               managed Discord server bindings and account-link/setup metadata (never credentials or session/state hashes)
 volumes/<id>/volume.json   each volume's name and size
 volumes/<id>/files/...     each volume's files
 billing/ledger.jsonl       your credit ledger, one entry per line, newest first
@@ -80,6 +81,25 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
   yield* zip.file("tokens.json", json(await accounts.listTokens(tenant)));
   yield* zip.file("keys.json", json(await accounts.keyStatus(tenant)));
   if (options.oauth) yield* zip.file("oauth-grants.json", json(await options.oauth.grants(tenant)));
+  const [bindings, links, attempts] = await Promise.all([
+    accounts.db.query(`select b.id, b.application_id, b.guild_id, b.channel_id, b.state,
+      b.allowed_channel_ids, b.administrator_id, b.created_at, b.updated_at,
+      i.name guild_name, i.state installation_state
+      from discord_server_bindings b join discord_installations i using (application_id, guild_id)
+      where b.tenant = $1 order by b.created_at, b.id`, [tenant]),
+    accounts.db.query("select discord_user_id, expires_at from discord_account_links where tenant = $1 order by discord_user_id, expires_at", [tenant]),
+    accounts.db.query("select guild_id, expires_at from discord_setup_attempts where tenant = $1 order by expires_at, guild_id", [tenant]),
+  ]);
+  yield* zip.file("discord.json", json({
+    serverBindings: bindings.rows.map(row => ({
+      id: row.id, applicationId: row.application_id, guildId: row.guild_id, guildName: row.guild_name,
+      channelId: row.channel_id, state: row.state, installationState: row.installation_state,
+      allowedChannelIds: row.allowed_channel_ids, administratorId: row.administrator_id,
+      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+    })),
+    accountLinks: links.rows.map(row => ({ discordUserId: row.discord_user_id, expiresAt: Number(row.expires_at) })),
+    setupAttempts: attempts.rows.map(row => ({ guildId: row.guild_id, expiresAt: Number(row.expires_at) })),
+  }));
 
   const volumes = options.volumes;
   if (volumes) {

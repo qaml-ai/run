@@ -10,8 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type Channel, type Definition } from "@/lib/api";
+import { api, formatTime, useApi, type Channel, type Definition, type ManagedDiscordConfig } from "@/lib/api";
 import { DefinitionDialog } from "./definitions";
+import { ManagedDiscord } from "./discord-managed";
 import { Link } from "@/lib/router";
 
 const senders = (value: string) => value.split(/[\s,]+/).map(entry => entry.trim()).filter(Boolean);
@@ -224,8 +225,8 @@ function WebhookSettings({ settings, set }: { settings: Settings; set: (next: Se
 const OWN = "own";
 
 /** Create a channel, or edit its definition and access (credentials are write-only). */
-function ChannelDialog({ channel, onClose, onSaved }: { channel?: Channel; onClose: () => void; onSaved: (created?: Channel) => void }) {
-  const [type, setType] = useState<ChannelType>((channel?.type as ChannelType) ?? "telegram");
+function ChannelDialog({ channel, initialType = "telegram", onClose, onSaved }: { channel?: Channel; initialType?: ChannelType; onClose: () => void; onSaved: (created?: Channel) => void }) {
+  const [type, setType] = useState<ChannelType>((channel?.type as ChannelType) ?? initialType);
   const [name, setName] = useState(channel?.name ?? "");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const definitions = useApi<Definition[]>("/v1/definitions");
@@ -351,24 +352,30 @@ function DiscordHelp({ channel }: { channel: Channel }) {
 
 export function ChannelsPage() {
   const channels = useApi<Channel[]>("/v1/channels");
+  const managedConfig = useApi<ManagedDiscordConfig>("/console/discord/config");
   const definitions = useApi<Definition[]>("/v1/definitions");
   const [modelDefinition, setModelDefinition] = useState<Definition>();
   const [connected, setConnected] = useState<Channel>();
-  const [editing, setEditing] = useState<Channel | "new">();
+  const [editing, setEditing] = useState<Channel | "new" | "own-discord">();
   const [error, setError] = useState<string>();
+  const [managedOpen, setManagedOpen] = useState(() => {
+    const query = new URLSearchParams(location.search);
+    return !!query.get("discord_setup") || query.has("discord_connected") || query.has("discord_error");
+  });
+  const ownChannels = channels.data?.filter(channel => channel.type !== "discord-managed");
   return (
     <>
       <PageHeader title="Channels" description="Let people talk to agents from messaging apps, and start agents from GitHub and webhooks. Each conversation (a chat, a pull request, a key) gets its own agent, made from the channel's definition."
-        actions={<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button>} />
+        actions={<>{managedConfig.data?.enabled && <><Button size="sm" variant="outline" onClick={() => setManagedOpen(true)}><Plus />Add Camel bot</Button><Button size="sm" variant="outline" onClick={() => setEditing("own-discord")}>Connect your own bot</Button></>}<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button></>} />
       <ErrorAlert error={channels.error ?? error} />
-      {!channels.data ? <Skeleton className="h-32 w-full" /> : channels.data.length === 0 ? (
+      {!ownChannels ? <Skeleton className="h-32 w-full" /> : ownChannels.length === 0 ? (
         <EmptyState icon={<MessageCircle />} title="No channels">Connect a Telegram, Slack or Discord bot to talk to your agents from there, a GitHub App to have them answer pull requests, or any service's webhooks.</EmptyState>
       ) : (
         <div className="bg-card border">
           <Table>
             <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Bot or address</TableHead><TableHead>Access</TableHead><TableHead className="hidden lg:table-cell">Created</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>
-              {channels.data.map(channel => (
+              {ownChannels.map(channel => (
                 <TableRow key={channel.id}>
                   <TableCell className="font-medium">{channel.name}<div className="text-muted-foreground text-xs">{channel.type}</div></TableCell>
                   <TableCell className="font-mono text-xs">{channel.type === "email" ? channel.settings?.address : channel.account.username ? `@${channel.account.username}` : channel.account.id ?? "—"}</TableCell>
@@ -386,13 +393,14 @@ export function ChannelsPage() {
           </Table>
         </div>
       )}
+      {managedConfig.data && <ManagedDiscord config={managedConfig.data} open={managedOpen} onOpenChange={setManagedOpen} onChanged={() => { void channels.reload(); void definitions.reload(); }} />}
       {modelDefinition && <DefinitionDialog definition={modelDefinition} forChannel onClose={() => setModelDefinition(undefined)} onSaved={() => void definitions.reload()} />}
       {connected && <Dialog open onOpenChange={value => { if (!value) setConnected(undefined); }}><DialogContent>
         <DialogHeader><DialogTitle>{connected.name} connected</DialogTitle><DialogDescription>Token validated and stored. Invite the bot, then send a test message.</DialogDescription></DialogHeader>
         <DiscordHelp channel={connected} />
         <DialogFooter><Button onClick={() => setConnected(undefined)}>Done</Button></DialogFooter>
       </DialogContent></Dialog>}
-      {editing && <ChannelDialog key={editing === "new" ? "new" : editing.id} channel={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={created => {
+      {editing && <ChannelDialog key={typeof editing === "string" ? editing : editing.id} channel={typeof editing === "string" ? undefined : editing} initialType={editing === "own-discord" ? "discord" : "telegram"} onClose={() => setEditing(undefined)} onSaved={created => {
         void channels.reload();
         void definitions.reload();
         if (created?.type === "discord") setConnected(created);

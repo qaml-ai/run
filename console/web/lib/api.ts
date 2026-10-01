@@ -127,6 +127,20 @@ export interface Channel {
   greeting?: string; settings?: Record<string, any>; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
 }
 
+export interface ManagedDiscordConfig { enabled: boolean; applicationId?: string; inviteUrl?: string; setupPath?: string }
+export interface ManagedDiscordGuild {
+  id: string; name: string; installed: boolean; owned: boolean;
+  installationState: "present" | "unavailable" | "removed" | null;
+  bindingState: "active" | "paused" | "disconnected" | null;
+}
+export interface ManagedDiscordBinding {
+  guildId: string; guildName: string; state: "active" | "paused" | "disconnected";
+  installationState: "present" | "unavailable" | "removed"; channelId: string | null;
+  allowedChannelIds: string[]; channel?: Channel;
+  applied?: { agent: string; status: "updated" | "queued" | "failed"; error?: string }[];
+}
+export interface DiscordGuildChannel { id: string; name: string; type: number }
+
 export interface VolumeSummary { id: string; name: string; createdAt: number }
 export interface Volume extends VolumeSummary { seq: number; files: number; bytes: number; origin?: { volume: string; snapshot?: string; seq: number } }
 export interface Snapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }

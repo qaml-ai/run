@@ -77,6 +77,10 @@ export interface ParseContext { headers: Headers; account: Record<string, string
  */
 export interface ChannelProvider {
   readonly label: string;
+  /** Platform integrations may only be provisioned through their verified setup service. */
+  readonly managed?: boolean;
+  /** Recheck managed installation/access before accepting, submitting or delivering queued work. */
+  guard?(channel: Channel, conversationId: string, phase: "inbound" | "submit" | "send"): Promise<boolean>;
   readonly maxMessageLength: number;
   /** Validate credentials and, where the service allows it, point its webhook at `webhook.url`. */
   setup(credentials: Credentials, webhook: { url: string; secret: string }): Promise<{ account: Record<string, string>; masked: Record<string, string> }>;
@@ -156,7 +160,7 @@ type Item = {
   /** Not before this time: the next retry or re-check. */
   due: number;
   inbound?: Inbound;
-  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; files?: { path: string }[] };
+  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; files?: { path: string }[]; requiredDefinition?: string };
   /** What to send: the text's parts, then each file; `sent` counts the steps done. */
   text?: string; files?: Presented[]; sent?: number; attempts?: number;
 };
@@ -318,10 +322,11 @@ export class Channels {
   }
   async get(tenant: string, id: string) { return this.view(await this.owned(tenant, id)); }
 
-  async create(tenant: string, input: ChannelInput) {
+  async create(tenant: string, input: ChannelInput, internal?: { managed: true }) {
     if (!this.options.accounts.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store channel credentials");
     const type = input.type ?? "";
     const provider = this.provider(type);
+    if (provider.managed && !internal?.managed) throw new HttpError(403, "Set up this integration through the console");
     if (!input.credentials && provider.needsCredentials !== false) throw new HttpError(400, "A channel needs credentials");
     const credentials = input.credentials ?? {};
     const id = `ch_${randomBytes(10).toString("hex")}`;
@@ -341,8 +346,9 @@ export class Channels {
     return this.view(channel);
   }
 
-  async update(tenant: string, id: string, input: ChannelInput) {
+  async update(tenant: string, id: string, input: ChannelInput, internal?: { managed: true }) {
     const channel = await this.owned(tenant, id);
+    if (this.provider(channel.type).managed && !internal?.managed) throw new HttpError(403, "Manage this integration through its server setup in the console");
     if (input.type !== undefined && input.type !== channel.type) throw new HttpError(400, "A channel's type cannot change");
     const settings = this.settings(this.provider(channel.type), input, id, channel.settings);
     const next: Channel = {
@@ -364,9 +370,13 @@ export class Channels {
     return this.view(next);
   }
 
-  async remove(tenant: string, id: string) {
+  async remove(tenant: string, id: string, internal?: { managed: true }) {
     const channel = await this.owned(tenant, id);
-    try { await this.provider(channel.type).teardown(this.secrets(channel).credentials); }
+    const provider = this.options.providers[channel.type];
+    if ((channel.type === "discord-managed" || provider?.managed) && !internal?.managed) throw new HttpError(403, "Disconnect this integration through its server setup in the console");
+    // Account deletion must still purge persisted managed channels when the hosted feature is disabled.
+    if (!provider && !(internal?.managed && channel.type === "discord-managed")) this.provider(channel.type);
+    try { await provider?.teardown(this.secrets(channel).credentials); }
     catch (error) { console.error(JSON.stringify({ type: "channel_teardown_failed", channel: id, error: safeError(error) })); }
     await this.db.query("delete from channels where id = $1 and tenant = $2", [id, tenant]);
     // Its queued work, dedup and rate windows, and its email threads' metadata go too: nothing replies through it again.
@@ -434,6 +444,7 @@ export class Channels {
 
   /** Record a message and start on it. Anything the channel does not handle, or from someone not allowed, is dropped. */
   private async accept(channel: Channel, inbound: Inbound) {
+    if (await this.provider(channel.type).guard?.(channel, inbound.conversationId, "inbound") === false) return;
     if (!validConversation(inbound.conversationId) || !(inbound.trusted || this.allowed(channel, inbound.sender))) {
       console.log(JSON.stringify({ type: "channel_message_rejected", channel: channel.id, messageId: inbound.messageId,
         reason: !validConversation(inbound.conversationId) ? "invalid_conversation" : "access" }));
@@ -623,6 +634,9 @@ export class Channels {
   private async advance(current: Held): Promise<void> {
     const channel = await this.read(current.item.channel);
     if (!channel) return this.finish(current);
+    const phase = current.item.state === "received" ? "submit" : "send";
+    if (await this.provider(channel.type).guard?.(channel, current.item.conversationId, phase) === false) return this.finish(current);
+    if (this.provider(channel.type).managed && current.item.inbound && !this.allowed(channel, current.item.inbound.sender)) return this.finish(current);
     if (current.item.state === "received") return this.receive(channel, current);
     if (current.item.state === "submitted") return this.recheck(channel, current);
     return this.deliver(channel, current);
@@ -642,13 +656,18 @@ export class Channels {
     const { credentials } = this.secrets(channel);
     void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
     const agent = await this.agentFor(channel, item.conversationId, inbound.sender, inbound.title);
+    if (!await this.managedSubmissionAllowed(channel, current)) return this.finish(current);
+    await this.syncManagedDefinition(channel, agent, item.id);
     // A reply to the question the agent waits on answers it; anything else is a new message, which supersedes it.
     if (await this.answerInput(channel, agent, inbound)) return this.finish(current);
     const prompt = this.prompt(channel, inbound, await this.attach(channel, credentials, agent, item.id, inbound.files ?? []));
     // Submitted before submitting: the turn may end (and its reply be settled) before submit returns.
     const next = await this.save(current, { state: "submitted", agent, prompt, due: Date.now() + RECHECK_MS }, false);
     // Channels run unattended: a turn goes ahead without the application, whose calls fail as not connected.
-    try { await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: { ...prompt, allowDisconnected: true } }); }
+    try {
+      if (!await this.managedSubmissionAllowed(channel, next)) return this.finish(next);
+      await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: { ...prompt, allowDisconnected: true } });
+    }
     catch (error) {
       console.error(JSON.stringify({ type: "channel_submit_failed", item: item.id, error: safeError(error) }));
       await this.save(next, { due: Date.now() + this.retryDelay(0) }).catch(() => {});
@@ -696,7 +715,7 @@ export class Channels {
     const { id, name, username } = inbound.sender;
     const from = { id: `${channel.type}:${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}) };
     const text = [inbound.text, ...notes].filter(Boolean).join("\n") || (files.length === 1 ? "(sent a file)" : files.length ? `(sent ${files.length} files)` : "");
-    return { text, from, ...(files.length ? { files } : {}) };
+    return { text, from, ...(files.length ? { files } : {}), ...(this.provider(channel.type).managed ? { requiredDefinition: channel.definition } : {}) };
   }
 
   /**
@@ -722,10 +741,41 @@ export class Channels {
     return true;
   }
 
+  /** A server can change definition while its first agent is still being provisioned. */
+  private async syncManagedDefinition(channel: Channel, agent: string, messageId: string) {
+    if (!this.provider(channel.type).managed) return;
+    const latest = await this.read(channel.id);
+    if (!latest) return;
+    const { rows } = await this.db.query("select header->'definition' as definition from agents where id=$1 and tenant=$2", [agent, latest.tenant]);
+    const reference = rows[0]?.definition;
+    if (!reference || reference.id === latest.definition) return;
+    const definition = await this.options.definitions.read(latest.tenant, latest.definition);
+    const record = await this.options.submit(agent, latest.tenant, {
+      id: `managed_rebind_${sha(`${messageId}:${definition.id}:${definition.revision}`).slice(0, 40)}`,
+      method: "configure", params: { definition: { id: definition.id, revision: definition.revision } },
+    });
+    if (record.outcome?.error) throw new Error(record.outcome.error);
+  }
+
+  /** Managed policies can change while attachments or agent startup are awaiting I/O. */
+  private async managedSubmissionAllowed(channel: Channel, current: Held, phase: "submit" | "send" = "submit") {
+    const provider = this.provider(channel.type);
+    if (!provider.managed) return true;
+    const latest = await this.read(channel.id);
+    if (!latest || latest.tenant !== channel.tenant || (current.item.inbound && !this.allowed(latest, current.item.inbound.sender))) return false;
+    if (await provider.guard?.(latest, current.item.conversationId, phase) === false) return false;
+    // A policy change cancels durable work. Do not submit a held copy of an item already cancelled.
+    const { rowCount } = await this.db.query("select 1 from channel_items where id=$1 and revision=$2", [current.item.id, current.revision]);
+    return !!rowCount;
+  }
+
   /** A submitted message whose turn end this runtime did not see: ask again (idempotently) how it went. */
   private async recheck(channel: Channel, current: Held) {
     const item = current.item;
     let record: RequestRecord;
+    // Rechecking an existing request must still retrieve its reply after credit is exhausted.
+    // The submission service enforces current credit if this id was never accepted.
+    if (!await this.managedSubmissionAllowed(channel, current, "send")) return this.finish(current);
     try { record = await this.options.submit(item.agent!, channel.tenant, { id: item.id, method: "prompt", params: { ...item.prompt!, allowDisconnected: true } }); }
     catch (error) {
       const status = (error as { status?: number }).status;
@@ -748,7 +798,10 @@ export class Channels {
       ...(item.files ?? []).map(file => () => this.sendFile(provider, credentials, item, file)),
     ];
     for (let index = item.sent ?? 0; index < steps.length; index++) {
-      try { await steps[index](); }
+      try {
+        if (await provider.guard?.(channel, item.conversationId, "send") === false) return this.finish(current);
+        await steps[index]();
+      }
       catch (error) {
         const attempts = (current.item.attempts ?? 0) + 1;
         const permanent = error instanceof SendError && error.permanent;

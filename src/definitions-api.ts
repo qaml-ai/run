@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -20,7 +21,7 @@ async function parse<T extends z.ZodType>(type: T, c: Context): Promise<z.infer<
 }
 
 /** /v1/definitions: a tenant's reusable agent definitions. */
-export function definitionRoutes(route: Route, context: () => { definitions?: Definitions; submit?: Submit }) {
+export function definitionRoutes(route: Route, context: () => { definitions?: Definitions; submit?: Submit; authorizeDefinition?: (request: Request, tenant: string, id: string) => Promise<void> }) {
   const service = () => {
     const value = context().definitions;
     if (!value) throw new HttpError(404, "Definitions are not enabled on this runtime");
@@ -35,6 +36,10 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
   }), async c => {
     const definitions = service();
     const key = c.req.header("idempotency-key"), input = await parse(schema.DefinitionInput, c);
+    if (key !== undefined) {
+      const id = `def_${createHash("sha256").update(`${c.var.principal.tenant}:${key}`).digest("hex").slice(0, 20)}`;
+      await context().authorizeDefinition?.(c.req.raw, c.var.principal.tenant, id);
+    }
     return json(c, 201, definitions.view(key !== undefined ? await definitions.upsert(c.var.principal.tenant, key, input) : await definitions.create(c.var.principal.tenant, input)));
   });
   route(createRoute({ method: "get", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition", schema.Definition) } }),
@@ -45,6 +50,7 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
   }), async c => {
     const definitions = service();
     const tenant = c.var.principal.tenant;
+    await context().authorizeDefinition?.(c.req.raw, tenant, c.req.param("id")!);
     const input = await parse(schema.DefinitionUpdate, c);
     const submit = context().submit;
     if (input.apply === "all" && !submit) throw new HttpError(404, "Applying definitions is not enabled on this runtime");
@@ -53,6 +59,7 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
     return json(c, 200, { ...definitions.view(updated), applied: await definitions.apply(updated, (agent, request) => submit!(agent, tenant, request)) });
   });
   route(createRoute({ method: "delete", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition is deleted; agents made from it keep their configuration", schema.Deleted) } }), async c => {
+    await context().authorizeDefinition?.(c.req.raw, c.var.principal.tenant, c.req.param("id")!);
     await service().remove(c.var.principal.tenant, c.req.param("id")!);
     return json(c, 200, { deleted: true });
   });
