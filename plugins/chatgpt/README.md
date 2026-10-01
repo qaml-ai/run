@@ -147,6 +147,7 @@ If the dashboard asks for a justification per hint, these match the server's val
   `abort_agent`, `answer_input`): each can overwrite a definition or an existing agent's configuration, delete
   something, cancel a running turn, or give an answer or approval that cannot be taken back.
 - `run_agent` is a write (it adds a turn to the agent's history and uses model credit) and open-world: the agent may
-  search and fetch the public web and call the MCP servers it was given. `answer_input` is open-world for the same
-  reason, since it resumes the run.
-- Everything else is confined to the connected camelRun account (openWorldHint false). `add_schedule` only adds.
+  search and fetch the public web and call the MCP servers it was given. `answer_input` and `add_schedule` are
+  open-world for the same reason, since one resumes the run and the other wakes the agent for a run later.
+  `add_schedule` only adds.
+- Everything else is confined to the connected camelRun account (openWorldHint false).

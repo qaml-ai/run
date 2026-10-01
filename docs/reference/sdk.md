@@ -317,9 +317,9 @@ application keeps serving its tools.
   `answer(True)` or `false`, as the docs show.
 - Python: the package ships `py.typed` and `__all__`, and its missing-key error
   names `CAMELAI_API_KEY`.
-- `camelrun mcp`: `list_agents` reports `loaded` and `toolsConnected`,
-  `create_agent` is not marked destructive, and its errors no longer suggest
-  CLI commands.
+- `camelrun mcp`: `list_agents` reports `loaded` and `toolsConnected`, its
+  errors no longer suggest CLI commands, and `add_schedule` is marked
+  open-world.
 
 ## 0.11.2 (TypeScript) / 0.7.2 (Python), 2026-10-01
 

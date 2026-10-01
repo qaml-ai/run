@@ -133,12 +133,13 @@ decided.
 
 Every tool has a title and states MCP's `readOnlyHint`, `destructiveHint` and
 `openWorldHint`. The tools that overwrite, delete, stop or irreversibly answer
-something (`deploy`, `configure_agent`, the deletes, `abort_agent`,
-`answer_input`) are marked destructive, so clients that ask before such calls
-ask you first. `create_agent` is not: it adds an agent, or brings the one with
-that key to the configuration given, keeping its history. `run_agent` and `answer_input` are
-open-world: the run they start can search and fetch the web and call the
-agent's tool servers. A result longer than 100,000 characters is cut, saying so.
+something (`deploy`, `configure_agent`, `create_agent`, the deletes,
+`abort_agent`, `answer_input`) are marked destructive, so clients that ask
+before such calls ask you first. `create_agent` is because, for a key that
+already has an agent, it brings that agent to the configuration given (keeping
+its history). `run_agent`, `answer_input` and `add_schedule` are open-world:
+the runs they start can search and fetch the web and call the agent's tool
+servers. A result longer than 100,000 characters is cut, saying so.
 
 ## Hosted MCP server
 

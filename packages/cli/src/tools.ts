@@ -127,7 +127,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
       name: z.string().optional(),
       builtins: z.array(z.enum(["web_fetch", "web_search", "schedule", "ask_user"])).optional().describe("Without a definition: tools the runtime answers itself"),
     },
-    ({ key, ...config }) => ops.upsertAgent(api(), key, config), { ...add, idempotentHint: true });
+    ({ key, ...config }) => ops.upsertAgent(api(), key, config), { ...destructive, idempotentHint: true });
   tool("configure_agent", "Configure agent", "Change one agent's model, system prompt, prompt addition or thinking level between its runs, replacing the current values; its history is kept.", {
     agent,
     model: z.string().optional(),
@@ -183,7 +183,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
   }, async ({ agent, ...schedule }) => {
     const client = api();
     return client.call("POST", `/v1/agents/${enc(await client.agentId(agent))}/schedules`, schedule);
-  }, add);
+  }, { ...add, openWorldHint: true });
   tool("delete_schedule", "Delete schedule", "Cancel a scheduled wake-up; this cannot be undone.", { agent, scheduleId: z.string() }, async ({ agent, scheduleId }) => {
     const client = api();
     return client.call("DELETE", `/v1/agents/${enc(await client.agentId(agent))}/schedules/${enc(scheduleId)}`);
