@@ -215,6 +215,9 @@ SDKs' `runLimits`, `run_limits=` in Python) when you make it, or with
 `PATCH /v1/agents/:id/configuration` (`null` removes them), or for every agent of a
 [definition](definitions.md) with its `runLimits`. An agent's own stay when its
 definition is applied. Values above the runtime's maximums count as the maximums,
-which its operator sets (`AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS`). Only you
+which its operator sets (`AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS`), or sets for
+one tenant (`maxRunResponses`, `maxRunSeconds`: in an admin tenant's tenants-file entry,
+or `PUT /v1/tenants/{id}/limits` for a self-serve one). Admin tenants have no maximums
+unless their entry sets them: only their agents' own `runLimits` apply. Only you
 can set them, not the agent's own token. They are counted on the node running the
 turn: a turn resumed on another node after its node was lost counts again from there.

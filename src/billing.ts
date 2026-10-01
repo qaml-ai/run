@@ -138,7 +138,7 @@ export class Billing {
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
-  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; until: number }>();
+  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; until: number }>();
 
   constructor(options: BillingOptions) {
     this.options = options;
@@ -163,7 +163,10 @@ export class Billing {
     if (cached && cached.until > Date.now()) return cached;
     const row = (await this.db.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
     const set = (key: string) => Number.isSafeInteger(row?.limits?.[key]) ? { [key]: row.limits[key] as number } : {};
-    const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; until: number } = { mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...set("maxStorageBytes"), ...set("agentCreatesPerMinute"), ...set("runsPerMinute"), until: Date.now() + MODE_CACHE_MS };
+    const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; until: number } = {
+      mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...set("maxStorageBytes"), ...set("agentCreatesPerMinute"), ...set("runsPerMinute"),
+      ...set("maxRunResponses"), ...set("maxRunSeconds"), until: Date.now() + MODE_CACHE_MS,
+    };
     this.modes.set(tenant, entry);
     return entry;
   }
@@ -175,6 +178,16 @@ export class Billing {
   async rateLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<number | undefined> {
     if (this.tenants.billing(tenant)) return undefined;
     return (await this.row(tenant))[limit === "runs" ? "runsPerMinute" : "agentCreatesPerMinute"];
+  }
+
+  /**
+   * The most one run of the tenant's agents may take, as set for it: an admin tenant's entry (`maxRunResponses`,
+   * `maxRunSeconds`; absent, no limit), else for a self-serve tenant `tenants.limits` (absent: undefined, the runtime's).
+   */
+  async runLimits(tenant: string): Promise<{ maxResponses?: number; maxSeconds?: number }> {
+    if (this.tenants.has(tenant)) return this.tenants.runLimits(tenant);
+    const row = await this.row(tenant);
+    return { maxResponses: row.maxRunResponses, maxSeconds: row.maxRunSeconds };
   }
 
   /**

@@ -349,10 +349,10 @@ export interface ClientSessionOptions {
    */
   spendLimit?: (tenant: string) => Promise<Refusal | undefined>;
   /**
-   * The most one run may take, whatever its agent asks (`runLimits`): model responses (compaction summaries count) and
-   * wall time from when it began. Default 1,000 responses and 2 hours (`RUN_LIMITS`).
+   * The most one run of a tenant's agents may take, whatever its agent asks (`runLimits`): model responses (compaction
+   * summaries count) and seconds from when it began; Infinity for no limit. Default 1,000 responses and 2 hours (`RUN_LIMITS`).
    */
-  runLimits?: Required<RunLimits>;
+  runLimitsFor?: (tenant: string) => Promise<Required<RunLimits>>;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
   /** Count a run the tenant starts against its rate limit; throws (429) past it. Checked when a run is accepted, not for retries. */
@@ -406,7 +406,7 @@ export function spendInput(value: unknown): number | null {
   return usd;
 }
 const dollars = (usd: number) => `$${Number(usd.toFixed(6))}`;
-/** The runtime's maximums for one run, which an agent's own `runLimits` may lower (ClientSessionsOptions.runLimits). */
+/** The runtime's default maximums for one run, which an agent's own `runLimits` may lower (ClientSessionsOptions.runLimitsFor). */
 export const RUN_LIMITS: Readonly<Required<RunLimits>> = Object.freeze({ maxResponses: 1_000, maxSeconds: 2 * 3_600 });
 const duration = (seconds: number) => {
   const [count, unit] = seconds % 3_600 === 0 ? [seconds / 3_600, "hour"] : seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
@@ -1169,7 +1169,7 @@ export class ClientSessions {
         runLimit: async () => {
           const limited = await this.agentSpendLimit(session) ?? this.runSpendLimit(session) ?? await this.options.spendLimit?.(session.header.tenant);
           if (limited) return { stopped: "spend_limit" as const, message: typeof limited === "string" ? limited : limited.message };
-          const turn = this.turnLimit(session);
+          const turn = await this.turnLimit(session);
           return turn ? { stopped: "turn_limit" as const, message: turn } : undefined;
         },
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
@@ -2757,10 +2757,10 @@ export class ClientSessions {
    * agent's `runLimits` allow, within the runtime's. Counted on this node: a turn resumed after its node was lost
    * counts again from its resume.
    */
-  private turnLimit(session: Session): string | undefined {
+  private async turnLimit(session: Session): Promise<string | undefined> {
     const run = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
     if (!run) return undefined;
-    const most = this.options.runLimits ?? RUN_LIMITS, own = session.header.config.runLimits ?? {};
+    const most = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS, own = session.header.config.runLimits ?? {};
     const maxResponses = Math.min(own.maxResponses ?? most.maxResponses, most.maxResponses);
     const maxSeconds = Math.min(own.maxSeconds ?? most.maxSeconds, most.maxSeconds);
     const responses = session.usage?.get(run.id)?.responses ?? 0;

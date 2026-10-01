@@ -137,6 +137,13 @@ test("over the API: uploads need credit, stop at the free limit with STORAGE_LIM
   assert.deepEqual(reset.json, { tenant: "lab-store", limits: {} });
   assert.equal((await upload("c.txt", 100)).status, 507, "back to the plan's limit");
 
+  // An unbilled admin tenant (like chiridion-prod) has no limit and no balance: its writes are never refused.
+  const own = (await call("/v1/volumes", { body: { name: "admin" }, token: OPS })).json;
+  for (const [index, size] of [6000, 9000].entries()) {
+    const written = await call(`/v1/volumes/${own.id}/files/admin-${index}.bin`, { method: "PUT", body: String(index).repeat(size), token: OPS });
+    assert.equal(written.status, 201, written.text);
+  }
+
   // Its busy-agent limit too, in place of its usage tier's; each limit is set or removed without touching the other.
   const busy = async () => (await call("/v1/billing", { token })).json.busyAgents;
   assert.deepEqual(await busy(), { busy: 0, limit: 8, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: 5_000_000, limit: 25 } });

@@ -1715,7 +1715,10 @@ SDKs' `runLimits`, `run_limits=` in Python) when you make it, or with
 `PATCH /v1/agents/:id/configuration` (`null` removes them), or for every agent of a
 [definition](definitions.md) with its `runLimits`. An agent's own stay when its
 definition is applied. Values above the runtime's maximums count as the maximums,
-which its operator sets (`AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS`). Only you
+which its operator sets (`AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS`), or sets for
+one tenant (`maxRunResponses`, `maxRunSeconds`: in an admin tenant's tenants-file entry,
+or `PUT /v1/tenants/{id}/limits` for a self-serve one). Admin tenants have no maximums
+unless their entry sets them: only their agents' own `runLimits` apply. Only you
 can set them, not the agent's own token. They are counted on the node running the
 turn: a turn resumed on another node after its node was lost counts again from there.
 
@@ -3671,8 +3674,8 @@ reading them and sending them input do not count; only runs do.
 | `metadata` | at most 16 keys of 1–64 characters, string values of at most 512 characters |
 | `configure` body | 1 MiB |
 | Provider retries within a turn | 3 attempts, backing off from 2 s (overload, rate limits, 5xx, dropped streams); context overflow is not retried |
-| Model responses in one run | 1,000, compaction summaries included; `runLimits.maxResponses` lowers it for an agent or a definition, and the operator sets the maximum (`AGENT_MAX_RUN_RESPONSES`). At it, the turn stops before its next model request: `stopped: "turn_limit"` |
-| A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`). `stopped: "turn_limit"` too; send another message to continue |
+| Model responses in one run | 1,000, compaction summaries included; `runLimits.maxResponses` lowers it for an agent or a definition, and the operator sets the maximum (`AGENT_MAX_RUN_RESPONSES`, or per tenant `maxRunResponses`; admin tenants have none unless their entry sets one). At it, the turn stops before its next model request: `stopped: "turn_limit"` |
+| A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`, or per tenant `maxRunSeconds`; none for admin tenants unless set). `stopped: "turn_limit"` too; send another message to continue |
 | Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
 

@@ -101,8 +101,8 @@ reading them and sending them input do not count; only runs do.
 | `metadata` | at most 16 keys of 1–64 characters, string values of at most 512 characters |
 | `configure` body | 1 MiB |
 | Provider retries within a turn | 3 attempts, backing off from 2 s (overload, rate limits, 5xx, dropped streams); context overflow is not retried |
-| Model responses in one run | 1,000, compaction summaries included; `runLimits.maxResponses` lowers it for an agent or a definition, and the operator sets the maximum (`AGENT_MAX_RUN_RESPONSES`). At it, the turn stops before its next model request: `stopped: "turn_limit"` |
-| A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`). `stopped: "turn_limit"` too; send another message to continue |
+| Model responses in one run | 1,000, compaction summaries included; `runLimits.maxResponses` lowers it for an agent or a definition, and the operator sets the maximum (`AGENT_MAX_RUN_RESPONSES`, or per tenant `maxRunResponses`; admin tenants have none unless their entry sets one). At it, the turn stops before its next model request: `stopped: "turn_limit"` |
+| A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`, or per tenant `maxRunSeconds`; none for admin tenants unless set). `stopped: "turn_limit"` too; send another message to continue |
 | Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
 

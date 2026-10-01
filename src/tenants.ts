@@ -27,6 +27,9 @@ export interface Tenant {
   maxAgentCreatesPerMinute?: number;
   /** Runs (prompt, continue, execute) this tenant may start a minute; overrides AGENT_RATE_LIMIT_RUNS. */
   maxRunsPerMinute?: number;
+  /** The most one run of its agents may take, in model responses and seconds; absent: no limit, as for every admin tenant (self-serve tenants get the runtime's). */
+  maxRunResponses?: number;
+  maxRunSeconds?: number;
   /** Model spend (USD, list prices) this tenant may reach per UTC month; absent means unlimited. */
   maxMonthlyCost?: number;
   /** GB (10^9 bytes) it may store in all, as the storage charge counts them; absent: the plan's for a prepaid tenant, else unlimited. */
@@ -92,6 +95,9 @@ export class Tenants {
       if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
       if (tenant.maxWatchers !== undefined && (!Number.isSafeInteger(tenant.maxWatchers) || tenant.maxWatchers < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxWatchers: a positive integer, or absent for the default`);
       if (tenant.maxDiscordServers !== undefined && (!Number.isSafeInteger(tenant.maxDiscordServers) || tenant.maxDiscordServers < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxDiscordServers: a non-negative integer, or absent for the default`);
+      for (const field of ["maxRunResponses", "maxRunSeconds"] as const) {
+        if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: a positive integer, or absent for no limit`);
+      }
       for (const field of ["maxAgentCreatesPerMinute", "maxRunsPerMinute"] as const) {
         if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: a positive integer, or absent for the default`);
       }
@@ -105,6 +111,7 @@ export class Tenants {
         ...(tenant.maxDiscordServers !== undefined ? { maxDiscordServers: tenant.maxDiscordServers } : {}), ...(tenant.maxStorageGb !== undefined ? { maxStorageGb: tenant.maxStorageGb } : {}),
         ...(tenant.maxAgentCreatesPerMinute !== undefined ? { maxAgentCreatesPerMinute: tenant.maxAgentCreatesPerMinute } : {}),
         ...(tenant.maxRunsPerMinute !== undefined ? { maxRunsPerMinute: tenant.maxRunsPerMinute } : {}),
+        ...(tenant.maxRunResponses !== undefined ? { maxRunResponses: tenant.maxRunResponses } : {}), ...(tenant.maxRunSeconds !== undefined ? { maxRunSeconds: tenant.maxRunSeconds } : {}),
         ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
       });
     }
@@ -136,6 +143,9 @@ export class Tenants {
   maxWatchers(id: string) { return this.byId.get(id)?.maxWatchers; }
   maxDiscordServers(id: string) { return this.byId.get(id)?.maxDiscordServers; }
   /** The tenant's own rate limit (a minute) for agent creates or runs, if its entry sets one. */
+  /** The most one run of an admin tenant's agents may take, as its entry sets it (absent: no limit). */
+  runLimits(id: string) { const tenant = this.byId.get(id); return { maxResponses: tenant?.maxRunResponses, maxSeconds: tenant?.maxRunSeconds }; }
+
   rateLimit(id: string, limit: "agentCreates" | "runs") { const tenant = this.byId.get(id); return limit === "runs" ? tenant?.maxRunsPerMinute : tenant?.maxAgentCreatesPerMinute; }
 
   /** The tenant's monthly spend cap in USD, if its entry sets one. */

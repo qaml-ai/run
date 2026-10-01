@@ -135,7 +135,8 @@ const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: proces
 const model = configuredModel();
 const toolTimeoutMs = Number(process.env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
 if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
-// The most one run may take, whatever its agent sets (runLimits): model responses, and seconds from when it began.
+// The most one run of a self-serve tenant's agents may take, whatever its agent sets (runLimits): model responses, and
+// seconds from when it began. A tenant's own maxRunResponses and maxRunSeconds replace them; admin tenants have none unless set.
 const runLimits = { maxResponses: Number(process.env.AGENT_MAX_RUN_RESPONSES ?? RUN_LIMITS.maxResponses), maxSeconds: Number(process.env.AGENT_MAX_RUN_SECONDS ?? RUN_LIMITS.maxSeconds) };
 if (!Number.isSafeInteger(runLimits.maxResponses) || runLimits.maxResponses < 1) throw new Error("AGENT_MAX_RUN_RESPONSES must be a positive integer");
 if (!Number.isSafeInteger(runLimits.maxSeconds) || runLimits.maxSeconds < 1) throw new Error("AGENT_MAX_RUN_SECONDS must be a positive integer");
@@ -467,7 +468,7 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
   runEvents: tenant => subscribers.runs(tenant),
-  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, runLimits, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
     // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
     const { limit, source } = await accounts.billing.busyLimit(tenant);
     return source === "default" ? undefined : limit;
@@ -497,6 +498,10 @@ const clients = new ClientSessions(supervisor, {
   onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
   onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
   spendLimit: tenant => accounts.runLimit(tenant),
+  runLimitsFor: async tenant => {
+    const set = await accounts.billing.runLimits(tenant), none = tenants.has(tenant);
+    return { maxResponses: set.maxResponses ?? (none ? Infinity : runLimits.maxResponses), maxSeconds: set.maxSeconds ?? (none ? Infinity : runLimits.maxSeconds) };
+  },
   runRate: tenant => rateLimits.run(tenant),
   rerankers,
   creditLimit: tenant => accounts.billing.creditLimit(tenant),
