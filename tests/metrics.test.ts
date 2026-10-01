@@ -113,7 +113,8 @@ test("turn outcomes: a model error, input required, the spend limit, a thrown er
     await turns.wrap(async () => ({ messages: 2, error: "503 Service Unavailable" }))("continue", {});
     await turns.wrap(async () => ({ messages: 2, error: null, stopped: "input_required" }))("resume", {});
     await turns.wrap(async () => ({ messages: 2, error: null, stopped: "spend_limit" }))("prompt", {});
-    await turns.wrap(async () => ({ messages: 2, error: null, stopped: "turn_limit" }))("prompt", {});
+    // As the host returns them: a limit's stop carries its reason as the error.
+    await turns.wrap(async () => ({ messages: 2, error: "This run stopped at its limit of 3 model responses", code: "turn_limit", stopped: "turn_limit" }))("prompt", {});
     await assert.rejects(turns.wrap(async () => { throw new Error("Session closed"); })("prompt", {}), /Session closed/);
     await turns.wrap(async () => ({ ok: true }))("init", {});
     await turns.wrap(async () => ({ value: 1 }))("execute", {});

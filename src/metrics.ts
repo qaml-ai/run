@@ -125,8 +125,10 @@ export function observeTurns(model: () => { provider: string; id: string } | und
   }
 
   function finish(current: NonNullable<typeof turn>, method: string, result: any, thrown: unknown) {
-    const error = thrown !== undefined ? "exception" : typeof result?.error === "string" && result.error ? errorClass(result.error) : "none";
-    const outcome = error !== "none" ? "failed" : result?.stopped === "input_required" ? "input_required" : result?.stopped === "spend_limit" || result?.stopped === "turn_limit" ? result.stopped : "completed";
+    // A limit's stop carries its reason as the error, but the turn did not fail.
+    const limited = thrown === undefined && (result?.stopped === "spend_limit" || result?.stopped === "turn_limit") ? result.stopped as string : undefined;
+    const error = thrown !== undefined ? "exception" : !limited && typeof result?.error === "string" && result.error ? errorClass(result.error) : "none";
+    const outcome = error !== "none" ? "failed" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
     const { provider = "unknown", id = "unknown" } = model() ?? {};
     emit("turn_metrics", {
       dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },
