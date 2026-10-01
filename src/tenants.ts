@@ -25,6 +25,8 @@ export interface Tenant {
   maxDiscordServers?: number;
   /** Model spend (USD, list prices) this tenant may reach per UTC month; absent means unlimited. */
   maxMonthlyCost?: number;
+  /** GB (10^9 bytes) it may store in all, as the storage charge counts them; absent: the plan's for a prepaid tenant, else unlimited. */
+  maxStorageGb?: number;
   /** "prepaid": pays from credit (src/billing.ts), and may use the platform's keys. Admin tenants default to "none", unbilled. */
   billing?: "prepaid" | "none";
   /** The tenant's own pass-through model endpoints, by the provider name its models are named under (`<name>/<provider>/<model id>`). */
@@ -87,12 +89,13 @@ export class Tenants {
       if (tenant.maxWatchers !== undefined && (!Number.isSafeInteger(tenant.maxWatchers) || tenant.maxWatchers < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxWatchers: a positive integer, or absent for the default`);
       if (tenant.maxDiscordServers !== undefined && (!Number.isSafeInteger(tenant.maxDiscordServers) || tenant.maxDiscordServers < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxDiscordServers: a non-negative integer, or absent for the default`);
       if (tenant.maxMonthlyCost !== undefined && (typeof tenant.maxMonthlyCost !== "number" || !Number.isFinite(tenant.maxMonthlyCost) || tenant.maxMonthlyCost < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxMonthlyCost: a non-negative number of USD, or absent for no limit`);
+      if (tenant.maxStorageGb !== undefined && (typeof tenant.maxStorageGb !== "number" || !Number.isFinite(tenant.maxStorageGb) || tenant.maxStorageGb < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxStorageGb: a non-negative number of GB, or absent for the default`);
       if (tenant.billing !== undefined && tenant.billing !== "prepaid" && tenant.billing !== "none") throw new Error(`Tenant ${tenant.id} has an invalid billing: "prepaid", "none", or absent for none`);
       if (tenant.modelEndpoints !== undefined) validEndpoints(tenant.id, tenant.modelEndpoints);
       next.set(tenant.id, {
         id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}),
         ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}), ...(tenant.maxWatchers !== undefined ? { maxWatchers: tenant.maxWatchers } : {}), ...(tenant.maxMonthlyCost !== undefined ? { maxMonthlyCost: tenant.maxMonthlyCost } : {}),
-        ...(tenant.maxDiscordServers !== undefined ? { maxDiscordServers: tenant.maxDiscordServers } : {}),
+        ...(tenant.maxDiscordServers !== undefined ? { maxDiscordServers: tenant.maxDiscordServers } : {}), ...(tenant.maxStorageGb !== undefined ? { maxStorageGb: tenant.maxStorageGb } : {}),
         ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
       });
     }
@@ -126,6 +129,9 @@ export class Tenants {
 
   /** The tenant's monthly spend cap in USD, if its entry sets one. */
   maxMonthlyCost(id: string) { return this.byId.get(id)?.maxMonthlyCost; }
+
+  /** The tenant's storage limit in bytes, if its entry sets one. */
+  maxStorageBytes(id: string) { const gb = this.byId.get(id)?.maxStorageGb; return gb === undefined ? undefined : Math.round(gb * 1e9); }
 
   /** How an admin tenant is billed; undefined for tenants not in the file. */
   billing(id: string) { const tenant = this.byId.get(id); return tenant && (tenant.billing ?? "none"); }

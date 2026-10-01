@@ -126,6 +126,19 @@ nothing cached; a refund can move it back down. A tenant's own `maxAgents` repla
 tier. `GET /v1/billing` reports it as `busyAgents: {busy, limit, source, tier, paid,
 next}`, and the console's Billing page shows the tier, the limit and the next threshold.
 
+Storage is limited too. A prepaid tenant at a zero balance stores nothing more: uploads,
+volume and file writes and tool outputs get 402 `INSUFFICIENT_CREDIT` (reads and deletes
+work), since storage is charged daily and a spent balance cannot pay for more. A tenant
+may store `AGENT_FREE_MAX_STORAGE_GB` (1) GB in all on free credit and
+`AGENT_MAX_STORAGE_GB` (100) GB once it has bought credit, counted from the same tracked
+totals as the storage charge (`storage_usage`: its file chunks, its live agents' logs and
+its live volumes' trees, plus chunk bytes the node has not flushed yet). A write that
+would pass the limit gets 507 `STORAGE_LIMIT` with `{limit, used}` in bytes. A
+billing-admin operator sets another limit for a self-serve tenant with
+`PUT /v1/tenants/{id}/limits` `{maxStorageGb}` (null returns to the plan's; other nodes
+apply it within a minute); an admin tenant's is `maxStorageGb` in the tenants file, and
+an unbilled tenant has none unless that sets one.
+
 `GET /v1/billing` has the balance, this month by kind, recent entries and the
 rates and `startingCredit: {status, amount, cardCheck?}` (the recorded award, not current
 configuration); `GET /v1/billing/ledger?before=<id>` pages through the ledger; the console's

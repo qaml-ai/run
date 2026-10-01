@@ -97,6 +97,18 @@ export class StorageUsage {
   }
 
   /**
+   * Bytes one tenant stores, as `tenantBytes` counts them but for its live volumes only (the index has those), with the
+   * chunk bytes this node has written and not yet flushed: what a storage limit compares against, read at each write.
+   */
+  async tenantUsed(tenant: string): Promise<number> {
+    const { rows: [row] } = await this.db.query(`
+      select coalesce((select greatest(bytes, 0) from storage_usage where kind = 'tenant' and owner = $1), 0)
+        + coalesce((select sum(greatest(u.bytes, 0)) from agents a join storage_usage u on u.kind = 'agent' and u.owner = a.id where a.tenant = $1 and a.purged_at is null), 0)
+        + coalesce((select sum(greatest(u.bytes, 0)) from volumes v join storage_usage u on u.kind = 'volume' and u.owner = v.id where v.tenant = $1 and v.deleted_at is null), 0) as bytes`, [tenant]);
+    return Math.max(0, Number(row.bytes) + (this.pending.get(`tenant:${tenant}`) ?? 0));
+  }
+
+  /**
    * Replace the tracked totals with a full listing of Storage: every owner's bytes as
    * listed, and owners with nothing listed removed. Deltas written while the listing
    * runs may be counted twice or not at all, for objects created or deleted meanwhile;

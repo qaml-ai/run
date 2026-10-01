@@ -784,6 +784,24 @@ export function api(context: ApiContext) {
     console.log(JSON.stringify({ type: "tenant_created", tenant: id, by }));
     return json(c, 201, { tenant: id, token: await accounts.createToken(id, tokenName) });
   });
+  route(createRoute({
+    method: "put", path: "/v1/tenants/{id}/limits", request: { params: tenantId, body: content(schema.TenantLimitsInput) },
+    responses: { 200: reply("Set limits for a self-serve tenant in place of its plan's (platform operator only); an admin tenant's are in the tenants file", schema.TenantLimits) },
+  }), async c => {
+    const by = operatorOnly(c);
+    const tenant = c.req.param("id")!;
+    if (accounts.tenants.has(tenant)) throw new HttpError(409, `${tenant} is an admin tenant: set its limits in the tenants file`);
+    const input = parse(schema.TenantLimitsInput, await readJson(c.req.raw.body, 4096, {}));
+    const set = input.maxStorageGb === undefined ? {} : input.maxStorageGb === null ? null : { maxStorageBytes: Math.round(input.maxStorageGb * 1e9) };
+    const { rows: [row] } = await accounts.db.query(`
+      update tenants set limits = case when $2::jsonb is null then limits - 'maxStorageBytes' else limits || $2::jsonb end where id = $1 returning limits`,
+    [tenant, set === null ? null : JSON.stringify(set)]);
+    if (!row) throw new HttpError(404, `Unknown tenant ${tenant}`);
+    accounts.billing.forgetLimits(tenant);
+    console.log(JSON.stringify({ type: "tenant_limits_set", tenant, limits: row.limits, by }));
+    const bytes = row.limits.maxStorageBytes;
+    return json(c, 200, { tenant, limits: typeof bytes === "number" ? { maxStorageGb: bytes / 1e9 } : {} });
+  });
   route(createRoute({ method: "get", path: "/v1/tenants/{id}/export", request: { params: tenantId }, responses: { 200: zipped("The tenant's export, as GET /v1/account/export gives it (platform operator only)") } }), async c => {
     operatorOnly(c);
     const tenant = c.req.param("id")!;

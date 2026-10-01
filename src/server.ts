@@ -382,6 +382,11 @@ const volumes = new VolumeService({
     throw Object.assign(new HttpError(response.status, value.error ?? `Volume owner answered HTTP ${response.status}`), value.current !== undefined ? { current: value.current } : {});
   },
   deliver: submitAnywhere,
+  // Uploads, file writes and tool outputs: refused once prepaid credit is spent, and past the tenant's storage limit.
+  quota: async tenant => {
+    const limit = await accounts.billing.storageLimit(tenant);
+    return limit === undefined ? undefined : { limit, used: await storageUsage.tenantUsed(tenant) };
+  },
 });
 
 // Signed file links, under a key derived from the session secret, so every node verifies any node's links.

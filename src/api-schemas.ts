@@ -8,7 +8,7 @@ export const ERROR_CODES = {
   INVALID_REQUEST: "400: the request is malformed or invalid", UNAUTHORIZED: "401: no valid token", PAYMENT_REQUIRED: "402", FORBIDDEN: "403: the token may not do this",
   NOT_FOUND: "404", CONFLICT: "409", GONE: "410", TOO_LARGE: "413", RATE_LIMITED: "429: retry after Retry-After", UNAVAILABLE: "503: retry after Retry-After", INTERNAL: "500",
   BUSY_AGENT_LIMIT: "429: the tenant has as many agents busy as it may (the body's busyAgents, a BusyAgents, says the limit, its usage tier and the next); retry after Retry-After",
-  SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent",
+  SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent", STORAGE_LIMIT: "507: the tenant's storage limit would be passed; the body has limit and used, in bytes",
   IDEMPOTENCY_CONFLICT: "409: the Idempotency-Key or request id was used for another request", IDEMPOTENCY_IN_PROGRESS: "409: the first request with this Idempotency-Key is still running; retry",
   APPLICATION_CONNECTED: "409: another connection serves this agent's tools; connect with ?takeover=true to replace it",
   APPLICATION_NOT_CONNECTED: "409: this agent's tools need its application, and none is connected; connect it, or send allowDisconnected: true",
@@ -723,6 +723,13 @@ export const TenantInput = z.object({
   tokenName: z.string().trim().min(1).max(80).default("api").openapi({ description: "Name of the API token made with it" }),
 }).strict().openapi("TenantInput");
 export const TenantCreated = z.object({ tenant: z.string(), token: TokenCreated }).openapi("TenantCreated");
+export const TenantLimitsInput = z.object({
+  maxStorageGb: z.number().min(0).max(1_000_000).nullable().optional().openapi({ description: "GB (10^9 bytes) the tenant may store in all, in place of its plan's (1 GB on free credit, 100 GB once it has bought credit); null returns to the plan's" }),
+}).strict().openapi("TenantLimitsInput");
+export const TenantLimits = z.object({
+  tenant: z.string(),
+  limits: z.object({ maxStorageGb: z.number().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
+}).openapi("TenantLimits");
 export const TenantLookup = z.object({
   tenant: z.string(),
   github: z.string().nullable(),

@@ -59,6 +59,17 @@ export interface VolumeOptions {
   peer?: (owner: string, path: string, body: unknown) => Promise<unknown>;
   /** Submit a request to an agent wherever it is served; wakes agents watching a volume. */
   deliver?: (agent: string, tenant: string, request: VolumeRequest) => Promise<unknown>;
+  /**
+   * What a tenant may still store, read before each write: its limit and the bytes it stores (undefined: no limit).
+   * It throws to refuse every write (a spent balance).
+   */
+  quota?: (tenant: string) => Promise<{ limit: number; used: number } | undefined>;
+}
+
+/** 507 STORAGE_LIMIT: storing `adding` more bytes would take the tenant past `limit`. */
+export function storageFull(quota: { limit: number; used: number }) {
+  const gb = (bytes: number) => `${(bytes / 1e9).toFixed(2)} GB`;
+  return new HttpError(507, `This account stores ${gb(quota.used)} of its ${gb(quota.limit)} storage limit, so it cannot store more; delete files or volumes to make room`, "STORAGE_LIMIT", { limit: quota.limit, used: quota.used });
 }
 
 export const validVolumeId = (value: unknown): value is string => typeof value === "string" && /^vol_[a-f0-9]{24}$/.test(value);
@@ -511,6 +522,10 @@ export class VolumeService {
 
   /** Store content as chunks (from any node) and return what `commit` needs. */
   async store(tenant: string, source: Uint8Array | AsyncIterable<Uint8Array>, limit = VOLUME_LIMITS.fileBytes) {
+    // Checked once, then against what this write adds: content already stored (the same chunks) still counts, so
+    // a write near the limit may be refused that would have stored nothing new.
+    const quota = await this.options.quota?.(tenant);
+    if (quota && quota.used >= quota.limit) throw storageFull(quota);
     const chunks: string[] = [];
     let size = 0;
     let parts: Buffer[] = [];
@@ -526,6 +541,7 @@ export class VolumeService {
     for await (const data of source instanceof Uint8Array ? [source] : source) {
       size += data.byteLength;
       if (size > limit) throw new HttpError(413, `Files are limited to ${limit} bytes`);
+      if (quota && quota.used + size > quota.limit) throw storageFull(quota);
       parts.push(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
       buffered += data.byteLength;
       while (buffered >= CHUNK_BYTES) {

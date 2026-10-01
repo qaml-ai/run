@@ -138,7 +138,7 @@ export class Billing {
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
-  private readonly modes = new Map<string, { mode: BillingMode; until: number }>();
+  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; until: number }>();
 
   constructor(options: BillingOptions) {
     this.options = options;
@@ -154,14 +154,37 @@ export class Billing {
 
   /** Admin tenants are billed as their entry says (unbilled by default); tenants created by sign-in as their row says. */
   async mode(tenant: string): Promise<BillingMode> {
-    const admin = this.tenants.billing(tenant);
-    if (admin) return admin;
+    return this.tenants.billing(tenant) ?? (await this.row(tenant)).mode;
+  }
+
+  /** A self-serve tenant's billing mode and the limits set for it (`tenants.limits`), re-read at most every minute. */
+  private async row(tenant: string) {
     const cached = this.modes.get(tenant);
-    if (cached && cached.until > Date.now()) return cached.mode;
-    const row = (await this.db.query("select billing from tenants where id = $1", [tenant])).rows[0];
-    const mode: BillingMode = row?.billing === "prepaid" ? "prepaid" : "none";
-    this.modes.set(tenant, { mode, until: Date.now() + MODE_CACHE_MS });
-    return mode;
+    if (cached && cached.until > Date.now()) return cached;
+    const row = (await this.db.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
+    const maxStorageBytes = row?.limits?.maxStorageBytes;
+    const entry = { mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...(Number.isSafeInteger(maxStorageBytes) ? { maxStorageBytes: maxStorageBytes as number } : {}), until: Date.now() + MODE_CACHE_MS };
+    this.modes.set(tenant, entry);
+    return entry;
+  }
+
+  /** Forget a self-serve tenant's mode and limits as read, after the operator changed them. */
+  forgetLimits(tenant: string) { this.modes.delete(tenant); }
+
+  /**
+   * How many bytes the tenant may store in all, or undefined for no limit; throws 402 when a prepaid tenant's credit is
+   * spent, since storage is charged daily and a spent balance cannot pay for more. The limit is the one set for the
+   * tenant (its tenants-file entry's `maxStorageGb`, else `tenants.limits`), else for a prepaid tenant the plan's: free
+   * credit's, or once it has bought credit, the paid one. Unbilled tenants have none unless one is set.
+   */
+  async storageLimit(tenant: string): Promise<number | undefined> {
+    const admin = this.tenants.maxStorageBytes(tenant);
+    const row = this.tenants.billing(tenant) ? undefined : await this.row(tenant);
+    const set = admin ?? row?.maxStorageBytes;
+    if ((this.tenants.billing(tenant) ?? row?.mode) !== "prepaid") return set;
+    const { balance, purchased } = await this.account(tenant);
+    if (balance <= 0) throw new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so it cannot store more files`, "INSUFFICIENT_CREDIT");
+    return set ?? (purchased > 0 ? this.pricing.maxStorageBytes : this.pricing.free.maxStorageBytes);
   }
 
   /** The tenant's account, with what this node has recorded and not yet written counted in, read at most every few seconds. */

@@ -22,10 +22,14 @@ export interface Pricing {
   maxPurchase: number;
   /** Credit every new self-serve tenant starts with, once. */
   startingGrant: number;
+  /** Bytes a tenant that has bought credit may store in all (as the storage charge counts them), unless set for it. */
+  maxStorageBytes: number;
   /** Limits on a tenant that has never bought credit. */
   free: {
     /** Credit it may spend on model tokens and agent time in any hour. */
     hourlySpend: number;
+    /** Bytes it may store in all. */
+    maxStorageBytes: number;
   };
   /** Usage tiers by what a tenant has paid for credit, lowest first; the first starts at 0. */
   tiers: UsageTier[];
@@ -47,7 +51,8 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   minPurchase: micros(5),
   maxPurchase: micros(1000),
   startingGrant: micros(5),
-  free: Object.freeze({ hourlySpend: micros(1) }),
+  maxStorageBytes: 100e9,
+  free: Object.freeze({ hourlySpend: micros(1), maxStorageBytes: 1e9 }),
   tiers: Object.freeze([
     { name: "Free", paid: 0, busyAgents: 8 },
     { name: "Tier 1", paid: micros(5), busyAgents: 25 },
@@ -60,7 +65,8 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
 /**
  * Rates from the environment, in USD (AGENT_PRICE_AGENT_HOUR_USD, AGENT_PRICE_STORAGE_GB_MONTH_USD,
  * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
- * AGENT_CREDIT_GRANT_USD, AGENT_FREE_HOURLY_SPEND_USD, AGENT_USAGE_TIERS); unset ones keep the defaults.
+ * AGENT_CREDIT_GRANT_USD, AGENT_FREE_HOURLY_SPEND_USD, AGENT_USAGE_TIERS) and storage limits in GB (AGENT_MAX_STORAGE_GB,
+ * AGENT_FREE_MAX_STORAGE_GB); unset ones keep the defaults.
  * AGENT_OPENROUTER_CREDIT_MULTIPLIER is the actual dollars paid per dollar of provider credit.
  */
 export function pricingFromEnvironment(env = process.env): Pricing {
@@ -73,6 +79,12 @@ export function pricingFromEnvironment(env = process.env): Pricing {
   const fee = env.AGENT_CREDIT_FEE_PERCENT === undefined ? DEFAULT_PRICING.purchaseFeeBps : Math.round(Number(env.AGENT_CREDIT_FEE_PERCENT) * 100);
   if (!Number.isInteger(fee) || fee < 0 || fee > 10_000) throw new Error("AGENT_CREDIT_FEE_PERCENT must be a percentage between 0 and 100");
   if (env.AGENT_FREE_MAX_AGENTS !== undefined) throw new Error("AGENT_FREE_MAX_AGENTS is replaced by AGENT_USAGE_TIERS: set the first tier's busyAgents");
+  const gigabytes = (name: string, fallback: number) => {
+    if (env[name] === undefined) return fallback;
+    const value = Number(env[name]);
+    if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number of GB`);
+    return Math.round(value * 1e9);
+  };
   const openrouterCreditMultiplier = Number(env.AGENT_OPENROUTER_CREDIT_MULTIPLIER ?? DEFAULT_PRICING.openrouterCreditMultiplier);
   if (!Number.isFinite(openrouterCreditMultiplier) || openrouterCreditMultiplier < 0) throw new Error("AGENT_OPENROUTER_CREDIT_MULTIPLIER must be a non-negative number");
   const pricing: Pricing = {
@@ -89,7 +101,8 @@ export function pricingFromEnvironment(env = process.env): Pricing {
     minPurchase: usd("AGENT_CREDIT_MIN_PURCHASE_USD", DEFAULT_PRICING.minPurchase),
     maxPurchase: usd("AGENT_CREDIT_MAX_PURCHASE_USD", DEFAULT_PRICING.maxPurchase),
     startingGrant: usd("AGENT_CREDIT_GRANT_USD", DEFAULT_PRICING.startingGrant),
-    free: { hourlySpend: usd("AGENT_FREE_HOURLY_SPEND_USD", DEFAULT_PRICING.free.hourlySpend) },
+    maxStorageBytes: gigabytes("AGENT_MAX_STORAGE_GB", DEFAULT_PRICING.maxStorageBytes),
+    free: { hourlySpend: usd("AGENT_FREE_HOURLY_SPEND_USD", DEFAULT_PRICING.free.hourlySpend), maxStorageBytes: gigabytes("AGENT_FREE_MAX_STORAGE_GB", DEFAULT_PRICING.free.maxStorageBytes) },
     tiers: env.AGENT_USAGE_TIERS === undefined ? DEFAULT_PRICING.tiers : usageTiers(env.AGENT_USAGE_TIERS),
   };
   if (pricing.minPurchase < micros(0.5) || pricing.maxPurchase < pricing.minPurchase) throw new Error("AGENT_CREDIT_MIN_PURCHASE_USD must be at least 0.50 (Stripe's minimum) and at most AGENT_CREDIT_MAX_PURCHASE_USD");

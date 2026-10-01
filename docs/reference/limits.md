@@ -85,6 +85,8 @@ reading them and sending them input do not count; only runs do.
 | Signed links (`POST …/links`) | `expiresIn` 1 to 86,400 s, default 900 |
 | A volume | 100,000 files, 100 snapshots; the change feed keeps the last 1,000 changes; a listing page is at most 1,000 files |
 | Channel attachments | 10 files a message, 25 MiB each, 100 MiB in all |
+| Storage per tenant | 1 GB (10^9 bytes) on free credit, 100 GB once it has bought credit; an operator can set another per tenant. Counted as the storage charge counts it: file contents (each distinct content once), agents' history logs and volumes' file trees. A write that would pass it is refused with 507 `STORAGE_LIMIT`, its body carrying `limit` and `used` in bytes: delete files or volumes to make room. Uploads, file writes and tool outputs all count |
+| Storing on spent credit | a prepaid tenant at a zero balance cannot store more: uploads, file writes and tool outputs get 402 `INSUFFICIENT_CREDIT`. Reading and deleting still work |
 
 ## Tools
 
@@ -160,4 +162,4 @@ reading them and sending them input do not count; only runs do.
 | --- | --- |
 | An agent's spend limit | from when it is set: new prompts are refused, and a running turn stops after the response that crossed it (`stopped: "spend_limit"`) |
 | A tenant's monthly cap (`maxMonthlyCost`) | 402 for new runs once reached |
-| Prepaid credit | 402 at a zero balance; free credit allows $1 of usage per hour (429 past it) |
+| Prepaid credit | 402 at a zero balance, for runs and for storing files; free credit allows $1 of usage per hour (429 past it) |

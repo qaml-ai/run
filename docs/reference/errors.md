@@ -28,7 +28,7 @@ retry.
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap |
-| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent |
+| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent: no runs start and no files are stored |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
@@ -43,6 +43,7 @@ retry.
 | 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
 | 429 | `RATE_LIMITED` | Too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
+| 507 | `STORAGE_LIMIT` | The account's storage limit would be passed; the body has `limit` and `used`, in bytes |
 | 500 | `INTERNAL` | A bug; retry, and report it with the request id |
 
 In more detail:
@@ -51,7 +52,7 @@ In more detail:
 | --- | --- | --- |
 | 400 | The request is malformed: a field fails validation (the message names it and what it takes), an unknown option, a blank `text`, an invalid request id or agent key, an answer that does not fit its input, an answer that names no one for an input meant for particular people (`This input is for …: answer with from or actor naming who answers`) | Fix the request; retrying it unchanged fails again |
 | 401 | No token, an unknown or wrong token, or an expired browser token (`This browser token has expired; mint a new one`); an agent's token used on another agent | Send `Authorization: Bearer <token>` with a valid key. A browser: mint a new browser token (the watcher's `getToken`) |
-| 402 | Payment required: the tenant's prepaid credit is used up, or its monthly model spend cap is reached. Queued runs fail with the same message | Add credit in the console, or raise the cap |
+| 402 | Payment required: the tenant's prepaid credit is used up (runs and file writes are refused), or its monthly model spend cap is reached. Queued runs fail with the same message | Add credit in the console, or raise the cap |
 | 403 | Authenticated but not allowed: a browser token outside its agent or its scopes, an agent token changing what only the tenant may (`keyScope`, `spendLimit`, `modelHeaders`), a person not allowed to answer an input, a write to a read-only mount, an expired signed link | Use a token that may do it (usually the tenant's API key, server-side) |
 | 404 | No such agent, request, input, volume, file, definition, schedule, webhook or route; or the feature is not enabled on this runtime. Another tenant's agent is a 404 too | Check the id. A deleted agent is 404 on `/v1/agents/:id` |
 | 405 | A signed link used with the other method | Use the method it was made for |
@@ -64,7 +65,7 @@ In more detail:
 | 429 | Too many: the tenant's agents awake at once, the agent's 32 open requests, event-stream subscribers, or free credit's hourly allowance | Retry after `Retry-After` (the SDKs do, up to 8 times) |
 | 500 | A bug | Retry; report it with the request id |
 | 503 | The runtime cannot serve it right now: a node is draining or starting, lost ownership of an agent, has no room for its work, or the database is failing over; also a feature this runtime is not configured for | Retry after `Retry-After` (the SDKs retry); nothing happened |
-| 507 | A volume is full (100,000 files) | Delete files, or use another volume |
+| 507 | A volume is full (100,000 files), or the account's storage limit would be passed (`STORAGE_LIMIT`, with `limit` and `used` in bytes) | Delete files, or use another volume; for the account's limit, delete files or volumes, or buy credit (free credit stores 1 GB) |
 
 ### 409s
 
