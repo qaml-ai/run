@@ -113,3 +113,16 @@ test("a takeover while a call runs lets the replaced process answer it, then tel
   assert.deepEqual(run.toolErrors, []);
   await until(() => errors.some((error: any) => error.code === "APPLICATION_REPLACED"), "the replaced process to hear it");
 });
+
+test("close() waits for no call the runtime gave up on, nor when there is nothing to finish", async t => {
+  const r = await runtime(t, model);
+  const old = new Agents({ url: r.base, apiKey: OPERATOR });
+  // A tool that ignores its abort signal, past a 1 s deadline: the runtime cancels it and moves on.
+  const stuck = tool({ description: "Never answer", input: schema.Object({ value: schema.String() }), timeoutMs: 1000, execute: () => new Promise(() => {}) });
+  const agent = await old.upsert("stuck", { tools: { slow: stuck } });
+  const run = await (await caller(t, r.base).agent(agent.client.session)).run("go", { throwOnError: false });
+  assert.equal((run.toolErrors[0] as { code: string }).code, "timeout");
+  const started = Date.now();
+  await old.close();
+  assert.ok(Date.now() - started < 1000, `close() took ${Date.now() - started} ms`);
+});

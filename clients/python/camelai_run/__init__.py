@@ -1249,19 +1249,21 @@ class AgentClient:
         await asyncio.shield(self.closing)
 
     async def _drain(self, seconds):
-        """Tell the runtime this connection takes no new calls, and wait up to `seconds` for those running to be answered."""
-        if self.fatal or not self.attach or not self.connection or seconds <= 0:
+        """Tell the runtime this connection takes no new calls, and wait up to `seconds` for those running to be answered.
+        Only calls that can still be answered count: not one the runtime cancelled, nor any once the connection is gone (a
+        reconnect is another connection). With none, close() costs nothing more than it did."""
+        connection = self.connection
+        running = lambda: self.connection == connection and any(not task.done() and not task.cancelling() for task in self.active.values())
+        if self.fatal or not self.attach or not connection or seconds <= 0 or not running():
             return
         loop = asyncio.get_running_loop()
         until = loop.time() + seconds
         try:
             await _http(self.http, self.base, self.path + "/mcp", self.session["token"], "POST", {"jsonrpc": "2.0", "method": _DRAINING},
-                        retry=False, headers={"X-Agent-Connection": self.connection})
+                        retry=False, headers={"X-Agent-Connection": connection})
         except Exception:
             pass
-        # A call the runtime sent just before it heard may still be on its way in the stream: give it a moment to arrive.
-        await asyncio.sleep(min(0.1, seconds))
-        while self.active and loop.time() < until:
+        while running() and loop.time() < until:
             await asyncio.sleep(0.025)
 
     async def _shutdown(self, drain):

@@ -1282,14 +1282,18 @@ export class AgentClient {
     return this.closing ??= this.shutdown(options.drainMs ?? DRAIN_MS);
   }
 
-  /** Tell the runtime this connection takes no new calls, and wait up to `ms` for those running to be answered. */
+  /**
+   * Tell the runtime this connection takes no new calls, and wait up to `ms` for those running to be answered. Only calls
+   * that can still be answered count: not one the runtime cancelled, nor any once the connection is gone (a reconnect is
+   * another connection). With none, close() costs nothing more than it did.
+   */
   private async drain(ms: number) {
-    if (this.closed || this.fatal || !this.attaching || !this.connection || ms <= 0) return;
+    const connection = this.connection;
+    const running = () => this.connection === connection && [...this.active.values()].some(controller => !controller.signal.aborted);
+    if (this.closed || this.fatal || !this.attaching || !connection || ms <= 0 || !running()) return;
     const until = Date.now() + ms;
-    await this.transport.json(this.path("/mcp"), this.session.token, "POST", { jsonrpc: "2.0", method: DRAINING_NOTIFICATION }, false, { "X-Agent-Connection": this.connection }).catch(() => {});
-    // A call the runtime sent just before it heard may still be on its way in the stream: give it a moment to arrive.
-    await pause(Math.min(100, ms));
-    while (this.active.size && Date.now() < until) await pause(25);
+    await this.transport.json(this.path("/mcp"), this.session.token, "POST", { jsonrpc: "2.0", method: DRAINING_NOTIFICATION }, false, { "X-Agent-Connection": connection }).catch(() => {});
+    while (running() && Date.now() < until) await pause(25);
   }
 
   private async shutdown(drainMs: number) {
