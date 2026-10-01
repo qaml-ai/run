@@ -1,5 +1,5 @@
 import { Component, useState, type ReactNode } from "react";
-import { AlertCircle, Check, Copy } from "lucide-react";
+import { AlertCircle, AlertTriangle, Check, Copy } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -7,6 +7,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { PIXEL_STYLE, StatusPanel } from "@/components/brand";
+import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
 export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
@@ -110,5 +111,20 @@ export function EmptyState({ icon, title, children }: { icon: ReactNode; title: 
       <p className="text-foreground text-sm font-medium">{title}</p>
       {children && <div className="max-w-md text-sm">{children}</div>}
     </div>
+  );
+}
+
+/** What a save answered it cannot do yet (`warnings`: builtins without a key), with the way to Models & keys. */
+export function WarningsAlert({ warnings, className }: { warnings?: string[]; className?: string }) {
+  if (!warnings?.length) return null;
+  return (
+    <Alert className={cn("mb-4", className)}>
+      <AlertTriangle />
+      <AlertTitle>Saved, but not everything will work yet</AlertTitle>
+      <AlertDescription>
+        {warnings.map(warning => <p key={warning}>{warning}</p>)}
+        <Link className="underline underline-offset-4" to="models">Open Models &amp; keys</Link>
+      </AlertDescription>
+    </Alert>
   );
 }

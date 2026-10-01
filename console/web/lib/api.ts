@@ -124,6 +124,8 @@ export const formatTime = (value?: number) => value ? new Date(value).toLocaleSt
 export interface Definition {
   id: string; name: string; revision: number; model?: string; systemPrompt?: string; thinkingLevel?: string;
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; createdAt: number; updatedAt: number; builtins?: string[];
+  /** On a save: builtins its agents cannot use yet (no key), and how to fix it. */
+  warnings?: string[];
   mcpServers?: { name: string; url: string; headerNames?: string[]; auth?: { type: "bearer" } }[];
   openApi?: { name: string; spec?: string; baseUrl: string; tools: string[]; allowTools?: string[]; denyTools?: string[]; exposure?: string; timeoutMs?: number; headerNames?: string[]; auth?: { type: "bearer" } }[];
 }
@@ -139,6 +141,8 @@ export interface ManagedDiscordBinding {
   installationState: "present" | "unavailable" | "removed"; channelId: string | null;
   allowedChannelIds: string[]; channel?: Channel;
   applied?: { agent: string; status: "updated" | "queued" | "failed"; error?: string }[];
+  /** On a save: builtins of its definition it cannot use yet (no key), and how to fix it. */
+  warnings?: string[];
 }
 export interface DiscordGuildChannel { id: string; name: string; type: number }
 

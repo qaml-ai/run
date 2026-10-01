@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ConfirmButton, ErrorAlert } from "@/components/common";
+import { ConfirmButton, ErrorAlert, WarningsAlert } from "@/components/common";
 import { api, useApi, type Definition, type DiscordGuildChannel, type ManagedDiscordBinding, type ManagedDiscordConfig } from "@/lib/api";
 import { DefinitionDialog } from "./definitions";
 
@@ -92,6 +92,7 @@ export function ManagedDiscordDialog({ config, binding, onClose, onSaved }: {
           <DialogHeader><DialogTitle>{saved.guildName || name} configured</DialogTitle><DialogDescription>Configuration saved. Send a new mention in an allowed channel to test a reply.</DialogDescription></DialogHeader>
           <Input aria-label="Camel Discord test message" readOnly value={`<@${config.applicationId}> status`} onFocus={event => event.target.select()} />
           <p className="text-muted-foreground text-sm">Choose the bot with the App badge in Discord autocomplete. Saving configuration does not verify delivery.</p>
+          <WarningsAlert warnings={saved.warnings} className="mb-0" />
           {saved.state === "paused" && <p className="text-sm">This server remains paused. Resume it from the server list when ready.</p>}
           {saved.applied && <div className="border p-3 space-y-2 text-sm">
             <p>Existing conversations: {saved.applied.filter(result => result.status === "updated").length} updated · {saved.applied.filter(result => result.status === "queued").length} queued · {saved.applied.filter(result => result.status === "failed").length} failed.</p>

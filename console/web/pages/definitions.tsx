@@ -9,13 +9,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
+import { ConfirmButton, EmptyState, ErrorAlert, PageHeader, WarningsAlert } from "@/components/common";
 import { api, formatTime, useApi, type Definition, type ApplyResult, type Model, type RequestRecord } from "@/lib/api";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const BUILTINS = [
   { id: "web_fetch", label: "web_fetch", help: "read public web pages as text (JavaScript-only pages rendered with a firecrawl key)" },
-  { id: "web_search", label: "web_search", help: "search the web (an exa, brave or parallel key on Models & keys, or the platform's, billed per search)" },
+  { id: "web_search", label: "web_search", help: "search the web (an Exa, Brave or Parallel key on Models & keys, or the platform's, billed per search on prepaid credit)" },
   { id: "schedule", label: "schedule", help: "set, list and cancel its own wake-ups" },
 ];
 const DEFAULT = "default";
@@ -51,6 +51,8 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [applied, setApplied] = useState<ApplyResult[]>();
+  // What the save said its agents cannot use yet: shown before the dialog closes.
+  const [warnings, setWarnings] = useState<string[]>();
   // Queued agents take the revision between their turns: check on them until they have.
   useEffect(() => {
     if (!applied?.some(entry => entry.status === "queued")) return;
@@ -79,15 +81,13 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
     };
     setBusy(true); setError(undefined);
     try {
-      if (definition) {
-        const updated = await api<Definition & { applied?: typeof applied }>(`/v1/definitions/${definition.id}`, { method: "PATCH", body });
-        onSaved(updated);
-        if (updated.applied) { setApplied(updated.applied); return; }
-      } else {
-        const created = await api<Definition>("/v1/definitions", { body });
-        onSaved(created);
-      }
-      onClose();
+      const saved = definition
+        ? await api<Definition & { applied?: ApplyResult[] }>(`/v1/definitions/${definition.id}`, { method: "PATCH", body })
+        : await api<Definition & { applied?: ApplyResult[] }>("/v1/definitions", { body });
+      onSaved(saved);
+      if (saved.warnings?.length) setWarnings(saved.warnings);
+      if (saved.applied) setApplied(saved.applied);
+      if (!saved.applied && !saved.warnings?.length) onClose();
     } catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
   }
@@ -100,7 +100,22 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
             <DialogTitle>Applied to {applied.length} agent{applied.length === 1 ? "" : "s"}</DialogTitle>
             <DialogDescription>{count("updated")} updated · {count("queued")} queued · {count("failed")} failed. Queued agents take the new revision between their turns.</DialogDescription>
           </DialogHeader>
+          <WarningsAlert warnings={warnings} />
           <div className="max-h-48 overflow-y-auto text-xs">{applied.map(entry => <p key={entry.agent}><span className="font-mono">{entry.agent}</span>: {entry.status}{entry.error && <span className="text-destructive"> ({entry.error})</span>}</p>)}</div>
+          <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+  if (warnings) {
+    return (
+      <Dialog open onOpenChange={value => { if (!value) onClose(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Saved {name.trim()}</DialogTitle>
+            <DialogDescription>The definition is saved. Its agents can use these tools once the account has what they need.</DialogDescription>
+          </DialogHeader>
+          <WarningsAlert warnings={warnings} className="mb-0" />
           <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
         </DialogContent>
       </Dialog>
