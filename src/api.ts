@@ -12,7 +12,7 @@ import { resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { errorCode, errorStatus, HttpError, readJson, readText } from "./http.ts";
+import { errorCode, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import type { Definitions } from "./definitions.ts";
@@ -921,6 +921,9 @@ function clientAddress(c: Context) {
   return forwarded ?? (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
 }
 
+/** Where this runtime is reached, for the next steps a 401 names. */
+const origin = (context: ApiContext) => context.links?.publicUrl ?? "https://run.camelai.com";
+
 async function authenticate(c: Context, context: ApiContext): Promise<Caller> {
   const authorization = c.req.header("authorization");
   if (context.browserTokens && BrowserTokens.carries(authorization)) {
@@ -929,11 +932,11 @@ async function authenticate(c: Context, context: ApiContext): Promise<Caller> {
   }
   if (authorization) {
     const principal = await context.accounts.authenticate(authorization) ?? await context.oauth?.authenticate(authorization);
-    if (!principal) throw new HttpError(401, "Invalid token");
+    if (!principal) throw new HttpError(401, `Invalid, expired or revoked token. ${signInHint(origin(context))}`);
     return principal;
   }
   const principal = await context.consoleAuth.principal(c.req.raw);
-  if (!principal) throw new HttpError(401, "Sign in, or send Authorization: Bearer <token>");
+  if (!principal) throw new HttpError(401, `No credentials. Sign in to the console, or: ${signInHint(origin(context))}`);
   if (!["GET", "HEAD"].includes(c.req.method) && !context.consoleAuth.allowsMutation(c.req.raw)) throw new HttpError(403, "Console requests must be same-origin");
   return principal;
 }

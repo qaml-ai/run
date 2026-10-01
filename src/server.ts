@@ -8,7 +8,7 @@ import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
-import { loadDocs, loadRegistry } from "./docs.ts";
+import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, sessionConfig } from "./session-config.ts";
 import { ClientSessions, spendInput } from "./client-sessions.ts";
@@ -48,7 +48,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorCode, errorStatus, HttpError, readJson, readText } from "./http.ts";
+import { errorCode, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
@@ -558,13 +558,17 @@ const docs = loadDocs(resolve(process.env.AGENT_DOCS_DIR ?? fileURLToPath(new UR
 // The UI registry's JSON (packages/registry/public/r/ in the image), for `npx shadcn add <runtime>/r/<name>.json`.
 const registry = loadRegistry(resolve(process.env.AGENT_REGISTRY_DIR ?? fileURLToPath(new URL("../packages/registry/public/r", import.meta.url))), publicUrl);
 // Matched on the request's path as sent, before any decoding or dot-segment folding: only exact document paths answer.
+// /docs itself is for people, who read the docs site. The setup skill is never cached: the one-line prompt that names it
+// stays the same while it changes.
 app.use(async (c, next) => {
   const path = (c.env.incoming.url ?? "").split("?")[0];
-  const served = path === "/llms.txt" || path === "/llms-full.txt" || path === "/docs" || path.startsWith("/docs/") ? docs : path === "/r" || path.startsWith("/r/") ? registry : undefined;
+  if ((path === "/docs" || path === "/docs/") && (c.req.method === "GET" || c.req.method === "HEAD")) return c.redirect(DOCS_SITE, 302);
+  const skill = SKILL_PATHS.includes(path);
+  const served = skill || path === "/llms.txt" || path === "/llms-full.txt" || path === "/docs" || path.startsWith("/docs/") ? docs : path === "/r" || path.startsWith("/r/") ? registry : undefined;
   if (!served) return next();
   const doc = c.req.method === "GET" || c.req.method === "HEAD" ? served.get(path) : undefined;
-  if (!doc) return c.json({ type: "error", error: "Unknown document", code: "NOT_FOUND" }, 404, { "Access-Control-Allow-Origin": "*" });
-  return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" });
+  if (!doc) return c.json({ type: "error", error: `Unknown document. The docs' index: ${origins.canonical}/llms.txt`, code: "NOT_FOUND" }, 404, { "Access-Control-Allow-Origin": "*" });
+  return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": skill ? "no-cache" : "public, max-age=300", "Access-Control-Allow-Origin": "*" });
 });
 app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
 // Every 503 is worth retrying (capacity, an actor moving, this node draining), and so is a 429 (a
@@ -659,9 +663,10 @@ app.get("/", c => c.redirect("/console/", 302));
 app.route("/", clients.app);
 
 // Everything below is for operator tokens, and never for browsers.
-app.use(async (c, next) => {
+// (`/registry/*` matches `/registry` too.)
+app.use("/registry/*", async (c, next) => {
   const principal = await accounts.authenticate(c.req.header("authorization"));
-  if (!principal) return c.body(null, 401);
+  if (!principal) return c.json({ type: "error", error: signInHint(origins.canonical), code: "UNAUTHORIZED" }, 401);
   if (c.req.header("origin")) return c.body(null, 403);
   c.set("tenant", principal.tenant);
   await next();
@@ -673,7 +678,8 @@ app.get(registered, async c => c.json(await clients.inspect(c.req.param("id"), c
 app.post(`${registered}/requests`, c => clients.app.request(`/clients/${c.req.param("id")}/requests`,
   { method: "POST", headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit, { ...c.env, operatorTenant: c.var.tenant }));
 for (const path of [registered, `${registered}/requests`]) app.all(path, c => c.body(null, 405));
-app.notFound(c => c.body(null, 404));
+// Anything else is no route at all: say so, and where to start, to whoever guessed the path (often a coding agent).
+app.notFound(c => c.json({ type: "error", error: `Not found. The docs' index: ${origins.canonical}/llms.txt; coding agents setting camelRun up: ${origins.canonical}/SKILL.md`, code: "NOT_FOUND" }, 404));
 // Errors keep their own status (429 quota, 409 conflict, 410 revoked, 503 retry...); an unreachable database is 503, and
 // anything else is a request the runtime could not accept (invalid configuration or tools): 400.
 app.onError((error, c) => {

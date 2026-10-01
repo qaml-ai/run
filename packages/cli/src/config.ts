@@ -36,6 +36,6 @@ export function forget(env = process.env) {
 export function resolve(flags: { apiKey?: string; url?: string }, env = process.env): Credentials {
   const saved = readSaved(env);
   const apiKey = flags.apiKey || env.CAMELAI_API_KEY || saved.apiKey;
-  if (!apiKey) throw new Error("No API key: run `camelrun login`, or set CAMELAI_API_KEY (create one under API tokens at https://run.camelai.com/console)");
+  if (!apiKey) throw new Error("No API key: run `camelrun login`, or set CAMELAI_API_KEY. Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
   return { apiKey, url: flags.url || env.CAMELAI_URL || saved.url || DEFAULT_URL };
 }

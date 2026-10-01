@@ -7,6 +7,13 @@ export class HttpError extends Error {
   constructor(status: number, message: string, code?: string) { super(message); this.status = status; if (code) this.code = code; }
 }
 
+/**
+ * What to do without credentials, said in each 401 and 404 a person or a coding agent reads: where API tokens are made,
+ * the CLI's login, and the setup skill.
+ */
+export const signInHint = (origin: string) =>
+  `Create an API token at ${origin}/console/tokens and send it as Authorization: Bearer <token> (the SDKs read CAMELAI_API_KEY; the CLI also takes \`npx @camelai/camelrun login\`). Coding agents: read ${origin}/SKILL.md`;
+
 /** The code an error body carries for each status, when the error names none of its own. */
 const STATUS_CODES: Record<number, string> = {
   400: "INVALID_REQUEST", 401: "UNAUTHORIZED", 402: "PAYMENT_REQUIRED", 403: "FORBIDDEN", 404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED",

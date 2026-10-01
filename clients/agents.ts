@@ -2,7 +2,7 @@
  * The SDK's simple interface: keyed agents you upsert and run.
  *
  *   const agents = new Agents({ apiKey: process.env.CAMELAI_API_KEY });
- *   const agent = await agents.upsert("support-triage", { model: "anthropic/claude-sonnet-5-5", instructions: "…" });
+ *   const agent = await agents.upsert("support-triage", { instructions: "…" });
  *   const run = await agent.run("Summarize ticket 123");
  *   console.log(run.text);
  *   await agents.close();
@@ -194,7 +194,7 @@ export class Agents {
    * as long as you keep it (until `agent.delete()`); any number of processes may upsert it.
    */
   async upsert(key: string, config: AgentConfig = {}): Promise<Agent> {
-    if (!this.runtime.options.apiKey) throw new AgentError("Set apiKey (or the CAMELAI_API_KEY environment variable): create a key in the console at https://run.camelai.com");
+    if (!this.runtime.options.apiKey) throw new AgentError("No API key: set CAMELAI_API_KEY (or pass apiKey). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
     const options = createOptions(config);
     const { session } = await this.runtime.upsertAgent(key, options);
     // The upsert declared these tools already (between the agent's turns, if it runs).

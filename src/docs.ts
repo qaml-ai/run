@@ -3,11 +3,16 @@ import { join, relative, sep } from "node:path";
 
 /** The origin the docs are written for; a runtime elsewhere serves them pointing at itself. */
 const DOCS_ORIGIN = "https://run.camelai.com";
+/** Where the one-line prompt "Read https://run.camelai.com/SKILL.md and set up camelRun" points. */
+export const SKILL_PATHS = ["/SKILL.md", "/skill.md"];
+/** The docs for people: `/docs` on the runtime goes there. */
+export const DOCS_SITE = "https://camelai.com/docs/camelrun/overview";
 
 /**
  * The public docs, read once at startup from `directory` (docs/ in the image): `/llms.txt` and
- * `/llms-full.txt` (text/plain), and every Markdown page at `/docs/<its path>` (text/markdown), but
- * the operators' own (operations/). Only these exact paths are served, so nothing else is reachable.
+ * `/llms-full.txt` (text/plain), every Markdown page at `/docs/<its path>` (text/markdown), but
+ * the operators' own (operations/), and the setup skill for coding agents at `/SKILL.md` (and `/skill.md`).
+ * Only these exact paths are served, so nothing else is reachable.
  */
 export function loadDocs(directory: string, publicUrl: string): Map<string, { body: string; type: string }> {
   const served = new Map<string, { body: string; type: string }>();
@@ -23,6 +28,8 @@ export function loadDocs(directory: string, publicUrl: string): Map<string, { bo
     }
   };
   walk(directory);
+  const skill = served.get("/docs/SKILL.md");
+  if (skill) for (const path of SKILL_PATHS) served.set(path, skill);
   for (const name of ["llms.txt", "llms-full.txt"]) {
     try { served.set(`/${name}`, { body: own(readFileSync(join(directory, name), "utf8")), type: "text/plain; charset=utf-8" }); } catch { /* not built in */ }
   }

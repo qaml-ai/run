@@ -31,9 +31,55 @@ test("the docs are served without credentials: llms.txt, llms-full.txt and every
       response.on("end", () => resolve({ status: response.statusCode!, body }));
     }).on("error", reject).end();
   });
-  for (const path of ["/docs/operations/architecture.md", "/docs/operations/README.md", "/docs/../package.json", "/docs/%2e%2e/package.json", "/docs/..%2fsrc%2fserver.ts", "/docs/guides/../../README.md", "/docs/quickstart", "/docs/", "/docs"]) {
+  for (const path of ["/docs/operations/architecture.md", "/docs/operations/README.md", "/docs/../package.json", "/docs/%2e%2e/package.json", "/docs/..%2fsrc%2fserver.ts", "/docs/guides/../../README.md", "/docs/quickstart", "/SKILL.md/../package.json"]) {
     const refused = await raw(path);
     assert.equal(refused.status, 404, `${path}: ${refused.status}`);
     assert.equal(JSON.parse(refused.body).code, "NOT_FOUND", path);
   }
+});
+
+test("coding agents' setup skill is at /SKILL.md (and /skill.md), uncached; /docs sends people to the docs site", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  for (const path of ["/SKILL.md", "/skill.md"]) {
+    const skill = await fetch(`${r.base}${path}`);
+    assert.equal(skill.status, 200, path);
+    assert.match(skill.headers.get("content-type")!, /^text\/markdown/);
+    assert.equal(skill.headers.get("cache-control"), "no-cache");
+    const text = await skill.text();
+    assert.match(text, /^---\nname: camelrun\ndescription: /, "a skill's frontmatter");
+    assert.match(text, /https:\/\/agents\.example\.test\/console\/tokens/, "pointing at this runtime");
+    assert.match(text, /Never ask for a key in chat/);
+  }
+  assert.equal((await fetch(`${r.base}/SKILL.md`, { method: "POST" })).status, 404);
+  for (const path of ["/docs", "/docs/"]) {
+    const docs = await fetch(`${r.base}${path}`, { redirect: "manual" });
+    assert.equal(docs.status, 302, path);
+    assert.equal(docs.headers.get("location"), "https://camelai.com/docs/camelrun/overview");
+  }
+});
+
+test("an unknown path is a 404 that says where to start, and a known one without credentials a 401 that says how to get them", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  for (const path of ["/does-not-exist", "/auth.md", "/AGENTS.md", "/v2/agents"]) {
+    const missing = await fetch(`${r.base}${path}`);
+    assert.equal(missing.status, 404, path);
+    const body = await missing.json();
+    assert.equal(body.code, "NOT_FOUND");
+    assert.match(body.error, /\/llms\.txt/);
+    assert.match(body.error, /\/SKILL\.md/);
+  }
+  // Still authenticated: the API, the operator's registry, and an agent's own routes.
+  for (const path of ["/v1/me", "/v1/agents", "/registry", "/registry/client_" + "0".repeat(40)]) {
+    const refused = await fetch(`${r.base}${path}`);
+    assert.equal(refused.status, 401, path);
+    const { error, code } = await refused.json();
+    assert.equal(code, "UNAUTHORIZED", path);
+    assert.match(error, /\/console\/tokens/, path);
+    assert.match(error, /camelrun login/, path);
+    assert.match(error, /\/SKILL\.md/, path);
+  }
+  assert.equal((await fetch(`${r.base}/clients/client_${"0".repeat(40)}/state`)).status, 401);
+  const wrong = await fetch(`${r.base}/v1/me`, { headers: { Authorization: "Bearer art_wrong" } });
+  assert.equal(wrong.status, 401);
+  assert.match((await wrong.json()).error, /revoked.*\/console\/tokens/);
 });
