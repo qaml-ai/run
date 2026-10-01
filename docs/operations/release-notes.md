@@ -11,7 +11,7 @@ self-hosted runtime sets them itself. Every value is an `AGENT_RATE_LIMIT_*` set
 tenants are exempt (their per-address /v1 traffic too) unless they set `maxAgentCreatesPerMinute` or
 `maxRunsPerMinute`. See [limits](../reference/limits.md#rate-limits).
 
-Migration 047 adds `rate_limits`. Nodes without this release count nothing, so limits hold fully once
+Migration 048 adds `rate_limits`. Nodes without this release count nothing, so limits hold fully once
 the rollout ends.
 ## Unreleased — busy agents across the fleet, and usage tiers
 
