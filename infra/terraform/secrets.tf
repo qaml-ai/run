@@ -15,6 +15,8 @@ locals {
     stripe        = "Stripe secret key and webhook signing secret for agent runtime credit purchases. Set with infra/stripe.sh."
     tool-search   = "OpenRouter API key for tools.search ranking by meaning (embeddings and Jev). Set with infra/tool-search.sh."
     billing-email = "Shared authentication secret for the Cloudflare billing email Worker and its delivery feedback."
+    # Read only while discord_managed_enabled is true; empty, the integration stays off.
+    discord-managed = "Managed Camel Discord application: JSON {applicationId, botToken, clientSecret, publicKey}. See docs/operations/managed-discord.md."
   }
 }
 
