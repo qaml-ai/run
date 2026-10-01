@@ -725,10 +725,11 @@ export const TenantInput = z.object({
 export const TenantCreated = z.object({ tenant: z.string(), token: TokenCreated }).openapi("TenantCreated");
 export const TenantLimitsInput = z.object({
   maxStorageGb: z.number().min(0).max(1_000_000).nullable().optional().openapi({ description: "GB (10^9 bytes) the tenant may store in all, in place of its plan's (1 GB on free credit, 100 GB once it has bought credit); null returns to the plan's" }),
+  maxBusyAgents: z.number().int().min(1).max(1_000_000).nullable().optional().openapi({ description: "Agents the tenant may have busy at once across the runtime, in place of its usage tier's; null returns to the tier's" }),
 }).strict().openapi("TenantLimitsInput");
 export const TenantLimits = z.object({
   tenant: z.string(),
-  limits: z.object({ maxStorageGb: z.number().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
+  limits: z.object({ maxStorageGb: z.number().optional(), maxBusyAgents: z.number().int().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
 }).openapi("TenantLimits");
 export const TenantLookup = z.object({
   tenant: z.string(),

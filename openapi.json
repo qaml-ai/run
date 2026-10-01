@@ -3540,6 +3540,9 @@
             "properties": {
               "maxStorageGb": {
                 "type": "number"
+              },
+              "maxBusyAgents": {
+                "type": "integer"
               }
             },
             "description": "The limits set for the tenant; those absent are its plan's"
@@ -3561,6 +3564,15 @@
             "minimum": 0,
             "maximum": 1000000,
             "description": "GB (10^9 bytes) the tenant may store in all, in place of its plan's (1 GB on free credit, 100 GB once it has bought credit); null returns to the plan's"
+          },
+          "maxBusyAgents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000000,
+            "description": "Agents the tenant may have busy at once across the runtime, in place of its usage tier's; null returns to the tier's"
           }
         },
         "additionalProperties": false

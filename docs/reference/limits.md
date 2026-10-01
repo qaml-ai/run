@@ -36,7 +36,8 @@ Starting credit and other grants do not count. A payment moves the account up as
 
 `GET /v1/billing` has `busyAgents`: the limit, how many are busy now, the tier, and the next one
 (`next: {tier, paid, limit}`); the console's Billing page shows the same. An account whose limit
-the operator set has `source: "tenant"` and no tier. Self-hosted runtimes set the tiers with
+the operator set (the tenants file's `maxAgents`, or `maxBusyAgents` with
+`PUT /v1/tenants/{id}/limits`) has `source: "tenant"` and no tier. Self-hosted runtimes set the tiers with
 `AGENT_USAGE_TIERS` ([configuration](../operations/configuration.md)).
 
 At the limit, a run (a prompt, `continue` or `execute`) gets 429 with `Retry-After`:

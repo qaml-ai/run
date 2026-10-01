@@ -122,8 +122,10 @@ adjustments do not count): Free 8, $5 or more 25, $50 100, $250 250, $1,000 1,00
 (`AGENT_USAGE_TIERS`; see [limits](../reference/limits.md#usage-tiers)). The tier is
 computed from that row each time an agent becomes busy, in the same transaction that
 counts its busy agents, so it moves up the moment a purchase posts, on every node, with
-nothing cached; a refund can move it back down. A tenant's own `maxAgents` replaces the
-tier. `GET /v1/billing` reports it as `busyAgents: {busy, limit, source, tier, paid,
+nothing cached; a refund can move it back down. A limit set for the tenant replaces the
+tier: an admin tenant's `maxAgents` in the tenants file, or for a self-serve tenant
+`PUT /v1/tenants/{id}/limits` `{maxBusyAgents}` (billing-admin operators; null returns to
+the tier's), read with the tier, so it applies at once on every node. `GET /v1/billing` reports it as `busyAgents: {busy, limit, source, tier, paid,
 next}`, and the console's Billing page shows the tier, the limit and the next threshold.
 
 Storage is limited too. A prepaid tenant at a zero balance stores nothing more: uploads,

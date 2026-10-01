@@ -236,15 +236,21 @@ export class Billing {
   }
 
   /**
-   * How many agents `tenant` may have busy at once across the fleet: its entry's `maxAgents`, else for a
-   * prepaid tenant its usage tier's, else the deployment's. The tier comes from what the tenant has paid,
+   * How many agents `tenant` may have busy at once across the fleet: its tenants-file entry's `maxAgents`, else
+   * the operator's `maxBusyAgents` for a self-serve tenant (`tenants.limits`), else for a prepaid tenant its usage
+   * tier's, else the deployment's. The tier comes from what the tenant has paid,
    * read from its account row (in `sql`, the caller's transaction) each time, so a payment applies at once.
    */
   async busyLimit(tenant: string, sql: Sql = this.db): Promise<BusyLimit> {
     const own = this.tenants.maxAgents(tenant);
     if (own !== undefined) return { limit: own, source: "tenant" };
-    if (await this.mode(tenant) !== "prepaid") return { limit: this.options.maxAgentsPerTenant ?? 4, source: "default" };
-    const paid = Number((await sql.query("select purchased from credit_accounts where tenant = $1", [tenant])).rows[0]?.purchased ?? 0);
+    // A self-serve tenant's row (the operator's maxBusyAgents, and its mode) and what it has paid, read together and afresh.
+    const { rows: [row] } = await sql.query(`
+      select t.billing, t.limits -> 'maxBusyAgents' as max_busy, a.purchased from (select $1::text as id) as x
+      left join tenants t on t.id = x.id left join credit_accounts a on a.tenant = x.id`, [tenant]);
+    if (!this.tenants.billing(tenant) && Number.isSafeInteger(row.max_busy) && row.max_busy > 0) return { limit: row.max_busy, source: "tenant" };
+    if ((this.tenants.billing(tenant) ?? (row.billing === "prepaid" ? "prepaid" : "none")) !== "prepaid") return { limit: this.options.maxAgentsPerTenant ?? 4, source: "default" };
+    const paid = Number(row.purchased ?? 0);
     const { tier, next } = usageTier(this.pricing.tiers, paid);
     return tierLimit(tier, next, paid);
   }

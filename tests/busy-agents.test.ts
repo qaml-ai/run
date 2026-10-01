@@ -119,4 +119,13 @@ test("busy limits: a tenant's own maxAgents wins, prepaid tenants get their tier
   // GET /v1/billing shows it, with how many are busy now.
   const summary = await there.billing.summary("payg");
   assert.deepEqual(summary.busyAgents, { busy: 0, limit: 25, source: "tier", tier: "Tier 1", paid: micros(45), next: { tier: "Tier 2", paid: micros(50), limit: 100 } });
+
+  // A self-serve tenant (a row, not in the tenants file): the operator's maxBusyAgents (tenants.limits) wins over its
+  // tier, and is read afresh, so a change applies at once on every node; removed, the tier applies again.
+  await db.query("insert into tenants (id, created_at, billing) values ('selfie', $1, 'prepaid')", [Date.now()]);
+  assert.deepEqual(await tier(there, "selfie"), ["Free", 8, "Tier 1", micros(5)]);
+  await db.query(`update tenants set limits = limits || '{"maxBusyAgents": 40}' where id = 'selfie'`);
+  assert.deepEqual(await tier(there, "selfie"), ["tenant", 40]);
+  await db.query("update tenants set limits = limits - 'maxBusyAgents' where id = 'selfie'");
+  assert.deepEqual(await tier(there, "selfie"), ["Free", 8, "Tier 1", micros(5)]);
 });

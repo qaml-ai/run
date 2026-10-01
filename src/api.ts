@@ -792,15 +792,19 @@ export function api(context: ApiContext) {
     const tenant = c.req.param("id")!;
     if (accounts.tenants.has(tenant)) throw new HttpError(409, `${tenant} is an admin tenant: set its limits in the tenants file`);
     const input = parse(schema.TenantLimitsInput, await readJson(c.req.raw.body, 4096, {}));
-    const set = input.maxStorageGb === undefined ? {} : input.maxStorageGb === null ? null : { maxStorageBytes: Math.round(input.maxStorageGb * 1e9) };
-    const { rows: [row] } = await accounts.db.query(`
-      update tenants set limits = case when $2::jsonb is null then limits - 'maxStorageBytes' else limits || $2::jsonb end where id = $1 returning limits`,
-    [tenant, set === null ? null : JSON.stringify(set)]);
+    // Each limit given is set, or with null removed (back to the plan's); those not given stay as they are.
+    const set: Record<string, number> = {}, removed: string[] = [];
+    if (input.maxStorageGb === null) removed.push("maxStorageBytes");
+    else if (input.maxStorageGb !== undefined) set.maxStorageBytes = Math.round(input.maxStorageGb * 1e9);
+    if (input.maxBusyAgents === null) removed.push("maxBusyAgents");
+    else if (input.maxBusyAgents !== undefined) set.maxBusyAgents = input.maxBusyAgents;
+    const { rows: [row] } = await accounts.db.query("update tenants set limits = (limits - $3::text[]) || $2::jsonb where id = $1 returning limits",
+      [tenant, JSON.stringify(set), removed]);
     if (!row) throw new HttpError(404, `Unknown tenant ${tenant}`);
     accounts.billing.forgetLimits(tenant);
     console.log(JSON.stringify({ type: "tenant_limits_set", tenant, limits: row.limits, by }));
-    const bytes = row.limits.maxStorageBytes;
-    return json(c, 200, { tenant, limits: typeof bytes === "number" ? { maxStorageGb: bytes / 1e9 } : {} });
+    const { maxStorageBytes: bytes, maxBusyAgents: busy } = row.limits;
+    return json(c, 200, { tenant, limits: { ...(typeof bytes === "number" ? { maxStorageGb: bytes / 1e9 } : {}), ...(typeof busy === "number" ? { maxBusyAgents: busy } : {}) } });
   });
   route(createRoute({ method: "get", path: "/v1/tenants/{id}/export", request: { params: tenantId }, responses: { 200: zipped("The tenant's export, as GET /v1/account/export gives it (platform operator only)") } }), async c => {
     operatorOnly(c);

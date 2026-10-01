@@ -58,7 +58,8 @@ the SDKs retry both.
 **Busy agents per tenant, across the fleet.** An agent is busy while it has a run
 open (running or queued). Each tenant may have a number of agents busy at once on
 all nodes together: its entry's `maxAgents` (a positive integer) if set, else for a
-prepaid tenant its [usage tier](../reference/limits.md#usage-tiers)'s
+self-serve tenant the operator's `maxBusyAgents` (`tenants.limits`, set with
+`PUT /v1/tenants/{id}/limits`), else for a prepaid tenant its [usage tier](../reference/limits.md#usage-tiers)'s
 (`AGENT_USAGE_TIERS`), else `AGENT_MAX_AGENTS_PER_TENANT` (default half of
 `AGENT_MAX_AGENTS`). A run that would pass it gets 429 `BUSY_AGENT_LIMIT`. Each busy
 agent has a row in `busy_agents` naming the node session that holds it, written
