@@ -40,11 +40,9 @@ test("an agent that names no model gets the first default its tenant or key scop
   // Both keys: the head.
   assert.equal((await r.call("/v1/me", { token: OTHER_OPERATOR })).json.defaultModel, "anthropic/claude-sonnet-5-5");
   assert.equal(await model((await r.call("/v1/agents", { body: {}, token: OTHER_OPERATOR })).json.id, OTHER_OPERATOR), "anthropic/claude-sonnet-5-5");
-  // No keys at all: the head, and creating says the default needs a key.
+  // No keys at all: the head, which an agent is made on all the same.
   assert.equal((await r.call("/v1/me", { token: NOBODY })).json.defaultModel, "anthropic/claude-sonnet-5-5");
-  const refused = await r.call("/v1/agents", { body: {}, token: NOBODY });
-  assert.equal(refused.status, 400);
-  assert.match(refused.json.error, /No anthropic API key .* the runtime's default model/);
+  assert.equal(await model((await r.call("/v1/agents", { body: {}, token: NOBODY })).json.id, NOBODY), "anthropic/claude-sonnet-5-5");
 
   // A key scope's own providers count too: a tenant with no keys runs the default through its scope's.
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", token: NOBODY, body: { apiKey: "sk-or", baseUrl: `${provider.url}/openrouter` } });

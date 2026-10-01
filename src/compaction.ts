@@ -226,7 +226,7 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
  */
 export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined): StreamFn {
   return (model, context, options) => {
-    if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent`);
+    if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
     const call = (credentials: Credentials) => {
       const sink: { cost?: number; credits?: number } = {};
       const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.());

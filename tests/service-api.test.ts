@@ -128,11 +128,11 @@ test('tenants provision and see only their own agents, billed to their own provi
   const created = await f.post('/v1/agents', { name: 'Alice agent' }, alice);
   assert.equal(created.status, 201);
   const agent = await created.json() as any;
-  const missingKey = await f.post('/v1/agents', {}, bob);
-  assert.equal(missingKey.status, 400);
-  assert.match((await missingKey.json() as any).error, /No .* API key is configured for tenant bob/);
+  // A tenant with no model key still makes agents; their runs say which key to set.
+  const keyless = await f.post('/v1/agents', { name: 'Bob agent' }, bob);
+  assert.equal(keyless.status, 201);
   assert.deepEqual((await (await f.get('/registry', alice)).json() as any[]).map(a => a.name), ['Alice agent']);
-  assert.deepEqual(await (await f.get('/registry', bob)).json(), []);
+  assert.deepEqual((await (await f.get('/registry', bob)).json() as any[]).map(a => a.name), ['Bob agent']);
   assert.equal((await f.get(`/registry/${agent.id}`, bob)).status, 404, "another tenant's agent is not found");
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'cross', method: 'status', params: {} }, bob)).status, 401);
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'own', method: 'status', params: {} }, alice)).status, 202);

@@ -178,9 +178,10 @@ test("models are chosen by name over REST, at creation and mid-conversation", as
   const all = (await call("/v1/models?provider=anthropic", { token: alice })).json as any[];
   assert.ok(all.some(model => model.id === "anthropic/claude-sonnet-5" && model.contextWindow > 0 && model.cost.input >= 0));
   assert.deepEqual((await call("/v1/models?available=true", { token: alice })).json, []);
-  const noKey = await call("/v1/agents", { token: alice, body: { name: "Planner", model: "anthropic/claude-sonnet-5" } });
-  assert.equal(noKey.status, 400);
-  assert.match(noKey.json.error, /PUT \/v1\/providers\/anthropic\/key/);
+  // An agent on a model with no key is made all the same: its runs say which key to set.
+  const noKey = await call("/v1/agents", { token: alice, body: { name: "Scratch", model: "anthropic/claude-sonnet-5" } });
+  assert.equal(noKey.status, 201, JSON.stringify(noKey.json));
+  assert.equal((await call(`/v1/agents/${noKey.json.id}`, { method: "DELETE", token: alice })).status, 200);
   await call("/v1/providers/anthropic/key", { method: "PUT", token: alice, body: { apiKey: "sk-ant-alice" } });
   assert.ok((await call("/v1/models?available=true", { token: alice })).json.every((model: any) => model.provider === "anthropic"));
   assert.equal((await call("/v1/agents", { token: alice, body: { model: "anthropic/not-a-model" } })).status, 400);

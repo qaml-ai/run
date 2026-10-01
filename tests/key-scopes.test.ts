@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fakeModel, runtime } from "./runtime-server.ts";
+import { fakeModel, runtime, until } from "./runtime-server.ts";
 import { anthropic, converse, gateway, responses } from "./provider-fixtures.ts";
 
 /** The fake gateways listen on this host, over http: reachable only where the operator allows it. */
@@ -82,7 +82,12 @@ test("a scope's model provider need not be the tenant's: an agent may be created
   ]));
   const r = await runtime(t, reply("unused"), LOCAL);
   const model = "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0";
-  assert.equal((await r.call("/v1/agents", { body: { model, keyScope: "org_2" } })).status, 400, "no Bedrock key anywhere yet");
+  // No Bedrock key anywhere yet: the agent is made, and its run says where to set one.
+  const early = await r.call("/v1/agents", { body: { model, keyScope: "org_2" } });
+  assert.equal(early.status, 201, early.text);
+  const accepted = await r.call(`/v1/agents/${early.json.id}/prompt`, { body: { text: "Hi" } });
+  const failed = await until(async () => { const got = (await r.call(`/v1/agents/${early.json.id}/requests/${accepted.json.id}`)).json; return got.state === "completed" && got; }, "the run to fail");
+  assert.match(failed.error, /No amazon-bedrock API key is configured for key scope org_2.*PUT \/v1\/key-scopes\/org_2\/providers\/amazon-bedrock/);
   const set = await r.call("/v1/key-scopes/org_2/providers/amazon-bedrock", { method: "PUT", body: { apiKey: "bedrock-api-key-wxyz", baseUrl: bedrock.url, region: "us-west-2" } });
   assert.equal(set.status, 200, set.text);
   assert.equal(set.json.providers[0].region, "us-west-2");

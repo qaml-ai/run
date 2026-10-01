@@ -42,6 +42,11 @@ Then, with the operator token from `.env`:
 curl -s localhost:8790/v1/me -H "Authorization: Bearer $AGENT_OPERATOR_TOKEN"
 ```
 
+Agents can be made before any model key is set, but their runs fail until one
+is: set `AGENT_TENANT_API_KEYS`, or `PUT /v1/providers/:provider/key` (or point
+agents at a [fake LLM](#local-harnesses-evals-end-to-end-tests) to try it
+without one).
+
 `AGENT_URL=http://localhost:8790 AGENT_RUNTIME_TOKEN=<token> SMOKE_PROMPT=1 node
 --experimental-strip-types deploy/smoke.ts` checks the sandbox, a client tool
 and a real model turn end to end.

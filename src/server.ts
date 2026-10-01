@@ -260,13 +260,6 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
   if (made) params = made.params;
   const fallback = params.model === undefined ? await steps.time("providers", defaultModelFor(tenant, keyScope)) : model;
   const config = { ...sessionConfig(params, fallback, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
-  // A custom provider's models need no key of the tenant's: the provider has its own, or takes none.
-  const keyed = async () => Object.hasOwn(custom ?? {}, config.model.provider) || !!(keyScope && await keyScopes.entry(tenant, keyScope, config.model.provider)) || await accounts.hasKey(tenant, config.model.provider);
-  if (!await steps.time("key", keyed)) {
-    // Said plainly when the model is the runtime's default: the caller may not know one was chosen for it.
-    const which = `${config.model.provider}/${config.model.id}${params.model === undefined ? ", the runtime's default model (this agent names none)" : ""}`;
-    throw new Error(`No ${config.model.provider} API key is configured for tenant ${tenant}, for ${which}; name a model you can use (GET /v1/models?available=true), or set a key with PUT /v1/providers/${config.model.provider}/key`);
-  }
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   // An agent made with a key is one the application comes back to: it lives until deleted, unless it says otherwise.
