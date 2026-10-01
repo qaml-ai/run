@@ -15,6 +15,13 @@ import { testDatabase } from "./database.ts";
 
 const MIGRATIONS = readdirSync(fileURLToPath(new URL("../migrations", import.meta.url))).filter(name => name.endsWith(".sql")).sort();
 
+test("each migration has its own number, so two branches cannot both claim one", () => {
+  // The runner applies files by name and does not refuse a shared number: a clash would only reorder them.
+  const numbers = MIGRATIONS.map(name => name.slice(0, 3));
+  assert.deepEqual(numbers.filter((number, index) => numbers.indexOf(number) !== index), []);
+  assert.ok(MIGRATIONS.every(name => /^\d{3}_[a-z0-9_]+\.sql$/.test(name)), "every file is NNN_name.sql, or the runner skips it");
+});
+
 test("migrations apply once: running them again does nothing", async () => {
   const { db } = await testDatabase({ migrate: false });
   assert.deepEqual(await migrate(db), MIGRATIONS);
