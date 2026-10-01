@@ -21,7 +21,7 @@ import { setHelpTenant } from "@/lib/help-context";
 import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
-import { consoleLoginUrl, discordSetupNext } from "@/lib/discord-setup";
+import { consoleLoginUrl, discordInstallNext } from "@/lib/discord-setup";
 import { AccountPage } from "@/pages/account";
 import { AgentsPage } from "@/pages/agents";
 import { AgentPage } from "@/pages/agent";
@@ -151,7 +151,7 @@ function GoogleMark({ className }: { className?: string }) {
 }
 
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const next = discordSetupNext(location.pathname, location.search);
+  const next = discordInstallNext(location.pathname, location.search);
   const methods = useApi<{ github: boolean; google?: boolean; token: boolean; org?: string; open?: boolean }>("/console/auth/methods");
   const providers = !!(methods.data?.github || methods.data?.google);
   const [token, setToken] = useState("");
@@ -163,9 +163,9 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
     setBusy(true);
     try {
       const signedIn = await api<{ next?: string }>("/console/auth/token", { body: { token: token.trim(), ...(next ? { next } : {}) } });
-      const accepted = signedIn.next?.match(/^\/console\/channels\?(.*)$/);
-      const destination = accepted ? discordSetupNext("/console/channels", `?${accepted[1]}`) : undefined;
-      history.replaceState(null, "", destination ?? "/console/");
+      // The server accepted only its own install route: that is a page load (on to Discord), not a console route.
+      if (signedIn.next && signedIn.next === next) { location.assign(signedIn.next); return; }
+      history.replaceState(null, "", "/console/");
       dispatchEvent(new PopStateEvent("popstate"));
       onSignedIn();
     }

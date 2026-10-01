@@ -127,12 +127,7 @@ export interface Channel {
   greeting?: string; settings?: Record<string, any>; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
 }
 
-export interface ManagedDiscordConfig { enabled: boolean; applicationId?: string; inviteUrl?: string; setupPath?: string; limits?: { servers: number; turnsPerDay: number } }
-export interface ManagedDiscordGuild {
-  id: string; name: string; installed: boolean; owned: boolean;
-  installationState: "present" | "unavailable" | "removed" | null;
-  bindingState: "active" | "paused" | "disconnected" | null;
-}
+export interface ManagedDiscordConfig { enabled: boolean; applicationId?: string; installPath?: string; limits?: { servers: number; turnsPerDay: number } }
 export interface ManagedDiscordBinding {
   guildId: string; guildName: string; state: "active" | "paused" | "disconnected";
   installationState: "present" | "unavailable" | "removed"; channelId: string | null;

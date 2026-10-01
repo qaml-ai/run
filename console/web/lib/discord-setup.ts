@@ -1,8 +1,10 @@
-/** Carry only a server setup intent across Camel login; the backend verifies server ownership. */
-export function discordSetupNext(pathname: string, search: string): string | undefined {
+/** Adding Camel to Discord before sign-in: resume it afterwards. The server checks the path again. */
+export function discordInstallNext(pathname: string, search: string): string | undefined {
   if (pathname !== "/console/channels") return;
-  const guild = new URLSearchParams(search).get("discord_setup");
-  return guild && /^\d{17,20}$/.test(guild) ? `/console/channels?discord_setup=${guild}` : undefined;
+  const query = new URLSearchParams(search);
+  if (!query.has("discord_install")) return;
+  const guild = query.get("guild_id");
+  return `/console/discord/install${guild && /^\d{1,20}$/.test(guild) ? `?guild_id=${guild}` : ""}`;
 }
 
 export function consoleLoginUrl(provider: "google" | "github", next?: string): string {

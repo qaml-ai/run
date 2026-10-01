@@ -358,15 +358,11 @@ export function ChannelsPage() {
   const [connected, setConnected] = useState<Channel>();
   const [editing, setEditing] = useState<Channel | "new" | "own-discord">();
   const [error, setError] = useState<string>();
-  const [managedOpen, setManagedOpen] = useState(() => {
-    const query = new URLSearchParams(location.search);
-    return !!query.get("discord_setup") || query.has("discord_connected") || query.has("discord_error");
-  });
   const ownChannels = channels.data?.filter(channel => channel.type !== "discord-managed");
   return (
     <>
       <PageHeader title="Channels" description="Let people talk to agents from messaging apps, and start agents from GitHub and webhooks. Each conversation (a chat, a pull request, a key) gets its own agent, made from the channel's definition."
-        actions={<>{managedConfig.data?.enabled && <><Button size="sm" variant="outline" onClick={() => setManagedOpen(true)}><Plus />Add Camel bot</Button><Button size="sm" variant="outline" onClick={() => setEditing("own-discord")}>Connect your own bot</Button></>}<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button></>} />
+        actions={<>{managedConfig.data?.enabled && <><Button size="sm" variant="outline" asChild><a href={managedConfig.data.installPath ?? "/console/discord/install"}><Plus />Add Camel to Discord</a></Button><Button size="sm" variant="outline" onClick={() => setEditing("own-discord")}>Connect your own bot</Button></>}<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button></>} />
       <ErrorAlert error={channels.error ?? error} />
       {!ownChannels ? <Skeleton className="h-32 w-full" /> : ownChannels.length === 0 ? (
         <EmptyState icon={<MessageCircle />} title="No channels">Connect a Telegram, Slack or Discord bot to talk to your agents from there, a GitHub App to have them answer pull requests, or any service's webhooks.</EmptyState>
@@ -393,7 +389,7 @@ export function ChannelsPage() {
           </Table>
         </div>
       )}
-      {managedConfig.data && <ManagedDiscord config={managedConfig.data} open={managedOpen} onOpenChange={setManagedOpen} onChanged={() => { void channels.reload(); void definitions.reload(); }} />}
+      {managedConfig.data && <ManagedDiscord config={managedConfig.data} onChanged={() => { void channels.reload(); void definitions.reload(); }} />}
       {modelDefinition && <DefinitionDialog definition={modelDefinition} forChannel onClose={() => setModelDefinition(undefined)} onSaved={() => void definitions.reload()} />}
       {connected && <Dialog open onOpenChange={value => { if (!value) setConnected(undefined); }}><DialogContent>
         <DialogHeader><DialogTitle>{connected.name} connected</DialogTitle><DialogDescription>Token validated and stored. Invite the bot, then send a test message.</DialogDescription></DialogHeader>
