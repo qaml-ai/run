@@ -3577,9 +3577,11 @@ wait out `Retry-After` and retry.
   UTC day), so `Retry-After` is the time to the next window.
 - A retried request (the same request id or `Idempotency-Key`) that the runtime
   answers from its record is not a new run.
-- Operators set every value (see [Configuration](../operations/configuration.md));
-  an admin tenant's `maxAgentCreatesPerMinute` and `maxRunsPerMinute` override
-  the account limits. A self-hosted runtime has no per-address limits unless it
+- Admin tenants (the operator's own, from its tenants file) are not rate
+  limited: neither their account limits, nor `api_requests` for requests made
+  with their tokens, browser tokens or console sessions. An admin tenant's
+  `maxAgentCreatesPerMinute` and `maxRunsPerMinute` set limits for it anyway.
+- Operators set every value (see [Configuration](../operations/configuration.md)). A self-hosted runtime has no per-address limits unless it
   sets them, or trusts Cloudflare's `CF-Connecting-IP`.
 - Channel senders and Get Help have limits of their own (below, and in
   [Errors](errors.md)).

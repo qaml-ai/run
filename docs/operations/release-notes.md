@@ -8,7 +8,8 @@ runs started (600 a minute, 60 on free credit); per client address, `/v1/*` requ
 sign-in and OAuth requests (20 a minute) and new accounts (5 a UTC day). The per-address limits are on
 by default only with `AGENT_TRUST_CF_CONNECTING_IP=true`, for a runtime only Cloudflare reaches; a
 self-hosted runtime sets them itself. Every value is an `AGENT_RATE_LIMIT_*` setting, and admin
-tenants take `maxAgentCreatesPerMinute` and `maxRunsPerMinute`. See [limits](../reference/limits.md#rate-limits).
+tenants are exempt (their per-address /v1 traffic too) unless they set `maxAgentCreatesPerMinute` or
+`maxRunsPerMinute`. See [limits](../reference/limits.md#rate-limits).
 
 Migration 047 adds `rate_limits`. Nodes without this release count nothing, so limits hold fully once
 the rollout ends.

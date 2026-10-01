@@ -177,7 +177,7 @@ const google = secrets.google && { ...secrets.google, issuer: process.env.AGENT_
 // Rate limits (src/rate-limits.ts): per client address and per tenant. The per-address API budget is split among the
 // live nodes, recounted every 30 s.
 let liveNodes = 1;
-const countNodes = () => void ownership.livePeers().then(peers => { liveNodes = peers.length + 1; }, error => console.error(JSON.stringify({ type: "node_count_failed", error: errorText(error) })));
+const countNodes = () => void ownership.livePeers().then(peers => { liveNodes = peers.length + 1; }, error => console.error(JSON.stringify({ type: "node_count_failed", error: safeError(error) })));
 countNodes();
 const nodesTimer = setInterval(countNodes, 30_000);
 nodesTimer.unref();
@@ -185,6 +185,8 @@ const rateLimits = new RateLimits({
   db, config: rateLimitConfig(), hashKey: sessionSecret, nodes: () => liveNodes,
   free: tenant => accounts.billing.onFreeCredit(tenant),
   override: (tenant, limit) => tenants.rateLimit(tenant, limit),
+  // Admin tenants (the operator's own applications, such as camelAI's) are never rate limited unless their entry sets a limit.
+  exempt: tenant => tenants.has(tenant),
 });
 rateLimits.start();
 /** Who sent a request: its address and the key per-address limits count it under (none for the runtime's own calls). */
@@ -660,9 +662,22 @@ app.use(async (c, next) => {
   if (BrowserTokens.carries(c.req.header("authorization"))) c.env.outgoing.setHeader("Access-Control-Allow-Origin", "*");
   return next();
 });
+/**
+ * Whether a request is authenticated as an admin tenant (by its token, a browser token it minted, or a console session):
+ * its /v1 traffic is not limited per address. A credential that does not check out is no one's: the API refuses it later.
+ */
+async function adminCaller(c: Context) {
+  const authorization = c.req.header("authorization");
+  let tenant: string | undefined;
+  try {
+    if (BrowserTokens.carries(authorization)) tenant = browserTokens.verify(authorization!).tenant;
+    else tenant = authorization ? (await accounts.authenticate(authorization))?.tenant : (await consoleAuth.principal(c.req.raw))?.tenant;
+  } catch { return false; }
+  return tenant !== undefined && tenants.has(tenant);
+}
 // Per-address rate limits, on the node a request reaches first (a request a peer forwarded was counted there).
 app.use(async (c, next) => {
-  if (!forwardedByPeer(c)) await rateLimits.request(c.req.path, requestClient(c).key);
+  if (!forwardedByPeer(c)) await rateLimits.request(c.req.path, requestClient(c).key, () => adminCaller(c));
   return next();
 });
 // One node serves each agent and volume; anything addressed to one another node holds goes there.

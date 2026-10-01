@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import type { Db, Sql } from "./db.ts";
-import { errorText } from "./protocol.ts";
+import { safeError } from "./metrics.ts";
 import { HttpError } from "./http.ts";
 
 const MINUTE = 60_000;
@@ -129,6 +129,11 @@ export interface RateLimitOptions {
   free: (tenant: string) => Promise<boolean>;
   /** An admin's own per-minute limit for the tenant (its tenants file entry), over the default. */
   override?: (tenant: string, limit: "agentCreates" | "runs") => number | undefined;
+  /**
+   * Whether a tenant is exempt from the per-tenant limits unless an override sets one: admin tenants (the tenants file's,
+   * such as the operator's own applications), whose traffic is trusted and must never be throttled by default.
+   */
+  exempt?: (tenant: string) => boolean;
   now?: () => number;
 }
 
@@ -159,10 +164,15 @@ export class RateLimits {
     return { address, key: address && !loopback(address) ? clientKey(header, address, this.config.cloudflare) : undefined };
   }
 
-  /** The per-address limit for a request to `path`, from `key` (none for the runtime's own calls). */
-  async request(path: string, key: string | undefined) {
+  /**
+   * The per-address limit for a request to `path`, from `key` (none for the runtime's own calls). `trusted` says whether
+   * the request is authenticated as an exempt tenant: /v1 traffic of those is never counted per address, since an
+   * operator's servers (Workers, containers) share a few egress addresses. Sign-in and OAuth are always counted.
+   */
+  async request(path: string, key: string | undefined, trusted: () => Promise<boolean> = async () => false) {
     if (!key || this.config.exempt.has(key)) return;
     if (path.startsWith("/v1/") && this.config.apiPerIp) {
+      if (await trusted()) return;
       const share = Math.max(1, Math.ceil(this.config.apiPerIp / Math.max(1, this.options.nodes())));
       const wait = this.take(key, share);
       if (wait) this.refuse({ name: "api_requests", scope: "ip", max: this.config.apiPerIp, windowSeconds: 60 }, wait,
@@ -192,6 +202,7 @@ export class RateLimits {
 
   private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string) {
     const own = this.options.override?.(tenant, limit);
+    if (own === undefined && this.options.exempt?.(tenant)) return;
     const free = own === undefined && await this.options.free(tenant);
     const max = own ?? (free ? this.config[limit === "runs" ? "freeRuns" : "freeAgentCreates"] : this.config[limit]);
     if (!max) return;
@@ -262,7 +273,7 @@ export class RateLimits {
         console.log(JSON.stringify({ type: "rate_limited", refused: Object.fromEntries(this.refused) }));
         this.refused = new Map();
       }
-      if (++minutes % 60 === 0) void this.sweep().catch(error => console.error(JSON.stringify({ type: "rate_limit_sweep_failed", error: errorText(error) })));
+      if (++minutes % 60 === 0) void this.sweep().catch(error => console.error(JSON.stringify({ type: "rate_limit_sweep_failed", error: safeError(error) })));
     }, MINUTE);
     this.timer.unref();
   }

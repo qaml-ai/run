@@ -65,13 +65,13 @@ test("tenants file entries may raise or lower their own per-minute limits", asyn
 });
 
 /** Limits over a test database, at a clock the test moves. */
-async function limits(config: Partial<RateLimitConfig> = {}, options: { nodes?: number; free?: (tenant: string) => boolean; override?: (tenant: string, limit: "agentCreates" | "runs") => number | undefined } = {}) {
+async function limits(config: Partial<RateLimitConfig> = {}, options: { nodes?: number; free?: (tenant: string) => boolean; override?: (tenant: string, limit: "agentCreates" | "runs") => number | undefined; exempt?: (tenant: string) => boolean } = {}) {
   const { db } = await testDatabase();
   const clock = { now: Date.UTC(2026, 9, 1, 12, 0, 10) };
   let freeChecks = 0;
   const make = () => new RateLimits({
     db, config: { ...rateLimitConfig({}), ...config }, hashKey: "rate-limit-test-hash-key", nodes: () => options.nodes ?? 1, now: () => clock.now,
-    free: async tenant => { freeChecks++; return options.free?.(tenant) ?? false; }, override: options.override,
+    free: async tenant => { freeChecks++; return options.free?.(tenant) ?? false; }, override: options.override, exempt: options.exempt,
   });
   return { db, clock, limits: make(), another: make(), freeChecks: () => freeChecks };
 }
@@ -103,6 +103,13 @@ test("/v1 requests per address: each node holds its share of the minute's budget
   assert.equal((await refusal(shared.request("/v1/me", "203.0.113.5"))).retryAfter, 60);
   const { limits: exempt } = await limits({ apiPerIp: 1, exempt: new Set(["worker:chiridion.example"]) });
   for (let i = 0; i < 5; i++) await exempt.request("/v1/me", "worker:chiridion.example");
+  // An admin tenant's /v1 traffic is never counted per address; its sign-ins are.
+  const { limits: trusted } = await limits({ apiPerIp: 1, authPerIp: 1 });
+  for (let i = 0; i < 5; i++) await trusted.request("/v1/me", "2a06:98c0:3600:0::/64", async () => true);
+  await trusted.request("/v1/me", "2a06:98c0:3600:0::/64");
+  await refusal(trusted.request("/v1/me", "2a06:98c0:3600:0::/64"));
+  await trusted.request("/oauth/token", "203.0.113.9", async () => true);
+  await refusal(trusted.request("/oauth/token", "203.0.113.9", async () => true));
   const { limits: off } = await limits({ apiPerIp: 0 });
   for (let i = 0; i < 5; i++) await off.request("/v1/me", "203.0.113.5");
 });
@@ -120,10 +127,13 @@ test("sign-in requests per address are counted in Postgres, across nodes, in fix
   await a.request("/oauth/token", "203.0.113.5");
 });
 
-test("agent creates and runs per tenant: lower on free credit, an admin's override over both", async () => {
+test("agent creates and runs per tenant: lower on free credit, none for admin tenants, an admin's override over both", async () => {
   const { clock, limits: tenantLimits, freeChecks } = await limits({ agentCreates: 3, freeAgentCreates: 1, runs: 2, freeRuns: 1 }, {
     free: tenant => tenant === "free", override: (tenant, limit) => tenant === "ops" && limit === "runs" ? 4 : undefined,
+    exempt: tenant => tenant === "ops" || tenant === "chiridion-prod",
   });
+  for (let i = 0; i < 50; i++) { await tenantLimits.agentCreate("chiridion-prod"); await tenantLimits.run("chiridion-prod"); }
+  for (let i = 0; i < 50; i++) await tenantLimits.agentCreate("ops");
   for (let i = 0; i < 3; i++) await tenantLimits.agentCreate("paid");
   const refused = await refusal(tenantLimits.agentCreate("paid"));
   assert.deepEqual(refused.limit, { name: "agent_creates", scope: "tenant", max: 3, windowSeconds: 60 });
@@ -176,53 +186,81 @@ test("ended windows are swept", async () => {
 
 test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per address behind Cloudflare, per tenant for creates and runs", async t => {
   const r = await runtime(t, () => ({ content: "ok" }), {
-    AGENT_TRUST_CF_CONNECTING_IP: "true", AGENT_RATE_LIMIT_API_PER_IP: "4", AGENT_RATE_LIMIT_AGENT_CREATES: "2", AGENT_RATE_LIMIT_RUNS: "2",
+    AGENT_TRUST_CF_CONNECTING_IP: "true", AGENT_RATE_LIMIT_API_PER_IP: "4", AGENT_RATE_LIMIT_FREE_AGENT_CREATES: "2", AGENT_RATE_LIMIT_FREE_RUNS: "2", AGENT_BILLING_ADMINS: "alice",
   }, { tenants: {
     alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
     bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" }, maxAgentCreatesPerMinute: 3 },
   } });
+  // A self-serve tenant (prepaid, on free credit) and its API token.
+  const carol = (await r.call("/v1/tenants", { body: { id: "carol" } })).json.token.token as string;
   const from = (ip: string, extra: Record<string, string> = {}) => ({ "CF-Connecting-IP": ip, ...extra });
-  for (let i = 0; i < 4; i++) assert.equal((await r.call("/v1/me", { headers: from("203.0.113.5") })).status, 200);
+  for (let i = 0; i < 4; i++) assert.equal((await r.call("/v1/me", { token: carol, headers: from("203.0.113.5") })).status, 200);
   // A forged hop header (what peers send) does not skip the count.
-  const response = await fetch(`${r.base}/v1/me`, { headers: { Authorization: `Bearer ${OPERATOR}`, ...from("203.0.113.5", { "x-agent-runtime-hop": `${Date.now()}.forged` }) } });
+  const response = await fetch(`${r.base}/v1/me`, { headers: { Authorization: `Bearer ${carol}`, ...from("203.0.113.5", { "x-agent-runtime-hop": `${Date.now()}.forged` }) } });
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("retry-after"), "15");
   assert.deepEqual(await response.json(), {
     type: "error", code: "RATE_LIMITED", error: "Too many requests from this address: at most 4 a minute to /v1. Retry after Retry-After",
     limit: { name: "api_requests", scope: "ip", max: 4, windowSeconds: 60 },
   });
-  assert.equal((await r.call("/v1/me", { headers: from("203.0.113.6") })).status, 200, "another address has its own budget");
-  assert.equal((await r.call("/v1/me", { headers: from("2001:db8:1:2::9") })).status, 200);
+  assert.equal((await r.call("/v1/me", { token: null, headers: from("203.0.113.5") })).status, 429, "unauthenticated requests count too");
+  assert.equal((await r.call("/v1/me", { token: carol, headers: from("203.0.113.6") })).status, 200, "another address has its own budget");
+  assert.equal((await r.call("/v1/me", { token: carol, headers: from("2001:db8:1:2::9") })).status, 200);
   // The runtime's own loopback calls (hosted MCP tools) carry no address and are not counted.
-  for (let i = 0; i < 6; i++) assert.equal((await r.call("/v1/me")).status, 200);
+  for (let i = 0; i < 6; i++) assert.equal((await r.call("/v1/me", { token: carol })).status, 200);
 
   const created = [];
-  for (let i = 0; i < 2; i++) created.push((await r.call("/v1/agents", { body: {} })).json.id);
-  const refused = await r.call("/v1/agents", { body: {} });
+  for (let i = 0; i < 2; i++) created.push((await r.call("/v1/agents", { body: {}, token: carol })).json.id);
+  const refused = await r.call("/v1/agents", { body: {}, token: carol });
   assert.equal(refused.status, 429);
   assert.equal(refused.json.code, "RATE_LIMITED");
   assert.deepEqual(refused.json.limit, { name: "agent_creates", scope: "tenant", max: 2, windowSeconds: 60 });
-  for (let i = 0; i < 3; i++) assert.equal((await r.call("/v1/agents", { body: {}, token: OTHER_OPERATOR })).status, 201, "bob's own limit is 3");
+  assert.match(refused.json.error, /on free credit/);
+  // An admin tenant with a limit of its own in the tenants file is held to it.
+  for (let i = 0; i < 3; i++) assert.equal((await r.call("/v1/agents", { body: {}, token: OTHER_OPERATOR })).status, 201);
   assert.equal((await r.call("/v1/agents", { body: {}, token: OTHER_OPERATOR })).status, 429);
 
-  const agent = created[0];
-  assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "one", requestId: "run-1" } })).status, 202);
-  assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "two", requestId: "run-2" } })).status, 202);
-  // A retried request is not a new run.
-  assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "one", requestId: "run-1" } })).status, 202);
-  const third = await r.call(`/v1/agents/${created[1]}/prompt`, { body: { text: "three", requestId: "run-3" } });
+  // Runs are counted when accepted, whatever then refuses them (here, no credit), and never for a retry.
+  const run = (agent: string, requestId: string) => r.call(`/v1/agents/${agent}/prompt`, { body: { text: requestId, requestId }, token: carol });
+  assert.notEqual((await run(created[0], "run-1")).status, 429);
+  assert.notEqual((await run(created[0], "run-2")).status, 429);
+  const third = await run(created[1], "run-3");
   assert.equal(third.status, 429);
   assert.deepEqual(third.json.limit, { name: "runs", scope: "tenant", max: 2, windowSeconds: 60 });
-  assert.match(third.json.error, /Too many runs started: at most 2 a minute/);
+  assert.match(third.json.error, /Too many runs started: at most 2 a minute for this account on free credit/);
+});
+
+test("an admin tenant's traffic (camelAI's servers behind a few Cloudflare egress addresses, its users' browser tokens) is never rate limited", async t => {
+  // Limits far below what it sends: 5 /v1 requests a minute per address, 3 agent creates and 3 runs a minute per tenant.
+  const r = await runtime(t, () => ({ content: "ok" }), {
+    AGENT_TRUST_CF_CONNECTING_IP: "true", AGENT_RATE_LIMIT_API_PER_IP: "5", AGENT_RATE_LIMIT_AGENT_CREATES: "3", AGENT_RATE_LIMIT_RUNS: "3", AGENT_MAX_AGENTS: "32", AGENT_MAX_AGENTS_PER_TENANT: "16",
+  });
+  // Every Worker subrequest arrives from Cloudflare's one Workers address; containers from a few others.
+  const worker = { "CF-Connecting-IP": "2a06:98c0:3600::103", "CF-Worker": "camelai.dev" };
+  const container = { "CF-Connecting-IP": "203.0.113.50" };
+  const agents: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const created = await r.call("/v1/agents", { body: {}, headers: i % 2 ? worker : container });
+    assert.equal(created.status, 201, `create ${i}: ${created.text}`);
+    agents.push(created.json.id);
+  }
+  for (let i = 0; i < 8; i++) assert.equal((await r.call(`/v1/agents/${agents[i]}/prompt`, { body: { text: `hi ${i}` }, headers: i % 2 ? worker : container })).status, 202, `run ${i}`);
+  for (let i = 0; i < 20; i++) assert.equal((await r.call(`/v1/agents/${agents[0]}/state`, { headers: worker })).status, 200);
+  // Its end users' browsers, many behind one corporate NAT, read with browser tokens it minted.
+  const minted = (await r.call(`/v1/agents/${agents[0]}/browser-tokens`, { body: {} })).json.token as string;
+  for (let i = 0; i < 20; i++) assert.equal((await r.call(`/v1/agents/${agents[0]}/state`, { token: minted, headers: { "CF-Connecting-IP": "198.51.100.77" } })).status, 200);
+  // Anyone else at that NAT address is still counted.
+  for (let i = 0; i < 5; i++) assert.equal((await r.call("/v1/me", { token: null, headers: { "CF-Connecting-IP": "198.51.100.77" } })).status, 401);
+  assert.equal((await r.call("/v1/me", { token: null, headers: { "CF-Connecting-IP": "198.51.100.77" } })).status, 429);
 });
 
 test("without AGENT_TRUST_CF_CONNECTING_IP, CF-Connecting-IP is ignored and the load balancer's X-Forwarded-For entry counts", async t => {
   const r = await runtime(t, () => ({ content: "ok" }), { AGENT_RATE_LIMIT_API_PER_IP: "2" });
-  const sent = (cf: string, forwarded: string) => r.call("/v1/me", { headers: { "CF-Connecting-IP": cf, "X-Forwarded-For": forwarded } });
-  assert.equal((await sent("203.0.113.1", "198.51.100.1, 10.0.0.7")).status, 200);
-  assert.equal((await sent("203.0.113.2", "198.51.100.2, 10.0.0.7")).status, 200);
+  const sent = (cf: string, forwarded: string) => r.call("/v1/me", { token: null, headers: { "CF-Connecting-IP": cf, "X-Forwarded-For": forwarded } });
+  assert.equal((await sent("203.0.113.1", "198.51.100.1, 10.0.0.7")).status, 401);
+  assert.equal((await sent("203.0.113.2", "198.51.100.2, 10.0.0.7")).status, 401);
   assert.equal((await sent("203.0.113.3", "198.51.100.3, 10.0.0.7")).status, 429, "every request came from 10.0.0.7");
-  assert.equal((await sent("203.0.113.3", "10.0.0.8")).status, 200);
+  assert.equal((await sent("203.0.113.3", "10.0.0.8")).status, 401);
 });
 
 test("a request a peer forwards is counted once, on the node it reached first", { timeout: 60_000 }, async t => {
@@ -231,12 +269,12 @@ test("a request a peer forwards is counted once, on the node it reached first", 
   // A counts one live node (itself) when it starts, so its share is all 4; B starts beside A, so its share is 2.
   const a = await c.start("a", env);
   const b = await c.start("b", env);
-  const auth = { Authorization: `Bearer ${clusterToken}` };
-  const agent = (await (await fetch(`${a.url}/v1/agents`, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: "{}" })).json()).id;
-  const state = (node: { url: string }) => fetch(`${node.url}/v1/agents/${agent}/state`, { headers: { ...auth, "CF-Connecting-IP": "203.0.113.5" } }).then(response => response.status);
-  assert.equal(await state(b), 200);
-  assert.equal(await state(b), 200);
+  const agent = (await (await fetch(`${a.url}/v1/agents`, { method: "POST", headers: { Authorization: `Bearer ${clusterToken}`, "Content-Type": "application/json" }, body: "{}" })).json()).id;
+  // Unauthenticated (an admin tenant's requests are not counted per address): the owner, A, answers 401.
+  const state = (node: { url: string }) => fetch(`${node.url}/v1/agents/${agent}/state`, { headers: { "CF-Connecting-IP": "203.0.113.5" } }).then(response => response.status);
+  assert.equal(await state(b), 401);
+  assert.equal(await state(b), 401);
   assert.equal(await state(b), 429, "B's share");
-  for (let i = 0; i < 4; i++) assert.equal(await state(a), 200, "A did not count what B forwarded");
+  for (let i = 0; i < 4; i++) assert.equal(await state(a), 401, "A did not count what B forwarded");
   assert.equal(await state(a), 429);
 });
