@@ -703,6 +703,11 @@ export const AccountDeletion = z.object({
   completedAt: z.number().nullable(),
   agents: z.number().int().optional().openapi({ description: "While deleting: agents not yet purged" }),
 }).openapi("AccountDeletion");
+export const TenantInput = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/).openapi({ description: "The new tenant's id: lowercase letters, digits and dashes (max 40)", example: "lab-ts-chat" }),
+  tokenName: z.string().trim().min(1).max(80).default("api").openapi({ description: "Name of the API token made with it" }),
+}).strict().openapi("TenantInput");
+export const TenantCreated = z.object({ tenant: z.string(), token: TokenCreated }).openapi("TenantCreated");
 export const TenantLookup = z.object({
   tenant: z.string(),
   github: z.string().nullable(),

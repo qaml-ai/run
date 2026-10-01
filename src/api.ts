@@ -770,6 +770,20 @@ export function api(context: ApiContext) {
       select id, github, google_email, created_at from tenants where id = lower($1) or lower(github) = lower($1) or lower(google_email) = lower($1) order by created_at`, [login]);
     return json(c, 200, rows.map(row => ({ tenant: row.id, github: row.github, googleEmail: row.google_email, createdAt: Number(row.created_at) })));
   });
+  route(createRoute({
+    method: "post", path: "/v1/tenants", request: { body: content(schema.TenantInput) },
+    responses: { 201: reply("A prepaid tenant as a sign-up makes one, but with no GitHub or Google identity, and an API token for it, shown only once (platform operator only). Its credit comes from POST /v1/billing/adjustments", schema.TenantCreated) },
+  }), async c => {
+    const by = operatorOnly(c);
+    const { id, tokenName } = parse(schema.TenantInput, await readJson(c.req.raw.body, 4096, {}));
+    if (accounts.tenants.has(id)) throw new HttpError(409, `${id} is an admin tenant`);
+    // A deleted tenant's id is never given out again: its kept ledger rows are under it.
+    const { rowCount } = await accounts.db.query(
+      "insert into tenants (id, created_at) select $1, $2 where not exists (select 1 from account_deletions where tenant = $1) on conflict do nothing", [id, Date.now()]);
+    if (!rowCount) throw new HttpError(409, `Tenant ${id} already exists or was deleted`);
+    console.log(JSON.stringify({ type: "tenant_created", tenant: id, by }));
+    return json(c, 201, { tenant: id, token: await accounts.createToken(id, tokenName) });
+  });
   route(createRoute({ method: "get", path: "/v1/tenants/{id}/export", request: { params: tenantId }, responses: { 200: zipped("The tenant's export, as GET /v1/account/export gives it (platform operator only)") } }), async c => {
     operatorOnly(c);
     const tenant = c.req.param("id")!;

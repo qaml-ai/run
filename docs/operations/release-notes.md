@@ -7,6 +7,8 @@ Account page offers it and **Delete account** (`DELETE /v1/account`, console ses
 Platform operators (`AGENT_BILLING_ADMINS`) look tenants up, export and delete them with
 `GET /v1/tenants?login=`, `GET /v1/tenants/{id}/export`, `DELETE /v1/tenants/{id}` and
 `GET /v1/tenants/{id}/deletion`. See [account data](privacy.md).
+`POST /v1/tenants` makes a prepaid tenant with an API token and no sign-in identity, for
+test and review accounts (see [billing](billing.md)).
 
 Migration 043 adds `account_deletions`, reduces existing purged agents' tombstones to their id,
 and deletes email thread metadata left by agents and channels deleted before. Older nodes still

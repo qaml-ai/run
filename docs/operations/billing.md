@@ -118,6 +118,12 @@ rates and `startingCredit: {status, amount, cardCheck?}` (the recorded award, no
 configuration); `GET /v1/billing/ledger?before=<id>` pages through the ledger; the console's
 Billing page shows both. An operator of a tenant in `AGENT_BILLING_ADMINS` can
 `POST /v1/billing/adjustments` `{tenant, amount (micro-USD), reason, idempotencyKey?}`.
+The same operator can make a tenant without a sign-in: `POST /v1/tenants` `{id, tokenName?}`
+returns `{tenant, token}`, a prepaid tenant like a new sign-up's (platform keys, free-credit
+limits, no starting credit) with no GitHub or Google identity, and an API token for it, shown
+once; the console signs in with that token. Credit it with an adjustment. Ids of admin tenants,
+existing tenants and deleted ones are refused (409). It is for test, review and demo accounts
+(see `plugins/chatgpt/README.md`), deleted with `DELETE /v1/tenants/{id}` when done.
 
 For a support exception to starting-credit eligibility, use
 `POST /v1/billing/starting-credit/grant` with `{tenant, amountUsd, reason}` ($1–$100, whole cents)

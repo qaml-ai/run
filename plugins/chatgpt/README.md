@@ -47,19 +47,24 @@ The package is ready except for the demo video's URL, which needs you. The build
    business verification for CamelQA, Inc. (dba camelAI). The directory shows the verified name, whatever
    `developerName` says. Use a project with global (not EU) data residency.
 3. **Reviewer account.** A tenant of its own, with sample data, signed into with an API token (no GitHub, so no
-   device-verification email, no MFA):
+   device-verification email, no MFA). It is prepaid like a new sign-up, on the platform's model keys, and its credit
+   caps what reviews can spend. As a billing admin (`$OPERATOR`, an operator token of a tenant in
+   `AGENT_BILLING_ADMINS`; never printed):
    ```sh
-   infra/tenant.sh add chatgpt-review                  # operator token in Secrets Manager
-   infra/tenant.sh set-spend-limit chatgpt-review 25   # caps the reviewers' model spend per month
+   umask 077
+   curl -sf https://run.camelai.com/v1/tenants -H "Authorization: Bearer $OPERATOR" -H 'Content-Type: application/json' \
+     -d '{"id":"chatgpt-review","tokenName":"chatgpt-review"}' | jq -r .token.token > chatgpt-review.token
+   curl -sf https://run.camelai.com/v1/billing/adjustments -H "Authorization: Bearer $OPERATOR" -H 'Content-Type: application/json' \
+     -d '{"tenant":"chatgpt-review","amount":25000000,"reason":"ChatGPT plugin review","idempotencyKey":"chatgpt-review:initial"}'
    ```
-   Sign in to https://run.camelai.com/console with that operator token, create an API token named `chatgpt-review`
-   on the API tokens page, and create the demo agent the test cases mention:
+   Keep the token in the password manager, then create the demo agent the test cases mention:
    ```sh
-   export CAMELAI_API_KEY=art_...   # the chatgpt-review API token
+   export CAMELAI_API_KEY=$(cat chatgpt-review.token)
    npx @camelai/camelrun agents create support-demo --prompt "You are Acme's support agent. Answer customers politely and briefly; offer a refund only for orders under 30 days old."
    CAMELRUN_TOKEN=$CAMELAI_API_KEY node --experimental-strip-types plugins/chatgpt/e2e.ts   # must end with "ok"
    ```
-   If runs fail for want of a model key, give the tenant one with `infra/tenant.sh set-key chatgpt-review anthropic`.
+   It stays on free credit ($1 of usage an hour, two busy agents at once), enough for the test cases. Before each
+   review, check `GET /v1/billing` with its token and top it up with another adjustment (a new `idempotencyKey`).
 4. **Try it in ChatGPT first (developer mode).** Settings, Security and login, turn on Developer mode. Then at
    https://chatgpt.com/plugins select +, name it camelRun, URL `https://run.camelai.com/mcp`, authentication
    OAuth. ChatGPT registers itself (dynamic client registration), so there is no client ID or secret to enter and no

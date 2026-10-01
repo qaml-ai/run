@@ -3397,6 +3397,43 @@
           "createdAt"
         ]
       },
+      "TenantCreated": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "string"
+          },
+          "token": {
+            "$ref": "#/components/schemas/TokenCreated"
+          }
+        },
+        "required": [
+          "tenant",
+          "token"
+        ]
+      },
+      "TenantInput": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+            "description": "The new tenant's id: lowercase letters, digits and dashes (max 40)",
+            "example": "lab-ts-chat"
+          },
+          "tokenName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "default": "api",
+            "description": "Name of the API token made with it"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
       "Channel": {
         "type": "object",
         "properties": {
@@ -10067,6 +10104,52 @@
                   "items": {
                     "$ref": "#/components/schemas/TenantLookup"
                   }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "A prepaid tenant as a sign-up makes one, but with no GitHub or Google identity, and an API token for it, shown only once (platform operator only). Its credit comes from POST /v1/billing/adjustments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantCreated"
                 }
               }
             }
