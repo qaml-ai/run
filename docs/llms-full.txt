@@ -2496,6 +2496,20 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.11.2 (TypeScript) / 0.7.2 (Python), 2026-10-01
+
+- `@camelai/run` and `camelai-run` ship this version's docs for coding agents:
+  `SKILL.md` (the setup skill also served at https://run.camelai.com/SKILL.md)
+  and `sdk.md` (this reference), at `node_modules/@camelai/run/docs/` and next
+  to `camelai_run`'s code. `camelai_run` is now a package rather than a single
+  module; imports are unchanged.
+- A missing API key's error (`new Agents()`, `Agents()`, the CLI) says where to
+  create one, https://run.camelai.com/console/tokens, and points coding agents
+  at SKILL.md.
+- `npm create @camelai/run-app` writes an `AGENTS.md` (and a `CLAUDE.md` that
+  imports it) for coding agents, and its agent names no model, so it gets the
+  account's default; `AGENT_MODEL` still chooses one.
+
 ## 0.11.1 (TypeScript) / 0.7.1 (Python), 2026-09-30
 
 - `@camelai/run/watch` (and so `createAgentChat`) reads a snapshot's history before

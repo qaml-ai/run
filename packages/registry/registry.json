@@ -8,7 +8,7 @@
       "type": "registry:block",
       "title": "Agent chat",
       "description": "A streaming chat with the user's agent on camelRun: markdown, tool cards and generative UI, questions and approvals, files, stop, and scroll that follows the reply. Talks to a createAgentHandler route.",
-      "dependencies": ["@camelai/run@0.11.1", "@camelai/run-react@0.11.1"],
+      "dependencies": ["@camelai/run@0.11.2", "@camelai/run-react@0.11.2"],
       "registryDependencies": ["button", "utils"],
       "files": [
         { "path": "src/agent-chat/agent-chat.tsx", "type": "registry:component", "target": "components/agent-chat/agent-chat.tsx" },
@@ -21,7 +21,7 @@
       "type": "registry:component",
       "title": "Agent markdown",
       "description": "Safe, streaming-tolerant markdown for agent replies, rendered with elements (no raw HTML).",
-      "dependencies": ["@camelai/run@0.11.1"],
+      "dependencies": ["@camelai/run@0.11.2"],
       "registryDependencies": ["utils"],
       "files": [
         { "path": "src/agent-chat/agent-markdown.tsx", "type": "registry:component", "target": "components/agent-chat/agent-markdown.tsx" }
@@ -32,7 +32,7 @@
       "type": "registry:file",
       "title": "Agent route (Next.js)",
       "description": "The Next.js App Router route the chat talks to: keeps your API key on the server and lets each user reach only their own agent.",
-      "dependencies": ["@camelai/run@0.11.1"],
+      "dependencies": ["@camelai/run@0.11.2"],
       "files": [
         { "path": "src/agent-route/route.ts", "type": "registry:file", "target": "app/api/agent/route.ts" }
       ]
