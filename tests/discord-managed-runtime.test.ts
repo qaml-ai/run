@@ -22,7 +22,7 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
     const url = new URL(req.url!, "http://localhost");
     const json = (status: number, body: unknown) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
     // The authorization code stands for the server the admin added Camel to.
-    if (url.pathname === "/oauth2/token") return json(200, { access_token: "test-discord-user", expires_in: 3600, scope: "bot applications.commands identify", guild: { id: new URLSearchParams(raw).get("code") } });
+    if (url.pathname === "/oauth2/token") return json(200, { access_token: "test-discord-user", expires_in: 3600, scope: "bot identify", guild: { id: new URLSearchParams(raw).get("code") } });
     if (req.headers.authorization === "Bearer test-discord-user" && url.pathname === "/users/@me") return json(200, { id: USER });
     if (req.headers.authorization !== `Bot ${BOT_TOKEN}`) return json(401, {});
     if (req.method === "DELETE" && url.pathname.startsWith("/users/@me/guilds/")) { left.push(url.pathname.split("/")[4]); return res.writeHead(204).end(); }

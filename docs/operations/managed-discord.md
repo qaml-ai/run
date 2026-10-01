@@ -63,9 +63,9 @@ store, rather than tenant channels or source files.
 **Add Camel to Discord** in the console opens `/console/discord/install`, which
 records a single-use state (stored hashed, bound to the console session and
 account, valid ten minutes) and redirects to Discord's authorization with scopes
-`bot applications.commands identify`, permissions `274878008320` (View Channel,
-Send Messages, Send Messages in Threads, Attach Files and Read Message History;
-never Administrator), and `response_type=code`. The user picks a server there;
+`bot identify`, permissions `274878008320` (View Channel, Send Messages, Send
+Messages in Threads, Attach Files and Read Message History; never
+Administrator), and `response_type=code`. The user picks a server there;
 Discord offers only servers where they have Manage Server.
 
 The callback checks the state, exchanges the code, and takes the server from the

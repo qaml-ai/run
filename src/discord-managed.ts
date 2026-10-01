@@ -413,7 +413,7 @@ export class ManagedDiscord {
   private installUrl(state: string, guild?: string) {
     const url = new URL("https://discord.com/oauth2/authorize");
     url.searchParams.set("client_id", this.options.applicationId);
-    url.searchParams.set("scope", "bot applications.commands identify");
+    url.searchParams.set("scope", "bot identify");
     url.searchParams.set("permissions", BOT_PERMISSIONS);
     url.searchParams.set("integration_type", "0");
     url.searchParams.set("response_type", "code");

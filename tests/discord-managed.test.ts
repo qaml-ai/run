@@ -33,7 +33,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
     if (url.pathname === "/oauth2/token") {
       const code = new URLSearchParams(raw).get("code") ?? "";
       if (code === "used") return json(400, { error: "invalid_grant" });
-      return json(200, { access_token: "verified-token", scope: "bot applications.commands identify", expires_in: 3600, ...(state.noGuild ? {} : { guild: { id: code, name: code === guildA ? "Alpha" : "Beta" } }) });
+      return json(200, { access_token: "verified-token", scope: "bot identify", expires_in: 3600, ...(state.noGuild ? {} : { guild: { id: code, name: code === guildA ? "Alpha" : "Beta" } }) });
     }
     if (req.headers.authorization === "Bearer verified-token" && url.pathname === "/users/@me") return json(200, { id: OWNER });
     if (req.headers.authorization !== `Bot ${TOKEN}`) return json(401, {});
@@ -130,12 +130,12 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
   return { db, managed, state, request, bind, install, ready, message, received, sent, saved, left, auth, base, options, ownership, binding };
 }
 
-test("adding Camel starts one Discord authorization: bot, commands and identity, message permissions only, and a single-use state", async t => {
+test("adding Camel starts one Discord authorization: bot and identity only, message permissions only, and a single-use state", async t => {
   const f = await fixture(t);
   const started = await f.request("/console/discord/install?guild_id=101");
   const url = new URL(started.headers.get("location")!);
   assert.equal(url.origin + url.pathname, "https://discord.com/oauth2/authorize");
-  assert.equal(url.searchParams.get("scope"), "bot applications.commands identify");
+  assert.equal(url.searchParams.get("scope"), "bot identify");
   assert.equal(url.searchParams.get("response_type"), "code");
   assert.equal(url.searchParams.get("redirect_uri"), "https://camel.test/console/discord/callback");
   assert.equal(url.searchParams.get("guild_id"), guildA);
