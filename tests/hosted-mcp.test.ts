@@ -119,6 +119,8 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
   const signInPage = await fetch(`${r.base}/oauth/authorize?${query}`);
   assert.equal(signInPage.status, 200);
   assert.equal(signInPage.headers.get("x-frame-options"), "DENY");
+  // With no-referrer, browsers send its forms with Origin: null, which the same-origin check refuses (2026-10-01).
+  assert.equal(signInPage.headers.get("referrer-policy"), "same-origin", "its forms must carry their Origin");
   assert.match(await signInPage.text(), /Test Agent[\s\S]*name="token"/);
   assert.equal((await post("/oauth/login", { token: OPERATOR, next: `/oauth/authorize?${query}` }, { Origin: "https://evil.example" })).status, 403);
   assert.equal((await post("/oauth/login", { token: OPERATOR, next: "https://evil.example/" }, { Origin: r.base })).status, 400, "only back to the consent page");

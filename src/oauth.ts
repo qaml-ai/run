@@ -334,7 +334,7 @@ export class OAuth {
 
     // The consent page. It is never framed, and its form posts back here, same-origin, with the session's cookie.
     const page = (c: Context, status: 200 | 400 | 403, title: string, body: string) => c.html(PAGE(title, body), status, {
-      "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'", "Referrer-Policy": "no-referrer",
+      "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'", "Referrer-Policy": "same-origin",
     });
     const shown = (c: Context, error: unknown) => {
       if (!(error instanceof OAuthError)) throw error;
