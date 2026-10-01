@@ -454,7 +454,6 @@ const clients = new ClientSessions(supervisor, {
   db, storage, prefix: "client-sessions/", ownership, volumes, links,
   get scheduler() { return scheduler; },
   get hooks() { return channels.hooks; },
-  authorizeConfiguration: (req, tenant, id) => authorizeManagedAgent(req, tenant, id),
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
     const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
@@ -489,17 +488,6 @@ const emailOptions: EmailOptions | undefined = process.env.AGENT_EMAIL_DOMAIN ? 
   db, domain: process.env.AGENT_EMAIL_DOMAIN, topics: (process.env.AGENT_EMAIL_SNS_TOPICS ?? "").split(",").map(topic => topic.trim()).filter(Boolean),
   ...(process.env.AGENT_EMAIL_BUCKET ? { bucket: process.env.AGENT_EMAIL_BUCKET } : {}), region: process.env.AGENT_EMAIL_REGION ?? process.env.AWS_REGION,
 } : undefined;
-async function authorizeManagedDefinition(req: Request, tenant: string, id: string) {
-  if (managedDiscord) return managedDiscord.authorizeDefinition(req, tenant, id);
-  const { rowCount } = await db.query(`select 1 from discord_server_bindings b join channels c on c.id=b.channel_id
-    where b.tenant=$1 and (c.channel->>'definition'=$2 or exists (
-      select 1 from channel_agents ca join agents a on a.id=ca.agent where ca.channel=c.id and a.header->'definition'->>'id'=$2)) limit 1`, [tenant, id]);
-  if (rowCount) throw new HttpError(403, "Managed Discord is disabled; enable it to verify server management permissions");
-}
-async function authorizeManagedAgent(req: Request, tenant: string, id: string) {
-  const { rows } = await db.query("select c.channel->>'definition' as definition from channel_agents ca join channels c on c.id = ca.channel where ca.agent = $1 and ca.tenant = $2 and c.channel->>'type' = 'discord-managed'", [id, tenant]);
-  if (rows[0]) await authorizeManagedDefinition(req, tenant, rows[0].definition);
-}
 const managedDiscordConfig = await managedDiscordSecrets();
 const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
   ...managedDiscordConfig, db, consoleAuth, channels: () => channels, ownership, node, publicUrl,
@@ -694,9 +682,7 @@ app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
 if (billingMailer) app.route("/", billingMailer.feedback());
-app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions,
-  authorizeDefinition: authorizeManagedDefinition,
-  authorizeAgentConfiguration: authorizeManagedAgent, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
 app.get("/console/*", serveConsole);

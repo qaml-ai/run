@@ -57,9 +57,6 @@ export interface ApiContext {
   channels?: Channels;
   volumes?: VolumeService;
   definitions?: Definitions;
-  /** Hosted managed integrations require fresh server administrator authorization for definition mutations. */
-  authorizeDefinition?: (request: Request, tenant: string, id: string) => Promise<void>;
-  authorizeAgentConfiguration?: (request: Request, tenant: string, id: string) => Promise<void>;
   /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
   billingAdmins?: string[];
   /** Signs and verifies file links (`/v1/links`). */
@@ -413,9 +410,7 @@ export function api(context: ApiContext) {
     const { prompt, ...params } = await readJson(c.req.raw.body, 18 * 1024 * 1024, {}) ?? {};
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt));
-    const provisionKey = c.req.header("idempotency-key");
-    if (provisionKey) await context.authorizeAgentConfiguration?.(c.req.raw, tenant, clients.agentId(tenant, provisionKey));
-    const created = await context.createAgent(tenant, params, provisionKey) as { id: string };
+    const created = await context.createAgent(tenant, params, c.req.header("idempotency-key")) as { id: string };
     if (!first) return json(c, 201, created);
     const submit = context.submit ?? clients.submit.bind(clients);
     // A prompt refused leaves the agent made: the caller learns why, and may send it again.
@@ -509,7 +504,6 @@ export function api(context: ApiContext) {
     method: "patch", path: "/v1/agents/{id}/configuration", request: { params: agentId, body: content(schema.ConfigureInput) },
     responses: { 202: reply("Configuration accepted; poll its request for completion. Conversation history is preserved", schema.RequestRecord) },
   }), async c => {
-    await context.authorizeAgentConfiguration?.(c.req.raw, c.var.principal.tenant, c.req.param("id")!);
     const { requestId, ...params } = parse(schema.ConfigureInput, await readJson(c.req.raw.body, 1024 * 1024, {}));
     const tenant = c.var.principal.tenant;
     // A model the agent could not call is refused now, not when the request runs.

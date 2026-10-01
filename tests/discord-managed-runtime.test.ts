@@ -108,7 +108,19 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
   assert.equal(agents.length, 2); assert.notEqual(agents[0].agent, agents[1].agent);
   assert.equal((await r.call(`/v1/channels/${bindings[0].channelId}`, { method: "PATCH", body: { access: { public: true } } })).status, 403, "generic channel mutations cannot bypass setup");
   const ownAgent = agents.find(agent => agent.tenant === "alice")!.agent;
-  assert.equal((await r.call(`/v1/agents/${ownAgent}/configuration`, { method: "PATCH", body: { systemPrompt: "bypass" } })).status, 403, "operator token alone cannot change a managed agent");
+  // A turn the account starts through the API still posts only where the server allows, and not while it is paused.
+  const before = sent.length;
+  const prompted = await r.call(`/v1/agents/${ownAgent}/prompt`, { body: { text: "from the API" } });
+  assert.equal(prompted.status, 202);
+  await until(() => sent.slice(before).some(message => message.channel === CHANNELS[0] && message.content === "Alpha answer"), "an API turn's reply in its own conversation");
+  assert.ok(sent.slice(before).every(message => message.channel === CHANNELS[0]));
+  assert.equal((await fetch(`${r.base}/console/discord/bindings/${GUILDS[0]}`, { method: "PATCH", headers: headers[0], body: JSON.stringify({ state: "paused" }) })).status, 200);
+  const paused = sent.length;
+  const quiet = await r.call(`/v1/agents/${ownAgent}/prompt`, { body: { text: "while paused" } });
+  await until(async () => (await r.call(`/v1/agents/${ownAgent}/requests/${quiet.json.id}`)).json.state === "completed", "the paused server's API turn to finish");
+  await until(async () => (await r.db.query("select count(*)::int n from channel_items where item->>'channel'=$1", [bindings[0].channelId])).rows[0].n === 0, "its reply to be dropped");
+  assert.equal(sent.length, paused, "a paused server gets no API turn's reply");
+  assert.equal((await fetch(`${r.base}/console/discord/bindings/${GUILDS[0]}`, { method: "PATCH", headers: headers[0], body: JSON.stringify({ state: "active" }) })).status, 200);
 
   const revised = await r.call("/v1/definitions", { body: { name: "Revised", systemPrompt: "Revised-only", builtins: [] } });
   const changed = await fetch(`${r.base}/console/discord/bindings/${GUILDS[0]}`, { method: "PATCH", headers: headers[0], body: JSON.stringify({ definition: revised.json.id }) });

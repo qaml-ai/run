@@ -180,7 +180,6 @@ test("two guilds route to separate tenant channels; outbound text/files/typing r
   await assert.rejects(f.managed.provider.sendFile({ bindingId: binding }, channelB, { name: "secret", contentType: "text/plain", size: 1, blob: async () => new Blob(["x"]) }), /not permitted/);
   f.state.manage = false;
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { name: "renamed" })).status, 403);
-  await assert.rejects(f.managed.authorizeDefinition(new Request("https://camel.test", { headers: { cookie: "ar_session=session-a" } }), "tenant-a", "def-test"), /Manage Server/);
   assert.equal((await f.request(`/console/discord/bindings/${guildA}`, "PATCH", { state: "paused" })).status, 200);
   await assert.rejects(f.managed.provider.send({ bindingId: binding }, channelA, "late"), /not permitted/);
   assert.deepEqual(f.sent.map(item => item.content), ["safe", "thread safe"]);
@@ -297,15 +296,6 @@ test("eligible guild discovery paginates Discord account membership", async t =>
   const f = await fixture(t); await f.link(); f.state.paginated = true;
   const response = await f.request("/console/discord/guilds"); assert.equal(response.status, 200);
   const result = await response.json() as any; assert.deepEqual(result.guilds.map((guild: any) => guild.id), ["2000"]);
-});
-
-test("older definitions still attached to managed agents require fresh server management permissions", async t => {
-  const f = await fixture(t); const a = await f.bind();
-  await f.db.query(`insert into agents(id,tenant,header,revision,name,type,model) values('agent-old','tenant-a',$1,1,'old','client','test')`, [JSON.stringify({ definition: { id: "def-old", revision: 1 } })]);
-  await f.db.query(`insert into channel_agents(agent,channel,tenant,conversation) values('agent-old',$1,'tenant-a',$2)`, [a.channelId, channelA]);
-  f.state.manage = false;
-  await assert.rejects(f.managed.authorizeDefinition(new Request("https://camel.test", { headers: { cookie: "ar_session=session-a" } }), "tenant-a", "def-old"), /Manage Server/);
-  await assert.rejects(f.managed.authorizeAgent(new Request("https://camel.test", { headers: { cookie: "ar_session=session-a" } }), "tenant-a", "agent-old"), /Manage Server/);
 });
 
 test("unfunded server mentions produce bounded deterministic status without submitting agent work", async t => {

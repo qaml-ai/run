@@ -83,8 +83,6 @@ test("an account exports everything it stores, then deletes it all but the ledge
     values ('carol-binding',$1,$2,$3,$4,'active','["444"]','555',1,2),('other-binding',$1,'999000000000000003','bob',null,'paused','[]','other-admin',1,2)`, [discordApplication, discordGuild, tenant, discordChannel]);
   await r.db.query("insert into discord_account_links (tenant,session_hash,discord_user_id,token,expires_at) values ($1,'private-discord-session-hash','555','private-encrypted-discord-token',900),('bob','other-session-hash','other-user','other-private-token',800)", [tenant]);
   await r.db.query("insert into discord_setup_attempts (state_hash,tenant,session_hash,guild_id,expires_at) values ('private-discord-state-hash',$1,'private-discord-session-hash',$2,600)", [tenant, discordGuild]);
-  assert.equal((await as(`/v1/definitions/${definition.json.id}`, { method: "PATCH", body: { systemPrompt: "Unauthorized managed change" } })).status, 403,
-    "disabling the managed transport does not bypass server configuration authorization");
 
   // The export: a zip of all of it, streamed.
   const exported = await fetch(`${r.base}/v1/account/export`, { headers: { Authorization: `Bearer ${token}` } });

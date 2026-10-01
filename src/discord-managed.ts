@@ -390,11 +390,6 @@ export class ManagedDiscord {
     if (!guild || !managesGuild(guild)) throw new HttpError(403, "You must own this Discord server or have Manage Server or Administrator permission");
     return { guild, userId: link.userId };
   }
-  /** Hook for all generic definition mutation paths, including API-key requests and apply. */
-  async authorizeDefinition(req: Request, tenant: string, definition: string) {
-    const rows = (await this.options.db.query(`select b.guild_id from discord_server_bindings b join channels c on c.id=b.channel_id where b.tenant=$1 and b.application_id=$2 and (c.channel->>'definition'=$3 or exists (select 1 from channel_agents ca join agents a on a.id=ca.agent where ca.channel=b.channel_id and a.tenant=b.tenant and a.header->'definition'->>'id'=$3))`, [tenant, this.options.applicationId, definition])).rows;
-    for (const row of rows) await this.permission(req, tenant, row.guild_id);
-  }
   private async verifiedInstallation(guildId: string) {
     const guild = await this.bot(`/guilds/${guildId}`);
     if (guild.id !== guildId) throw new HttpError(403, "Camel is not installed in this server");
@@ -444,10 +439,6 @@ export class ManagedDiscord {
       installationState: binding.installation_state, channelId: binding.channel_id, allowedChannelIds: binding.allowed_channel_ids,
       ...(binding.channel_id ? { channel: await this.channels().get(binding.tenant, binding.channel_id) } : {}),
     };
-  }
-  async authorizeAgent(req: Request, tenant: string, agent: string) {
-    const rows = (await this.options.db.query(`select b.guild_id from discord_server_bindings b join channel_agents a on a.channel=b.channel_id where b.tenant=$1 and b.application_id=$2 and a.agent=$3`, [tenant, this.options.applicationId, agent])).rows;
-    for (const row of rows) await this.permission(req, tenant, row.guild_id);
   }
   private routes() {
     const app = new Hono();

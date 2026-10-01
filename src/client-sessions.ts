@@ -352,8 +352,6 @@ export interface ClientSessionOptions {
   /** Called with time an agent spent in runs (model calls and tool execution), at least every minute while one runs. */
   onActive?: (tenant: string, agentId: string, ms: number) => void;
   hooks?: SessionHooks;
-  /** Authorize external configuration requests; trusted internal definition application is separate. */
-  authorizeConfiguration?: (request: Request, tenant: string, agent: string) => Promise<void>;
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
   /** Signs links to the agent's files (`POST /clients/:id/links`, `present_file`). */
@@ -2036,9 +2034,7 @@ export class ClientSessions {
       return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].map(visible) });
     });
     app.post(`${agent}/requests`, async c => {
-      const input = await readJson(body(c), FRAME_BYTES);
-      if (input?.method === "configure") await this.options.authorizeConfiguration?.(c.req.raw, c.var.session.header.tenant, c.var.session.header.id);
-      const { status, record } = await this.accept(c.var.session, input);
+      const { status, record } = await this.accept(c.var.session, await readJson(body(c), FRAME_BYTES));
       return json(c, status, record);
     });
     app.get(`${agent}/requests/:request`, c => this.settled(c, c.var.session, c.req.param("request")));
