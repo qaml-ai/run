@@ -1563,6 +1563,9 @@ class Agent:
                 value = _parsed_output(output, value)
             except ValueError as invalid:
                 error = {"code": "output_invalid", "message": f"The output does not fit its schema: {invalid}"}
+        # A runtime from before structured output ignores the schema and answers in text.
+        if output is not None and value is None and not error and not result.get("stopped") and result:
+            error = {"code": "output_missing", "message": "The run ended without an output: this runtime may not support structured output (output); upgrade it"}
         status = "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
         return Run(request_id, status, text=result.get("reply") or "", output=value, inputs=[RunInput(self, input, output) for input in result.get("inputs") or []], error=error,
                    usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],

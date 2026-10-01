@@ -369,6 +369,8 @@ export class Agent {
       if (parsed.issues) error = { code: "output_invalid", message: `The output does not fit its schema: ${parsed.issues.map(issue => `${issue.path?.length ? `${issue.path.map(key => typeof key === "object" && key ? (key as { key: unknown }).key : key).join(".")}: ` : ""}${issue.message}`).join("; ")}` };
       else output = parsed.value;
     }
+    // A runtime from before structured output ignores the schema and answers in text.
+    if (schema && raw && output === undefined && !error && !raw.stopped) error = { code: "output_missing", message: "The run ended without an output: this runtime may not support structured output (output); upgrade it" };
     return {
       id, status: error ? "failed" : raw?.stopped === "input_required" ? "input_required" : "completed",
       text: raw?.reply ?? "", ...(output !== undefined ? { output } : {}), inputs: (raw?.inputs ?? []).map(input => this.input<T>(input, schema)), error,
