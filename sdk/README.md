@@ -40,7 +40,7 @@ await agents.close();
 
 - **Keyed agents.** `upsert(key, config)` makes the agent for your key, or brings
   the existing one to `config`; its history and files last until you delete it.
-- **Runs.** `run()` resolves with `{ status, text, inputs, error, toolErrors, … }`
+- **Runs.** `run()` resolves with `{ status, text, inputs, error, toolErrors, toolCalls, … }`
   and throws `RunError` on failure (unless `throwOnError: false`). No timeout: pass
   an `AbortSignal` to stop waiting. `stream()` yields text, tool calls and results
   as they happen, then the run.

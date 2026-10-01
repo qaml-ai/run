@@ -31,7 +31,7 @@ import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
-import { callMeta, compose, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { callMeta, compose, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
@@ -120,6 +120,8 @@ type Session = {
   sourceErrors?: { kind: string; source: string; message: string }[];
   /** The running run's tool calls that did not complete, for its outcome. */
   toolErrors?: ToolError[];
+  /** The running run's tool calls (the first OUTPUT_TOOL_CALLS), for its outcome. */
+  toolCalls?: RunToolCall[];
   /** Prompts sent with `whileRunning: "steer"` that a running turn took, each with that turn's request: they end with it. */
   steered?: Map<string, string>;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
@@ -209,6 +211,7 @@ const IDLE_CHECK_MS = 20_000;
 const MAX_POLL_WAIT_MS = 25_000;
 /** Files written in one run that its outcome lists. */
 const OUTPUT_FILES = 100;
+const OUTPUT_TOOL_CALLS = 100;
 /** How long a tool call waits for an application to reconnect before failing as not run. */
 const RECONNECT_GRACE_MS = 3_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -1193,6 +1196,22 @@ export class ClientSessions {
    * call the person answered runs again with their answers, and only with the same arguments.
    */
   private async callTool(session: Session, call: ToolCall) {
+    let code: ToolCallCode | undefined;
+    try {
+      const answer = await this.answerToolCall(session, call);
+      code = "inputRequired" in answer ? "input_required" : "isError" in answer && answer.isError ? "tool_error" : undefined;
+      return answer;
+    } catch (error) {
+      code = call.signal.aborted ? "aborted" : error instanceof ToolFailure ? error.code : "failed";
+      throw error;
+    } finally {
+      // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
+      const calls = session.toolCalls ??= [];
+      if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}) });
+    }
+  }
+
+  private async answerToolCall(session: Session, call: ToolCall) {
     const server = session.route?.get(call.name);
     if (!server) throw new Error(`Unknown tool ${call.name}`);
     const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
@@ -2466,6 +2485,7 @@ export class ClientSessions {
         session.activeSince = Date.now();
         session.outputs = { files: new Map(), presented: [] };
         session.toolErrors = undefined;
+        session.toolCalls = undefined;
       }
       // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
       if (record.method === "prompt") await this.cancelInputs(session, "superseded");
@@ -2477,6 +2497,8 @@ export class ClientSessions {
       }
       // Tool calls that did not complete, so a caller sees them too (the model saw each as its call's error).
       if (RUN_METHODS.includes(record.method) && session.toolErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, toolErrors: session.toolErrors } };
+      // Every tool call the run made, so a caller sees what it did without reading history.
+      if (RUN_METHODS.includes(record.method) && session.toolCalls?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, toolCalls: session.toolCalls } };
       if (RUN_METHODS.includes(record.method) && session.sourceErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, sourceErrors: session.sourceErrors } };
       // What its model responses used on this node (a turn resumed after its node was lost counts from the resume).
       if (RUN_METHODS.includes(record.method) && value.result && typeof value.result === "object") value = { result: { ...value.result, usage: session.usage?.get(record.id) ?? null } };

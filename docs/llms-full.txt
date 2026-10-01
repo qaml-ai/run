@@ -256,6 +256,7 @@ A `Run` has:
 | `inputs` | what it waits on, each with `answer()` |
 | `error` | `{code, message, uncertain?}` when it failed |
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
+| `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?}`. Arguments and results are in history |
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it |
 
@@ -2370,8 +2371,10 @@ Run options (`run`, `stream`):
 
 ### `Run`
 
-`{ id, status, text, inputs, error, usage, files, toolErrors, sourceErrors, raw }`
-(Python: `tool_errors`, `source_errors`). `status` is `completed`,
+`{ id, status, text, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
+(Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
+tool call the run made, with `ok` or an error `code`, not their arguments or
+results (see [Run outcomes](events.md#run-outcomes)). `status` is `completed`,
 `input_required` or `failed`; `error` is `{ code, message, uncertain? }`. See
 [Concepts](../concepts.md#runs) and [Errors](../reference/errors.md#run-failures).
 
@@ -3135,15 +3138,17 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |
 | `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](errors.md#tool-errors) |
+| `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?}`. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
 | `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
 
 An `execute` request's result is `{output: string[], truncated}` (plus `files`,
-`presented`, `toolErrors`, `sourceErrors` as above). A steered prompt shares its
+`presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt shares its
 turn's outcome, and its record names the turn's request as `steeredInto`.
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
 `failed`), `text`, `inputs`, `error: {code, message, uncertain?}`, `files`,
-`toolErrors`, `sourceErrors`.
+`toolErrors`, `toolCalls`, `sourceErrors`. A browser token never sees a run's
+result, `toolCalls` included: only whether and why it stopped.
 
 ## Webhook events
 

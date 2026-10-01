@@ -55,6 +55,7 @@ A `Run` has:
 | `inputs` | what it waits on, each with `answer()` |
 | `error` | `{code, message, uncertain?}` when it failed |
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
+| `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?}`. Arguments and results are in history |
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it |
 

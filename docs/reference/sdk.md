@@ -105,8 +105,10 @@ Run options (`run`, `stream`):
 
 ### `Run`
 
-`{ id, status, text, inputs, error, usage, files, toolErrors, sourceErrors, raw }`
-(Python: `tool_errors`, `source_errors`). `status` is `completed`,
+`{ id, status, text, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
+(Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
+tool call the run made, with `ok` or an error `code`, not their arguments or
+results (see [Run outcomes](events.md#run-outcomes)). `status` is `completed`,
 `input_required` or `failed`; `error` is `{ code, message, uncertain? }`. See
 [Concepts](../concepts.md#runs) and [Errors](../reference/errors.md#run-failures).
 

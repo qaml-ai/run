@@ -178,6 +178,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         started = asyncio.get_running_loop().time()
         run = await agent.run("echo thrice")
         self.assertEqual(run.text, "seen")
+        self.assertEqual(run.tool_calls, [{"tool": "echo", "toolCallId": f"call_{index}", "ok": True} for index in range(3)])
         self.assertLess(asyncio.get_running_loop().time() - started, 8, "the run did not wait for on_event")
         for _ in range(100):
             if any(isinstance(error, ValueError) for error in errors):

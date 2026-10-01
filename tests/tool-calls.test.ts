@@ -64,6 +64,33 @@ test("calls whose ids repeat across turns (as providers that number calls per re
   assert.notEqual(keys[0], keys[1], "two calls, two keys, though both are call_0");
 });
 
+test("a run's outcome lists its tool calls, those from code too, by name and id with how each went, the first 100 only", async t => {
+  const server = await mcpServer(t, {
+    echo: () => ({ content: [{ type: "text", text: "echoed" }] }),
+    refuse: () => ({ content: [{ type: "text", text: "not today" }], isError: true }),
+  });
+  const r = await runtime(t, (_body, index) => [
+    toolCall("tools__echo", { secret: "s3cr3t" }, "call_direct"),
+    toolCall("js_exec", { code: "await tools.tools__echo({}); try { await tools.tools__refuse({}); } catch {} return 1" }, "call_code"),
+    { role: "assistant", content: "done" },
+    toolCall("js_exec", { code: "for (let i = 0; i < 105; i++) await tools.tools__echo({}); return 1", timeoutMs: 120000 }, "call_many"),
+    { role: "assistant", content: "done" },
+  ][index], LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Tools", mcpServers: [{ name: "tools", url: server.url, exposure: "both" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id as string;
+  const first = await r.prompt(agent, "go");
+  assert.deepEqual(first.outcome.result.toolCalls, [
+    { tool: "tools__echo", toolCallId: "call_direct", ok: true },
+    { tool: "tools__echo", toolCallId: "call_code", innerCallId: "call_code:1", ok: true },
+    { tool: "tools__refuse", toolCallId: "call_code", innerCallId: "call_code:2", ok: false, code: "tool_error" },
+  ]);
+  assert.ok(!JSON.stringify(first.outcome).includes("s3cr3t"), "no arguments");
+  assert.ok(!JSON.stringify(first.outcome.result.toolCalls).includes("echoed"), "no results");
+  const many = await r.prompt(agent, "again");
+  assert.equal(many.outcome.result.toolCalls.length, 100);
+  assert.deepEqual(many.outcome.result.toolCalls[99], { tool: "tools__echo", toolCallId: "call_many", innerCallId: "call_many:100", ok: true });
+});
+
 const slow = { name: "slow", description: "Takes a while", inputSchema: { type: "object", properties: {} }, _meta: { "agent-runtime/exposure": "direct", "agent-runtime/timeoutMs": 1500 } };
 
 test("an attached tool's own timeoutMs bounds its call; progress extends it; a timeout is an unknown outcome, in the run's outcome too", async t => {
@@ -82,11 +109,13 @@ test("an attached tool's own timeoutMs bounds its call; progress extends it; a t
   assert.match(toolResults(r.model.bodies[1]).at(-1), /outcome is unknown/);
   assert.deepEqual(timedOut.outcome.result.toolErrors, [{ tool: "slow", toolCallId: "call_0", code: "timeout", outcomeUnknown: true, message: timedOut.outcome.result.toolErrors[0].message }]);
   assert.match(timedOut.outcome.result.toolErrors[0].message, /1500 ms/);
+  assert.deepEqual(timedOut.outcome.result.toolCalls, [{ tool: "slow", toolCallId: "call_0", ok: false, code: "timeout" }]);
 
   progressing = true;
   const extended = await r.prompt(created.id, "again");
   assert.equal(toolResults(r.model.bodies[3]).at(-1), "finished", "progress kept it alive past 1.5 s");
   assert.equal(extended.outcome.result.toolErrors, undefined);
+  assert.deepEqual(extended.outcome.result.toolCalls, [{ tool: "slow", toolCallId: "call_2", ok: true }]);
 });
 
 test("a tool source that cannot be listed is named in every run's outcome", async t => {

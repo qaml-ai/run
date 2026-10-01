@@ -131,9 +131,11 @@ test("an approval: the run waits with its input, and answering it resolves with 
   assert.equal(run.status, "input_required");
   assert.equal(run.inputs.length, 1);
   assert.equal(run.inputs[0].kind, "approval");
+  assert.deepEqual(run.toolCalls, [{ tool: "deploy", toolCallId: "call_deploy", ok: false, code: "input_required" }]);
   assert.equal(deployed, 0);
   const resumed = await run.inputs[0].answer(true);
   assert.equal(resumed.status, "completed");
+  assert.deepEqual(resumed.toolCalls, [{ tool: "deploy", toolCallId: "call_deploy", ok: true }]);
   assert.equal(deployed, 1);
   assert.match(resumed.text, /deployed/);
 });

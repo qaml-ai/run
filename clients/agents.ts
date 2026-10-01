@@ -12,7 +12,7 @@
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type Builtin, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
-  type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type ToolServer, type Tools, type AgentFile,
+  type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
 
@@ -109,6 +109,8 @@ export interface Run {
    * effect matters. `not_connected`: no process served the agent's tools, so the call did not run.
    */
   toolErrors: ToolError[];
+  /** The tool calls it made (the first 100), those from js_exec's code included: ids and `ok` or an error `code`; arguments and results are in history. */
+  toolCalls: RunToolCall[];
   /** Tool sources (MCP servers, OpenAPI specs) that could not be reached, so the model went without their tools. */
   sourceErrors: { kind: string; source: string; message: string }[];
   /** The runtime's result as sent. */
@@ -313,7 +315,7 @@ export class Agent {
     catch (error) {
       // A run that ended in an error settles with it; anything else (a refused request, a closed client) is not a run.
       if (!(error instanceof AgentError) || error.status !== 0 || error.requestId !== id || /^Client closed/.test(error.message)) throw error;
-      run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], toolErrors: [], sourceErrors: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}) } };
+      run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}) } };
     }
     if (run.error && throwOnError) throw new RunError(run);
     return run;
@@ -326,7 +328,7 @@ export class Agent {
     return {
       id, status: error ? "failed" : raw?.stopped === "input_required" ? "input_required" : "completed",
       text: raw?.reply ?? "", inputs: (raw?.inputs ?? []).map(input => this.input(input)), error,
-      usage: raw?.usage ?? null, files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], sourceErrors: raw?.sourceErrors ?? [], raw,
+      usage: raw?.usage ?? null, files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], toolCalls: raw?.toolCalls ?? [], sourceErrors: raw?.sourceErrors ?? [], raw,
     };
   }
 
@@ -338,7 +340,7 @@ export class Agent {
       if (request) return this.settle(request.id, this.client.waitForRequest(request.id, { ...(options.signal ? { signal: options.signal } : {}) }), options.throwOnError);
       // Other inputs of the run still wait: it resumes once they are answered too.
       const pending = (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId);
-      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input(other)), error: null, usage: null, files: [], toolErrors: [], sourceErrors: [], raw: null };
+      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input(other)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
     };
     return {
       ...input,

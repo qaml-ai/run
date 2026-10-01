@@ -1282,6 +1282,9 @@ class Run:
     # Tool calls that did not complete (the model was told, and carried on): {"tool", "code", "message", "outcomeUnknown"?}.
     # code "not_connected": no process served the agent's tools, so the call did not run.
     tool_errors: list = field(default_factory=list)
+    # The tool calls it made (the first 100), those from js_exec's code included: {"tool", "toolCallId"?, "innerCallId"?,
+    # "ok", "code"?}. code: a tool error's, "tool_error", "input_required" or "aborted". Arguments and results are in history.
+    tool_calls: list = field(default_factory=list)
     # Tool sources (MCP servers, OpenAPI specs) that could not be reached: {"kind", "source", "message"}.
     source_errors: list = field(default_factory=list)
     # The runtime's result as sent.
@@ -1492,6 +1495,7 @@ class Agent:
         status = "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
         return Run(request_id, status, text=result.get("reply") or "", inputs=[RunInput(self, input) for input in result.get("inputs") or []], error=error,
                    usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],
+                   tool_calls=result.get("toolCalls") or [],
                    source_errors=result.get("sourceErrors") or [], raw=result)
 
     async def _respond(self, input, answer, from_, throw_on_error, timeout):

@@ -41,7 +41,7 @@ asyncio.run(main())
   existing one to the configuration given; its history and files last until you
   delete it.
 - **Runs.** `run()` returns a `Run` (`status`, `text`, `inputs`, `error`,
-  `tool_errors`) and raises `RunError` on failure (unless `throw_on_error=False`).
+  `tool_errors`, `tool_calls`) and raises `RunError` on failure (unless `throw_on_error=False`).
   No timeout unless you pass `timeout=`. `agent.stream()` yields text, tool calls
   and results as they happen, then the run.
 - **Tools.** `@tool` takes async or plain functions (plain ones run in a thread),

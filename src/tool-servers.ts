@@ -49,6 +49,13 @@ export const TOOL_DEADLINES = Object.freeze({ attachedMs: 15_000, remoteMs: 60_0
  */
 export type ToolErrorCode = "timeout" | "connection_lost" | "not_connected" | "source_unavailable" | "failed";
 export type ToolError = { tool: string; toolCallId?: string; innerCallId?: string; code: ToolErrorCode; outcomeUnknown?: true; message: string };
+/**
+ * A tool call a run made, as its outcome lists it (`toolCalls`): which tool, and whether it answered (`ok`) or why not:
+ * a `ToolErrorCode`, `tool_error` (it answered with an error), `input_required` (it waits on a person) or `aborted`.
+ * Its arguments and result are in history, not here.
+ */
+export type ToolCallCode = ToolErrorCode | "tool_error" | "input_required" | "aborted";
+export type RunToolCall = { tool: string; toolCallId?: string; innerCallId?: string; ok: boolean; code?: ToolCallCode };
 export class ToolFailure extends Error {
   readonly code: ToolErrorCode;
   readonly outcomeUnknown: boolean;

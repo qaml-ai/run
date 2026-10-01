@@ -508,6 +508,8 @@ export interface RunResult {
   code?: string;
   /** Tool calls that did not complete (the model was told): timed out, lost, with no application connected, and so on. */
   toolErrors?: ToolError[];
+  /** The tool calls it made (the first 100), those from js_exec's code included: ids and how each went, not arguments or results. */
+  toolCalls?: RunToolCall[];
   /** Tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools. */
   sourceErrors?: { kind: string; source: string; message: string }[];
 }
@@ -516,6 +518,12 @@ export interface RunResult {
  * taken effect), not_connected (no application was connected to run it: it did not run), source_unavailable, failed.
  */
 export interface ToolError { tool: string; toolCallId?: string; innerCallId?: string; code: "timeout" | "connection_lost" | "not_connected" | "source_unavailable" | "failed"; outcomeUnknown?: true; message: string }
+/**
+ * A tool call a run made: the tool, the model's call id (js_exec's, for a call from its code, with `innerCallId`), and
+ * whether it answered (`ok`), else why not (`code`): a `ToolError` code, tool_error (it answered with an error),
+ * input_required (it waits on a person) or aborted. Its arguments and result are in the agent's history.
+ */
+export interface RunToolCall { tool: string; toolCallId?: string; innerCallId?: string; ok: boolean; code?: ToolError["code"] | "tool_error" | "input_required" | "aborted" }
 /** An error body's stable name: its `code`, or the prefix of its message (`APPLICATION_CONNECTED: …`). */
 function codeOf(value: { error?: unknown; code?: unknown }): { code?: string } {
   if (typeof value.code === "string") return { code: value.code };

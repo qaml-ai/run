@@ -240,15 +240,17 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |
 | `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](errors.md#tool-errors) |
+| `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?}`. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
 | `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
 
 An `execute` request's result is `{output: string[], truncated}` (plus `files`,
-`presented`, `toolErrors`, `sourceErrors` as above). A steered prompt shares its
+`presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt shares its
 turn's outcome, and its record names the turn's request as `steeredInto`.
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
 `failed`), `text`, `inputs`, `error: {code, message, uncertain?}`, `files`,
-`toolErrors`, `sourceErrors`.
+`toolErrors`, `toolCalls`, `sourceErrors`. A browser token never sees a run's
+result, `toolCalls` included: only whether and why it stopped.
 
 ## Webhook events
 

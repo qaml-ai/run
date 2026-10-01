@@ -1561,7 +1561,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs"
+        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?}, without arguments or results"
       },
       "AgentInput": {
         "type": "object",
