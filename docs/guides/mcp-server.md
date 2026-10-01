@@ -9,9 +9,15 @@ Claude Code:
 
 ```sh
 claude mcp add --transport http support https://run.camelai.com/v1/agents/client_…/mcp
-# then /mcp in Claude Code to sign in; or skip signing in with a token:
-claude mcp add --transport http support https://run.camelai.com/v1/agents/client_…/mcp --header "Authorization: Bearer art_..."
+# then /mcp in Claude Code to sign in; or skip signing in with a token from your environment:
+claude mcp add --scope project --transport http support https://run.camelai.com/v1/agents/client_…/mcp \
+  --header 'Authorization: Bearer ${SUPPORT_AGENT_TOKEN}'
 ```
+
+The single quotes keep the variable as written, so the project's `.mcp.json`
+names it and Claude Code reads its value from the environment. Never write a
+token's value into an MCP config: they are often committed (see
+[Keys stay out of MCP configs](../reference/cli.md#keys-stay-out-of-mcp-configs)).
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the agent's URL. Cursor and other clients configured with JSON:

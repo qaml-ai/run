@@ -2088,9 +2088,15 @@ Claude Code:
 
 ```sh
 claude mcp add --transport http support https://run.camelai.com/v1/agents/client_…/mcp
-# then /mcp in Claude Code to sign in; or skip signing in with a token:
-claude mcp add --transport http support https://run.camelai.com/v1/agents/client_…/mcp --header "Authorization: Bearer art_..."
+# then /mcp in Claude Code to sign in; or skip signing in with a token from your environment:
+claude mcp add --scope project --transport http support https://run.camelai.com/v1/agents/client_…/mcp \
+  --header 'Authorization: Bearer ${SUPPORT_AGENT_TOKEN}'
 ```
+
+The single quotes keep the variable as written, so the project's `.mcp.json`
+names it and Claude Code reads its value from the environment. Never write a
+token's value into an MCP config: they are often committed (see
+[Keys stay out of MCP configs](../reference/cli.md#keys-stay-out-of-mcp-configs)).
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the agent's URL. Cursor and other clients configured with JSON:
@@ -2722,9 +2728,10 @@ decided.
 
 Every tool has a title and states MCP's `readOnlyHint`, `destructiveHint` and
 `openWorldHint`. The tools that overwrite, delete, stop or irreversibly answer
-something (`deploy`, `create_agent` on an existing key, `configure_agent`, the
-deletes, `abort_agent`, `answer_input`) are marked destructive, so clients that
-ask before such calls ask you first. `run_agent` and `answer_input` are
+something (`deploy`, `configure_agent`, the deletes, `abort_agent`,
+`answer_input`) are marked destructive, so clients that ask before such calls
+ask you first. `create_agent` is not: it adds an agent, or brings the one with
+that key to the configuration given, keeping its history. `run_agent` and `answer_input` are
 open-world: the run they start can search and fetch the web and call the
 agent's tool servers. A result longer than 100,000 characters is cut, saying so.
 
@@ -2739,9 +2746,15 @@ Claude Code:
 
 ```sh
 claude mcp add --transport http camelrun https://run.camelai.com/mcp
-# then /mcp in Claude Code to sign in; or skip signing in with a key:
-claude mcp add --transport http camelrun https://run.camelai.com/mcp --header "Authorization: Bearer art_..."
+# then /mcp in Claude Code to sign in; or skip signing in with a key from your environment:
+claude mcp add --scope project --transport http camelrun https://run.camelai.com/mcp \
+  --header 'Authorization: Bearer ${CAMELAI_API_KEY}'
 ```
+
+The single quotes keep `${CAMELAI_API_KEY}` as written: `--scope project` saves
+it in the project's `.mcp.json`, and Claude Code reads the variable from its
+environment each time it starts. The file is safe to commit; a key is not (see
+[Keys stay out of MCP configs](#keys-stay-out-of-mcp-configs)).
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the URL above. Cursor and other clients configured with JSON:
@@ -2793,31 +2806,46 @@ Claude Code:
 
 ```sh
 claude mcp add camelrun -- npx -y @camelai/camelrun mcp
-# or, with a key of its own:
-claude mcp add camelrun -e CAMELAI_API_KEY=art_... -- npx -y @camelai/camelrun mcp
 ```
 
-Cursor, Windsurf and other clients configured with JSON:
+It uses `CAMELAI_API_KEY` from the environment Claude Code starts it in, or
+else your `camelrun login`. To name the key in the project's `.mcp.json`, as
+a variable rather than its value:
 
 ```json
 {
   "mcpServers": {
-    "camelrun": { "command": "npx", "args": ["-y", "@camelai/camelrun", "mcp"], "env": { "CAMELAI_API_KEY": "art_..." } }
+    "camelrun": { "command": "npx", "args": ["-y", "@camelai/camelrun", "mcp"], "env": { "CAMELAI_API_KEY": "${CAMELAI_API_KEY}" } }
   }
 }
 ```
 
-Codex (`~/.codex/config.toml`):
+Cursor (`.cursor/mcp.json`) reads the environment as `${env:NAME}`:
+
+```json
+{
+  "mcpServers": {
+    "camelrun": { "command": "npx", "args": ["-y", "@camelai/camelrun", "mcp"], "env": { "CAMELAI_API_KEY": "${env:CAMELAI_API_KEY}" } }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`) passes the variables `env_vars` names through:
 
 ```toml
 [mcp_servers.camelrun]
 command = "npx"
 args = ["-y", "@camelai/camelrun", "mcp"]
-env = { CAMELAI_API_KEY = "art_..." }
+env_vars = ["CAMELAI_API_KEY"]
 ```
 
-A key or a connected app can create and delete every agent in the account. Give
-a coding agent a key of its own, or connect it with OAuth, so you can revoke it
+### Keys stay out of MCP configs
+
+MCP configs such as `.mcp.json` and `.cursor/mcp.json` are often committed.
+Never write a key's value into one: name the variable, as above, and keep the
+key in your shell's environment or an ignored file such as `.env.local`. A key
+or a connected app can create and delete every agent in the account. Give a
+coding agent a key of its own, or connect it with OAuth, so you can revoke it
 alone.
 
 ---
