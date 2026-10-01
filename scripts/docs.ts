@@ -14,6 +14,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Start", path: "concepts.md", about: "durable keyed agents, runs, events, where tools run, processes, people in the loop, idempotency" },
   { section: "Guides", path: "guides/tools.md", about: "writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources" },
   { section: "Guides", path: "guides/human-input.md", about: "approvals, questions and forms; answering them and resuming the run" },
+  { section: "Guides", path: "guides/structured-output.md", about: "a run's answer as an object in your schema: zod, TypeBox, pydantic or JSON Schema" },
   { section: "Guides", path: "guides/browser.md", about: "browser tokens and the watcher: showing an agent live in a web page" },
   { section: "Guides", path: "guides/files.md", about: "attachments, what the model sees, files out, volumes, signed links" },
   { section: "Guides", path: "guides/multi-user.md", about: "an agent per user or conversation, identity, spend limits and keys per customer" },

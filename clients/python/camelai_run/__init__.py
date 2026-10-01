@@ -18,7 +18,7 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import NotRequired, TypedDict, get_type_hints
+from typing import Any, NotRequired, TypedDict, get_type_hints
 from urllib.parse import quote, urlencode, urlparse
 import uuid
 
@@ -1113,7 +1113,7 @@ class AgentClient:
                                            **({"metadata": metadata} if metadata else {})}, idempotency_key=request_id, **options)
 
     async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
-                     spend_limit=None, **options):
+                     spend_limit=None, output=None, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
         the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
         identity tokens) without telling the model. `files` are attached: bytes, a local path (str or Path),
@@ -1122,10 +1122,12 @@ class AgentClient:
         application's own key-value data about the message (a dict of at most 16 strings): the stored message and
         its request carry it, with the request's id, in history, events and webhooks; the model never sees it. `while_running="steer"` hands
         the message to a running turn, and returns with that turn's outcome. `spend_limit` ({"usd": n}) is this run's own budget:
-        it ends before its next model request once it has spent that; the agent's spend limit is unchanged."""
+        it ends before its next model request once it has spent that; the agent's spend limit is unchanged. `output`
+        ({"schema": a JSON Schema for an object}) asks for structured output: the run ends with an answer that fits it, as "output"."""
         return await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
                                    extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
-                                          **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {})},
+                                          **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
+                                          **({"output": output} if output is not None else {})},
                                    **options)
 
     async def _attach(self, request_id, files):
@@ -1311,6 +1313,8 @@ class Run:
     status: str
     # The final reply's text; "" when it said nothing (or failed first).
     text: str = ""
+    # A run with `output`: the answer, which fits its schema (an instance of it, for a pydantic model); else None.
+    output: Any = None
     inputs: list = field(default_factory=list)
     error: dict | None = None
     # What its model calls used, where the runtime reports it.
@@ -1349,9 +1353,10 @@ class RunInput(dict):
     """Human input a run waits on (a dict: id, kind, message, detail (an InputDetail)...), with the means to answer it.
     answer() and decline() return the resumed run."""
 
-    def __init__(self, agent, value):
+    def __init__(self, agent, value, output=None):
         super().__init__(value)
-        self._agent = agent
+        # The run's output schema: the resumed run's output is parsed by it too.
+        self._agent, self._output = agent, output
 
     async def answer(self, value, *, from_=None, throw_on_error=True, timeout=None):
         """approval or url: True (yes, done) or False; question: the label chosen (or labels, or your own words), or a
@@ -1360,6 +1365,22 @@ class RunInput(dict):
 
     async def decline(self, *, from_=None, throw_on_error=True, timeout=None):
         return await self._agent._respond(self, {"action": "decline"}, from_, throw_on_error, timeout)
+
+
+def _output_request(output):
+    """What the runtime is sent for an output schema: a pydantic model's JSON Schema (model_json_schema), or a JSON Schema as given."""
+    if output is None:
+        return None
+    if isinstance(output, dict):
+        return {"schema": output}
+    if hasattr(output, "model_json_schema"):
+        return {"schema": output.model_json_schema()}
+    raise AgentError("output is a pydantic model class or a JSON Schema (a dict) for an object")
+
+
+def _parsed_output(output, value):
+    """The run's output as its schema gives it: an instance of a pydantic model (model_validate), else the value."""
+    return output.model_validate(value) if output is not None and not isinstance(output, dict) else value
 
 
 def _answer_for(input, value):
@@ -1421,6 +1442,7 @@ class RunStream:
     def __init__(self, agent, text, options):
         self.id = options.pop("idempotency_key", None) or str(uuid.uuid4())
         self._agent, self._throw = agent, options.pop("throw_on_error", True)
+        output = options.get("output")
         self._parts = asyncio.Queue()
         spoke, fresh = False, False
 
@@ -1442,7 +1464,7 @@ class RunStream:
                 self._parts.put_nowait(StreamPart("tool_result", id=event.get("toolCallId"), name=event.get("toolName"), output=_text_of(event.get("result")),
                                                   is_error=bool(event.get("isError")), raw=event))
             elif kind == "input_required":
-                self._parts.put_nowait(StreamPart("input_required", input=RunInput(agent, event["input"]), raw=event))
+                self._parts.put_nowait(StreamPart("input_required", input=RunInput(agent, event["input"], output), raw=event))
 
         self._listen = listen
         agent.client.listeners.add(listen)
@@ -1490,33 +1512,37 @@ class Agent:
         return self.client.files
 
     async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-                  allow_disconnected=False, spend_limit=None):
+                  allow_disconnected=False, spend_limit=None, output=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. There is no timeout
         unless `timeout` (seconds) says so, and that only stops the wait. `user` (your user id, or {"id", "name"?}) is
         who sent it: the model sees who, and tools get it as identity.user. A failed run raises RunError (with the run)
         unless throw_on_error=False. The same idempotency_key returns the same run, never a second one. An agent with application
         tools and no process serving them refuses the run (AgentError, code APPLICATION_NOT_CONNECTED) unless allow_disconnected.
-        `spend_limit` ({"usd": n}) is this run's own budget; the agent's spend limit is unchanged."""
+        `spend_limit` ({"usd": n}) is this run's own budget; the agent's spend limit is unchanged. `output` (a pydantic model class, or a
+        JSON Schema dict for an object) asks for structured output: the agent ends the run with an answer that fits it, as run.output (an
+        instance of the model); a run that ends without one fails (code "output_missing"). Not with while_running="steer"."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
-                               throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit)
+                               throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
+                               output=output)
 
     def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-               allow_disconnected=False, spend_limit=None):
+               allow_disconnected=False, spend_limit=None, output=None):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
                                       "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected,
-                                      "spend_limit": spend_limit})
+                                      "spend_limit": spend_limit, "output": output})
 
     async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None,
-                   allow_disconnected=False, spend_limit=None):
+                   allow_disconnected=False, spend_limit=None, output=None):
         pending = self.client.prompt(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=request_id,
-                                     timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit)
-        return await self._settle(request_id, pending, throw_on_error)
+                                     timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
+                                     output=_output_request(output))
+        return await self._settle(request_id, pending, throw_on_error, output)
 
-    async def _settle(self, request_id, pending, throw_on_error):
+    async def _settle(self, request_id, pending, throw_on_error, output=None):
         try:
-            run = self._to_run(request_id, await pending)
+            run = self._to_run(request_id, await pending, output)
         except AgentError as error:
             # A run that ended in an error settles with it; anything else (a refused request, a closed client) is not a run.
             if error.status != 0 or error.request_id != request_id or str(error).startswith(("Client closed", "Stopped waiting")):
@@ -1526,12 +1552,19 @@ class Agent:
             raise RunError(run)
         return run
 
-    def _to_run(self, request_id, result):
+    def _to_run(self, request_id, result, output=None):
         result = result or {}
         error = ({"code": result.get("code") or "model_error", "message": result["error"]} if result.get("error")
                  else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit" else None)
+        # The runtime checked the output against the JSON Schema; a pydantic model parses it too (validators, types).
+        value = result.get("output")
+        if value is not None and not error:
+            try:
+                value = _parsed_output(output, value)
+            except ValueError as invalid:
+                error = {"code": "output_invalid", "message": f"The output does not fit its schema: {invalid}"}
         status = "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
-        return Run(request_id, status, text=result.get("reply") or "", inputs=[RunInput(self, input) for input in result.get("inputs") or []], error=error,
+        return Run(request_id, status, text=result.get("reply") or "", output=value, inputs=[RunInput(self, input, output) for input in result.get("inputs") or []], error=error,
                    usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],
                    tool_calls=result.get("toolCalls") or [],
                    source_errors=result.get("sourceErrors") or [], raw=result)
@@ -1543,9 +1576,9 @@ class Agent:
         answered = await self.client.answer(input["id"], **answer, **({"from_": _sender(from_)} if from_ else {}))
         request = answered.get("request")
         if request:
-            return await self._settle(request["id"], self.client.wait_for_request(request["id"], timeout=timeout), throw_on_error)
+            return await self._settle(request["id"], self.client.wait_for_request(request["id"], timeout=timeout), throw_on_error, input._output)
         # Other inputs of the run still wait: it resumes once they are answered too.
-        pending = [RunInput(self, other) for other in await self.client.inputs(state="pending") if other["requestId"] == input["requestId"]]
+        pending = [RunInput(self, other, input._output) for other in await self.client.inputs(state="pending") if other["requestId"] == input["requestId"]]
         return Run(input["requestId"], "input_required", inputs=pending)
 
     async def pending_inputs(self):

@@ -37,6 +37,30 @@ test("a turn whose node died between model steps resumes on the next owner, call
   assert.equal(state.requests.find((request: any) => request.id === "turn-1").resumes, 1);
 });
 
+test("a structured run whose node died between model steps resumes with final_output still declared, and ends with its output", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const answer = { role: "assistant", tool_calls: [{ index: 0, id: "call_2", type: "function", function: { name: "final_output", arguments: JSON.stringify({ value: "value-of-k" }) } }] };
+  const model = await fakeModel(t, (_body, index) => index === 0 ? jsExec('return await tools.lookup({ key: "k" })') : index === 1 ? undefined : answer);
+  const a = await c.start("a", model.env);
+  const b = await c.start("b", model.env);
+  const calls: string[] = [];
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: lookup(calls), idempotencyKey: "structured-agent" });
+  await created.close();
+  const client = await new AgentRuntime({ url: b.url, apiKey: token }).connectAgent(created.session, { tools: lookup(calls) });
+  t.after(() => client.close());
+  const schema = { type: "object", properties: { value: { type: "string" } }, required: ["value"] };
+  // A new agent's first turn: final_output is declared by its transcript alone, which the next owner reads.
+  const run = client.prompt("go", { idempotencyKey: "structured-turn", timeoutMs: 60_000, output: { schema } });
+  await until(() => model.bodies.length === 2, "A made the second model call");
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+  const result = await run;
+  assert.equal(result.error, null);
+  assert.deepEqual(result.output, { value: "value-of-k" });
+  assert.equal(model.bodies.length, 3);
+  assert.deepEqual(model.bodies[2].tools.find((tool: any) => tool.function.name === "final_output")?.function.parameters, schema);
+});
+
 test("a turn whose node died during a tool call continues with the outcome unknown, without calling the tool again", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, (_body, index) => index === 0 ? jsExec("return await tools.slow({})") : { role: "assistant", content: "noted the unknown outcome" });

@@ -504,8 +504,10 @@ export interface RunResult {
   files?: AgentFile[];
   presented?: PresentedFile[];
   usage?: RunUsage | null;
-  /** A stable name for `error`, where the runtime gives one. */
+  /** A stable name for `error`, where the runtime gives one (output_missing: a structured run ended without its output). */
   code?: string;
+  /** A prompt sent with `output`: the answer, which fits its schema. */
+  output?: unknown;
   /** Tool calls that did not complete (the model was told): timed out, lost, with no application connected, and so on. */
   toolErrors?: ToolError[];
   /** The tool calls it made (the first 100), those from js_exec's code included: ids and how each went, not arguments or results. */
@@ -1153,9 +1155,10 @@ export class AgentClient {
    * stored message and its request carry it, with the request's id, in history, events and webhooks; the model never sees it.
    * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome. `spendLimit` is this run's own
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
+   * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
    */
-  prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number } }) {
-    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}) });
+  prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; output?: { schema: Record<string, unknown> } }) {
+    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.output ? { output: options.output } : {}) });
   }
 
   /**
@@ -1306,4 +1309,4 @@ export class AgentClient {
 }
 
 export { Agents, Agent } from "./agents.ts";
-export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, InputValue, AnswerOptions } from "./agents.ts";
+export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";

@@ -128,6 +128,9 @@ asyncio.run(main())
   every process upserts the agent from that definition with no `tools`. Served tools also keep working through your
   deploys and restarts, which tools attached to a process don't. See
   https://run.camelai.com/docs/guides/tools.md#several-processes-workers-and-deploys.
+- **Data back, not prose.** When the code needs an object (classification, extraction, a triage decision), pass a
+  schema: `agent.run(text, { output: zodSchema })` gives a typed `run.output`; Python `output=PydanticModel`. Don't
+  parse JSON out of `run.text`. See https://run.camelai.com/docs/guides/structured-output.md.
 
 ## 4. Verify with one real run
 

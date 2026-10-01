@@ -1561,7 +1561,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?}, without arguments or results"
+        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?}, without arguments or results. result.output is a structured answer, for a prompt sent with output"
       },
       "AgentInput": {
         "type": "object",
@@ -1776,6 +1776,37 @@
                 "description": "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too"
               }
             ]
+          },
+          "output": {
+            "type": "object",
+            "properties": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "A JSON Schema for an object (type: \"object\"; at most 64 KB)",
+                "example": {
+                  "type": "object",
+                  "properties": {
+                    "sentiment": {
+                      "type": "string",
+                      "enum": [
+                        "positive",
+                        "neutral",
+                        "negative"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sentiment"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "schema"
+            ],
+            "additionalProperties": false,
+            "description": "Structured output: the agent ends this run by calling a final_output tool whose arguments are the schema, checked against it (a call that does not fit goes back to the model with what is wrong). The run's outcome.result.output is that object. A model that answers in text instead is asked once more, with a reminder; a run that still ends without an output fails with code output_missing. The tool stays declared until a prompt without output. Not with whileRunning: steer"
           },
           "metadata": {
             "type": "object",

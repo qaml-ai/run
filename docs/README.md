@@ -12,6 +12,7 @@ model-written code in a sandbox, and wakes agents when there is work.
 3. **Guides**
    - [Tools](guides/tools.md): writing tools, attached and served tools, identity, MCP and OpenAPI sources, built-ins
    - [Human input](guides/human-input.md): approvals, questions and forms; answering
+   - [Structured output](guides/structured-output.md): a run's answer as an object in your schema (zod, pydantic, JSON Schema)
    - [Showing an agent in a browser](guides/browser.md): browser tokens and the watcher
    - [Files](guides/files.md): attachments, what the model sees, files out, volumes, signed links
    - [Agents for many users](guides/multi-user.md): per-user agents, identity, spend

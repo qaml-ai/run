@@ -235,9 +235,11 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | Field | |
 | --- | --- |
 | `reply` | the final assistant message's text; absent when it said nothing |
+| `output` | a prompt sent with `output`: the answer, which fits its schema. See [Structured output](../guides/structured-output.md) |
 | `replyIndex` | that message's index in the agent's history |
 | `messages` | how many messages the agent's history holds after the run |
 | `error` | the model's error (a provider refusal after retries), or `null` |
+| `code` | a stable name for `error`, where the runtime gives one: `output_missing` (a structured run ended without its output) |
 | `stopped` | why the run stopped early: `input_required` (it waits on `inputs`) or `spend_limit` (with the reason in `error`) |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
@@ -251,7 +253,7 @@ An `execute` request's result is `{output: string[], truncated}` (plus `files`,
 turn's outcome, and its record names the turn's request as `steeredInto`.
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
-`failed`), `text`, `inputs`, `error: {code, message, uncertain?}`, `files`,
+`failed`), `text`, `output`, `inputs`, `error: {code, message, uncertain?}`, `files`,
 `toolErrors`, `toolCalls`, `sourceErrors`. A browser token never sees a run's
 result, `toolCalls` included: only whether and why it stopped.
 

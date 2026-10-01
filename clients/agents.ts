@@ -15,6 +15,7 @@ import {
   type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
+import type { Static, TSchema } from "typebox";
 
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 const env = (name: string): string | undefined => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[name] || undefined;
@@ -92,13 +93,15 @@ export interface RunFailure {
  * `completed`: it answered (`text`). `input_required`: it waits on people (`inputs`); answer them to resume it.
  * `failed`: see `error` (and, unless `throwOnError: false`, the RunError thrown).
  */
-export interface Run {
+export interface Run<T = unknown> {
   id: string;
   status: "completed" | "input_required" | "failed";
   /** The final reply's text; "" when it said nothing (or failed first). */
   text: string;
+  /** A run with `output`: the answer, which fits its schema (parsed by it, for a zod or other Standard Schema). */
+  output?: T;
   /** What it waits on, when `input_required`. */
-  inputs: RunInput[];
+  inputs: RunInput<T>[];
   error: RunFailure | null;
   /** What its model calls used, where the runtime reports it; else null. */
   usage: RunUsage | null;
@@ -127,10 +130,27 @@ export interface AnswerOptions {
   signal?: AbortSignal;
 }
 /** Human input a run waits on, with the means to answer it. Answering resolves with the resumed run. */
-export interface RunInput extends Omit<AgentInput, "answer"> {
-  answer(value: InputValue, options?: AnswerOptions): Promise<Run>;
-  decline(options?: AnswerOptions): Promise<Run>;
+export interface RunInput<T = unknown> extends Omit<AgentInput, "answer"> {
+  answer(value: InputValue, options?: AnswerOptions): Promise<Run<T>>;
+  decline(options?: AnswerOptions): Promise<Run<T>>;
 }
+
+/**
+ * A Standard Schema (zod 4.2+, Valibot, ArkType) that also says its JSON Schema (Standard JSON Schema):
+ * what `output` takes besides a TypeBox schema (`schema.Object(…)`) or a plain JSON Schema.
+ */
+export interface StandardOutputSchema<T = unknown> {
+  readonly "~standard": {
+    readonly validate: (value: unknown) => StandardResult<T> | Promise<StandardResult<T>>;
+    readonly jsonSchema?: { readonly input: (options: { target: string }) => Record<string, unknown> };
+    readonly types?: { readonly output: T };
+  };
+}
+type StandardResult<T> = { readonly value: T; readonly issues?: undefined } | { readonly issues: readonly { readonly message: string; readonly path?: readonly unknown[] }[] };
+/** A schema for a run's structured output: a JSON Schema for an object, as TypeBox, zod or plain JSON. */
+export type OutputSchema = StandardOutputSchema<any> | TSchema | Record<string, unknown>;
+/** The value a run's `output` schema gives. */
+export type OutputOf<S> = S extends { readonly "~standard": { readonly types?: { readonly output: infer T } } } ? T : S extends TSchema ? Static<S> : unknown;
 
 export interface RunOptions {
   /** Who sent it (your user id, or a Sender): the model sees who, and tools get it as `identity.user`. */
@@ -153,6 +173,11 @@ export interface RunOptions {
   allowDisconnected?: boolean;
   /** This run's own budget (USD): it ends before its next model request once it has spent this. The agent's spendLimit is unchanged. */
   spendLimit?: { usd: number };
+  /**
+   * Structured output: a schema for an object (zod, TypeBox or JSON Schema). The agent ends the run with an answer
+   * that fits it, as `run.output`; a run that ends without one fails (code output_missing). Not with whileRunning: "steer".
+   */
+  output?: OutputSchema;
 }
 
 /** What `agent.stream()` yields. `raw` is the event it came from. */
@@ -167,9 +192,17 @@ export type StreamPart =
   | { type: "done"; run: Run };
 
 /** `for await (const part of agent.stream(text))`; `result()` is the run, as `done` has it. */
-export interface RunStream extends AsyncIterable<StreamPart> {
+export interface RunStream<T = unknown> extends AsyncIterable<StreamPart> {
   readonly id: string;
-  result(): Promise<Run>;
+  result(): Promise<Run<T>>;
+}
+
+/** What the runtime is sent for an output schema: its JSON Schema (a Standard Schema's input side, the model's to write). */
+function outputRequest(schema: OutputSchema): { schema: Record<string, unknown> } {
+  const standard = (schema as StandardOutputSchema)["~standard"];
+  if (!standard) return { schema: schema as Record<string, unknown> };
+  if (!standard.jsonSchema) throw new AgentError("This schema cannot say its JSON Schema (Standard JSON Schema: zod 4.2+, or an adapter); pass a JSON Schema or a TypeBox schema instead");
+  return { schema: standard.jsonSchema.input({ target: "draft-2020-12" }) };
 }
 
 const senderOf = (user: string | Sender) => typeof user === "string" ? { id: user } : user;
@@ -250,16 +283,16 @@ export class Agent {
    * timeout (runs can take minutes, or wait on people for days); `signal` stops the wait. A failed run
    * throws a RunError (with the run) unless `throwOnError: false`.
    */
-  async run(text: string, options: RunOptions = {}): Promise<Run> {
+  async run<S extends OutputSchema = never>(text: string, options: RunOptions & { output?: S } = {}): Promise<Run<OutputOf<S>>> {
     const id = options.idempotencyKey ?? globalThis.crypto.randomUUID();
-    return this.settle(id, this.client.prompt(text, promptOptions(id, options)), options.throwOnError);
+    return this.settle(id, this.client.prompt(text, promptOptions(id, options)), options.throwOnError, options.output);
   }
 
   /**
    * Send a message and read the run as it happens: its text as it is written, tool calls and results,
    * the input it waits on, and last, `done` with the run. Breaking off stops the reading, not the run.
    */
-  stream(text: string, options: RunOptions = {}): RunStream {
+  stream<S extends OutputSchema = never>(text: string, options: RunOptions & { output?: S } = {}): RunStream<OutputOf<S>> {
     const id = options.idempotencyKey ?? globalThis.crypto.randomUUID();
     const parts: StreamPart[] = [];
     let wake: (() => void) | undefined;
@@ -284,7 +317,7 @@ export class Agent {
         case "input_required": push({ type: "input_required", input: this.input(event.input), raw: event }); break;
       }
     });
-    const result = this.settle(id, this.client.prompt(text, promptOptions(id, options)), false).then(run => {
+    const result = this.settle<OutputOf<S>>(id, this.client.prompt(text, promptOptions(id, options)), false, options.output).then(run => {
       push({ type: "done", run });
       if (run.error && options.throwOnError !== false) failure = new RunError(run);
       return run;
@@ -312,9 +345,9 @@ export class Agent {
   }
 
   /** A run's outcome, however it ended, as a Run: thrown if it failed, unless `throwOnError` is false. */
-  private async settle(id: string, pending: Promise<RunResult>, throwOnError = true): Promise<Run> {
-    let run: Run;
-    try { run = this.toRun(id, await pending); }
+  private async settle<T>(id: string, pending: Promise<RunResult>, throwOnError = true, schema?: OutputSchema): Promise<Run<T>> {
+    let run: Run<T>;
+    try { run = await this.toRun<T>(id, await pending, schema); }
     catch (error) {
       // A run that ended in an error settles with it; anything else (a refused request, a closed client) is not a run.
       if (!(error instanceof AgentError) || error.status !== 0 || error.requestId !== id || /^Client closed/.test(error.message)) throw error;
@@ -324,26 +357,34 @@ export class Agent {
     return run;
   }
 
-  private toRun(id: string, result: RunResult | undefined): Run {
+  private async toRun<T>(id: string, result: RunResult | undefined, schema?: OutputSchema): Promise<Run<T>> {
     const raw = result ?? null;
-    const error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error }
+    let error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error }
       : raw?.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it (configure spendLimit) to go on" } : null;
+    // The runtime checked the output against the JSON Schema; a Standard Schema parses it too (refinements, transforms).
+    let output = raw?.output as T | undefined;
+    const standard = (schema as StandardOutputSchema<T> | undefined)?.["~standard"];
+    if (standard && output !== undefined && !error) {
+      const parsed = await standard.validate(output);
+      if (parsed.issues) error = { code: "output_invalid", message: `The output does not fit its schema: ${parsed.issues.map(issue => `${issue.path?.length ? `${issue.path.map(key => typeof key === "object" && key ? (key as { key: unknown }).key : key).join(".")}: ` : ""}${issue.message}`).join("; ")}` };
+      else output = parsed.value;
+    }
     return {
       id, status: error ? "failed" : raw?.stopped === "input_required" ? "input_required" : "completed",
-      text: raw?.reply ?? "", inputs: (raw?.inputs ?? []).map(input => this.input(input)), error,
+      text: raw?.reply ?? "", ...(output !== undefined ? { output } : {}), inputs: (raw?.inputs ?? []).map(input => this.input<T>(input, schema)), error,
       usage: raw?.usage ?? null, files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], toolCalls: raw?.toolCalls ?? [], sourceErrors: raw?.sourceErrors ?? [], raw,
     };
   }
 
   /** An input, with the means to answer it. */
-  private input(input: AgentInput): RunInput {
-    const respond = async (answer: InputAnswer, options: AnswerOptions): Promise<Run> => {
+  private input<T = unknown>(input: AgentInput, schema?: OutputSchema): RunInput<T> {
+    const respond = async (answer: InputAnswer, options: AnswerOptions): Promise<Run<T>> => {
       if (input.responders.audience?.length && !answer.from) throw new AgentError(`Say who answers (from): only ${input.responders.audience.join(", ")} may answer this`);
       const { request } = await this.client.answer(input.id, answer);
-      if (request) return this.settle(request.id, this.client.waitForRequest(request.id, { ...(options.signal ? { signal: options.signal } : {}) }), options.throwOnError);
+      if (request) return this.settle<T>(request.id, this.client.waitForRequest(request.id, { ...(options.signal ? { signal: options.signal } : {}) }), options.throwOnError, schema);
       // Other inputs of the run still wait: it resumes once they are answered too.
       const pending = (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId);
-      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input(other)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
+      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
     };
     return {
       ...input,
@@ -391,6 +432,7 @@ function promptOptions(id: string, options: RunOptions) {
     ...messageOptions(options), idempotencyKey: id,
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
+    ...(options.output ? { output: outputRequest(options.output) } : {}),
   };
 }
 

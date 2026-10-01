@@ -105,14 +105,17 @@ Run options (`run`, `stream`):
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](../guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
+| `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](../guides/structured-output.md) |
 
 ### `Run`
 
-`{ id, status, text, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
+`{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
 (Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
 tool call the run made, with `ok` or an error `code`, not their arguments or
 results (see [Run outcomes](events.md#run-outcomes)). `status` is `completed`,
-`input_required` or `failed`; `error` is `{ code, message, uncertain? }`. See
+`input_required` or `failed`; `error` is `{ code, message, uncertain? }`.
+`output` is a run with `output`'s answer, typed by its schema (`Run<T>`; Python:
+an instance of the pydantic model). See
 [Concepts](../concepts.md#runs) and [Errors](../reference/errors.md#run-failures).
 
 Each of `run.inputs` is the input (`id`, `kind`, `message`, `detail`,
@@ -192,7 +195,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
-| `client.prompt(text, { from, actor, files, metadata, whileRunning, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error |
+| `client.prompt(text, { from, actor, files, metadata, whileRunning, output, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, output, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error. `output` here is `{ schema }`, a JSON Schema |
 | `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`) |
 | `client.waitForRequest(id)` | `wait_for_request(id)` | wait for a request already sent, from any process |
 | `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |

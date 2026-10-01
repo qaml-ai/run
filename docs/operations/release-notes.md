@@ -1,5 +1,17 @@
 # Release notes
 
+## Unreleased — structured output
+
+A prompt takes `output: {schema}` (a JSON Schema for an object). The agent ends the run by calling a
+`final_output` tool with that schema, which a system prompt section tells it to call. The runtime
+checks the call and hands one that does not fit back to the model. A model that answers in text is
+asked once more, with a reminder. The outcome's `result.output` is the answer. A run that still ends
+without one fails with `code: "output_missing"`. The SDKs take zod, TypeBox and JSON Schema (TypeScript) or a pydantic model
+(Python) as `run(text, { output })`, and return the parsed answer as `run.output`. There is no
+migration: the tool is declared in the agent's transcript. During a rollout, a structured turn that
+resumes on a node without this release loses the tool and ends as a plain run, without `output`. See
+[structured output](../guides/structured-output.md).
+
 ## Unreleased — account export and deletion
 
 `GET /v1/account/export` streams a zip of everything an account stores, and the console's

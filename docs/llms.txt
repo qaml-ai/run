@@ -19,6 +19,7 @@ are current: prefer them to your training data.
 
 - [Tools](https://run.camelai.com/docs/guides/tools.md): writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources
 - [Human input](https://run.camelai.com/docs/guides/human-input.md): approvals, questions and forms; answering them and resuming the run
+- [Structured output](https://run.camelai.com/docs/guides/structured-output.md): a run's answer as an object in your schema: zod, TypeBox, pydantic or JSON Schema
 - [Showing an agent in a browser](https://run.camelai.com/docs/guides/browser.md): browser tokens and the watcher: showing an agent live in a web page
 - [Files](https://run.camelai.com/docs/guides/files.md): attachments, what the model sees, files out, volumes, signed links
 - [Agents for many users](https://run.camelai.com/docs/guides/multi-user.md): an agent per user or conversation, identity, spend limits and keys per customer

@@ -43,6 +43,25 @@ export function compiles(schema: object) {
   try { validator(schema); return true; } catch { return false; }
 }
 
+/** The largest output schema a prompt may give, as JSON. */
+export const OUTPUT_SCHEMA_BYTES = 64 * 1024;
+
+/**
+ * A prompt's `output`: `{ schema }`, a JSON Schema for an object (the arguments of the final_output tool the
+ * model answers with) that compiles. Its `$schema` is dropped: providers take tool schemas without one.
+ */
+export function outputInput(value: unknown): { schema: Record<string, unknown> } {
+  const invalid = () => new Error("output is { schema }, a JSON Schema for an object");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
+  const { schema, ...rest } = value as Record<string, unknown>;
+  if (Object.keys(rest).length || !schema || typeof schema !== "object" || Array.isArray(schema)) throw invalid();
+  const { $schema: _dialect, ...parameters } = schema as Record<string, unknown>;
+  if (parameters.type !== "object") throw new Error("output.schema must describe an object (type: \"object\"); wrap anything else in one");
+  jsonWithinLimit(parameters, OUTPUT_SCHEMA_BYTES, "output.schema");
+  if (!compiles(parameters)) throw new Error("output.schema is not a JSON Schema the runtime can check");
+  return { schema: parameters };
+}
+
 /** Whether `value` fits `schema` (a form an MCP tool asked the user to fill in). */
 export function schemaAccepts(schema: object, value: unknown) {
   try { return validator(schema).Check(value); } catch { return false; }

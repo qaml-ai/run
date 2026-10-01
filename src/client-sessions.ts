@@ -9,7 +9,7 @@ import { errorText } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { configurationUpdate, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
-import { validateDefinitions } from "./tool-policy.ts";
+import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { validateUserMessages } from "./history.ts";
 import type { Backlog } from "./transcript.ts";
 import { canonical } from "../shared/durable-json.ts";
@@ -2126,10 +2126,13 @@ export class ClientSessions {
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     // A run's own budget: it only ever lowers what the run may spend, so whoever may run the agent may set it.
     if (params.spendLimit !== undefined && (!MODEL_RUNS.includes(body.method) || spendInput(params.spendLimit) === null)) throw new HttpError(400, "spendLimit is {usd}, for a model run (prompt, continue)");
+    // An output schema shapes the turn a prompt starts: a steer joins one already running.
+    if (params.output !== undefined && (body.method !== "prompt" || params.whileRunning === "steer")) throw new HttpError(400, "output is for a prompt that starts its own turn (not whileRunning: steer)");
     if (params.whileRunning === "queue") delete params.whileRunning;
     // A message records the request that sent it, so an application can match it to its own.
     if (isMessage) params.requestId = body.id;
     try {
+      if (params.output !== undefined) params.output = outputInput(params.output);
       if (params.from !== undefined) params.from = senderInput(params.from);
       if (params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
       // The sender acts, unless the application names someone else.

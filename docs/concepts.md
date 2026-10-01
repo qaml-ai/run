@@ -52,6 +52,7 @@ A `Run` has:
 | `id` | the run's id; pass `idempotencyKey` to choose it, and sending the same key again returns the same run instead of starting another |
 | `status` | `completed`, `input_required` (it waits on a person: see `inputs`), or `failed` |
 | `text` | the final reply |
+| `output` | with `output: schema`, the answer in that shape ([Structured output](guides/structured-output.md)) |
 | `inputs` | what it waits on, each with `answer()` |
 | `error` | `{code, message, uncertain?}` when it failed |
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |

@@ -253,6 +253,53 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         resumed = await run.inputs[0].answer(True)
         self.assertEqual((resumed.status, resumed.text, done), ("completed", "seen", ["d1"]))
 
+    async def test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value(self):
+        from typing import Literal
+        from pydantic import BaseModel, field_validator
+
+        class Item(BaseModel):
+            name: str
+            qty: int
+
+        class Order(BaseModel):
+            customer: str
+            items: list[Item]
+            priority: Literal["low", "high"] = "low"
+
+        agent = await self.make()
+        answer = {"customer": "Ada", "items": [{"name": "bolt", "qty": 3}]}
+        self.call("final_output", answer)
+        run = await agent.run("Read this order", output=Order)
+        self.assertIsInstance(run.output, Order)
+        self.assertEqual((run.output.customer, run.output.items[0].qty, run.output.priority), ("Ada", 3, "low"))
+        # The model was given the model's JSON Schema, nested models ($defs) included.
+        declared = next(item["function"] for item in self.bodies[-1]["tools"] if item["function"]["name"] == "final_output")
+        self.assertEqual(declared["parameters"]["$defs"]["Item"]["required"], ["name", "qty"])
+
+        # A JSON Schema dict gives the value as is; a validator the schema cannot say fails the run here.
+        self.call("final_output", {"customer": "Bob", "items": []})
+        plain = await agent.run("Again", output={"type": "object", "properties": {"customer": {"type": "string"}, "items": {"type": "array"}}, "required": ["customer"]})
+        self.assertEqual(plain.output, {"customer": "Bob", "items": []})
+
+        class Big(Order):
+            @field_validator("items")
+            @classmethod
+            def some(cls, items):
+                if not items:
+                    raise ValueError("an order has items")
+                return items
+
+        self.call("final_output", {"customer": "Cy", "items": []})
+        failed = await agent.run("Once more", output=Big, throw_on_error=False)
+        self.assertEqual((failed.status, failed.error["code"]), ("failed", "output_invalid"))
+        self.assertIn("an order has items", failed.error["message"])
+
+        # Ended without final_output: output_missing. A run without output has none.
+        with self.assertRaises(RunError) as missing:
+            await agent.run("Say it in words", output=Order)
+        self.assertEqual(missing.exception.code, "output_missing")
+        self.assertIsNone((await agent.run("hi")).output)
+
     async def test_parity_history_configure_tools_and_wait_for_request(self):
         agent = await self.make()
         # The same key sent again while its run goes on joins that run.

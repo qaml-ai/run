@@ -8,7 +8,7 @@ import {
 import { executeCode, presentResult } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type ToolBridge } from "./protocol.ts";
-import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage } from "./system-prompt.ts";
+import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
@@ -80,6 +80,8 @@ export function createAgentHost(hostIO: HostIO) {
   let steerable = false;
   /** Steering messages not yet taken, in order; `whileRunning` ones are taken back if the turn ends without them. */
   let steers: { message: AgentMessage; whileRunning: boolean }[] = [];
+  /** What the current run's final_output call gave, once the model made one that fit its schema. */
+  let output: { value: unknown } | undefined;
 
   /**
    * Add what the history index lacks to it, in the background. Like the log's own segments, chunks
@@ -155,19 +157,24 @@ export function createAgentHost(hostIO: HostIO) {
 
   /**
    * Bring the system messages in line with the configuration. Without history the leading message
-   * is rebuilt; with history a change is appended, so the cached prefix stays byte-identical.
+   * is rebuilt; with history a change is appended, so the cached prefix stays byte-identical. `durable`
+   * appends the change even without history: a tool the configuration does not hold (final_output) is
+   * declared only by the transcript, so another node continuing the turn finds it.
    */
-  function declareConfiguration(): Promise<unknown> {
+  function declareConfiguration(durable = false): Promise<unknown> {
     const messages = agent!.state.messages;
     const tools = agent!.state.tools.map(toToolDeclaration);
-    if (!transcript.total && !transcript.compaction) {
+    if (!durable && !transcript.total && !transcript.compaction) {
       agent!.state.messages = [leadingSystemMessage(config, tools), ...messages.filter(message => message.role !== "system")];
       return Promise.resolve();
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     const current = getCurrentSystemMessage(messages)?.sections ?? {};
-    const wanted = { [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config) };
-    const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => current[name] !== text));
+    const wanted = {
+      [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
+    };
+    const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
     if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return Promise.resolve();
     const change: SystemMessage = {
       role: "system", content: "", timestamp: Date.now(), ...(Object.keys(sections).length ? { sections } : {}),
@@ -237,6 +244,33 @@ export function createAgentHost(hostIO: HostIO) {
   function made(toolCallId: string): { messageIndex?: number } {
     const messageIndex = transcript.calls.get(toolCallId);
     return messageIndex === undefined ? {} : { messageIndex };
+  }
+
+  /**
+   * The tool a run that asks for structured output ends with: its parameters are the run's schema, so Pi checks
+   * the model's answer against it and hands a call that does not fit back to the model with what is wrong.
+   */
+  function outputTool(schema: Tool["parameters"]): AgentTool {
+    return {
+      name: OUTPUT_TOOL, label: "Final output", parameters: schema as AgentTool["parameters"], executionMode: "sequential",
+      description: "Give your final answer for this request by calling this tool once, with the answer as its arguments: this request asks for its answer in this form. Do the work first; your turn ends when the call is accepted.",
+      execute: async (_id, args) => ({ content: [{ type: "text", text: "Accepted." }], details: { output: args } }),
+    };
+  }
+
+  /**
+   * Declare final_output with a prompt's schema, or take it away from a prompt without one. It stays declared
+   * between runs (the tool set changes only when a schema does), and a turn continued or resumed keeps it.
+   */
+  async function useOutput(schema: Tool["parameters"] | undefined) {
+    const declared = agent!.state.tools.find(tool => tool.name === OUTPUT_TOOL);
+    if (schema && config.tools.some(tool => tool.name === OUTPUT_TOOL)) throw new Error(`This agent has a tool of its own named ${OUTPUT_TOOL}, so it cannot take an output schema`);
+    if (!schema && !declared) return;
+    if (!declared || JSON.stringify(declared.parameters) !== JSON.stringify(schema)) {
+      agent!.state.tools = [...agent!.state.tools.filter(tool => tool.name !== OUTPUT_TOOL), ...(schema ? [outputTool(schema)] : [])];
+    }
+    // Also takes back a reminder the last run was given (see finishTurn): a change only where there is one.
+    await declareConfiguration(true);
   }
 
   /** The tools code can call; `toolCallId` is the js_exec call running it, if the model made one. */
@@ -369,6 +403,25 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
+   * A structured run whose model ended its turn in text, not with final_output: that answer is taken back, as a failed
+   * response is, and the model asked again once, with a reminder in the output section (which the next prompt takes
+   * back). Asked again rather than answered: after an answer of its own, some providers would only continue it.
+   */
+  async function remindOfOutput(signal: AbortSignal) {
+    const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
+    if (output || stopped || signal.aborted || last?.role !== "assistant" || last.stopReason !== "stop" || !agent!.state.tools.some(tool => tool.name === OUTPUT_TOOL)) return;
+    if (transcript.total <= transcript.turnStart + 1) return;
+    await transcript.retract();
+    io.emit({ type: "message_retracted", index: transcript.total });
+    const reminder: SystemMessage = { role: "system", content: "", sections: { [OUTPUT]: `${OUTPUT_INSTRUCTIONS}\n${OUTPUT_REMINDER}` }, timestamp: Date.now() };
+    const written = declare(reminder, agent!.state.messages[0] as SystemMessage);
+    agent!.state.messages = [...agent!.state.messages.slice(0, -1), reminder];
+    await written;
+    await agent!.continue();
+    await recoverFailedResponses(signal);
+  }
+
+  /**
    * Recover failed responses within the same turn: a context overflow compacts and
    * continues once; transient provider failures retry with backoff. The failed
    * response is retracted either way, so it never becomes history.
@@ -429,7 +482,7 @@ export function createAgentHost(hostIO: HostIO) {
       transcript = new Transcript(io.transcript, indexed ?? undefined);
       await transcript.load();
       let recovered = false;
-      let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string } } | undefined;
+      let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
       if (transcript.active && transcript.awaiting.length) {
         // The turn had suspended for input when its node stopped: its other calls are closed as unknown, and it stays suspended.
         await transcript.append(interruptedTurnRepairs(transcript.context, false, transcript.awaiting));
@@ -442,8 +495,12 @@ export function createAgentHost(hostIO: HostIO) {
         // Answer tool calls whose outcome was lost as unknown, never by running them again.
         await transcript.append(interruptedTurnRepairs(transcript.context, false));
         const last = transcript.context.at(-1);
-        // At a step boundary the model is simply called again; a final answer means the turn had ended.
-        if (last && (last.role === "user" || last.role === "toolResult")) resume = { continue: true };
+        // At a step boundary the model is simply called again; a final answer (final_output's, too) means the turn had ended.
+        if (last?.role === "toolResult" && last.toolName === OUTPUT_TOOL && !last.isError && transcript.total > transcript.turnStart) {
+          const said = transcript.context.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
+          resume = { finished: { messages: transcript.total, ...answer(said), output: (last.details as { output?: unknown } | undefined)?.output } };
+          await transcript.setActive(false);
+        } else if (last && (last.role === "user" || last.role === "toolResult")) resume = { continue: true };
         else {
           if (last?.role === "assistant" && transcript.total > transcript.turnStart) resume = { finished: { messages: transcript.total, ...answer(last as AssistantMessage) } };
           else await transcript.append(interruptedTurnRepairs(transcript.context));
@@ -505,6 +562,12 @@ export function createAgentHost(hostIO: HostIO) {
             stopped = { stopped: "input_required" };
             return { action: "end" };
           }
+          // An answer in the run's schema ends it.
+          const answered = turn.toolResults.findLast(result => result.toolName === OUTPUT_TOOL && !result.isError);
+          if (answered) {
+            output = { value: (answered.details as { output: unknown }).output };
+            return { action: "end" };
+          }
           if (!turn.toolResults.length && !agent!.hasQueuedMessages()) return;
           let reason: string | undefined;
           try { reason = await io.spendLimit(); }
@@ -536,6 +599,9 @@ export function createAgentHost(hostIO: HostIO) {
         }
         io.emit(event);
       });
+      // final_output, declared by a prompt with an output schema, stays until a prompt without one.
+      const kept = getCurrentTools(agent.state.messages).find(tool => tool.name === OUTPUT_TOOL);
+      if (kept && !config.tools.some(tool => tool.name === OUTPUT_TOOL)) agent.state.tools = [...agent.state.tools, outputTool(kept.parameters)];
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
       void index();
@@ -588,8 +654,10 @@ export function createAgentHost(hostIO: HostIO) {
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
     stopped = undefined;
+    output = undefined;
     active = new AbortController();
     try {
+      if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
         const { returned: _returned, ...result } = await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
         return result;
@@ -618,13 +686,22 @@ export function createAgentHost(hostIO: HostIO) {
         await agent.prompt(promptMessages!);
       }
       await recoverFailedResponses(active.signal);
+      await remindOfOutput(active.signal);
       if (persistenceError) throw persistenceError;
       await transcript.setActive(false);
-      // A suspended turn ends on its open calls: what the model said as it made them is the reply so far.
-      const last = (transcript.awaiting.length ? agent.state.messages.findLast(message => message.role === "assistant") : agent.state.messages.at(-1)) as AssistantMessage | undefined;
+      // Set by finishTurn as the turn ran.
+      const given = output as { value: unknown } | undefined;
+      // A suspended turn ends on its open calls, and a structured answer on final_output's result: what the model said as it made them is the reply.
+      const last = (transcript.awaiting.length || given ? agent.state.messages.findLast(message => message.role === "assistant") : agent.state.messages.at(-1)) as AssistantMessage | undefined;
       // A failed model call fails the run, whether Pi kept its error or only the message does.
       const answered = answer(last);
-      return { messages: transcript.total, ...answered, error: agent.state.errorMessage ?? answered.error, ...(stopped ?? {}) };
+      const error = agent.state.errorMessage ?? answered.error;
+      // A run that asked for structured output and ended without it, nor stopped for a reason of its own, failed.
+      const missing = !given && !error && !stopped && agent.state.tools.some(tool => tool.name === OUTPUT_TOOL);
+      return {
+        messages: transcript.total, ...answered, error, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
+        ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
+      };
     } finally {
       // Steers sent for this turn that it did not take are taken back: each runs as a turn of its own.
       steerable = false;

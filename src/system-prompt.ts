@@ -33,6 +33,15 @@ Application instructions follow. They define your role, task-specific behavior a
 export const INSTRUCTIONS = "instructions";
 /** The section summarizing the agent's environment, generated from its configuration. */
 export const ENVIRONMENT = "environment";
+/** The tool a run that asks for structured output (a prompt's `output.schema`) answers with. */
+export const OUTPUT_TOOL = "final_output";
+/** The section declared with final_output, for as long as it is: models answer in text unless told the tool is the answer. */
+export const OUTPUT = "output";
+export const OUTPUT_INSTRUCTIONS = `<structured_output>
+The application reads your answer to each message as data, not as text: a program consumes it, and no person reads your text replies. Use your tools as needed, then answer by calling ${OUTPUT_TOOL} with the answer as its arguments. Always end with that call, even when the message is a question or a request for help: never reply with text alone, and never ask a question instead. Where information is missing, give your best answer within the schema.
+</structured_output>`;
+/** Added to the output section when a structured run's model ends its turn in text, once per run. */
+export const OUTPUT_REMINDER = `<structured_output_reminder>Your previous answer, in text, was discarded: the application can only read an answer given as a ${OUTPUT_TOOL} call. Answer this message by calling ${OUTPUT_TOOL} now.</structured_output_reminder>`;
 
 export function applicationInstructions(applicationPrompt?: string, append?: string): string {
   const prompt = applicationPrompt ?? "You are a helpful application assistant. Keep responses concise and useful.";
@@ -80,7 +89,10 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
 export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools" | "fileTools">, tools: Tool[]): SystemMessage {
   return {
     role: "system", content: runtimeInstructions, timestamp: 0,
-    sections: { [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config) },
+    sections: {
+      [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      ...(tools.some(tool => tool.name === OUTPUT_TOOL) ? { [OUTPUT]: OUTPUT_INSTRUCTIONS } : {}),
+    },
     ...(tools.length ? { toolsAdded: tools } : {}),
   };
 }

@@ -254,6 +254,7 @@ A `Run` has:
 | `id` | the run's id; pass `idempotencyKey` to choose it, and sending the same key again returns the same run instead of starting another |
 | `status` | `completed`, `input_required` (it waits on a person: see `inputs`), or `failed` |
 | `text` | the final reply |
+| `output` | with `output: schema`, the answer in that shape ([Structured output](guides/structured-output.md)) |
 | `inputs` | what it waits on, each with `answer()` |
 | `error` | `{code, message, uncertain?}` when it failed |
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
@@ -925,6 +926,99 @@ as text: a question's numbered options, the call to approve, the URL, a
 confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
 anything else is a new message. See [Channels](channels.md).
+
+---
+
+<!-- https://run.camelai.com/docs/guides/structured-output.md -->
+
+# Structured output
+
+Give a run an output schema and its answer comes back as an object in that
+shape, as `run.output`. The schema can be zod, TypeBox or plain JSON Schema, or a
+pydantic model in Python. The agent works as usual (tools, code, files) and then
+answers by calling a `final_output` tool whose arguments are your schema. The
+system prompt tells it to answer that way. The runtime checks the call against
+the schema. If it does not fit, the model gets the call back with what is wrong
+and tries again. Once it fits, the run ends.
+
+```ts
+import { z } from "zod";
+
+const Triage = z.object({
+  category: z.enum(["bug", "billing", "question"]),
+  priority: z.number().int().min(1).max(4),
+  summary: z.string(),
+});
+
+const run = await agent.run("Triage ticket 123", { output: Triage });
+run.output; // { category: "bug", priority: 2, summary: "…" }, typed z.infer<typeof Triage>
+```
+
+```python
+from pydantic import BaseModel
+from typing import Literal
+
+class Triage(BaseModel):
+    category: Literal["bug", "billing", "question"]
+    priority: int
+    summary: str
+
+run = await agent.run("Triage ticket 123", output=Triage)
+run.output  # Triage(category='bug', priority=2, summary='…')
+```
+
+```bash
+curl -s https://run.camelai.com/v1/agents/$AGENT/prompt -H "Authorization: Bearer $CAMELAI_API_KEY" \
+  -H "Content-Type: application/json" -d '{
+    "text": "Triage ticket 123",
+    "output": { "schema": { "type": "object",
+      "properties": { "category": { "enum": ["bug", "billing", "question"] }, "priority": { "type": "integer" }, "summary": { "type": "string" } },
+      "required": ["category", "priority", "summary"] } }
+  }'
+# Poll GET /v1/agents/$AGENT/requests/<id>: once completed, outcome.result.output is the object.
+```
+
+## Schemas
+
+- **The schema must describe an object** (`type: "object"`), at most 64 KB as
+  JSON. For a list or a single value, wrap it: `z.object({ items: z.array(…) })`.
+- **zod** needs version 4.2 or later. The SDK sends zod's JSON Schema
+  (`~standard.jsonSchema`) and then parses the answer with zod, so refinements
+  and transforms apply. **TypeBox** (`schema.Object(…)`, exported by the SDK)
+  and plain JSON Schema are sent as they are. Any Standard Schema library that
+  can produce JSON Schema also works.
+- **pydantic** models are sent as `model_json_schema()` (nested models as
+  `$defs`) and parsed with `model_validate`, so validators apply.
+- The runtime checks what the JSON Schema can express. A check that only zod or
+  pydantic can run, such as a refinement or a validator, happens in the SDK. If it
+  fails, the run fails with `output_invalid`.
+
+## How the run ends
+
+| Outcome | What you get |
+| --- | --- |
+| The model called `final_output` with arguments that fit | `status: "completed"`, `output` set, and `text` with anything the model said alongside |
+| The model answered in prose | That answer is discarded and the model is asked once more, with a reminder. If it answers in prose again: `status: "failed"`, `error.code: "output_missing"`, and `text` with what it said |
+| The answer fit the JSON Schema but failed your zod or pydantic schema | `status: "failed"`, `error.code: "output_invalid"` |
+| It waits on a person (an approval, a question) | `input_required`. Answering resumes the run, which still ends with `output` |
+
+Calls whose arguments do not fit are not failures. The model sees them as tool
+errors and calls again.
+
+## Notes
+
+- **Per run.** `output` belongs to the prompt that starts a turn. It cannot be
+  combined with `whileRunning: "steer"`. Each `run()` with an `output` schema
+  declares `final_output` with that schema. The tool stays declared until a run
+  without `output`, so a series of runs with the same schema keeps the model's
+  tool set unchanged and its prompt cache intact. Switching schemas, or
+  switching between structured and plain runs, changes the tool set once.
+- **History.** The `final_output` call and its result are ordinary messages in
+  the agent's history. Later turns can refer back to the answer.
+- **Durable.** A structured run that is resumed on another node still ends with
+  `output`.
+- **An agent with its own tool named `final_output`** cannot take an output
+  schema.
 
 ---
 
@@ -2405,14 +2499,17 @@ Run options (`run`, `stream`):
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](../guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
+| `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](../guides/structured-output.md) |
 
 ### `Run`
 
-`{ id, status, text, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
+`{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
 (Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
 tool call the run made, with `ok` or an error `code`, not their arguments or
 results (see [Run outcomes](events.md#run-outcomes)). `status` is `completed`,
-`input_required` or `failed`; `error` is `{ code, message, uncertain? }`. See
+`input_required` or `failed`; `error` is `{ code, message, uncertain? }`.
+`output` is a run with `output`'s answer, typed by its schema (`Run<T>`; Python:
+an instance of the pydantic model). See
 [Concepts](../concepts.md#runs) and [Errors](../reference/errors.md#run-failures).
 
 Each of `run.inputs` is the input (`id`, `kind`, `message`, `detail`,
@@ -2492,7 +2589,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
-| `client.prompt(text, { from, actor, files, metadata, whileRunning, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error |
+| `client.prompt(text, { from, actor, files, metadata, whileRunning, output, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, output, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error. `output` here is `{ schema }`, a JSON Schema |
 | `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`) |
 | `client.waitForRequest(id)` | `wait_for_request(id)` | wait for a request already sent, from any process |
 | `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |
@@ -3176,9 +3273,11 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | Field | |
 | --- | --- |
 | `reply` | the final assistant message's text; absent when it said nothing |
+| `output` | a prompt sent with `output`: the answer, which fits its schema. See [Structured output](../guides/structured-output.md) |
 | `replyIndex` | that message's index in the agent's history |
 | `messages` | how many messages the agent's history holds after the run |
 | `error` | the model's error (a provider refusal after retries), or `null` |
+| `code` | a stable name for `error`, where the runtime gives one: `output_missing` (a structured run ended without its output) |
 | `stopped` | why the run stopped early: `input_required` (it waits on `inputs`) or `spend_limit` (with the reason in `error`) |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
@@ -3192,7 +3291,7 @@ An `execute` request's result is `{output: string[], truncated}` (plus `files`,
 turn's outcome, and its record names the turn's request as `steeredInto`.
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
-`failed`), `text`, `inputs`, `error: {code, message, uncertain?}`, `files`,
+`failed`), `text`, `output`, `inputs`, `error: {code, message, uncertain?}`, `files`,
 `toolErrors`, `toolCalls`, `sourceErrors`. A browser token never sees a run's
 result, `toolCalls` included: only whether and why it stopped.
 
@@ -3441,6 +3540,8 @@ A run ends in one of three ways: it answered, it waits on people
 | Code (SDK `RunError.code`) | Outcome | Meaning |
 | --- | --- | --- |
 | `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, an invalid key, content refused, context overflow that compaction could not fix |
+| `output_missing` | `result.code` (with `result.error`) | A run sent with `output` ended without the model calling `final_output`: it answered in prose twice, the second time after a reminder. `text` has what it said. Send the prompt again, make the instructions say what the answer is for, or use a stronger model |
+| `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
 | `spend_limit` | `result.stopped: "spend_limit"` | The agent's spend limit (or the tenant's monthly cap) stopped the turn after the response that crossed it; its tool calls ran. Raise the limit and send the next message |
 | `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent's model has no key, the agent was deleted, code execution failed, a queued run refused for credit |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
