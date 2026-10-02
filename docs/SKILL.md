@@ -29,6 +29,12 @@ still says `<does X>`, don't ask: pick something small and useful in this projec
 about its data or code, with one tool that reads it), say what you picked, and build that. Choose sensible defaults
 the same way (the agent's key, its instructions, the account's default model) rather than asking.
 
+**An empty folder.** With no project to read and no agent named, build a TypeScript ES module project
+(`npm init -y && npm pkg set type=module && npm install @camelai/run`) with a one-tool demo: an agent that answers
+questions about a small business from a `facts.json` it reads with a `get_facts` tool (opening hours, prices, a
+policy or two). Use Python instead only if the user asked for it. With an agent named but no project, build that
+agent the same way.
+
 **Just trying camelRun, with no code?** The hosted MCP server needs no API key: signing in with GitHub or Google
 creates the account. Offer it, and tell the user the command to run themselves:
 
@@ -43,7 +49,9 @@ Look in this order, and use the first that works:
 
 1. `CAMELAI_API_KEY` in the environment, `.env.local` or `.env`. Check that the variable is set without printing its
    value.
-2. A saved CLI login: `npx -y @camelai/camelrun whoami` exits 0 and prints the account and its default model.
+2. A saved CLI login: `npx -y @camelai/camelrun whoami` exits 0. Outside a terminal it prints JSON: `tenant` (the
+   account's id), `login` (the GitHub login or Google address it signed in with, if any), `via` (how the key
+   authenticated), `defaultModel` and `url` (the runtime). A non-zero exit means no usable key.
 
 To check a key that is only in a file, load the file in a subshell, e.g.
 `(set -a; . ./.env.local; set +a; npx -y @camelai/camelrun whoami)`.
@@ -68,9 +76,11 @@ credit, tell the user this in one sentence with that link.
 ## 2. Detect the project; don't ask
 
 - `package.json` means TypeScript. Install `@camelai/run` with the project's package manager.
+- Neither, and the folder is empty: see **An empty folder** in step 0.
 - `pyproject.toml` or `requirements.txt` means Python. Install `camelai-run`, and import from `camelai_run`.
 - A Next.js app that wants a chat UI can use `@camelai/run-react` with `createAgentHandler` (see
-  https://run.camelai.com/docs/guides/browser.md). For a new app, use `npm create @camelai/run-app`.
+  https://run.camelai.com/docs/frontend.md). For a new app, use `npm create @camelai/run-app` (it reads
+  `CAMELAI_API_KEY` from the environment; never pass the key as an argument).
 
 - A project already on the OpenAI Agents SDK (`from agents import Agent`, `@openai/agents`) or LangGraph is a port:
   read https://run.camelai.com/docs/guides/migrating.md first, and say which of its features have no equivalent.
@@ -137,23 +147,29 @@ asyncio.run(main())
 
 ## 4. Verify with one real run
 
-Write a short script that:
-1. upserts the agent;
+Write a short check script that:
+1. upserts the agent under a **fresh key for each check** (the app's own key with a timestamp, e.g.
+   `` `my-project-assistant-check-${Date.now()}` ``). An agent keeps its history, so a rerun on the app's stable key
+   can answer from what it already said and call no tool;
 2. calls `agent.run("<a message that needs the tool>")`;
-3. prints `run.status` and `run.text`;
-4. closes the client (`await agents.close()`, or the `async with` block).
+3. prints `run.status`, `run.text` and the tools it called: `run.toolCalls.map(call => call.tool)` (Python
+   `[call["tool"] for call in run.tool_calls]`), and any `run.toolErrors` (Python `run.tool_errors`);
+4. deletes the check agent (`await agent.delete()`) and closes the client (`await agents.close()`, or the
+   `async with` block).
 
 Run it with the key loaded. For example, use `node --env-file=.env.local check.mjs` for TypeScript. For Python, use
 the project's dotenv setup, or `(set -a; . ./.env; set +a; python check.py)`.
 
-It is done when the status is `completed` and the reply used the tool. Show the user the agent's reply exactly as it
-wrote it. Then send them to https://run.camelai.com/console/agents, where the run's transcript and tool calls appear.
+It is done when the status is `completed`, the tool calls include your tool, and there are no tool errors. A run can
+be `completed` with tool errors: the model worked around a call that failed. Show the user the agent's reply exactly
+as it wrote it, and the tools it called. Then send them to https://run.camelai.com/console/agents, where the run's
+transcript and tool calls appear.
 
 ## 5. When it fails
 
 | Error | What to do |
 |---|---|
-| `No ... API key is configured` | Leave out `model`, or pick one from `npx -y @camelai/camelrun models --available` |
+| `model_key_missing` (`No ... API key is configured`) | Leave out `model`, or pick one from `npx -y @camelai/camelrun models --available` |
 | `INSUFFICIENT_CREDIT` / 402 | Tell the user: verify a card for starting credit (no charge), or add credit, at https://run.camelai.com/console/billing |
 | `APPLICATION_NOT_CONNECTED` | No process is serving the agent's tools. Run the script that calls `upsert`. |
 | 401 | The key is wrong or revoked. Go back to step 1. |
