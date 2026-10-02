@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -46,7 +47,9 @@ def fake_model(bodies, script=None):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            delta = script.pop(0) if script else {"role": "assistant", "content": "seen"}
+            delta = dict(script.pop(0)) if script else {"role": "assistant", "content": "seen"}
+            # A slow model: `delayMs` before it answers.
+            time.sleep(delta.pop("delayMs", 0) / 1000)
             for delta, finish in ((delta, None), ({}, "tool_calls" if "tool_calls" in delta else "stop")):
                 self.wfile.write(f"data: {json.dumps({'id': 'fixture', 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
@@ -109,6 +112,42 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
     def call(self, name, arguments, call_id=None):
         """A scripted model turn that calls tool `name`."""
         self.script.append({"role": "assistant", "tool_calls": [{"index": 0, "id": call_id or f"call_{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]})
+
+    async def test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it(self):
+        @tool
+        async def slow(value: str) -> dict:
+            """Do something slowly"""
+            started.set()
+            await asyncio.Event().wait()
+
+        @tool(name="slow")
+        async def slow_next(value: str) -> dict:
+            """Do something slowly"""
+            return {"answer": f"restarted process {value}"}
+
+        started = asyncio.Event()
+        crashed, restarted = Agents(self.token, url=self.url), Agents(self.token, url=self.url)
+        try:
+            agent = await crashed.upsert("orphaned", tools=[slow])
+            self.call("slow", {"value": "go"}, "call_1")
+            # Told the call was cut off, the model calls it again, a second later.
+            self.script.append({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_2", "type": "function", "function": {"name": "slow", "arguments": json.dumps({"value": "again"})}}], "delayMs": 1000})
+            self.script.append({"role": "assistant", "content": "done"})
+            orphaned = asyncio.ensure_future(agent.run("go", idempotency_key="job-42"))
+            await asyncio.wait_for(started.wait(), 10)
+            await crashed.close(drain=0)
+            await asyncio.gather(orphaned, return_exceptions=True)
+
+            # The docs' recipe: serve the tools again, then collect the job's run by its key.
+            agent = await restarted.upsert("orphaned", tools=[slow_next])
+            run = await agent.run("go", idempotency_key="job-42")
+            lost = [error for error in run.tool_errors if error["code"] == "connection_lost"]
+            self.assertEqual((run.id, run.status, len(lost), lost[0]["tool"]), ("job-42", "completed", 1, "slow"))
+            self.assertEqual([call["tool"] for call in run.tool_calls], ["slow", "slow"])
+            self.assertIn("restarted process again", json.dumps(self.bodies[-1]))
+        finally:
+            await crashed.close(drain=0)
+            await restarted.close(drain=0)
 
     async def test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running(self):
         gate, started = asyncio.Event(), asyncio.Event()

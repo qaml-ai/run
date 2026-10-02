@@ -126,3 +126,34 @@ test("close() waits for no call the runtime gave up on, nor when there is nothin
   await old.close();
   assert.ok(Date.now() - started < 1000, `close() took ${Date.now() - started} ms`);
 });
+
+test("a tool process that dies mid-run: the run goes on, the restarted process serves its next calls, and the same idempotencyKey fetches its result", async t => {
+  // Calls `slow`; told the call was cut off, calls it again (a second later); then says what it answered.
+  const r = await runtime(t, body => {
+    const results = toolResults(body);
+    if (body.messages.at(-1).role === "user") return toolCall("slow", { value: "go" }, "call_1");
+    if (results.length === 1) return { ...toolCall("slow", { value: "again" }, "call_2"), delayMs: 1_000 };
+    return { role: "assistant", content: `Tool said: ${results.at(-1)}` };
+  });
+  const crashed = new Agents({ url: r.base, apiKey: OPERATOR });
+  const before = slowTool("never", new Promise(() => {}));
+  const agent = await crashed.upsert("orphaned", { tools: { slow: before.slow } });
+  const orphaned = agent.run("go", { idempotencyKey: "job-42" }).catch(() => undefined);
+  await until(() => before.calls.started === 1, "the call to start");
+  await crashed.close({ drainMs: 0 });
+  await orphaned;
+
+  // The restarted process: it serves the run's next call, and the same key answers with that run.
+  const restarted = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(() => restarted.close());
+  const after = slowTool("from the restarted process");
+  const again = await restarted.upsert("orphaned", { tools: { slow: after.slow } });
+  const run = await again.run("go", { idempotencyKey: "job-42" });
+  assert.equal(run.id, "job-42");
+  assert.equal(run.status, "completed");
+  assert.match(run.text, /from the restarted process/);
+  assert.deepEqual(run.toolErrors.map(error => error.code), ["connection_lost"], "completed, with a lost call to check");
+  assert.deepEqual(run.toolCalls.map(call => [call.tool, call.ok]), [["slow", false], ["slow", true]]);
+  assert.equal(after.calls.started, 1);
+  assert.equal(r.model.bodies.filter(body => body.messages.at(-1).role === "user").length, 1, "the same run, not a second");
+});

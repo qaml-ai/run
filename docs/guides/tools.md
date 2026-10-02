@@ -146,6 +146,47 @@ told, in words it can pass on, that the tool's server disconnected during the
 call and it may or may not have taken effect; the run lists it in `toolErrors`
 (Python `tool_errors`) with code `connection_lost`. Key side effects by
 `context.idempotencyKey` so that checking and retrying is safe.
+
+#### When the tool process dies mid-run
+
+The run lives in the runtime, not in your process, so it goes on without it:
+
+- **The call that was running** fails as `connection_lost`, as above. The model
+  is told, and usually checks or tries again.
+- **A call while no process serves the tools** waits 3 seconds for one to
+  connect, then fails as `not_connected` (it did not run).
+- **The restarted process serves the run's next calls.** Once it upserts the
+  agent with its `tools`, it serves every call that comes, including calls of
+  runs a process before it started. A run is not tied to the process that sent it.
+- **The `run()` the dead process awaited is gone, but its run is not.** Give each
+  run an id of yours (`idempotencyKey`), saved before you send it, e.g. the job
+  or the order it is for. After the restart, `run()` with the same text and the
+  same key answers with that run instead of starting another: its result if it
+  has ended, or once it ends if not. Without an SDK, `GET
+  /v1/agents/:id/requests/<key>?wait=25` answers the same, and `GET
+  /v1/agents/:id/state` lists the agent's runs.
+
+Check `toolErrors` even when the run's `status` is `completed`: a run whose
+call was cut off often ends normally, after the model worked around it.
+
+```ts
+// On startup (and after a crash): serve the tools, then collect the job's run.
+const agent = await agents.upsert("ops", { model, instructions, tools: { refund } });
+const run = await agent.run(`Refund order ${job.orderId}`, { idempotencyKey: job.id });
+const lost = run.toolErrors.filter(error => error.code === "connection_lost");
+if (lost.length) console.warn(`check whether ${lost.map(error => error.tool).join(", ")} took effect`);
+console.log(run.status, run.text, run.toolCalls.map(call => call.tool));
+```
+
+```python
+# On startup (and after a crash): serve the tools, then collect the job's run.
+agent = await agents.upsert("ops", model=model, instructions=instructions, tools=[refund])
+run = await agent.run(f"Refund order {job.order_id}", idempotency_key=job.id)
+lost = [error for error in run.tool_errors if error["code"] == "connection_lost"]
+if lost:
+    print("check whether", ", ".join(error["tool"] for error in lost), "took effect")
+print(run.status, run.text, [call["tool"] for call in run.tool_calls])
+```
 ## Served tools: over HTTP, for serverless and many users
 
 A server of yours answers tool calls over HTTP (MCP's Streamable HTTP), and a
