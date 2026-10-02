@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtime } from "./runtime-server.ts";
 
-test("the docs are served without credentials: llms.txt, llms-full.txt and every page but the operators', pointing at this runtime", async t => {
+test("the docs are served without credentials: llms.txt, llms-full.txt and every page, the operators' too, pointing at this runtime", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const get = (path: string) => fetch(`${r.base}${path}`);
   const index = await get("/llms.txt");
@@ -27,7 +27,10 @@ test("the docs are served without credentials: llms.txt, llms-full.txt and every
   // Every link in llms.txt to this runtime is served.
   for (const [, url] of text.matchAll(/\((https:\/\/agents\.example\.test\/[^)]+)\)/g)) assert.equal((await get(new URL(url).pathname)).status, 200, url);
 
-  // Sent as written (fetch would fold dot segments first): nothing outside docs/, nor the operators' pages, is served.
+  // The guides link to the operators' pages (self-hosting, configuration): those are served too.
+  for (const path of ["/docs/operations/self-host.md", "/docs/operations/billing.md", "/docs/operations/README.md"]) assert.equal((await get(path)).status, 200, path);
+
+  // Sent as written (fetch would fold dot segments first): nothing outside docs/ is served.
   const raw = (path: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
     const { hostname, port } = new URL(r.base);
     request({ hostname, port, path, method: "GET" }, response => {
@@ -36,7 +39,7 @@ test("the docs are served without credentials: llms.txt, llms-full.txt and every
       response.on("end", () => resolve({ status: response.statusCode!, body }));
     }).on("error", reject).end();
   });
-  for (const path of ["/docs/operations/architecture.md", "/docs/operations/README.md", "/docs/../package.json", "/docs/%2e%2e/package.json", "/docs/..%2fsrc%2fserver.ts", "/docs/guides/../../README.md", "/docs/quickstart", "/SKILL.md/../package.json"]) {
+  for (const path of ["/docs/../package.json", "/docs/%2e%2e/package.json", "/docs/..%2fsrc%2fserver.ts", "/docs/guides/../../README.md", "/docs/quickstart", "/SKILL.md/../package.json"]) {
     const refused = await raw(path);
     assert.equal(refused.status, 404, `${path}: ${refused.status}`);
     assert.equal(JSON.parse(refused.body).code, "NOT_FOUND", path);
@@ -105,4 +108,14 @@ test("the SDK packages ship this version's skill and SDK reference, with links t
   assert.match(npm.scripts.build, /package-docs\.mjs docs/);
   assert.match(await readFile(new URL("../clients/python/pyproject.toml", import.meta.url), "utf8"), /camelai_run = \["\*\.md", "py\.typed"\]/);
   assert.match(await readFile(new URL("../.github/workflows/publish-python.yml", import.meta.url), "utf8"), /package-docs\.mjs clients\/python\/camelai_run/);
+});
+
+test("llms.txt and llms-full.txt are current (npm run docs), llms-full.txt's links are absolute, and every relative link in the docs resolves", async () => {
+  const { brokenLinks, llmsFullTxt, llmsTxt } = await import("../scripts/docs.ts");
+  assert.equal(await readFile(new URL("../docs/llms.txt", import.meta.url), "utf8"), llmsTxt(), "run npm run docs");
+  const full = llmsFullTxt();
+  assert.equal(await readFile(new URL("../docs/llms-full.txt", import.meta.url), "utf8"), full, "run npm run docs");
+  assert.doesNotMatch(full, /\]\((?!https?:|mailto:)[^)\s]+\)/, "no relative links");
+  assert.match(full, /\]\(https:\/\/run\.camelai\.com\/docs\/operations\/self-host\.md#networking\)/);
+  assert.deepEqual(brokenLinks(), []);
 });

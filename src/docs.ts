@@ -10,8 +10,9 @@ export const DOCS_SITE = "https://camelai.com/docs/camelrun/overview";
 
 /**
  * The public docs, read once at startup from `directory` (docs/ in the image): `/llms.txt` and
- * `/llms-full.txt` (text/plain), every Markdown page at `/docs/<its path>` (text/markdown), but
- * the operators' own (operations/), and the setup skill for coding agents at `/SKILL.md` (and `/skill.md`).
+ * `/llms-full.txt` (text/plain), every Markdown page at `/docs/<its path>` (text/markdown), the operators' own
+ * (operations/: self-hosting, configuration) included, since the guides link to them, and the setup skill for coding
+ * agents at `/SKILL.md` (and `/skill.md`).
  * Only these exact paths are served, so nothing else is reachable.
  */
 export function loadDocs(directory: string, publicUrl: string): Map<string, { body: string; type: string }> {
@@ -23,7 +24,7 @@ export function loadDocs(directory: string, publicUrl: string): Map<string, { bo
     for (const entry of entries) {
       const path = join(dir, entry.name);
       const shown = relative(directory, path).split(sep).join("/");
-      if (entry.isDirectory()) { if (shown !== "operations") walk(path); }
+      if (entry.isDirectory()) walk(path);
       else if (entry.isFile() && shown.endsWith(".md")) served.set(`/docs/${shown}`, { body: own(readFileSync(path, "utf8")), type: "text/markdown; charset=utf-8" });
     }
   };

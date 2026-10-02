@@ -1,12 +1,16 @@
 /**
  * The documentation for tools and agents that read it (https://llmstxt.org): `docs/llms.txt` lists every
  * user-facing page with a link to its Markdown, as the runtime serves it under /docs/, and
- * `docs/llms-full.txt` has them all in one file. `npm run docs` writes both; tests/docs.test.ts checks
- * they are current and that every relative link in the docs resolves.
+ * `docs/llms-full.txt` has them all in one file, its links made absolute (a relative link there has no page to be
+ * relative to). `npm run docs` writes both; tests/docs.test.ts checks they are current and that every relative link in
+ * the docs resolves.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { posix } from "node:path";
 
 export const DOCS_URL = "https://run.camelai.com/docs";
+/** Where links to files outside docs/ (examples, packages) go. */
+export const REPOSITORY_URL = "https://github.com/qaml-ai/run/blob/main";
 
 /** The user-facing pages, in reading order, each with what it is for. Operations pages are left out. */
 export const PAGES: { section: string; path: string; about: string }[] = [
@@ -15,6 +19,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/tools.md", about: "writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources" },
   { section: "Guides", path: "guides/human-input.md", about: "approvals, questions and forms; answering them and resuming the run" },
   { section: "Guides", path: "guides/structured-output.md", about: "a run's answer as an object in your schema: zod, TypeBox, pydantic or JSON Schema" },
+  { section: "Guides", path: "frontend.md", about: "a streaming chat with each user's agent in your app: `npm create @camelai/run-app`, or one server route and one React component in an app you have" },
   { section: "Guides", path: "guides/browser.md", about: "browser tokens and the watcher: showing an agent live in a web page" },
   { section: "Guides", path: "guides/files.md", about: "attachments, what the model sees, files out, volumes, signed links" },
   { section: "Guides", path: "guides/multi-user.md", about: "an agent per user or conversation, identity, spend limits and keys per customer" },
@@ -59,12 +64,37 @@ export function llmsTxt() {
     ]),
     "## Optional", "",
     `- [Full documentation](${new URL("/llms-full.txt", DOCS_URL)}): every page above in one file`,
+    `- [Self-hosting](${DOCS_URL}/operations/self-host.md): running the runtime on your own host with Docker; [Configuration](${DOCS_URL}/operations/configuration.md) has every setting`,
     "",
   ].join("\n");
 }
 
+/** Every relative Markdown link in `page` (a path under docs/), as its absolute URL. */
+export function absoluteLinks(page: string, text: string) {
+  return text.replace(/\]\((?!https?:|mailto:)([^)\s]+)\)/g, (_, link: string) => {
+    const [file, anchor] = link.split("#") as [string, string | undefined];
+    const path = file ? posix.normalize(posix.join(posix.dirname(page), file)) : page;
+    return `](${path.startsWith("../") ? `${REPOSITORY_URL}/${path.slice(3)}` : `${DOCS_URL}/${path}`}${anchor !== undefined ? `#${anchor}` : ""})`;
+  });
+}
+
 export function llmsFullTxt() {
-  return PAGES.map(page => `<!-- ${DOCS_URL}/${page.path} -->\n\n${read(page.path).trim()}\n`).join("\n---\n\n");
+  return PAGES.map(page => `<!-- ${DOCS_URL}/${page.path} -->\n\n${absoluteLinks(page.path, read(page.path)).trim()}\n`).join("\n---\n\n");
+}
+
+/** Relative links in the docs whose file is missing: `page: link`. */
+export function brokenLinks() {
+  const broken: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(new URL(dir, docs))) {
+      if (statSync(new URL(dir + name, docs)).isDirectory()) walk(`${dir}${name}/`);
+      else if (name.endsWith(".md")) for (const [, link] of read(dir + name).matchAll(/\]\((?!https?:|mailto:|#)([^)\s#]+)(?:#[^)\s]*)?\)/g)) {
+        if (!existsSync(new URL(posix.normalize(posix.join(dir, link!)), docs))) broken.push(`${dir}${name}: ${link}`);
+      }
+    }
+  };
+  walk("");
+  return broken;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

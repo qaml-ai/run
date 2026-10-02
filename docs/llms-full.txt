@@ -25,7 +25,7 @@ codex mcp add camelrun --url https://run.camelai.com/mcp && codex mcp login came
 ```
 
 Then ask it to "use camelrun to build me my first agent". See the
-[CLI and MCP server](reference/cli.md).
+[CLI and MCP server](https://run.camelai.com/docs/reference/cli.md).
 
 **Credit.** GitHub accounts older than 30 days start with free credit. Everyone
 else (Google sign-ins, newer GitHub accounts) unlocks the same credit by verifying
@@ -120,7 +120,7 @@ python quickstart.py
 ```
 
 curl (the agent has no tools of yours here: tools that run in your process need an
-SDK, or a server of your own, see [Tools](guides/tools.md)):
+SDK, or a server of your own, see [Tools](https://run.camelai.com/docs/guides/tools.md)):
 
 ```sh
 BASE=https://run.camelai.com; AUTH="Authorization: Bearer $CAMELAI_API_KEY"
@@ -131,7 +131,7 @@ REQ=$(curl -s $BASE/v1/agents/$AGENT/prompt -H "$AUTH" -H "Content-Type: applica
   -d '{"text": "Write a haiku about durable agents."}' | jq -r .id)
 # ?wait=25 answers as soon as the run ends (or after 25 s, still running: ask again).
 until RUN=$(curl -s "$BASE/v1/agents/$AGENT/requests/$REQ?wait=25" -H "$AUTH") && jq -e '.state == "completed"' <<< "$RUN" > /dev/null; do :; done
-jq -r '.outcome.result.reply // .error' <<< "$RUN"
+jq -r 'if .status == "failed" then "failed: \(.error)" else .outcome.result.reply end' <<< "$RUN"
 ```
 
 The agent names no model, so it uses your account's default: the first of the
@@ -140,14 +140,21 @@ the models you can use, and pass one as `model`:
 
 ```sh
 npx -y @camelai/camelrun models --available
+# or, without Node:
+curl -s "https://run.camelai.com/v1/models?available=true" -H "Authorization: Bearer $CAMELAI_API_KEY" | jq -r '.[].id'
 ```
 
 ```ts
 const agent = await agents.upsert("quickstart", { model: "<a model id from that list>", instructions: "…" });
 ```
 
-A model your account can't use fails with `No ... API key configured`: pick one
-from that list, or add the provider's key under **Models & keys**.
+```python
+agent = await agents.upsert("quickstart", model="<a model id from that list>", instructions="…")
+```
+
+A model your account can't use fails the run with code `model_key_missing`, and
+an error that says which key to set: pick one from that list, or add the
+provider's key under **Models & keys**.
 
 ## 4. Stream it
 
@@ -163,11 +170,15 @@ for await (const part of agent.stream("And tomorrow?")) {
 ```
 
 ```python
-async for part in agent.stream("And tomorrow?"):
+stream = agent.stream("And tomorrow?")
+async for part in stream:
     if part.type == "text":
         print(part.text, end="", flush=True)
     elif part.type == "tool_call":
         print(f"\n[{part.name}({part.arguments})]")
+    elif part.type == "done":
+        print(f"\n({part.run.status})")
+run = await stream.result()  # the same run as "done" has, also after a stream that broke off
 ```
 
 The run's result is the truth; the stream is for display. A stream that breaks
@@ -177,24 +188,27 @@ never loses the run: `run()` (or `stream.result()`) still resolves with it.
 
 - `upsert("quickstart", …)` made a keyed agent, or found the one made last time
   and brought it to this configuration. It lives until you delete it, so running
-  the file again continues the same conversation. See [Concepts](concepts.md).
+  the file again continues the same conversation. See [Concepts](https://run.camelai.com/docs/concepts.md).
 - Because the agent has `tools`, this process served them: the runtime called
   `weather` here, over the connection the SDK holds. One process at a time serves
   an agent's tools, and only while it runs. Serverless functions, several web
   workers or task workers, and multi-user backends serve tools over HTTP
   instead, which also keeps them working through deploys; see [Several
-  processes, workers and deploys](guides/tools.md#several-processes-workers-and-deploys).
+  processes, workers and deploys](https://run.camelai.com/docs/guides/tools.md#several-processes-workers-and-deploys).
 - `run()` resolved with a `Run`: `status` (`completed`, `input_required` or
-  `failed`), `text`, `inputs`, `error`, `toolErrors` (Python `tool_errors`). A
-  failed run throws a `RunError` unless you pass `throwOnError: false`
-  (`throw_on_error=False`).
+  `failed`), `text`, `inputs`, `error`, `toolCalls` (Python `tool_calls`: each
+  tool it called), `toolErrors` (Python `tool_errors`). A failed run throws a
+  `RunError` unless you pass `throwOnError: false` (`throw_on_error=False`). A
+  `completed` run can still list tool errors, e.g. `connection_lost` when the
+  process serving its tools went away mid-call: check them.
 - `agents.close()` let the process exit. The agent stays in the runtime.
 
-Next: [Concepts](concepts.md), then the guide for what you are building:
-[tools](guides/tools.md), [asking people](guides/human-input.md),
-[showing an agent in a browser](guides/browser.md), [files](guides/files.md),
-[agents for many users](guides/multi-user.md), [webhooks](guides/webhooks.md).
-Before you ship, read the [production checklist](production.md).
+Next: [Concepts](https://run.camelai.com/docs/concepts.md), then the guide for what you are building:
+[a chat in your app](https://run.camelai.com/docs/frontend.md) (`npm create @camelai/run-app`),
+[tools](https://run.camelai.com/docs/guides/tools.md), [asking people](https://run.camelai.com/docs/guides/human-input.md),
+[showing an agent in a browser](https://run.camelai.com/docs/guides/browser.md), [files](https://run.camelai.com/docs/guides/files.md),
+[agents for many users](https://run.camelai.com/docs/guides/multi-user.md), [webhooks](https://run.camelai.com/docs/guides/webhooks.md).
+Before you ship, read the [production checklist](https://run.camelai.com/docs/production.md).
 
 ---
 
@@ -254,7 +268,7 @@ A `Run` has:
 | `id` | the run's id; pass `idempotencyKey` to choose it, and sending the same key again returns the same run instead of starting another |
 | `status` | `completed`, `input_required` (it waits on a person: see `inputs`), or `failed` |
 | `text` | the final reply |
-| `output` | with `output: schema`, the answer in that shape ([Structured output](guides/structured-output.md)) |
+| `output` | with `output: schema`, the answer in that shape ([Structured output](https://run.camelai.com/docs/guides/structured-output.md)) |
 | `inputs` | what it waits on, each with `answer()` |
 | `error` | `{code, message, uncertain?}` when it failed |
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
@@ -281,7 +295,7 @@ working. Do not use them to decide what happened.
   snapshot of the running turn instead; streamed deltas in between are gone.
 
 So reply to your user from the run, and render the stream as progress. See the
-[event reference](reference/events.md).
+[event reference](https://run.camelai.com/docs/reference/events.md).
 
 ## Tools: where they run
 
@@ -296,9 +310,9 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 
 The same `tool({...})` definitions work attached and served, so you can start
 attached and move to served without changing a tool (see [Several processes,
-workers and deploys](guides/tools.md#several-processes-workers-and-deploys)). Every agent also has file
-tools over its [files](guides/files.md), and `js_exec`, a sandbox where the model
-writes code that calls all of its tools. See [Tools](guides/tools.md).
+workers and deploys](https://run.camelai.com/docs/guides/tools.md#several-processes-workers-and-deploys)). Every agent also has file
+tools over its [files](https://run.camelai.com/docs/guides/files.md), and `js_exec`, a sandbox where the model
+writes code that calls all of its tools. See [Tools](https://run.camelai.com/docs/guides/tools.md).
 
 ## Processes and connections
 
@@ -336,7 +350,7 @@ for days if need be; answering the last input resumes it.
 if (run.status === "input_required") run = await run.inputs[0].answer(true, { from: "alice" });
 ```
 
-See [Human input](guides/human-input.md).
+See [Human input](https://run.camelai.com/docs/guides/human-input.md).
 
 ## Idempotency
 
@@ -360,15 +374,15 @@ check before repeating anything.
 
 An agent can be woken by a schedule (`agent.client.schedule({ text, inSeconds |
 at, everySeconds })`, or the `schedule` built-in for the agent to set its own), by
-a [channel](guides/channels.md) (Slack, Telegram, Discord), or by your own code
-from a [webhook](guides/webhooks.md).
+a [channel](https://run.camelai.com/docs/guides/channels.md) (Slack, Telegram, Discord), or by your own code
+from a [webhook](https://run.camelai.com/docs/guides/webhooks.md).
 
 ## Definitions
 
 A **definition** is a reusable configuration: model, instructions, tool sources
 (MCP servers, OpenAPI specs, built-ins), limits and mounts. Make agents from one
 (`definition: "def_…"` on `upsert`), and roll a change out to all of them with
-`apply: "all"`. See [Definitions](guides/definitions.md).
+`apply: "all"`. See [Definitions](https://run.camelai.com/docs/guides/definitions.md).
 
 ---
 
@@ -379,7 +393,7 @@ A **definition** is a reusable configuration: model, instructions, tool sources
 An agent's tools are how it acts. This guide covers where they run, how to write
 them so a retry never does harm, and how the runtime tells a tool who a call is
 for. For the short version of where tools should run, see the table in
-[Concepts](../concepts.md#tools-where-they-run).
+[Concepts](https://run.camelai.com/docs/concepts.md#tools-where-they-run).
 
 ## Writing a tool
 
@@ -431,10 +445,10 @@ async def refund(order_id: str, context: ToolContext) -> dict:
   check and retry safely.
 - **`context.signal`** aborts when the runtime cancels the call (the run was
   aborted, or the deadline passed). Cancellation is not rollback.
-- **`context.identity`** says who the call is for; see [Identity](#identity-who-a-call-is-for).
+- **`context.identity`** says who the call is for; see [Identity](https://run.camelai.com/docs/guides/tools.md#identity-who-a-call-is-for).
 - **`needsApproval: true`** (`needs_approval=True`) makes a person approve each
   call first, and `context.confirm/ask/requireUrl` ask from inside the tool; see
-  [Human input](human-input.md).
+  [Human input](https://run.camelai.com/docs/guides/human-input.md).
 - **`exposure`**: `"direct"` (the model calls it as a tool), `"codemode"` (only
   from code in `js_exec`, as `tools.<name>(args)`), or `"both"`. By default a
   source of up to 10 tools is `both` and a larger one `codemode`, so big catalogs
@@ -522,6 +536,47 @@ told, in words it can pass on, that the tool's server disconnected during the
 call and it may or may not have taken effect; the run lists it in `toolErrors`
 (Python `tool_errors`) with code `connection_lost`. Key side effects by
 `context.idempotencyKey` so that checking and retrying is safe.
+
+#### When the tool process dies mid-run
+
+The run lives in the runtime, not in your process, so it goes on without it:
+
+- **The call that was running** fails as `connection_lost`, as above. The model
+  is told, and usually checks or tries again.
+- **A call while no process serves the tools** waits 3 seconds for one to
+  connect, then fails as `not_connected` (it did not run).
+- **The restarted process serves the run's next calls.** Once it upserts the
+  agent with its `tools`, it serves every call that comes, including calls of
+  runs a process before it started. A run is not tied to the process that sent it.
+- **The `run()` the dead process awaited is gone, but its run is not.** Give each
+  run an id of yours (`idempotencyKey`), saved before you send it, e.g. the job
+  or the order it is for. After the restart, `run()` with the same text and the
+  same key answers with that run instead of starting another: its result if it
+  has ended, or once it ends if not. Without an SDK, `GET
+  /v1/agents/:id/requests/<key>?wait=25` answers the same, and `GET
+  /v1/agents/:id/state` lists the agent's runs.
+
+Check `toolErrors` even when the run's `status` is `completed`: a run whose
+call was cut off often ends normally, after the model worked around it.
+
+```ts
+// On startup (and after a crash): serve the tools, then collect the job's run.
+const agent = await agents.upsert("ops", { model, instructions, tools: { refund } });
+const run = await agent.run(`Refund order ${job.orderId}`, { idempotencyKey: job.id });
+const lost = run.toolErrors.filter(error => error.code === "connection_lost");
+if (lost.length) console.warn(`check whether ${lost.map(error => error.tool).join(", ")} took effect`);
+console.log(run.status, run.text, run.toolCalls.map(call => call.tool));
+```
+
+```python
+# On startup (and after a crash): serve the tools, then collect the job's run.
+agent = await agents.upsert("ops", model=model, instructions=instructions, tools=[refund])
+run = await agent.run(f"Refund order {job.order_id}", idempotency_key=job.id)
+lost = [error for error in run.tool_errors if error["code"] == "connection_lost"]
+if lost:
+    print("check whether", ", ".join(error["tool"] for error in lost), "took effect")
+print(run.status, run.text, [call["tool"] for call in run.tool_calls])
+```
 ## Served tools: over HTTP, for serverless and many users
 
 A server of yours answers tool calls over HTTP (MCP's Streamable HTTP), and a
@@ -612,7 +667,7 @@ agent's own token cannot change them; the model cannot touch any of it. So,
 once the token is checked to be from your own tenant (served tools), a tool can
 trust `identity`, and should never take a user id from the model's arguments.
 Another tenant's agents can claim any `subject`: `identity` is only meaningful
-within your tenant. See [Many users](multi-user.md).
+within your tenant. See [Many users](https://run.camelai.com/docs/guides/multi-user.md).
 
 The token itself (for servers that verify it by hand, e.g. with `jose`):
 
@@ -641,7 +696,7 @@ const { payload } = await jwtVerify(token, jwks, { issuer: "https://agents.camel
 
 ## Definitions' sources
 
-A [definition](definitions.md) lists tool sources the runtime calls itself.
+A [definition](https://run.camelai.com/docs/guides/definitions.md) lists tool sources the runtime calls itself.
 
 ### MCP servers
 
@@ -737,7 +792,7 @@ it is made from (whose builtins it then has):
 - `schedule`, `list_schedules`, `cancel_schedule` let the agent manage its own
   wake-ups (100 per agent, at most a year ahead, repeats at least a minute apart).
 - `ask_user` lets the model ask the user 1 to 4 multiple-choice questions; the
-  run waits for the answer. See [Human input](human-input.md).
+  run waits for the answer. See [Human input](https://run.camelai.com/docs/guides/human-input.md).
 
 ## Seeing an agent's tools
 
@@ -757,7 +812,7 @@ The model can write JavaScript that calls any of its tools, in a sandbox
 tools.shop__getOrder({ id })`, `Promise.all` for parallel calls, `fs` over its
 files, `tools.search(query)` to find tools in a large catalog, `tools.describe(name)`
 for a schema. Code runs for at most 120 seconds and 256 tool calls; see
-[Limits](../reference/limits.md). `agent.client.execute(code)` runs code
+[Limits](https://run.camelai.com/docs/reference/limits.md). `agent.client.execute(code)` runs code
 yourself, outside the model's history, which is handy for testing tools.
 
 ## Tool search
@@ -895,10 +950,10 @@ Inputs outlive your process: answer later from anywhere.
   input is answered): poll it like a prompt.
 - `onInput` (`on_input`) on `upsert` hears each input as it is asked: return an
   answer to give it at once, or nothing to answer later.
-- An MCP client talking to the agent through its [MCP endpoint](mcp-server.md)
+- An MCP client talking to the agent through its [MCP endpoint](https://run.camelai.com/docs/guides/mcp-server.md)
   is asked through elicitation, when it supports it.
 - The agent's events include `input_required` and `input_resolved`, and
-  [webhooks](webhooks.md) `input.requested` and `input.resolved`.
+  [webhooks](https://run.camelai.com/docs/guides/webhooks.md) `input.requested` and `input.resolved`.
 
 ## Who may answer
 
@@ -929,7 +984,7 @@ In Slack, Telegram or Discord, a suspended turn's reply ends with its first inpu
 as text: a question's numbered options, the call to approve, the URL, a
 confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
-anything else is a new message. See [Channels](channels.md).
+anything else is a new message. See [Channels](https://run.camelai.com/docs/guides/channels.md).
 
 ---
 
@@ -959,6 +1014,7 @@ run.output; // { category: "bug", priority: 2, summary: "…" }, typed z.infer<t
 ```
 
 ```python
+# pip install "camelai-run[pydantic]"
 from pydantic import BaseModel
 from typing import Literal
 
@@ -1023,6 +1079,424 @@ errors and calls again.
   `output`.
 - **An agent with its own tool named `final_output`** cannot take an output
   schema.
+
+---
+
+<!-- https://run.camelai.com/docs/frontend.md -->
+
+# Frontend guide
+
+Put a streaming chat with an agent in your app: your users talk to their own agents, the agent's
+replies stream in as they are written, its tool calls show as cards (or as your own components), and
+its questions and approvals are answered in place.
+
+- [Start a new app](https://run.camelai.com/docs/frontend.md#start-a-new-app)
+- [Add it to an app you have](https://run.camelai.com/docs/frontend.md#add-it-to-an-app-you-have): the route, then the UI
+- [How it stays secure](https://run.camelai.com/docs/frontend.md#how-it-stays-secure)
+- [The UI, four ways](https://run.camelai.com/docs/frontend.md#the-ui-four-ways): `<AgentChat>`, hooks, shadcn, AI SDK
+- [Tools and generative UI](https://run.camelai.com/docs/frontend.md#tools-and-generative-ui)
+- [Questions, approvals and files](https://run.camelai.com/docs/frontend.md#questions-approvals-and-files)
+- [Conversations (threads)](https://run.camelai.com/docs/frontend.md#conversations-threads)
+- [Theming and accessibility](https://run.camelai.com/docs/frontend.md#theming-and-accessibility)
+- [Other frameworks](https://run.camelai.com/docs/frontend.md#other-frameworks)
+- [Troubleshooting](https://run.camelai.com/docs/frontend.md#troubleshooting)
+
+## Start a new app
+
+```sh
+export CAMELAI_API_KEY=art_...   # https://run.camelai.com/console/tokens
+npm create @camelai/run-app my-app
+cd my-app && npm run dev
+```
+
+It writes the key from `CAMELAI_API_KEY` to the app's `.env.local`.
+
+A Next.js app with the chat, its route, a tool drawn by its own component, and a demo sign-in to
+replace with yours. Examples with Vite (React, Vue, Svelte, Solid), the read proxy and the AI SDK are in
+[examples/frontend](https://github.com/qaml-ai/run/blob/main/examples/frontend). Get an API key in the [console](https://run.camelai.com/console).
+
+## Add it to an app you have
+
+```sh
+npm install @camelai/run @camelai/run-react
+```
+
+### 1. The route
+
+One POST route on your server does everything the browser needs: it checks who the user is (your
+own sign-in), gives their browser a short-lived token to read their agent, and sends their messages
+and answers. Your API key never leaves the server.
+
+```ts
+// app/api/agent/route.ts (Next.js App Router)
+import { createAgentHandler } from "@camelai/run/server";
+
+export const POST = createAgentHandler({
+  // CAMELAI_API_KEY from the environment, or apiKey: "…"
+  authorize: async request => {
+    const user = await getUser(request);          // your session check
+    return user ? { userId: user.id, name: user.name } : null;   // null: 401
+  },
+  agent: {
+    instructions: "You help customers with their orders.",
+    model: "anthropic/claude-sonnet-5-5",           // optional; any model from GET /v1/models
+  },
+});
+```
+
+The same handler is a standard `fetch` handler everywhere:
+
+```ts
+// Hono
+app.post("/api/agent", c => handler(c.req.raw));
+
+// Cloudflare Workers, Bun, Deno
+export default { fetch: handler };
+
+// Express or node:http
+import { nodeListener } from "@camelai/run/node";
+app.post("/api/agent", nodeListener(handler));    // before any body parser for this route
+```
+
+`createAgentHandler` options:
+
+| Option | |
+| --- | --- |
+| `authorize(request, { thread, action })` | Required. Return `{ userId, name?, agentKey? }` or `null`. |
+| `agent` | How the user's agent is made: `{ instructions, model, tools, definition, context, spendLimit, … }`, or a function of the user. |
+| `onSend({ auth, text, data, request })` | Before each message: return `{ text?, metadata? }`, or `throw new Response(…)` to refuse it (quotas, moderation). |
+| `browserToken` | `{ ttlSeconds, events, redact, url }` for the tokens it mints (default 15 minutes, no provider cost). |
+| `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
+| `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts, so the boundary is what the agent can read. Default: only files it presented, or in its own workspace volume. |
+| `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](https://run.camelai.com/docs/frontend.md#reading-through-your-route-proxy)). Default `false`. |
+| `apiKey`, `url` | Default `CAMELAI_API_KEY`, and `CAMELAI_BASE_URL` or https://run.camelai.com. |
+
+### 2. The UI
+
+```tsx
+"use client";
+import { AgentChat } from "@camelai/run-react/ui";
+import "@camelai/run-react/styles.css";
+
+export default function Support() {
+  return <AgentChat endpoint="/api/agent" suggestions={["Where is my order?"]} />;
+}
+```
+
+`<AgentChat>` fills its container: give that a height.
+
+### Reading through your route (proxy)
+
+By default the browser reads its agent's stream straight from the runtime, with the browser token
+your route gave it: the stream never passes through your server. With `proxy: true`, your route
+passes those reads through as well (the event stream, its long-poll fallback, history, state and
+inputs), and file downloads (`link` answers a URL under your route), so the browser only ever talks
+to your origin: nothing to allow in a Content Security Policy, no runtime URL in the page, and the
+runtime itself may be private (see [Self-hosting](https://run.camelai.com/docs/operations/self-host.md#networking)). The chat
+needs no other change.
+
+```ts
+// app/api/agent/[[...path]]/route.ts: the route and every path under it
+const handler = createAgentHandler({ authorize, agent, proxy: true });
+export const GET = handler;
+export const POST = handler;
+```
+
+Hono: `app.all("/api/agent/*", c => handler(c.req.raw))` as well as `/api/agent`. Express:
+`app.use("/api/agent", nodeListener(handler))`. Workers: the same `fetch` handler.
+
+Each read is checked with `authorize` like everything else and must name the user's own agent; the
+route adds a browser token it keeps on the server (the browser never sees one), and streams each
+chunk as it arrives. A browser that goes away cancels the read upstream.
+
+The cost: every open chat holds a request on your server for as long as it is open. Serverless
+functions cut a request at their time limit (on Vercel, the function's maximum duration); the chat
+then reconnects from where it was, and after two streams that deliver nothing it switches to long
+polls of at most 25 seconds, which fit any limit. Direct reads keep that load off your servers, so
+they stay the default: use the proxy when policy requires a single origin.
+
+### The route's protocol
+
+The chat talks to your route in plain JSON, so anything that can POST can use it: a native app, a
+test, a script or curl. Each request is `POST <route>` with `Content-Type: application/json`, the
+cookie or header your `authorize` reads, and a body `{ action, thread?, … }`. `thread` (1 to 200
+characters, or null) picks the conversation; with the user, it picks the agent
+(`agentKeyFor(userId, thread)`) unless `authorize` names one.
+
+| `action` | Body | Answer |
+| --- | --- | --- |
+| `token` | | `{ token, expiresAt, agentId, url }`: a browser token that reads the agent (`/v1/agents/:id/{events,history,state,inputs}` at `url`). With `proxy: true`, `{ proxy: true, agentId, token: "", expiresAt }`: read under the route instead. |
+| `send` | `{ text, clientId, data?, whileRunning?, wait? }` | `{ requestId, state, steeredInto? }`, as soon as the message is accepted. `clientId` (8 to 80 letters, digits, `_` and `-`) is the message's id: sending the same one again sends nothing twice. `whileRunning` is `queue` (the default) or `steer`. `data` reaches only your `onSend`. With `wait`, see below. |
+| `wait` | `{ requestId, wait? }` | A message sent before, by its `clientId`, as `send` with `wait` answers. Sends nothing. |
+| `answer` | `{ inputId, answer: { action: "accept" \| "decline" \| "cancel", content? } }` | `{ input, request }`, as `POST /v1/agents/:id/inputs/:inputId` answers. The answer is the user's (`from`). |
+| `stop` | | `{ aborted: true }`: the agent's running turn is stopped. |
+| `link` | `{ path }` | `{ url, expiresAt }`: a download link for a file the agent presented or that is in its own workspace (any mounted path with `linkAnyMountedPath`). |
+
+With `proxy: true` the route also takes `GET <route>[/threads/:thread]/v1/agents/:id/{events,history,state,inputs}`
+(the runtime's read routes, for the user's own agent only) and the file links that `link` gives.
+
+Errors are `{ error: { code, message } }` with the HTTP status: 401 `unauthorized` (`authorize`
+returned null), 400 `invalid_request` or `invalid_json` (the message names the field), 403
+`forbidden_origin` (another site; see `allowedOrigins`), 405, 413 `too_large`, 415
+`unsupported_media_type`, and the runtime's own errors passed on with their status and code
+(`INSUFFICIENT_CREDIT`, `not_found`, …; 502 `runtime_unreachable` when it cannot be reached). A
+`Response` that your `onSend` throws is answered as it is.
+
+#### Waiting for the reply
+
+The chat follows the agent's stream, so it sends without waiting. A caller without the stream
+passes `wait`: `true` (25 seconds) or whole seconds from 1 to 25. The route answers once the run
+ends, with `state: "completed"` and the run's `reply` (its final message's text), `error` (why it
+failed) or `stopped` (`input_required`, `spend_limit` or `turn_limit`). A run still going when the wait is over
+answers `state: "running"`: ask again with `wait`.
+
+```sh
+curl -s https://app.example.com/api/agent -H "Cookie: session=…" -H "Content-Type: application/json" \
+  -d '{"action":"send","text":"Where is my order?","clientId":"msg_0001","wait":true}'
+# {"requestId":"msg_0001","state":"completed","reply":"It shipped yesterday…"}
+curl -s https://app.example.com/api/agent -H "Cookie: session=…" -H "Content-Type: application/json" \
+  -d '{"action":"wait","requestId":"msg_0001","wait":25}'
+```
+
+Each wait holds a request on your server: keep `wait` under your platform's limit (serverless
+functions cut requests at theirs). Without the handler, the runtime's
+`GET /v1/agents/:id/requests/:requestId?wait=25` does the same with your API key.
+
+## How it stays secure
+
+- **The API key stays on your server.** The browser gets a *browser token* for one agent: it reads
+  that agent's events, history, state and inputs, for 15 minutes, and nothing else. It cannot send,
+  answer, stop, or read another agent. The chat renews it through your route before it expires.
+- **Every write goes through your route**, after your `authorize`. The browser never names an agent:
+  the route picks the user's agent from what `authorize` returned (by default one per user and
+  thread, `agentKeyFor(userId, thread)`, a hash that no user's thread name can collide with). An
+  agent's `subject` is its user and cannot change afterwards.
+- **Messages and answers are sent as the user** (`from: { id: userId, name }`), never as whatever the
+  browser claims; the runtime checks answers against who may answer. The browser's own data for a
+  message (`send(text, { data })`) reaches the agent only if your `onSend` passes it on.
+- **Sends are idempotent**: each carries the id the browser gave its message, so a retry never sends
+  twice.
+- **Cross-site requests are refused**: the route takes only `application/json` (which a form on
+  another site cannot post) and refuses `Sec-Fetch-Site: cross-site` unless you list the origin.
+- **Rendering is safe**: markdown is rendered with elements, never HTML; links are only http(s) and
+  mailto; images the model links are shown as links unless you set `allowImages` (loading an image
+  a model chose can leak data to its server).
+
+## The UI, four ways
+
+**`<AgentChat>`**, prebuilt (`@camelai/run-react/ui`): messages, streaming markdown, tool
+cards, questions, files, a composer with Stop, scrolling that follows the reply. Replace any part:
+
+```tsx
+<AgentChat
+  endpoint="/api/agent"
+  tools={{ get_weather: WeatherCard }}                 // your component per tool
+  components={{ Markdown: MyMarkdown, EmptyState: Welcome }}
+  labels={{ placeholder: "Ask about your order" }}     // every string, for translation
+  theme="system"                                       // or "light" / "dark"
+/>
+```
+
+**Hooks**, for your own UI (`@camelai/run-react`):
+
+```tsx
+<AgentProvider endpoint="/api/agent">
+  <MyChat />
+</AgentProvider>
+
+function MyChat() {
+  const messages = useMessages();                  // user bubbles and assistant turns, as typed parts
+  const send = useSend();
+  const { status, isRunning, error, stop } = useAgentStatus();
+  const { inputs, answer } = useInputs();
+  const { hasOlder, loadOlder } = useLoadOlder();
+  return messages.map(message => <Row key={message.id} message={message} />);
+}
+```
+
+A message is `{ id, role: "user", text, parts, status: "sending" | "sent" | "failed" }` or
+`{ id, role: "assistant", parts, streaming }`; parts are `text`, `reasoning`, `tool` (`name`, `args`
+while they stream, `state`, `result`, `progress`, `input`) and `file`. A message that did not change
+is the same object from one render to the next, and a sent message keeps its id when the agent's
+copy arrives, so rows keyed by `id` never remount.
+
+**shadcn**: copy the chat into your project, in your theme, and own the code:
+
+```sh
+npx shadcn add https://run.camelai.com/r/agent-chat.json
+npx shadcn add https://run.camelai.com/r/agent-route.json   # the Next.js route
+```
+
+**AI SDK**: use `useChat` (and AI Elements) with the agent:
+
+```tsx
+import { useChat } from "@ai-sdk/react";
+import { lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
+import { AgentRuntimeChatTransport } from "@camelai/run/ai-sdk";
+
+const transport = useMemo(() => new AgentRuntimeChatTransport({ endpoint: "/api/agent" }), []);
+const { messages, setMessages, sendMessage, addToolApprovalResponse, stop } = useChat({
+  id: threadId,                        // the route's thread
+  transport,
+  sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+});
+// The conversation so far, from the agent:
+useEffect(() => { void transport.loadMessages({ chatId: threadId }).then(setMessages); }, [transport, threadId]);
+```
+
+The agent keeps the conversation, so only the new message is sent. Tool calls arrive as
+`dynamic-tool` parts, approvals as tool approval requests, other questions as `data-agent-input`
+parts (answer with `transport.answer(input, value, { chatId: threadId })`, then `resumeStream()`).
+
+Without React, the store behind all of these is `createAgentChat` from
+`@camelai/run/chat`: `subscribe`, `getSnapshot`, `send`, `answer`, `stop`, `loadOlder`.
+
+## Tools and generative UI
+
+Give the agent tools in the route; draw their calls with your own components in the browser.
+
+```ts
+// route.ts
+import { schema, tool } from "@camelai/run";
+agent: {
+  tools: {
+    get_weather: tool({
+      description: "The weather in a city",
+      input: schema.Object({ city: schema.String() }),
+      execute: async ({ city }, { identity }) => weather.now(city),   // identity.subject is the user
+    }),
+  },
+},
+```
+
+```tsx
+function WeatherCard({ args, state, result }: ToolRenderProps) {
+  if (state === "input_streaming") return <p>Looking up {String(args.city ?? "")}…</p>;
+  return <Card data={result?.data} loading={state !== "done"} />;
+}
+<AgentChat endpoint="/api/agent" tools={{ get_weather: WeatherCard }} />
+// or anywhere under the provider: useToolRenderer("get_weather", WeatherCard)
+```
+
+A renderer gets `args` (partial while the model writes them), `state` (`input_streaming`, `running`,
+`input_required`, `done`, `error`), `result` (`text`, and `data` when it is JSON), `progress`, and,
+for a call that waits on the user, its `input` and `answer(value)`.
+
+Tools given in the route run in that server process, so it must keep running (`next dev`,
+`next start`, a container, a Node or Bun server). On serverless hosting (Vercel functions,
+Workers), serve the tools over HTTP with `serveTools` and name them in a definition:
+`agent: { definition: "def_…" }` (see `clients/README.md`, "Serving tools to many users").
+`serveTools` checks the runtime's signed identity on every call, and needs your tenant's id
+(`GET /v1/me`), so another tenant's agents can never call your tools as your users:
+
+```ts
+// app/api/tools/route.ts
+import { serveTools } from "@camelai/run/server";
+const handler = serveTools(tools, { runtime: "https://run.camelai.com", tenant: process.env.CAMELAI_TENANT! });
+export { handler as GET, handler as POST };
+```
+
+With `nodeListener` (Express, node:http) behind a proxy that ends TLS, pass `trustProxy: true` only
+if that proxy sets `X-Forwarded-Proto` and `X-Forwarded-Host` itself; they are ignored otherwise.
+
+## Questions, approvals and files
+
+When the agent asks (`ask_user`), a tool needs approval (`needsApproval`, or a definition's approval
+policy), or a tool asks for a form or a URL step, the run waits, for days if need be. `<AgentChat>`
+shows the question on the call that asked, with the choices, a form, or Approve and Deny; the
+answer goes through your route as the user, and the run goes on. With hooks:
+`useInputs().answer(input, value)`, where `value` is `true`/`false` for an approval, the chosen label
+(or labels) for a question, or the fields for a form.
+
+Files the agent hands over (`present_file`) show as images or downloads. Their signed links come with
+the stream; for older ones the chat asks your route for a fresh link. The route signs links only for
+files the agent presented, or that are in its own workspace volume (the one the runtime made for it):
+a volume you mounted into it (shared data, say) is not downloadable by its users unless the agent
+hands a file over. With `linkAnyMountedPath: true` the boundary is what the agent can read: any file
+in any of its mounts.
+
+## Conversations (threads)
+
+A `thread` is your name for one of the user's conversations; each is its own agent, with its own
+history:
+
+```tsx
+<AgentChat endpoint="/api/agent" thread={conversationId} />
+```
+
+The route receives it in `authorize(request, { thread })`. By default each user and thread is one
+agent (`agentKeyFor(userId, thread)`).
+
+**Agents several people share** (a team's assistant, a support conversation a customer and an agent
+of yours both join): return the agent's key yourself, after checking the user may use it.
+
+```ts
+authorize: async (request, { thread }) => {
+  const user = await getUser(request);
+  if (!user) return null;
+  // thread is the team's id here: only its members get its agent.
+  if (thread && !(await isMember(user.id, thread))) return null;
+  return { userId: user.id, name: user.name, agentKey: thread ? `team-${thread}` : undefined };
+},
+```
+
+- The key is yours: 1 to 80 letters, digits, `_` and `-`, stable for as long as the conversation
+  lives. Never build it from untrusted input without checking access first, as above.
+- Each message is sent as its user (`from`), so the model knows who said what and the chat shows each
+  sender's name; tools get the sender as `identity.actor`.
+- The agent's `subject` (what its tools see as `identity.subject`) is set when it is made and never
+  changes: for an agent you name, it is the key (`team-acme`), not whoever opened it first; return
+  `subject` from `authorize` to choose it, and put what tools need (the team) in `agent.context`.
+- Answers to the agent's questions are checked against who may answer: by default the person whose
+  message started the turn.
+- Everyone watching sees the same conversation, live.
+- It is one conversation with one turn at a time: a message sent while the agent works waits for
+  that turn (or joins it, with `whileRunning: "steer"`); anyone's Stop stops the turn for everyone;
+  and a new message while the agent waits on a question supersedes the question (its call closes as
+  not answered). Put per-user work in per-user agents.
+
+## Theming and accessibility
+
+`styles.css` defines the look with CSS variables on `.agent-chat` (or any ancestor):
+
+```css
+.agent-chat {
+  --agent-accent: #4f46e5;        /* buttons, send */
+  --agent-radius: 16px;
+  --agent-font: "Inter", sans-serif;
+  --agent-max-width: 880px;
+}
+```
+
+Others: `--agent-bg`, `--agent-fg`, `--agent-muted`, `--agent-muted-fg`, `--agent-border`,
+`--agent-user-bg`, `--agent-code-bg`, `--agent-danger`, `--agent-focus`, `--agent-font-size`. Dark mode
+follows the system, a `.dark` (or `data-theme="dark"`) ancestor, or `theme="dark"`; use `theme="light"`
+on a site without dark mode. With shadcn/ui, also import `@camelai/run-react/shadcn.css`
+to use your theme's tokens. Every rule is `:where(…)`, so your CSS wins without `!important`; class
+names (`agent-chat__message`, …) are stable.
+
+Accessibility: the conversation is a `log` that screen readers do not read token by token; a polite
+status says when the assistant is responding and then reads its reply. Everything works with the
+keyboard (Enter sends, Shift+Enter is a new line, Escape stops a run); questions are fieldsets with
+radio and checkbox groups; focus is always visible; motion follows `prefers-reduced-motion`.
+
+## Other frameworks
+
+The store (`@camelai/run/chat`) has no framework in it; the React bindings are a thin
+layer over it, and so are those for Vue, Svelte and Solid (see their packages). React Native works
+with the store and the hooks where `fetch` streams (Expo's `expo/fetch`), or with
+`watch: { transport: "poll" }`.
+
+## Troubleshooting
+
+- **401 from the route**: `authorize` returned null: the user is not signed in, or the cookie did not
+  reach the route (`credentials`).
+- **"Could not reach the runtime … CORS"** in the browser: the runtime allows any origin only for
+  browser tokens on its read routes; check the route's `browserToken.url` (or `CAMELAI_BASE_URL`).
+- **Tool calls fail with "not connected"**: the process that serves the route's tools is not
+  running (serverless); use `serveTools` and a definition.
+- **Two server instances**: tools served from the route belong to one process at a time; run one
+  instance, or serve tools over HTTP.
 
 ---
 
@@ -1139,7 +1613,7 @@ its own at `<its URL>/r/`.
 The same reads work from any code: `GET /v1/agents/:id/events` (SSE; `?poll=1&wait=25`
 for one JSON long poll), `/state`, `/history?limit=50` (pages of whole turns,
 newest first, `before` for older) and `/inputs`, with a browser token or your
-API key. See the [event reference](../reference/events.md).
+API key. See the [event reference](https://run.camelai.com/docs/reference/events.md).
 
 ---
 
@@ -1335,8 +1809,8 @@ const definition = await agents.runtime.upsertDefinition("support", {
 
 Authorize every call as `identity.user` within `identity.context`, never from
 the model's arguments. That identity is only meaningful within your own tenant,
-which is why `serveTools` requires `tenant`. See [Tools](tools.md#served-tools-over-http-for-serverless-and-many-users)
-and [Identity](tools.md#identity-who-a-call-is-for).
+which is why `serveTools` requires `tenant`. See [Tools](https://run.camelai.com/docs/guides/tools.md#served-tools-over-http-for-serverless-and-many-users)
+and [Identity](https://run.camelai.com/docs/guides/tools.md#identity-who-a-call-is-for).
 
 Your request handlers can be serverless: an agent upserted without local tools
 follows its stream read-only, so any number of instances run agents at once.
@@ -1344,7 +1818,7 @@ follows its stream read-only, so any number of instances run agents at once.
 ## Showing each user their agent
 
 Mint a browser token per user and let the browser read the agent directly; send
-messages through your server. See [Showing an agent in a browser](browser.md).
+messages through your server. See [Showing an agent in a browser](https://run.camelai.com/docs/guides/browser.md).
 
 ## Spend: limits and keys per user
 
@@ -1355,9 +1829,9 @@ messages through your server. See [Showing an agent in a browser](browser.md).
   failed as `spend_limit`.
 - A **key scope** per customer holds that customer's own provider keys, so their
   agents call providers with them: `PUT /v1/key-scopes/:scope/providers/:provider`,
-  then `keyScope` on upsert. See [Models and keys](models-and-keys.md).
+  then `keyScope` on upsert. See [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md).
 - `modelHeaders` label each model call, e.g. for a gateway's per-conversation logs.
-- The `usage.recorded` [webhook](webhooks.md) reports each model response's cost
+- The `usage.recorded` [webhook](https://run.camelai.com/docs/guides/webhooks.md) reports each model response's cost
   with the agent's `subject`, `context`, `actor` and `keyScope`, to meter per user.
 
 ## Matching messages to your records
@@ -1490,7 +1964,7 @@ if (event.type === "run.failed" && event.data.metadata?.thread) {
 ```
 
 A serverless handler that upserts without local tools never contends with the
-process serving the agent's tools; see [Concepts](../concepts.md#processes-and-connections).
+process serving the agent's tools; see [Concepts](https://run.camelai.com/docs/concepts.md#processes-and-connections).
 
 ## The usage webhook (deprecated)
 
@@ -1516,7 +1990,7 @@ its history carries over.
 A model on a server of your own that speaks OpenAI's or Anthropic's API (vLLM,
 Ollama, a gateway, a hosted API the catalog lacks) is named the same way once
 you add its server as a provider, your account's or a key scope's: see
-[Custom models](custom-models.md).
+[Custom models](https://run.camelai.com/docs/guides/custom-models.md).
 
 An agent that names no model (and whose definition names none) gets the
 runtime's default: Claude Sonnet 5.5 on run.camelai.com, on the first of
@@ -1527,99 +2001,24 @@ key scope's keys count too), else `openrouter/openai/gpt-6-luna`. It is chosen
 when the agent is made and stays its model. `GET /v1/me` says which
 (`defaultModel`; `runtime.me()` in the SDKs).
 
-A model call uses, in order: the key of the agent's [key scope](#key-scopes) for
+A model call uses, in order: the key of the agent's [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes) for
 the model's provider, else your account's own key for the provider
-(`PUT /v1/providers/:provider/key`, or the console), else one the runtime's
-operator set for your account, else the platform's key: for prepaid accounts,
-charged to your credit, and for the operator's own (unbilled) accounts, free
-but still counted as platform usage. Agents cannot be made on a provider none
-of these has a key for. Web search and `web_fetch`'s page rendering take their
-keys (`exa`, `brave`, `parallel`, `firecrawl`) the same way, without key scopes.
+(`PUT /v1/providers/:provider/key`, or the console), else the platform's key,
+charged to your credit. An account that signed up before billing never uses the
+platform's. A provider with your own key never uses the platform's. An agent on
+a provider none of these has a key for is still made, and its runs fail with
+`model_key_missing`, naming the key to set. Web search and `web_fetch`'s page
+rendering take their keys (`exa`, `brave`, `parallel`, `firecrawl`) the same way,
+without key scopes.
 
-| Account | Order a key is taken in |
-|---|---|
-| Signed up (prepaid) | key scope's, own, platform's (charged to credit) |
-| Signed up before billing (unbilled) | key scope's, own; never the platform's |
-| Admin tenant from the tenants file (`billing` `none`) | key scope's, own, the admin's `apiKeys`, platform's (unbilled, recorded as platform usage) |
-| Admin tenant with `"platformKeys": false` | key scope's, own, the admin's `apiKeys`; never the platform's |
-| Admin tenant with `"billing": "prepaid"` | key scope's, own, the admin's `apiKeys`, platform's (charged to credit) |
+`PUT /v1/providers/:provider/key` checks the key with the provider before it
+stores it, and refuses one the provider rejects. `{"apiKey": "…", "verify": false}`
+stores it unchecked (a placeholder, a key for a provider the runtime cannot
+reach yet). A run on a key the provider refuses fails with `model_key_invalid`.
 
-A provider with your own key never uses the platform's, whatever the account.
-
-## Your own model endpoint
-
-A tenant can have its agents' model calls go through its own pass-through
-gateway, e.g. a proxy that checks credit per call, swaps in the real provider
-key (its customers' own, a subscription) and meters usage, the way Cloudflare's
-AI Gateway does. The runtime speaks each provider's native protocol to it, so
-nothing is translated: the gateway forwards the bytes as they are. Its entry in
-the tenants file names the endpoint as a provider:
-
-```json
-"camel": {"tokenSha256": "…", "modelEndpoints": {"chiridion": {
-  "baseUrl": "https://camelai.com/agent-runtime/llm",
-  "models": {"openrouter/deepseek/deepseek-v4:free": {"contextWindow": 128000, "maxTokens": 8192, "reasoning": true, "input": ["text"]}}
-}}}
-```
-
-- Agents name its models as `<name>/<provider>/<model id>`, e.g.
-  `"chiridion/anthropic/claude-opus-5"` or
-  `"chiridion/openrouter/anthropic/claude-sonnet-5:nitro"`, at creation, in a
-  definition or through `PATCH /v1/agents/:id/configuration`. Bedrock models also
-  name their region: `"chiridion/amazon-bedrock/us-west-2/us.anthropic.claude-sonnet-5"`.
-  The model is Pi's catalog model `<provider>/<model id>` (its metadata, API and
-  compatibility; a routing variant like `:nitro` or `:free` is looked up without
-  the suffix). Or it is one declared in `models` under everything after
-  `<name>/`. `GET /v1/models` lists the declared ones. The model id is sent
-  exactly as given, variant and all.
-- `<baseUrl>/<provider>` stands for the provider's API root below. The gateway
-  strips `<baseUrl>/<provider>` (plus the region, for Bedrock) and appends the
-  rest of the path, query included, to the root. The runtime puts its identity
-  token where the provider takes its key.
-
-  | provider | upstream root | requests | key header |
-  |---|---|---|---|
-  | `anthropic` | `https://api.anthropic.com` | `POST /v1/messages?beta=true` | `x-api-key` |
-  | `openai` | `https://api.openai.com/v1` | `POST /responses` | `Authorization: Bearer` |
-  | `openrouter` | `https://openrouter.ai/api` | `POST /v1/responses`; Anthropic models `POST /v1/messages?beta=true` | `Authorization: Bearer`; `x-api-key` |
-  | `google` | `https://generativelanguage.googleapis.com/v1beta` | `POST /models/<id>:streamGenerateContent?alt=sse` | `x-goog-api-key` |
-  | `amazon-bedrock` | `https://bedrock-runtime.<region>.amazonaws.com`, from `<baseUrl>/amazon-bedrock/<region>` | `POST /model/<URL-encoded id>/converse-stream` | `Authorization: Bearer` (unsigned; no SigV4) |
-  | `openai-codex` | `https://chatgpt.com/backend-api` | `POST /codex/responses` (SSE, body `Content-Encoding: zstd`) | `Authorization: Bearer`, with `chatgpt-account-id: passthrough` |
-
-  OpenRouter's models use its Responses API, stateless (`store: false`, the whole
-  conversation each call), with reasoning kept and sent back as it came
-  (`encrypted_content` or `signature`). Its Anthropic models keep its Messages API,
-  as in Pi's catalog, because Responses gets them no prompt caching. Bedrock
-  requests are HTTP/1.1, and their ids are sent as given: a model id
-  (`anthropic.claude-sonnet-5`) or an inference profile's (`us.…`, `eu.…`,
-  `global.…`); Pi's catalog has both.
-  `openai-codex` is ChatGPT's Codex backend, e.g.
-  `"chiridion/openai-codex/gpt-5.5"`: the tenant replaces `Authorization` with
-  the user's ChatGPT access token and sets the real `chatgpt-account-id`. Its
-  requests are stateless too, and also carry `originator`, `OpenAI-Beta`, and,
-  in a turn, `session-id` and `x-client-request-id` (the agent's id), which the
-  backend takes as they are.
-- Every call also carries the token as `X-Agent-Runtime-Identity`. This is the
-  EdDSA JWT that MCP servers with `auth: {"type": "runtime"}` get (see
-  [Identity tokens](tools.md#identity-who-a-call-is-for)). Its `aud` is the
-  endpoint's `baseUrl` exactly as configured, and it has the same claims:
-  `tenant`, `agent`, `sub`, `act` (the turn's actor), `ctx` and `definition`. A
-  fresh token is minted for every call, compaction summaries included, and lasts
-  two minutes. Verify it against `/.well-known/jwks.json`; the runtime sends no
-  key.
-- The runtime does not retry the endpoint's errors, since the gateway retries
-  itself. A refusal before the stream (e.g. an HTTP 402 or 429 in the
-  provider's error format), a 5xx or an error mid-stream ends the turn, with the
-  message as the outcome's `error`. A context overflow still compacts and
-  continues once.
-- Calls to it cost the runtime nothing. They are counted in `/v1/usage` under
-  `<name>/<provider>/<model id>` at zero cost, and are never charged as platform
-  tokens or counted toward `maxMonthlyCost`. Agent time is charged as with a
-  tenant's own key.
-- The endpoint is the operator's: it must be HTTPS (plain HTTP only to
-  localhost, for development), and its name cannot be one of Pi's providers.
-  Changes apply from the next tenants reload to agents created or configured
-  after it.
+A self-hosted runtime's operator can also give an account keys, and route its
+model calls through a gateway of the operator's own: see
+[Billing](https://run.camelai.com/docs/operations/billing.md) and [Model endpoints](https://run.camelai.com/docs/operations/model-endpoints.md).
 
 ## Key scopes
 
@@ -1637,7 +2036,7 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
   every call, sealed like the key. The provider is any model provider of
   `GET /v1/providers` that takes a key, or `amazon-bedrock`.
 - `baseUrl` (HTTPS, on a public address: it is checked when saved, and each call
-  goes through the same [outbound guard](tools.md#outbound-calls) as MCP servers
+  goes through the same [outbound guard](https://run.camelai.com/docs/guides/tools.md#outbound-calls) as MCP servers
   and `web_fetch`; Google's and Mistral's clients can't be kept to it, so their
   entries take no `baseUrl`) replaces the provider's API
   root in each request's URL, as an AI gateway's provider path stands for it
@@ -1675,8 +2074,8 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
   carried back as it came), whatever key they use, except Anthropic's, which keep
   its Messages API for prompt caching: the same rule as on a tenant's endpoint.
 - Each model call, compaction summaries included, takes the key of the agent's
-  scope for the model's provider, else the tenant's own key, else an admin's,
-  else the platform's (see the table above). It is read at the call, so a changed key applies
+  scope for the model's provider, else the tenant's own key, else the
+  platform's (see above). It is read at the call, so a changed key applies
   to every agent of the scope from its next call, within five seconds. An agent may be
   created on a provider only its scope has a key for.
 - Scope keys are the tenant's own: no platform token charge, like a tenant's key
@@ -1700,7 +2099,7 @@ with 400. Only the tenant sets them; `GET /v1/agents/:id` shows them.
 
 `spendLimit: {"usd": n}` at creation or through `PATCH /v1/agents/:id/configuration`
 is the most the agent may spend on model calls from then on: their cost as the
-[webhooks](webhooks.md) (`usage.recorded`) reports it (the provider's own when it reports
+[webhooks](https://run.camelai.com/docs/guides/webhooks.md) (`usage.recorded`) reports it (the provider's own when it reports
 one, else the catalog price), turns and compaction summaries, whoever's key they
 ran on. Setting a value starts counting from zero; `null` removes it. A PATCH applies it at once, ahead of runs already queued. `GET /v1/agents/:id`
 shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
@@ -1730,13 +2129,10 @@ The SDKs' `run()` fails with code `turn_limit`.
 Lower them for an agent with `runLimits: {"maxResponses": n, "maxSeconds": n}` (the
 SDKs' `runLimits`, `run_limits=` in Python) when you make it, or with
 `PATCH /v1/agents/:id/configuration` (`null` removes them), or for every agent of a
-[definition](definitions.md) with its `runLimits`. An agent's own stay when its
+[definition](https://run.camelai.com/docs/guides/definitions.md) with its `runLimits`. An agent's own stay when its
 definition is applied. Values above the runtime's maximums count as the maximums,
-which its operator sets (`AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS`), or sets for
-one tenant (`maxRunResponses`, `maxRunSeconds`: in an admin tenant's tenants-file entry,
-or `PUT /v1/tenants/{id}/limits` for a self-serve one). Admin tenants have no maximums
-unless their entry sets them: only their agents' own `runLimits` apply. Only you
-can set them, not the agent's own token. They are counted on the node running the
+which its operator sets (see [Configuration](https://run.camelai.com/docs/operations/configuration.md),
+`AGENT_MAX_RUN_RESPONSES`). Only you can set them, not the agent's own token. They are counted on the node running the
 turn: a turn resumed on another node after its node was lost counts again from there.
 
 ---
@@ -1750,7 +2146,7 @@ Messages can be a provider of your own: a hosted API the catalog lacks, a model
 the catalog has not caught up with yet, a gateway, or your own vLLM, Ollama or
 LM Studio. You name the provider, list its models, and your agents use them
 like catalog models: `<name>/<model id>`. A provider can be your account's, or
-one [key scope](#in-a-key-scope)'s, for one customer's agents only.
+one [key scope](https://run.camelai.com/docs/guides/custom-models.md#in-a-key-scope)'s, for one customer's agents only.
 
 ```ts
 await agents.runtime.setProvider("acme-llm", {
@@ -1772,7 +2168,7 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
 | Field | |
 | --- | --- |
 | `type` | the API it speaks: `"openai-completions"`, OpenAI Chat Completions (`POST <baseUrl>/chat/completions`); `"openai-responses"`, OpenAI Responses (`POST <baseUrl>/responses`); `"anthropic-messages"`, Anthropic Messages (`POST <baseUrl>/v1/messages`). All stream |
-| `baseUrl` | the API root, public and `https` (see [Where the server can be](#where-the-server-can-be)): with `/v1` for OpenAI's APIs (`https://api.example.com/v1`), without for Anthropic's (`https://api.example.com`) |
+| `baseUrl` | the API root, public and `https` (see [Where the server can be](https://run.camelai.com/docs/guides/custom-models.md#where-the-server-can-be)): with `/v1` for OpenAI's APIs (`https://api.example.com/v1`), without for Anthropic's (`https://api.example.com`) |
 | `apiKey` | sent as `Authorization: Bearer <apiKey>` (`x-api-key` for Anthropic Messages). Leave it out when you save again to keep the stored key; `null` removes it, for a server that takes none |
 | `auth` | Anthropic Messages only: `"bearer"` sends the key as `Authorization: Bearer <apiKey>`, as some Anthropic-compatible gateways and proxies take it, instead of `x-api-key` (the default). Saved again without it, `x-api-key` |
 | `headers` | more headers for each call, e.g. `{"api-key": "…"}` for a server that takes its key that way. Stored sealed like the key; left out keeps them, `null` removes them. The runtime sets `Authorization` itself |
@@ -1792,7 +2188,7 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
   (`PATCH /v1/agents/:id/configuration` with `{"model": "<name>/<id>"}`).
 - Deleting the provider (`DELETE /v1/providers/{name}`) fails its agents at
   their next call, until it is set again or they move to another model.
-- A [key scope](models-and-keys.md#key-scopes) can have its own entry for your
+- A [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes) can have its own entry for your
   provider (`PUT /v1/key-scopes/{scope}/providers/{name}`, `{apiKey?, baseUrl?,
   headers?}`). Agents in the scope then call with that key, address or headers,
   e.g. each customer's own deployment. What the entry gives replaces the
@@ -1801,7 +2197,7 @@ Over HTTP, `PUT /v1/providers/acme-llm` with the same body.
 
 ## In a key scope
 
-A [key scope](models-and-keys.md#key-scopes) can have providers of its own, for
+A [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes) can have providers of its own, for
 its agents only: each customer's own endpoint, under the same name in every
 scope.
 
@@ -1839,7 +2235,7 @@ Each model is `{id, contextWindow, maxOutputTokens?, input?, reasoning?, pricing
 | `maxOutputTokens` | the most it writes in a reply. Default 8,192, or half a smaller context window |
 | `input` | `["text", "image"]` for a model that sees images: attached and read images are shown to it. Default `["text"]`: images are described in text |
 | `reasoning` | `true` for a model that reasons, so `thinkingLevel` applies |
-| `pricing` | `{input, output, cacheRead?, cacheWrite?}` in USD per million tokens. It is what runs cost in usage, [spend limits](models-and-keys.md#spend-limits) and webhooks. Without it, the model's runs cost 0 |
+| `pricing` | `{input, output, cacheRead?, cacheWrite?}` in USD per million tokens. It is what runs cost in usage, [spend limits](https://run.camelai.com/docs/guides/models-and-keys.md#spend-limits) and webhooks. Without it, the model's runs cost 0 |
 | `compat` | switches for a server that differs from OpenAI's (below) |
 
 `GET /v1/models` lists your providers' models before the catalog's, all `available`.
@@ -1876,7 +2272,7 @@ Other switches, per model:
 ## Where the server can be
 
 The runtime calls the address you give from the public internet, through the
-same [outbound guard](tools.md#outbound-calls) as MCP servers and `web_fetch`.
+same [outbound guard](https://run.camelai.com/docs/guides/tools.md#outbound-calls) as MCP servers and `web_fetch`.
 The address is checked when you save the provider, and again at every call:
 it must be `https`, and its host must resolve to public addresses only.
 Loopback, private and link-local addresses are refused, so `localhost` and your
@@ -1886,7 +2282,7 @@ A server on your own machine or network needs a public `https` address in front
 of it, such as a tunnel. Keep it behind a key: anyone with the address can call
 it.
 
-A [self-hosted runtime](../operations/self-host.md#networking) can call servers
+A [self-hosted runtime](https://run.camelai.com/docs/operations/self-host.md#networking) can call servers
 on its own network: its operator names each one's exact origin in
 `AGENT_OUTBOUND_ALLOW_ORIGINS` (e.g. `http://10.1.2.3:8000` for a vLLM or
 Ollama host), which allows that origin alone, over `http` too, and never to
@@ -1947,7 +2343,7 @@ If the tunnel's address changes, save the provider again with the new
 
 A definition is a reusable agent configuration: name, model, system prompt,
 thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
-limits (`ttlSeconds`), run limits (`runLimits`, see [Run limits](models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
+limits (`ttlSeconds`), run limits (`runLimits`, see [Run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
 (`agents.runtime.upsertDefinition`, `createDefinition`, `updateDefinition`,
 `definition(s)`, `deleteDefinition`; `upsert_definition` and so on in Python),
 `/v1/definitions`, or the console's Definitions page, and make agents from one.
@@ -1969,7 +2365,7 @@ Saving a definition lists its MCP servers: credentials a server refuses are a
 400 that says so, and the answer's `toolSources` shows what each offers.
 
 A `description` (1–1,000 characters) says what its agents are for; models see it
-as the description of each agent's [MCP tool](mcp-server.md).
+as the description of each agent's [MCP tool](https://run.camelai.com/docs/guides/mcp-server.md).
 
 The definition supplies the model, prompt, thinking level and tool sources;
 `name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
@@ -2039,7 +2435,7 @@ takes the change when it next starts.
 
 A channel lets people talk to agents from a messaging service (Telegram, Slack,
 Discord or email), or has agents answer activity on GitHub. A `webhook` channel lets any service that sends webhooks (Sentry,
-Linear, Stripe, your own) start agents; see [Generic webhooks](#generic-webhooks). Tenants manage channels with `/v1/channels` or the console's Channels page:
+Linear, Stripe, your own) start agents; see [Generic webhooks](https://run.camelai.com/docs/guides/channels.md#generic-webhooks). Tenants manage channels with `/v1/channels` or the console's Channels page:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -2154,7 +2550,7 @@ day.
 
 Use **Configure** to edit the selected definition, including tools, and apply it to
 existing conversations; the console reports updated, queued or failed outcomes
-using the normal [definition revision mechanism](definitions.md).
+using the normal [definition revision mechanism](https://run.camelai.com/docs/guides/definitions.md).
 
 Pause stops new routing and pending sends; resume requires Camel to be in the
 server. Disconnect retains conversation history and stops routing; it does not
@@ -2173,7 +2569,7 @@ when mentioned.
 Managed channels are created through console setup, rather than generic
 `POST /v1/channels`. The existing `discord` provider and customer-owned bot flow
 remain available. Operators can find the platform setup and pilot boundaries in
-[Managed Discord operations](../operations/managed-discord.md).
+[Managed Discord operations](https://run.camelai.com/docs/operations/managed-discord.md).
 
 ## Shared channel behavior
 
@@ -2185,13 +2581,13 @@ What they all share:
   Telegram and Discord user ids or @usernames, Slack member ids (`U0123ABCD`).
   Each sender is rate limited (`limits.perSenderPerMinute`, default 10) and the
   channel has a daily turn cap (`limits.turnsPerDay`, default 1000).
-- Each message carries its sender as `from` (see [Who sent a message](multi-user.md#one-agent-per-user-or-conversation)), and tool calls carry a runtime-set `origin`
+- Each message carries its sender as `from` (see [Who sent a message](https://run.camelai.com/docs/guides/multi-user.md#one-agent-per-user-or-conversation)), and tool calls carry a runtime-set `origin`
   (`{channel, conversationId, sender}`, `context.origin` in the SDKs) that
   tools can authorize against.
 - Attachments of any type (Telegram photos, documents, audio, voice notes,
   videos and animations; Slack files; Discord attachments) are streamed into the
   agent's workspace at `uploads/<requestId>/<name>` and the prompt refers to
-  them by path (`files: [{path}]`), as in [Attaching files](files.md#attaching-files-to-a-message).
+  them by path (`files: [{path}]`), as in [Attaching files](https://run.camelai.com/docs/guides/files.md#attaching-files-to-a-message).
   Up to 10 files and 25 MiB each (20 MB on Telegram, the most a bot may
   download), 100 MiB per message. Downloads go only to the service's file host
   (Slack's with the bot token, Discord's CDN, Telegram's file API), never follow
@@ -2210,7 +2606,7 @@ What they all share:
   through the external upload (`files.getUploadURLExternal`, the bytes, then
   `files.completeUploadExternal` into the thread; up to 100 MiB); on Discord as
   a multipart attachment (up to 10 MiB, the limit in servers without boosts). A
-  file over the service's limit is sent as a [signed link](files.md#signed-links) that
+  file over the service's limit is sent as a [signed link](https://run.camelai.com/docs/guides/files.md#signed-links) that
   works for 24 hours, the longest a link may last.
 - A message is recorded durably before it is acknowledged, and duplicates
   (provider retries, a Gateway resume) are dropped by message id for seven days.
@@ -2274,7 +2670,7 @@ minute per sender: the signature is what keeps others out. It still has the dail
 turn cap, and `access` and `limits` can be set as for any channel.
 
 There is no conversation to answer, so the agent acts through its tools, and the
-turn's end reaches you as a [`run.completed`](webhooks.md) event. To have the
+turn's end reaches you as a [`run.completed`](https://run.camelai.com/docs/guides/webhooks.md) event. To have the
 reply too, give `credentials.replyUrl`: each reply (and each `send_message`) is
 POSTed there as `{"type":"message","conversationId","text"}`, signed per Standard
 Webhooks with the channel's secret, and retried like any channel's messages.
@@ -2284,7 +2680,7 @@ Files are sent there as a link.
 
 An email channel is an address on the runtime's own domain, which it receives
 mail for through Amazon SES (on a runtime with `AGENT_EMAIL_DOMAIN`; see
-[Configuration](../operations/configuration.md)). It takes no credentials:
+[Configuration](https://run.camelai.com/docs/operations/configuration.md)). It takes no credentials:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -2387,20 +2783,20 @@ your side.
 | `Agent(name, instructions, tools, model)` | `agents.upsert(key, instructions=, tools=, model=)`; models are `provider/model` ids from `GET /v1/models` |
 | `Runner.run(agent, input)`, `result.final_output` | `agent.run(text)`, `run.text` |
 | `Runner.run_streamed` | `agent.stream(text)`: text, tool calls and results as they happen, then `done` with the run |
-| `@function_tool` | `@tool` (TypeScript: `tool({ input, execute })`). Arguments are checked against the schema first. See [Tools](tools.md) |
+| `@function_tool` | `@tool` (TypeScript: `tool({ input, execute })`). Arguments are checked against the schema first. See [Tools](https://run.camelai.com/docs/guides/tools.md) |
 | Sessions (`SQLiteSession`, Redis…) | The agent's key. History is durable and compacted when it gets long; `agent.history()` reads it |
-| `output_type=Model` | `run(text, output=Model)`, `run.output`. See [Structured output](structured-output.md) |
-| Handoffs | No built-in handoff; see [Handoffs and multi-agent](#handoffs-and-multi-agent) |
+| `output_type=Model` | `run(text, output=Model)`, `run.output`. See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
+| Handoffs | No built-in handoff; see [Handoffs and multi-agent](https://run.camelai.com/docs/guides/migrating.md#handoffs-and-multi-agent) |
 | `agent.as_tool()` | A tool that runs another agent; see below |
 | Input guardrails | Your code, before `run()`. With `createAgentHandler`, `onSend` can rewrite or refuse a message |
 | Output guardrails | Your code, on `run.text` or `run.output`, before you use it |
-| Tool approval (`needs_approval`), interruptions | `@tool(needs_approval=True)`; the run ends `input_required` and `run.inputs[0].answer(True)` resumes it, from any process, days later if need be. See [Human input](human-input.md) |
-| `RunContextWrapper` (context for tools) | `context` and `subject` on the agent, plus `user` on each run. Tools get them in `context.identity`, set by your code and never by the model. See [Identity](tools.md#identity-who-a-call-is-for) |
+| Tool approval (`needs_approval`), interruptions | `@tool(needs_approval=True)`; the run ends `input_required` and `run.inputs[0].answer(True)` resumes it, from any process, days later if need be. See [Human input](https://run.camelai.com/docs/guides/human-input.md) |
+| `RunContextWrapper` (context for tools) | `context` and `subject` on the agent, plus `user` on each run. Tools get them in `context.identity`, set by your code and never by the model. See [Identity](https://run.camelai.com/docs/guides/tools.md#identity-who-a-call-is-for) |
 | Hosted tools: `WebSearchTool` | `builtins=["web_search"]` |
 | `CodeInterpreterTool` | `js_exec`, always on: JavaScript in a sandbox that can call the agent's tools. It has no Python |
 | `FileSearchTool` (vector stores) | No equivalent. Agents have files and file tools, not vector search |
-| `MCPServerStreamableHttp` | `mcpServers` in a [definition](definitions.md): the runtime calls the server itself. A local MCP server object can be attached with `fromMcpServer` (TypeScript) |
-| Tracing (`trace()`, the traces dashboard) | The event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](webhooks.md), and `GET /v1/agents/:id/history`. No OpenTelemetry export |
+| `MCPServerStreamableHttp` | `mcpServers` in a [definition](https://run.camelai.com/docs/guides/definitions.md): the runtime calls the server itself. A local MCP server object can be attached with `fromMcpServer` (TypeScript) |
+| Tracing (`trace()`, the traces dashboard) | The event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](https://run.camelai.com/docs/guides/webhooks.md), and `GET /v1/agents/:id/history`. No OpenTelemetry export |
 | `max_turns` | `run_limits={"maxResponses": n}` on the agent (at most 1,000 model responses and 2 hours a run by default); a run that reaches it stops with `stopped: "turn_limit"`. `spend_limit={"usd": …}` on a run, or on the agent, bounds what it spends |
 | `ModelSettings` (temperature, top_p) | Not settable. `thinking_level` is |
 
@@ -2417,7 +2813,7 @@ your side.
 | `response_format`, `with_structured_output` | `run(text, output=Model)` |
 | A custom `StateGraph` | Your own code: a sequence of runs, branching on `run.output`. There is no graph DSL; see below |
 | `Send` (map-reduce) | `asyncio.gather` over runs of several agents |
-| Long-term memory (`Store`) | Files. Mount a shared [volume](files.md#volumes) in several agents |
+| Long-term memory (`Store`) | Files. Mount a shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) in several agents |
 | Time travel (`get_state_history`, replay from a checkpoint) | Not supported. A conversation cannot be forked or rewound |
 | LangSmith | No integration; see the tracing row above |
 
@@ -2464,7 +2860,7 @@ so pass what the other agent needs in the message.
 Existing conversations can continue in camelRun. Create the agent with its
 history in `initialMessages`, converted to the runtime's message format (user,
 assistant with tool calls, tool results). See [Bringing in existing
-conversations](multi-user.md#bringing-in-existing-conversations).
+conversations](https://run.camelai.com/docs/guides/multi-user.md#bringing-in-existing-conversations).
 
 ## What camelRun adds
 
@@ -2472,10 +2868,10 @@ conversations](multi-user.md#bringing-in-existing-conversations).
   nodes being replaced. A run waiting on a person waits for days at no cost.
 - **Tools anywhere.** Tools run in your process (attached) or behind an HTTPS
   endpoint (served, for serverless and many workers), and the model can call
-  many of them from code in `js_exec`. See [Tools](tools.md).
+  many of them from code in `js_exec`. See [Tools](https://run.camelai.com/docs/guides/tools.md).
 - **Channels and schedules.** Slack, Telegram, Discord, GitHub and email can
   reach an agent directly, and agents can wake themselves. See
-  [Channels](channels.md).
+  [Channels](https://run.camelai.com/docs/guides/channels.md).
 
 ---
 
@@ -2500,7 +2896,7 @@ claude mcp add --scope project --transport http support https://run.camelai.com/
 The single quotes keep the variable as written, so the project's `.mcp.json`
 names it and Claude Code reads its value from the environment. Never write a
 token's value into an MCP config: they are often committed (see
-[Keys stay out of MCP configs](../reference/cli.md#keys-stay-out-of-mcp-configs)).
+[Keys stay out of MCP configs](https://run.camelai.com/docs/reference/cli.md#keys-stay-out-of-mcp-configs)).
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the agent's URL. Cursor and other clients configured with JSON:
@@ -2518,10 +2914,10 @@ connector, with the agent's URL. Cursor and other clients configured with JSON:
   `token` it was created with), an API token of its tenant, or an OAuth sign-in.
   A `401` names the agent's protected-resource metadata
   (`/.well-known/oauth-protected-resource/v1/agents/<id>/mcp`), so clients sign
-  in [as with the hosted MCP server](../reference/cli.md#hosted-mcp-server).
+  in [as with the hosted MCP server](https://run.camelai.com/docs/reference/cli.md#hosted-mcp-server).
   Other tenants' tokens get `404`.
 - **The tool's description** names the agent and, when the agent is made from a
-  [definition](definitions.md) with a `description`, says what it is for:
+  [definition](https://run.camelai.com/docs/guides/definitions.md) with a `description`, says what it is for:
   `"description": "Answers questions about orders and refunds."` (1–1,000
   characters). Its system prompt is never shown.
 - **Long turns.** A call lasts as long as the turn. It sends progress
@@ -2535,7 +2931,7 @@ connector, with the agent's URL. Cursor and other clients configured with JSON:
 - **A busy agent.** A message to an agent that is working queues behind its
   current turn, as a prompt does. Once 32 requests are open, the call fails:
   `The agent is busy: …`.
-- **Human input.** When the turn [waits on a person](human-input.md) and the
+- **Human input.** When the turn [waits on a person](https://run.camelai.com/docs/guides/human-input.md) and the
   client supports elicitation, the question, approval, form or page comes up in
   the client, and the answer resumes the turn. Otherwise the call ends with a
   result listing what the agent waits on (`structuredContent.status` is
@@ -2557,13 +2953,13 @@ Before you ship an application on the runtime, check each of these.
 
 - [ ] Your API key is only on your servers, in a secret store, never in a
       browser, a mobile app or a repository. Browsers get [browser
-      tokens](guides/browser.md), minted per user after your own access checks.
+      tokens](https://run.camelai.com/docs/guides/browser.md), minted per user after your own access checks.
 - [ ] An agent's token (`agent.session.token`) is secret too. You rarely need it:
       upsert by key instead. The SDKs keep it out of logs and JSON; do not print it
       yourself.
 - [ ] Tools authorize every call as `context.identity.user` within
       `identity.context`, never from ids in the model's arguments. `subject` and
-      `context` are set when the agent is made. See [Identity](guides/tools.md#identity-who-a-call-is-for).
+      `context` are set when the agent is made. See [Identity](https://run.camelai.com/docs/guides/tools.md#identity-who-a-call-is-for).
 - [ ] Served tools verify the runtime's token (`serveTools`, `serve_tools`,
       `runtimeAuth` do) with `tenant` set to your own tenant, so another tenant's
       agents cannot act as your users.
@@ -2625,12 +3021,12 @@ Before you ship an application on the runtime, check each of these.
       or `await using`): it finishes the tool calls it is running, hands new
       ones to the next process, and releases the agents' tools, so a deploy
       loses no call. A rolling deploy starts the new process with `takeover: true`.
-      See [deploying a tool process](guides/tools.md#deploying-a-tool-process).
-- [ ] You register a [webhook](guides/webhooks.md) endpoint for `run.failed` and
+      See [deploying a tool process](https://run.camelai.com/docs/guides/tools.md#deploying-a-tool-process).
+- [ ] You register a [webhook](https://run.camelai.com/docs/guides/webhooks.md) endpoint for `run.failed` and
       `input.requested` (and `usage.recorded` to meter spend), verify signatures,
       dedupe by event `id`, and answer within 10 seconds.
 - [ ] You handle 429 and 503 by waiting `Retry-After` (the SDKs retry them),
-      and know the [limits](reference/limits.md) your workload approaches.
+      and know the [limits](https://run.camelai.com/docs/reference/limits.md) your workload approaches.
 - [ ] Serverless: prefer served tools.
 
 ---
@@ -2640,12 +3036,12 @@ Before you ship an application on the runtime, check each of these.
 # SDKs
 
 The TypeScript SDK (`@camelai/run`) and the Python SDK
-(`camelai-run`). Start with the [Quickstart](../quickstart.md);
+(`camelai-run`). Start with the [Quickstart](https://run.camelai.com/docs/quickstart.md);
 this page is the reference.
 
 ```sh
 npm install @camelai/run      # Node 22+, Bun, Deno, Cloudflare Workers
-pip install camelai-run       # Python 3.11+; "camelai-run[server]" for serve_tools
+pip install camelai-run       # Python 3.11+; "camelai-run[server]" for serve_tools, "camelai-run[pydantic]" for pydantic output
 ```
 
 | TypeScript entry | |
@@ -2681,7 +3077,7 @@ synchronous code (a script, a Django view, a Celery task), run it with
   their runs go on in the runtime. A process serving tools first finishes the
   calls it is running, up to `drainMs` (Python `drain=`, seconds; default 25 s),
   while new calls go to another process: call it on SIGTERM. See [deploying a
-  tool process](../guides/tools.md#deploying-a-tool-process).
+  tool process](https://run.camelai.com/docs/guides/tools.md#deploying-a-tool-process).
 - `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
   mounts, `listAgents()`, `browserToken(agentId)`, `inbox()`, `toolSources(agentId)`.
 
@@ -2689,7 +3085,7 @@ synchronous code (a script, a Django view, a Celery task), run it with
 
 The agent for `key` (1 to 80 of `A-Z a-z 0-9 _ -`), made if there is none, and
 brought to `config` if it differs. Returns a connected `Agent`. See
-[Concepts](../concepts.md#agents-are-durable-and-keyed).
+[Concepts](https://run.camelai.com/docs/concepts.md#agents-are-durable-and-keyed).
 
 | TypeScript | Python | |
 | --- | --- | --- |
@@ -2701,7 +3097,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `definition` | `definition=` | make it from a definition (its model, prompt and tool sources) |
 | `thinkingLevel` | `thinking_level=` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
-| `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
+| `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
 | `name` | `name=` | a label, shown in the console |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
@@ -2736,32 +3132,32 @@ Run options (`run`, `stream`):
 | TypeScript | Python | |
 | --- | --- | --- |
 | `user` | `user=` | who sent it: your user id, or `{ id, name, username }`; the model sees who, tools get `identity.actor` |
-| `files` | `files=` | attachments; see [Files](../guides/files.md) |
+| `files` | `files=` | attachments; see [Files](https://run.camelai.com/docs/guides/files.md) |
 | `metadata` | `metadata=` | your own key-value data about the message (16 strings); the model never sees it |
 | `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run, joining it if it is still going |
 | `signal` | `timeout=` | stop waiting; the run goes on |
 | `throwOnError` | `throw_on_error=` | `false`: return a failed run instead of throwing `RunError` |
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
-| `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](../guides/models-and-keys.md#spend-limits) |
+| `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](https://run.camelai.com/docs/guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
-| `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](../guides/structured-output.md) |
+| `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
 
 ### `Run`
 
 `{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
 (Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
 tool call the run made, with `ok` or an error `code`, not their arguments or
-results (see [Run outcomes](events.md#run-outcomes)). `status` is `completed`,
+results (see [Run outcomes](https://run.camelai.com/docs/reference/events.md#run-outcomes)). `status` is `completed`,
 `input_required` or `failed`; `error` is `{ code, message, uncertain? }`.
 `output` is a run with `output`'s answer, typed by its schema (`Run<T>`; Python:
 an instance of the pydantic model). See
-[Concepts](../concepts.md#runs) and [Errors](../reference/errors.md#run-failures).
+[Concepts](https://run.camelai.com/docs/concepts.md#runs) and [Errors](https://run.camelai.com/docs/reference/errors.md#run-failures).
 
 Each of `run.inputs` is the input (`id`, `kind`, `message`, `detail`,
 `responders`, `expiresAt`, …) with `answer(value, { from })` and
 `decline({ from })` (Python: a dict with `answer(value, from_=)` and
 `decline(from_=)`), which resolve with the resumed run. See [Human
-input](../guides/human-input.md#answering).
+input](https://run.camelai.com/docs/guides/human-input.md#answering).
 
 ### Stream parts
 
@@ -2798,12 +3194,12 @@ def or_async_def(arg: str, context: ToolContext): ...
 | `origin` | `origin` | where the turn came from (a channel) |
 | `signal` | (task cancellation) | aborted when the runtime cancels the call |
 | `progress(message \| { progress, total, message })` | `progress(message, progress=, total=)` | report progress; restarts the deadline |
-| `confirm`, `ask`, `requireUrl` | `confirm`, `ask`, `require_url` | ask the user; see [Human input](../guides/human-input.md) |
+| `confirm`, `ask`, `requireUrl` | `confirm`, `ask`, `require_url` | ask the user; see [Human input](https://run.camelai.com/docs/guides/human-input.md) |
 
-See [Tools](../guides/tools.md) for attached and served tools, identity and
+See [Tools](https://run.camelai.com/docs/guides/tools.md) for attached and served tools, identity and
 the definitions' sources, and `serveTools` / `serve_tools`. With several
 processes (web workers, task queues, serverless), serve tools over HTTP: see
-[Several processes, workers and deploys](../guides/tools.md#several-processes-workers-and-deploys).
+[Several processes, workers and deploys](https://run.camelai.com/docs/guides/tools.md#several-processes-workers-and-deploys).
 
 ## Errors
 
@@ -2814,7 +3210,7 @@ processes (web workers, task queues, serverless), serve tools over HTTP: see
 - `RunError extends AgentError`: a failed run, with `run`.
 
 The SDKs retry 429 and 503 (honouring `Retry-After`) and transient failures of
-idempotent requests. See [Errors](../reference/errors.md).
+idempotent requests. See [Errors](https://run.camelai.com/docs/reference/errors.md).
 
 ## The lower-level API
 
@@ -2829,7 +3225,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.connectAgent(session, { tools, attach, takeover })` | `runtime.connect_agent(session, tools=, attach=, takeover=)` | connect with stored credentials |
 | `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
 | `runtime.me()` | `runtime.me()` | who the API key is: `tenant`, your tenant's id, which `serveTools` takes |
-| `runtime.setProvider(name, config)`, `providers()`, `deleteProvider(name)` | `set_provider(name, base_url=, models=, api_key=, headers=)`, `providers()`, `delete_provider(name)` | a provider of your own: any OpenAI-compatible server and its models; see [Custom models](../guides/custom-models.md) |
+| `runtime.setProvider(name, config)`, `providers()`, `deleteProvider(name)` | `set_provider(name, base_url=, models=, api_key=, headers=)`, `providers()`, `delete_provider(name)` | a provider of your own: any OpenAI-compatible server and its models; see [Custom models](https://run.camelai.com/docs/guides/custom-models.md) |
 | `runtime.listAgents()` | `runtime.list_agents()` | the tenant's agents, each with the `key` it was made with (`null` without one) and its `name` |
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
@@ -2863,7 +3259,7 @@ A `message_update` is its delta alone (`assistantMessageEvent`), not the whole
 message: fold the message from its `message_start` and the deltas since
 (`@camelai/run/watch` does). A subscriber that cannot replay gets a
 `snapshot` of the running turn first. See the [event
-reference](../reference/events.md).
+reference](https://run.camelai.com/docs/reference/events.md).
 
 `onEvent` (`on_event`) handlers run one at a time, in order, apart from the
 stream: a slow handler never holds up tool calls, and what it throws goes to
@@ -2940,7 +3336,7 @@ application keeps serving its tools.
   class or a JSON Schema dict), and `run.output` is the answer, typed and
   parsed. A run that ends without one fails with `output_missing`; one the
   schema's own checks reject, with `output_invalid`. See
-  [Structured output](../guides/structured-output.md). Needs a runtime with
+  [Structured output](https://run.camelai.com/docs/guides/structured-output.md). Needs a runtime with
   structured output (run.camelai.com has it).
 - `run.toolCalls` (`run.tool_calls`): the tool calls a run made, each
   `{ tool, toolCallId?, innerCallId?, ok, code? }`, the first 100.
@@ -3030,16 +3426,16 @@ application keeps serving its tools.
 
 ## Examples
 
-[`examples/`](../../examples) has runnable programs, each of which exits when done:
+[`examples/`](https://github.com/qaml-ai/run/blob/main/examples) has runnable programs, each of which exits when done:
 
 | | |
 | --- | --- |
-| [`quickstart.ts`](../../examples/quickstart.ts), [`quickstart.py`](../../examples/quickstart.py) | the quickstart |
-| [`stream.ts`](../../examples/stream.ts) | streaming a run to the terminal |
-| [`approval.ts`](../../examples/approval.ts) | a tool that needs approval, answered in code |
-| [`release-board.ts`](../../examples/release-board.ts), [`inventory.py`](../../examples/inventory.py) | an application's tools over its own data |
-| [`team-todos.ts`](../../examples/team-todos.ts) | served tools with the runtime's identity tokens |
-| [`file-report.ts`](../../examples/file-report.ts) | files in and out |
+| [`quickstart.ts`](https://github.com/qaml-ai/run/blob/main/examples/quickstart.ts), [`quickstart.py`](https://github.com/qaml-ai/run/blob/main/examples/quickstart.py) | the quickstart |
+| [`stream.ts`](https://github.com/qaml-ai/run/blob/main/examples/stream.ts) | streaming a run to the terminal |
+| [`approval.ts`](https://github.com/qaml-ai/run/blob/main/examples/approval.ts) | a tool that needs approval, answered in code |
+| [`release-board.ts`](https://github.com/qaml-ai/run/blob/main/examples/release-board.ts), [`inventory.py`](https://github.com/qaml-ai/run/blob/main/examples/inventory.py) | an application's tools over its own data |
+| [`team-todos.ts`](https://github.com/qaml-ai/run/blob/main/examples/team-todos.ts) | served tools with the runtime's identity tokens |
+| [`file-report.ts`](https://github.com/qaml-ai/run/blob/main/examples/file-report.ts) | files in and out |
 
 Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
 `npm run demo:clients` runs the release board and inventory examples against a
@@ -3055,7 +3451,7 @@ temporary local runtime with scripted code, calling no model.
 agents (Claude Code, Cursor, Codex…) get the same operations over MCP, so they can
 write an agent's manifest, deploy it, talk to the agent and read what it did:
 from the hosted MCP server at `https://run.camelai.com/mcp`, with nothing to
-install ([below](#hosted-mcp-server)), or from `camelrun mcp` on your machine,
+install ([below](https://run.camelai.com/docs/reference/cli.md#hosted-mcp-server)), or from `camelrun mcp` on your machine,
 which can also deploy the manifests in your repository.
 
 ```sh
@@ -3064,7 +3460,8 @@ camelrun login                     # paste an API key from the console's API tok
 ```
 
 `login` checks the key and saves it to `~/.config/camelrun/credentials.json`
-(mode 600). `CAMELAI_API_KEY` and `CAMELAI_URL` (for a self-hosted runtime), or
+(mode 600). `CAMELAI_API_KEY` and `CAMELAI_BASE_URL` (for a self-hosted runtime, as
+the SDKs read it; `CAMELAI_URL` works too), or
 `--api-key` and `--url`, take precedence over it.
 
 ## Deploy from a manifest
@@ -3093,7 +3490,7 @@ agents:                          # keyed agents made from it on deploy
 ```
 
 - Every field but `key`, `agents`, `systemPromptFile` and an OpenAPI source's
-  `specFile` is sent as the [definition](../guides/definitions.md) (`name`,
+  `specFile` is sent as the [definition](https://run.camelai.com/docs/guides/definitions.md) (`name`,
   `model`, `systemPrompt`, `thinkingLevel`, `fileTools`, `builtins`, `webSearch`,
   `mcpServers`, `openApi`, `limits`, `mounts`), and the runtime validates it.
   `name` defaults to the key.
@@ -3211,7 +3608,7 @@ claude mcp add --scope project --transport http camelrun https://run.camelai.com
 The single quotes keep `${CAMELAI_API_KEY}` as written: `--scope project` saves
 it in the project's `.mcp.json`, and Claude Code reads the variable from its
 environment each time it starts. The file is safe to commit; a key is not (see
-[Keys stay out of MCP configs](#keys-stay-out-of-mcp-configs)).
+[Keys stay out of MCP configs](https://run.camelai.com/docs/reference/cli.md#keys-stay-out-of-mcp-configs)).
 
 Claude (claude.ai and the desktop app): Settings, Connectors, Add custom
 connector, with the URL above. Cursor and other clients configured with JSON:
@@ -3241,7 +3638,7 @@ where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 /v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.
 
 Each agent is also an MCP server of its own, with one tool that messages it:
-see [Agents as MCP servers](../guides/mcp-server.md).
+see [Agents as MCP servers](https://run.camelai.com/docs/guides/mcp-server.md).
 
 ## In the browser: WebMCP
 
@@ -3317,11 +3714,11 @@ presents. Use it for display. **A run's result is the truth; events are for
 display**: a stream can drop events (a restart, a slow reader, a frame too
 large), and every SDK settles a run from its outcome, never from its events.
 
-- [Reading the stream](#reading-the-stream): endpoints, framing, cursors, snapshots
-- [Frames](#frames): `event`, `response`, `snapshot`, `mcp`
-- [Event types](#event-types): every `event.type`
-- [Run outcomes](#run-outcomes): what a `response` frame carries
-- [Webhook events](#webhook-events)
+- [Reading the stream](https://run.camelai.com/docs/reference/events.md#reading-the-stream): endpoints, framing, cursors, snapshots
+- [Frames](https://run.camelai.com/docs/reference/events.md#frames): `event`, `response`, `snapshot`, `mcp`
+- [Event types](https://run.camelai.com/docs/reference/events.md#event-types): every `event.type`
+- [Run outcomes](https://run.camelai.com/docs/reference/events.md#run-outcomes): what a `response` frame carries
+- [Webhook events](https://run.camelai.com/docs/reference/events.md#webhook-events)
 
 ## Reading the stream
 
@@ -3329,16 +3726,16 @@ large), and every SDK settles a run from its outcome, never from its events.
 | --- | --- | --- |
 | `GET /clients/:id/events` | the agent's own token (the SDKs) | the application's connection: it also carries the runtime's MCP calls to the application's tools (`mcp` frames) |
 | `GET /clients/:id/events?watch=1` | the agent's own token | a read-only watcher: every event, no MCP calls, holds nothing |
-| `GET /v1/agents/:id/events` | an API key, or a [browser token](../guides/browser.md) | always a read-only watcher |
+| `GET /v1/agents/:id/events` | an API key, or a [browser token](https://run.camelai.com/docs/guides/browser.md) | always a read-only watcher |
 
 Query parameters and headers:
 
 | | |
 | --- | --- |
 | `Last-Event-ID: <cursor>` | resume after this event id. Absent or `0` takes everything still buffered. |
-| `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](#snapshot) of the running turn first instead of a 409. Watchers and polls (`?watch=1`, `?poll=1`, `/v1/agents/:id/events`) get one by default (`?snapshot=0` opts out); the application's connection only when it asks, as the SDKs do. |
+| `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](https://run.camelai.com/docs/reference/events.md#snapshot) of the running turn first instead of a 409. Watchers and polls (`?watch=1`, `?poll=1`, `/v1/agents/:id/events`) get one by default (`?snapshot=0` opts out); the application's connection only when it asks, as the SDKs do. |
 | `?poll=1&wait=N` | answer once, as JSON, instead of streaming: `{cursor, events: [{id, data}]}`, where `data` is a frame. With `wait` (seconds, at most 25) and nothing buffered, it answers when the next event arrives or the wait ends. Poll again with `Last-Event-ID: <cursor>`. For clients that cannot hold a stream open. |
-| `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](#one-application-at-a-time). |
+| `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](https://run.camelai.com/docs/reference/events.md#one-application-at-a-time). |
 | `X-Agent-Connection: <connection>` | (application connection only) reconnecting: the `connection` the last `ready` named, so the runtime knows it is the same application coming back. |
 
 The response is `text/event-stream`. Each frame is `data:` JSON; most have an
@@ -3386,7 +3783,7 @@ answered MCP's `initialize`). Another application connection is refused with
 **409 `APPLICATION_CONNECTED`**, unless it asks `?takeover=true` (the one serving
 gets `event: closed`) or names the connection it held
 (`X-Agent-Connection`, reconnecting). Watchers and a connection that serves no
-tools hold nothing. See [Concepts](../concepts.md) and [Errors](errors.md).
+tools hold nothing. See [Concepts](https://run.camelai.com/docs/concepts.md) and [Errors](https://run.camelai.com/docs/reference/errors.md).
 
 ## Frames
 
@@ -3396,7 +3793,7 @@ tools hold nothing. See [Concepts](../concepts.md) and [Errors](errors.md).
 { "type": "event", "requestId": "…", "event": { "type": "message_update", … } }
 ```
 
-One [event](#event-types). `requestId` is the run it belongs to (the id you sent
+One [event](https://run.camelai.com/docs/reference/events.md#event-types). `requestId` is the run it belongs to (the id you sent
 the prompt with, or the SDK's). It is `""` for events of no run: `turn_resumed`
 and `turn_recovered`, and a file presented or a tool's progress when no run had
 begun.
@@ -3409,11 +3806,12 @@ begun.
 ```
 
 A request settled. `outcome.result` is what it produced ([run
-outcomes](#run-outcomes) for prompts); `outcome.error` means the runtime could not
+outcomes](https://run.camelai.com/docs/reference/events.md#run-outcomes) for prompts); `outcome.error` means the runtime could not
 carry it out, and `uncertain: true` that nobody can tell whether its work took
 effect (a restart cut it short). The same outcome is at
 `GET …/requests/:requestId` and in `GET …/state`, which is what to trust. There,
-an ended request also carries `error` (the runtime's, or the model's from
+an ended request (`state: "completed"`) also carries `status` (`completed`,
+`input_required` or `failed`), `error` (the runtime's, or the model's from
 `result.error`) and `stopped` on top, so a failed run reads as failed without
 looking inside `result`. `GET …/requests/:requestId?wait=<seconds>` (at most 25)
 waits for a running request: it answers as soon as the request settles, or when
@@ -3453,7 +3851,7 @@ application's tools (`initialize`, `ping`, `tools/list`, `tools/call`,
 `notifications/cancelled`). They have no `id:` line and are never replayed. The
 application answers each with `POST /clients/:id/mcp` (and may send
 `notifications/progress` there). The SDKs do all of this; see
-[Tools](../guides/tools.md).
+[Tools](https://run.camelai.com/docs/guides/tools.md).
 
 ## Event types
 
@@ -3524,7 +3922,7 @@ Messages (`message` fields, and history) are one of:
 
 | Type | Fields | When |
 | --- | --- | --- |
-| `input_required` | `input` | the turn waits on a person: a question, an approval, a form or a URL step. `input`: `{id, agent, requestId, toolCallId, kind: "question" \| "approval" \| "form" \| "url", message, detail, responders: {audience?}, state, createdAt, expiresAt}`; `detail` by kind: question `{questions}`, approval `{tool, source, arguments, argumentsHash, reason?}` (`arguments` an object, as in the call; past 4,000 characters of JSON, `argumentsPreview` instead), form `{requestedSchema}`, url `{url, origin}`. See [Human input](../guides/human-input.md) |
+| `input_required` | `input` | the turn waits on a person: a question, an approval, a form or a URL step. `input`: `{id, agent, requestId, toolCallId, kind: "question" \| "approval" \| "form" \| "url", message, detail, responders: {audience?}, state, createdAt, expiresAt}`; `detail` by kind: question `{questions}`, approval `{tool, source, arguments, argumentsHash, reason?}` (`arguments` an object, as in the call; past 4,000 characters of JSON, `argumentsPreview` instead), form `{requestedSchema}`, url `{url, origin}`. See [Human input](https://run.camelai.com/docs/guides/human-input.md) |
 | `input_resolved` | `id`, `state` (`answered`, `declined`, `cancelled`, `expired`, `superseded`), `by?` | an input settled |
 
 ### The runtime
@@ -3547,16 +3945,16 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | Field | |
 | --- | --- |
 | `reply` | the final assistant message's text; absent when it said nothing |
-| `output` | a prompt sent with `output`: the answer, which fits its schema. See [Structured output](../guides/structured-output.md) |
+| `output` | a prompt sent with `output`: the answer, which fits its schema. See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
 | `replyIndex` | that message's index in the agent's history |
 | `messages` | how many messages the agent's history holds after the run |
 | `error` | the model's error (a provider refusal after retries), or `null` |
-| `code` | a stable name for `error`, where the runtime gives one: `output_missing` (a structured run ended without its output), `spend_limit`, `turn_limit` |
-| `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](../guides/models-and-keys.md#run-limits)), with the reason in `error` |
+| `code` | a stable name for `error`, where the runtime gives one: `model_key_missing` (no key for the agent's model), `model_key_invalid` (the provider refused the key), `output_missing` (a structured run ended without its output), `spend_limit`, `turn_limit` |
+| `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits)), with the reason in `error` |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |
-| `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](errors.md#tool-errors) |
+| `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](https://run.camelai.com/docs/reference/errors.md#tool-errors) |
 | `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?}`. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
 | `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
 
@@ -3573,7 +3971,7 @@ result, `toolCalls` included: only whether and why it stopped.
 
 A tenant's webhook endpoints (`POST /v1/webhooks {url, events}`) receive
 signed events (Standard Webhooks) in an envelope `{id, type, created, data}`;
-dedupe by `id`. See [Webhooks](../guides/webhooks.md).
+dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 
 | Type | `data` |
 | --- | --- |
@@ -3593,7 +3991,7 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 Every limit a developer can hit, from the runtime's code. Sizes: KiB = 1024
 bytes, MiB = 1024 KiB. Past a size limit the request is refused (400 or 413);
 past a count or rate limit, 409 or 429 (with `Retry-After`). See
-[Errors](errors.md) for what to do about each.
+[Errors](https://run.camelai.com/docs/reference/errors.md) for what to do about each.
 
 ## Rate limits
 
@@ -3622,12 +4020,12 @@ wait out `Retry-After` and retry.
   limited: neither their account limits, nor `api_requests` for requests made
   with their tokens, browser tokens or console sessions. An admin tenant's
   `maxAgentCreatesPerMinute` and `maxRunsPerMinute` set limits for it anyway.
-- Operators set every value (see [Configuration](../operations/configuration.md)),
+- Operators set every value (see [Configuration](https://run.camelai.com/docs/operations/configuration.md)),
   and a self-serve account's own with `PUT /v1/tenants/{id}/limits`
-  `{agentCreatesPerMinute, runsPerMinute}` (see [Billing](../operations/billing.md)). A self-hosted runtime has no per-address limits unless it
+  `{agentCreatesPerMinute, runsPerMinute}` (see [Billing](https://run.camelai.com/docs/operations/billing.md)). A self-hosted runtime has no per-address limits unless it
   sets them, or trusts Cloudflare's `CF-Connecting-IP`.
 - Channel senders and Get Help have limits of their own (below, and in
-  [Errors](errors.md)).
+  [Errors](https://run.camelai.com/docs/reference/errors.md)).
 
 ## Agents
 
@@ -3642,7 +4040,7 @@ wait out `Retry-After` and retry.
 | `spendLimit.usd` | 0 to 1,000,000 |
 | `subject` | a string; `context`: at most 4 KB |
 | Mounts | at most 16 per agent |
-| Agents busy at once per account | by [usage tier](#usage-tiers), across the whole runtime (not per node). An agent is busy while it has a run open, running or queued; a busy agent queues more runs without another slot. A run past the limit gets 429 `BUSY_AGENT_LIMIT` (below) |
+| Agents busy at once per account | by [usage tier](https://run.camelai.com/docs/reference/limits.md#usage-tiers), across the whole runtime (not per node). An agent is busy while it has a run open, running or queued; a busy agent queues more runs without another slot. A run past the limit gets 429 `BUSY_AGENT_LIMIT` (below) |
 | Tools in an agent's catalog | 4,096 tools, 16 MiB of schemas; at most 64 declared directly to the model (the rest are reached from js_exec) |
 
 ### Usage tiers
@@ -3662,7 +4060,7 @@ Starting credit and other grants do not count. A payment moves the account up as
 (`next: {tier, paid, limit}`); the console's Billing page shows the same. An account whose limit
 the operator set (the tenants file's `maxAgents`, or `maxBusyAgents` with
 `PUT /v1/tenants/{id}/limits`) has `source: "tenant"` and no tier. Self-hosted runtimes set the tiers with
-`AGENT_USAGE_TIERS` ([configuration](../operations/configuration.md)).
+`AGENT_USAGE_TIERS` ([configuration](https://run.camelai.com/docs/operations/configuration.md)).
 
 At the limit, a run (a prompt, `continue` or `execute`) gets 429 with `Retry-After`:
 
@@ -3788,7 +4186,7 @@ reading them and sending them input do not count; only runs do.
 | Limit | Value |
 | --- | --- |
 | An agent's spend limit | from when it is set: new prompts are refused, and a running turn stops after the response that crossed it (`stopped: "spend_limit"`) |
-| Run limits | 1,000 model responses and 2 hours a run (see [Runs and requests](#runs-and-requests)): `stopped: "turn_limit"` |
+| Run limits | 1,000 model responses and 2 hours a run (see [Runs and requests](https://run.camelai.com/docs/reference/limits.md#runs-and-requests)): `stopped: "turn_limit"` |
 | A tenant's monthly cap (`maxMonthlyCost`) | 402 for new runs once reached |
 | Prepaid credit | 402 at a zero balance, for runs and for storing files; free credit allows $1 of usage per hour (429 past it) |
 
@@ -3801,14 +4199,14 @@ reading them and sending them input do not count; only runs do.
 Three kinds of failure, and where each shows:
 
 1. **The API refused a request**: an HTTP status and a JSON body
-   `{"error": "<message>"}` ([below](#http-errors)). The SDKs throw `AgentError`
+   `{"error": "<message>"}` ([below](https://run.camelai.com/docs/reference/errors.md#http-errors)). The SDKs throw `AgentError`
    with `status`.
 2. **A run failed**: the request was accepted, and the run ended badly. Its
-   outcome says why ([Run failures](#run-failures)); the SDKs' `run()` throws
+   outcome says why ([Run failures](https://run.camelai.com/docs/reference/errors.md#run-failures)); the SDKs' `run()` throws
    `RunError` with the run, unless `throwOnError: false`.
 3. **A tool call did not complete** within a run that otherwise went on: the
    model was told, and the run's outcome lists it in `toolErrors`
-   ([Tool errors](#tool-errors)). Nothing throws; check them where a tool's
+   ([Tool errors](https://run.camelai.com/docs/reference/errors.md#tool-errors)). Nothing throws; check them where a tool's
    side effect matters.
 
 ## HTTP errors
@@ -3838,8 +4236,8 @@ retry.
 | 410 | `GONE` | The agent was deleted or has expired |
 | 413 | `TOO_LARGE` | The request body is too large |
 | 413 | `HISTORY_TOO_LARGE` | An imported history is over 16 MB of JSON |
-| 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
-| 429 | `RATE_LIMITED` | Too many: a rate limit (the body's `limit` names it: `{name, scope, max, windowSeconds}`; see [Rate limits](limits.md#rate-limits)), or too many agents, requests or subscribers at once; retry after `Retry-After` |
+| 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](https://run.camelai.com/docs/reference/limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
+| 429 | `RATE_LIMITED` | Too many: a rate limit (the body's `limit` names it: `{name, scope, max, windowSeconds}`; see [Rate limits](https://run.camelai.com/docs/reference/limits.md#rate-limits)), or too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
 | 507 | `STORAGE_LIMIT` | The account's storage limit would be passed; the body has `limit` and `used`, in bytes |
 | 500 | `INTERNAL` | A bug; retry, and report it with the request id |
@@ -3854,13 +4252,13 @@ In more detail:
 | 403 | Authenticated but not allowed: a browser token outside its agent or its scopes, an agent token changing what only the tenant may (`keyScope`, `spendLimit`, `modelHeaders`), a person not allowed to answer an input, a write to a read-only mount, an expired signed link | Use a token that may do it (usually the tenant's API key, server-side) |
 | 404 | No such agent, request, input, volume, file, definition, schedule, webhook or route; or the feature is not enabled on this runtime. Another tenant's agent is a 404 too | Check the id. A deleted agent is 404 on `/v1/agents/:id` |
 | 405 | A signed link used with the other method | Use the method it was made for |
-| 409 | A conflict: see [409s](#409s) | Depends on the case |
+| 409 | A conflict: see [409s](https://run.camelai.com/docs/reference/errors.md#409s) | Depends on the case |
 | 410 | The agent was deleted or expired (`Session expired or revoked`, on `/clients/:id/*`) | Stop using that id and token. With a key, `upsert` it again: the key makes a fresh agent |
 | 412 | A versioned write lost (a volume file changed since the `version` you gave) | Read it again and retry with the new version |
-| 413 | Too large: the request body, inline files over 4 MiB, a file over 256 MiB, an upload over a link's `maxBytes` | See [Limits](limits.md); upload large files first and attach them by path |
+| 413 | Too large: the request body, inline files over 4 MiB, a file over 256 MiB, an upload over a link's `maxBytes` | See [Limits](https://run.camelai.com/docs/reference/limits.md); upload large files first and attach them by path |
 | 415 | An upload through a signed link with another content type | Send the type the link names |
 | 422 | A channel's credentials were rejected by the provider (Slack, Telegram, Discord) | Fix the bot token |
-| 429 | Too many: a [rate limit](limits.md#rate-limits) (requests from one address, agents created or runs started a minute, sign-in requests), the tenant's agents awake at once, the agent's 32 open requests, event-stream subscribers, or free credit's hourly allowance | Retry after `Retry-After` (the SDKs do, up to 8 times). A rate limit's body names it in `limit`; to go faster for good, ask for a higher limit |
+| 429 | Too many: a [rate limit](https://run.camelai.com/docs/reference/limits.md#rate-limits) (requests from one address, agents created or runs started a minute, sign-in requests), the tenant's agents awake at once, the agent's 32 open requests, event-stream subscribers, or free credit's hourly allowance | Retry after `Retry-After` (the SDKs do, up to 8 times). A rate limit's body names it in `limit`; to go faster for good, ask for a higher limit |
 | 500 | A bug | Retry; report it with the request id |
 | 503 | The runtime cannot serve it right now: a node is draining or starting, lost ownership of an agent, has no room for its work, or the database is failing over; also a feature this runtime is not configured for | Retry after `Retry-After` (the SDKs retry); nothing happened |
 | 507 | A volume is full (100,000 files), or the account's storage limit would be passed (`STORAGE_LIMIT`, with `limit` and `used` in bytes) | Delete files, or use another volume; for the account's limit, delete files or volumes, or buy credit (free credit stores 1 GB) |
@@ -3889,16 +4287,21 @@ A run ends in one of three ways: it answered, it waits on people
 
 | Code (SDK `RunError.code`) | Outcome | Meaning |
 | --- | --- | --- |
-| `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, an invalid key, content refused, context overflow that compaction could not fix |
+| `model_key_missing` | `result.code` (with `result.error`) | No key is set for the agent's model. The error names the model and the remedy: set a key with `PUT /v1/providers/<provider>/key` (or the key scope's entry), or move the agent to a model you can use (`GET /v1/models?available=true`) |
+| `model_key_invalid` | `result.code` (with `result.error`) | The provider refused the key (HTTP 401). The error says the same remedy, then the provider's own words |
+| `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, content refused, context overflow that compaction could not fix |
 | `output_missing` | `result.code` (with `result.error`) | A run sent with `output` ended without the model calling `final_output`: it answered in prose twice, the second time after a reminder. `text` has what it said. Send the prompt again, make the instructions say what the answer is for, or use a stronger model |
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
 | `spend_limit` | `result.stopped: "spend_limit"` | The agent's spend limit (or the tenant's monthly cap) stopped the turn after the response that crossed it; its tool calls ran. Raise the limit and send the next message |
-| `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](../guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
-| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent's model has no key, the agent was deleted, code execution failed, a queued run refused for credit |
+| `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
+| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, code execution failed, a queued run refused for credit |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
 
 A request record (`GET …/requests/:requestId`, `GET …/state`) puts an ended run's
-`error`, whichever kind, and `stopped` on top: `error` set means it failed.
+`status` (`completed`, `input_required` or `failed`, as the SDKs' runs say it),
+`error`, whichever kind, and `stopped` on top. Its `state` says only whether it
+ended (`running`, `completed`): a failed run is `state: "completed"`,
+`status: "failed"`.
 
 A failed model response that is retried is retracted from history (`message_retracted`); the last one stays, with its `errorMessage`. A run
 whose node was lost mid-turn resumes on another (`turn_resumed`), with any tool
@@ -3915,8 +4318,8 @@ result and carried on.
 | `code` | Meaning | `outcomeUnknown` |
 | --- | --- | --- |
 | `timeout` | No answer (or progress) within the tool's deadline | yes: it may have taken effect |
-| `connection_lost` | The connection the call went out on closed before its answer: the process serving the tools crashed, or was stopped without `close()`, or its call outlived `close()`'s drain. See [deploying a tool process](../guides/tools.md#deploying-a-tool-process) | yes |
-| `not_connected` | No process served the agent's tools (no application attached), so the call did not run. Typical for REST, schedules and channels driving an agent whose tools live in a process that is not running: serve them over HTTP instead ([Tools](../guides/tools.md)) | no |
+| `connection_lost` | The connection the call went out on closed before its answer: the process serving the tools crashed, or was stopped without `close()`, or its call outlived `close()`'s drain. See [deploying a tool process](https://run.camelai.com/docs/guides/tools.md#deploying-a-tool-process) | yes |
+| `not_connected` | No process served the agent's tools (no application attached), so the call did not run. Typical for REST, schedules and channels driving an agent whose tools live in a process that is not running: serve them over HTTP instead ([Tools](https://run.camelai.com/docs/guides/tools.md)) | no |
 | `source_unavailable` | Its MCP server could not be reached, listed or authenticated with | no |
 | `failed` | Anything else that kept it from running or answering | no |
 

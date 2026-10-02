@@ -129,7 +129,7 @@ REQ=$(curl -s $BASE/v1/agents/$AGENT/prompt -H "$AUTH" -H "Content-Type: applica
   -d '{"text": "Write a haiku about durable agents."}' | jq -r .id)
 # ?wait=25 answers as soon as the run ends (or after 25 s, still running: ask again).
 until RUN=$(curl -s "$BASE/v1/agents/$AGENT/requests/$REQ?wait=25" -H "$AUTH") && jq -e '.state == "completed"' <<< "$RUN" > /dev/null; do :; done
-jq -r '.outcome.result.reply // .error' <<< "$RUN"
+jq -r 'if .status == "failed" then "failed: \(.error)" else .outcome.result.reply end' <<< "$RUN"
 ```
 
 The agent names no model, so it uses your account's default: the first of the
@@ -138,14 +138,21 @@ the models you can use, and pass one as `model`:
 
 ```sh
 npx -y @camelai/camelrun models --available
+# or, without Node:
+curl -s "https://run.camelai.com/v1/models?available=true" -H "Authorization: Bearer $CAMELAI_API_KEY" | jq -r '.[].id'
 ```
 
 ```ts
 const agent = await agents.upsert("quickstart", { model: "<a model id from that list>", instructions: "…" });
 ```
 
-A model your account can't use fails with `No ... API key configured`: pick one
-from that list, or add the provider's key under **Models & keys**.
+```python
+agent = await agents.upsert("quickstart", model="<a model id from that list>", instructions="…")
+```
+
+A model your account can't use fails the run with code `model_key_missing`, and
+an error that says which key to set: pick one from that list, or add the
+provider's key under **Models & keys**.
 
 ## 4. Stream it
 
@@ -161,11 +168,15 @@ for await (const part of agent.stream("And tomorrow?")) {
 ```
 
 ```python
-async for part in agent.stream("And tomorrow?"):
+stream = agent.stream("And tomorrow?")
+async for part in stream:
     if part.type == "text":
         print(part.text, end="", flush=True)
     elif part.type == "tool_call":
         print(f"\n[{part.name}({part.arguments})]")
+    elif part.type == "done":
+        print(f"\n({part.run.status})")
+run = await stream.result()  # the same run as "done" has, also after a stream that broke off
 ```
 
 The run's result is the truth; the stream is for display. A stream that breaks
@@ -183,12 +194,15 @@ never loses the run: `run()` (or `stream.result()`) still resolves with it.
   instead, which also keeps them working through deploys; see [Several
   processes, workers and deploys](guides/tools.md#several-processes-workers-and-deploys).
 - `run()` resolved with a `Run`: `status` (`completed`, `input_required` or
-  `failed`), `text`, `inputs`, `error`, `toolErrors` (Python `tool_errors`). A
-  failed run throws a `RunError` unless you pass `throwOnError: false`
-  (`throw_on_error=False`).
+  `failed`), `text`, `inputs`, `error`, `toolCalls` (Python `tool_calls`: each
+  tool it called), `toolErrors` (Python `tool_errors`). A failed run throws a
+  `RunError` unless you pass `throwOnError: false` (`throw_on_error=False`). A
+  `completed` run can still list tool errors, e.g. `connection_lost` when the
+  process serving its tools went away mid-call: check them.
 - `agents.close()` let the process exit. The agent stays in the runtime.
 
 Next: [Concepts](concepts.md), then the guide for what you are building:
+[a chat in your app](frontend.md) (`npm create @camelai/run-app`),
 [tools](guides/tools.md), [asking people](guides/human-input.md),
 [showing an agent in a browser](guides/browser.md), [files](guides/files.md),
 [agents for many users](guides/multi-user.md), [webhooks](guides/webhooks.md).
