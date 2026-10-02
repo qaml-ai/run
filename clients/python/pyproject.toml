@@ -14,6 +14,8 @@ dependencies = ["httpx==0.28.1"]
 [project.optional-dependencies]
 # serve_tools, verify_runtime_token and TestRuntime check Ed25519 signatures.
 server = ["cryptography>=42"]
+# Structured output with a pydantic model (run(output=Model)); a JSON Schema dict needs nothing.
+pydantic = ["pydantic>=2"]
 
 [project.urls]
 Homepage = "https://run.camelai.com"

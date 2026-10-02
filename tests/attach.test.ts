@@ -47,6 +47,7 @@ test("a run for an agent whose tools need its application is refused while none 
   const refused = await r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "hi" } });
   assert.equal(refused.status, 409);
   assert.match(refused.json.error, /^APPLICATION_NOT_CONNECTED/);
+  assert.match(refused.json.error, /agents\.upsert\(key, \{ tools \}\).*tools=\[…\].*connectAgent or connect_agent.*allow_disconnected=True/, "in either SDK's words");
   const viaClient = await fetch(`${r.base}/clients/${created.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: "c-1", method: "execute", params: { code: "return 1" } }) });
   assert.equal(viaClient.status, 409);
   const anyway = await r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "anyway", allowDisconnected: true } });

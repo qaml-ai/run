@@ -6,7 +6,7 @@ this page is the reference.
 
 ```sh
 npm install @camelai/run      # Node 22+, Bun, Deno, Cloudflare Workers
-pip install camelai-run       # Python 3.11+; "camelai-run[server]" for serve_tools
+pip install camelai-run       # Python 3.11+; "camelai-run[server]" for serve_tools, "camelai-run[pydantic]" for pydantic output
 ```
 
 | TypeScript entry | |

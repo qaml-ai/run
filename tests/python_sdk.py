@@ -771,6 +771,13 @@ class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
             await runtime.close()
 
 
+class VersionTest(unittest.TestCase):
+    def test_version_is_pyprojects(self):
+        import camelai_run
+        import tomllib
+        self.assertEqual(camelai_run.__version__, tomllib.loads((ROOT / "clients" / "python" / "pyproject.toml").read_text())["project"]["version"])
+
+
 class OriginTest(unittest.TestCase):
     def test_plain_http_reaches_only_private_hosts(self):
         for url in ["http://localhost:8790", "http://127.0.0.1:8790", "http://runtime:8790", "http://agent-runtime.internal", "http://10.1.2.3", "http://172.20.0.5:8790", "http://192.168.1.9", "https://agents.example.com"]:

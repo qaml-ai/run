@@ -2221,7 +2221,7 @@ export class ClientSessions {
       // than a turn whose calls cannot run. An application reconnecting (a process restarting) has a moment to arrive.
       if (["prompt", "continue", "execute"].includes(body.method) && !allowDisconnected && session.header.definitions.length && !await this.applicationConnected(session)) {
         if (existing()) return { status: 200, record: visible(existing()!) };
-        throw new HttpError(409, "APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it (the SDKs' connectAgent), or send allowDisconnected: true to run anyway");
+        throw new HttpError(409, "APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it: upsert the agent with its tools in a process that stays up (TypeScript agents.upsert(key, { tools }), Python agents.upsert(key, tools=[…]); lower down, connectAgent or connect_agent), or send allowDisconnected: true (allow_disconnected=True) to run anyway");
       }
       const queued = QUEUED_METHODS.includes(body.method);
       // Status and aborts need no process; queued requests start it (if at all) when their turn comes.

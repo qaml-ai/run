@@ -22,6 +22,7 @@ run.output; // { category: "bug", priority: 2, summary: "…" }, typed z.infer<t
 ```
 
 ```python
+# pip install "camelai-run[pydantic]"
 from pydantic import BaseModel
 from typing import Literal
 
