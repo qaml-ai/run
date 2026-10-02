@@ -14,7 +14,7 @@ import { resolve } from "node:path";
 import { databaseFromEnvironment } from "../src/db.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { verifyGcCandidates } from "../src/gc-verify.ts";
-import { errorText } from "../src/protocol.ts";
+import { safeError } from "../src/metrics.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 
 const option = (name: string) => { const at = process.argv.indexOf(name); return at > 0 ? process.argv[at + 1] : undefined; };
@@ -30,7 +30,7 @@ try {
   const results = await verifyGcCandidates({
     db, storage, tenant: option("--tenant"), sample: Number(option("--sample") ?? 5), logged,
     graceMs: Number(process.env.AGENT_GC_GRACE_MS ?? 24 * 60 * 60_000),
-    onError: (what, error) => console.error(JSON.stringify({ type: "gc_verify_unreadable", what, error: errorText(error) })),
+    onError: (what, error) => console.error(JSON.stringify({ type: "gc_verify_unreadable", what, error: safeError(error) })),
   });
   const total = { tenants: results.length, candidates: 0, due: 0, unpinnedAgentRefs: 0, loggedChecked: [...logged.values()].reduce((sum, hashes) => sum + hashes.length, 0), loggedReferenced: 0, dueInVolumes: 0, referencedAgain: 0, unreadable: 0 };
   for (const row of results) {

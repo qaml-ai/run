@@ -14,7 +14,7 @@ import { resolve } from "node:path";
 import { databaseFromEnvironment } from "../src/db.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { backfillPins } from "../src/pin-backfill.ts";
-import { errorText } from "../src/protocol.ts";
+import { safeError } from "../src/metrics.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 
 const dryRun = process.argv.includes("--dry-run");
@@ -26,7 +26,7 @@ try {
   const storage = await openStorage(storageFromEnvironment(resolve(process.env.AGENT_DATA_DIR ?? ".agent-runtime")), postgresTail(db));
   const tenants = await backfillPins({
     db, storage, dryRun, tenant,
-    onError: (agent, what, error) => console.error(JSON.stringify({ type: "backfill_pins_unreadable", agent, what, error: errorText(error) })),
+    onError: (agent, what, error) => console.error(JSON.stringify({ type: "backfill_pins_unreadable", agent, what, error: safeError(error) })),
   });
   const total = { agents: 0, refs: 0, chunks: 0, missing: 0, inserted: 0, unreadable: 0 };
   for (const row of tenants) {

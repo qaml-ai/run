@@ -167,7 +167,9 @@ refers to any more, so they stop being stored and billed:
   it with the dry run and watch the logs for a few intervals, check them with
   `scripts/verify-gc.ts --logged <tenant:hash,…>` (read-only: it fails if a due candidate is
   held by a FileRef without a pin, or a hash the dry run named is referred to at all), then
-  unset the dry run.
+  unset the dry run. `scripts/check-storage.ts` checks the result at any time, read-only:
+  every chunk a live agent's FileRefs or a live volume's files and snapshots refer to must
+  still be stored.
 - **Accepted gap.** A collector that crashes after deleting a chunk and before putting
   it back for a writer that touched it meanwhile loses that chunk. The window is one
   delete and one query long, and needs a writer storing the same bytes at that moment.
