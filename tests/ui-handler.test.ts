@@ -97,12 +97,12 @@ test("a send with wait answers with the reply once the run ends; wait asks again
   const handler = handlerFor(t, r, { onSend: () => { sends++; } });
   const done = await post(handler, { action: "send", text: "hello", clientId: "cm_wait0001", wait: true });
   assert.equal(done.status, 200, JSON.stringify(done.json));
-  assert.deepEqual(done.json, { requestId: "cm_wait0001", state: "completed", reply: "answer 0" });
+  assert.deepEqual(done.json, { requestId: "cm_wait0001", state: "completed", status: "completed", reply: "answer 0" });
   // Not done within the wait: still running, and asked about again by its client id, without sending it again.
   const slow = await post(handler, { action: "send", text: "slowly", clientId: "cm_wait0002", wait: 1 });
   assert.deepEqual(slow.json, { requestId: "cm_wait0002", state: "running" });
   const later = await post(handler, { action: "wait", requestId: "cm_wait0002", wait: 25 });
-  assert.deepEqual(later.json, { requestId: "cm_wait0002", state: "completed", reply: "answer 1" });
+  assert.deepEqual(later.json, { requestId: "cm_wait0002", state: "completed", status: "completed", reply: "answer 1" });
   assert.equal(sends, 2, "waiting sends nothing");
   assert.equal((await post(handler, { action: "wait", requestId: "cm_wait0002" })).json.reply, "answer 1", "without wait: as it is now");
   assert.equal((await post(handler, { action: "send", text: "x", clientId: "cm_wait0003", wait: 30 })).status, 400);

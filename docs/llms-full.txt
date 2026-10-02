@@ -1246,14 +1246,14 @@ returned null), 400 `invalid_request` or `invalid_json` (the message names the f
 
 The chat follows the agent's stream, so it sends without waiting. A caller without the stream
 passes `wait`: `true` (25 seconds) or whole seconds from 1 to 25. The route answers once the run
-ends, with `state: "completed"` and the run's `reply` (its final message's text), `error` (why it
-failed) or `stopped` (`input_required`, `spend_limit` or `turn_limit`). A run still going when the wait is over
+ends, with `state: "completed"`, `status` (`completed`, `input_required` or `failed`) and the run's
+`reply` (its final message's text), `error` (why it failed) or `stopped` (`input_required`, `spend_limit` or `turn_limit`). A run still going when the wait is over
 answers `state: "running"`: ask again with `wait`.
 
 ```sh
 curl -s https://app.example.com/api/agent -H "Cookie: session=…" -H "Content-Type: application/json" \
   -d '{"action":"send","text":"Where is my order?","clientId":"msg_0001","wait":true}'
-# {"requestId":"msg_0001","state":"completed","reply":"It shipped yesterday…"}
+# {"requestId":"msg_0001","state":"completed","status":"completed","reply":"It shipped yesterday…"}
 curl -s https://app.example.com/api/agent -H "Cookie: session=…" -H "Content-Type: application/json" \
   -d '{"action":"wait","requestId":"msg_0001","wait":25}'
 ```
