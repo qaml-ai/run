@@ -13,7 +13,8 @@ camelrun login                     # paste an API key from the console's API tok
 ```
 
 `login` checks the key and saves it to `~/.config/camelrun/credentials.json`
-(mode 600). `CAMELAI_API_KEY` and `CAMELAI_URL` (for a self-hosted runtime), or
+(mode 600). `CAMELAI_API_KEY` and `CAMELAI_BASE_URL` (for a self-hosted runtime, as
+the SDKs read it; `CAMELAI_URL` works too), or
 `--api-key` and `--url`, take precedence over it.
 
 ## Deploy from a manifest

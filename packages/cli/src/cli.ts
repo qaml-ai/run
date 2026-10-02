@@ -53,7 +53,7 @@ MCP
 
 Options
   --json                           Print JSON (the default when stdout is not a terminal)
-  --api-key <key>, --url <url>     Instead of CAMELAI_API_KEY / CAMELAI_URL / the saved login
+  --api-key <key>, --url <url>     Instead of CAMELAI_API_KEY / CAMELAI_BASE_URL / the saved login
 
 Docs: https://run.camelai.com/llms.txt`;
 
@@ -189,7 +189,7 @@ async function login(flags: Flags, io: Io, print: (value: unknown, human?: () =>
     apiKey = (await prompt.question("API key (create one at https://run.camelai.com/console/tokens): ")).trim();
     prompt.close();
   }
-  const url = flags.url || io.env.CAMELAI_URL || DEFAULT_URL;
+  const url = flags.url || io.env.CAMELAI_BASE_URL || io.env.CAMELAI_URL || DEFAULT_URL;
   const me = await new Api({ apiKey, url }).me();
   const path = save({ apiKey, url }, io.env);
   print({ tenant: me.tenant, url, saved: path }, () => `Logged in as ${me.login ?? me.tenant} on ${url} (key saved to ${path})`);

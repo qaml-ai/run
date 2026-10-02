@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Api } from "../packages/cli/src/api.ts";
 import { main } from "../packages/cli/src/cli.ts";
+import { resolve } from "../packages/cli/src/config.ts";
 import { loadManifests } from "../packages/cli/src/manifest-files.ts";
 import { createServer } from "../packages/cli/src/mcp.ts";
 import { OPERATOR, lastUser, runtime, toolResults, toolCall, until } from "./runtime-server.ts";
@@ -15,7 +16,7 @@ import { OPERATOR, lastUser, runtime, toolResults, toolCall, until } from "./run
 function cli(base: string, cwd: string, env: Record<string, string> = {}) {
   return async (...argv: string[]) => {
     const out: string[] = [], err: string[] = [];
-    const code = await main(argv, { out: text => out.push(text), err: text => err.push(text), tty: false, cwd, env: { CAMELAI_API_KEY: OPERATOR, CAMELAI_URL: base, CAMELRUN_CONFIG: join(cwd, "credentials.json"), ...env } });
+    const code = await main(argv, { out: text => out.push(text), err: text => err.push(text), tty: false, cwd, env: { CAMELAI_API_KEY: OPERATOR, CAMELAI_BASE_URL: base, CAMELRUN_CONFIG: join(cwd, "credentials.json"), ...env } });
     const text = out.join("\n");
     let json: any;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
@@ -138,7 +139,7 @@ test("login saves a checked key readable only by its owner", async t => {
   const login = await run("login", "--api-key", OPERATOR, "--url", r.base);
   assert.equal(login.code, 0, login.err);
   assert.equal(statSync(join(dir, "credentials.json")).mode & 0o777, 0o600);
-  const saved = cli(r.base, dir, { CAMELAI_API_KEY: "", CAMELAI_URL: "" });
+  const saved = cli(r.base, dir, { CAMELAI_API_KEY: "", CAMELAI_BASE_URL: "" });
   // Empty variables are unset ones: the saved login answers.
   assert.equal((await main(["whoami"], { out: () => {}, err: () => {}, tty: false, cwd: dir, env: { CAMELRUN_CONFIG: join(dir, "credentials.json") } })), 0);
   assert.equal((await saved("logout")).json.loggedOut, true);
@@ -180,4 +181,11 @@ test("the MCP server deploys and runs agents for a coding agent", async t => {
   assert.equal(missing.isError, true);
   assert.match(missing.text, /^404: No agent with key "nobody"/);
   assert.equal((await call("delete_agent", { agent: "helper-1" })).json.deleted, true);
+});
+
+test("the CLI reads the runtime's URL from CAMELAI_BASE_URL, as the SDKs do, or CAMELAI_URL", () => {
+  const env = { CAMELAI_API_KEY: "k".repeat(32), CAMELRUN_CONFIG: join(mkdtempSync(join(tmpdir(), "camelrun-env-")), "none.json") };
+  assert.equal(resolve({}, { ...env, CAMELAI_BASE_URL: "http://runtime:8790" }).url, "http://runtime:8790");
+  assert.equal(resolve({}, { ...env, CAMELAI_URL: "http://old:8790" }).url, "http://old:8790");
+  assert.equal(resolve({ url: "http://flag" }, { ...env, CAMELAI_BASE_URL: "http://runtime:8790" }).url, "http://flag");
 });
