@@ -25,9 +25,28 @@ for are the agent's goal, if the user hasn't said it (below), and a missing API 
     3. Run it once and show you its reply
 
 **What to build.** If the user said what the agent should do, build that. If they haven't (the usual prompt ends "Ask
-me what the agent should do."), ask exactly one short question first, "What should your agent do?", and build what
-they answer. Ask nothing else: choose the rest yourself (the language from the project, the agent's key, its
-instructions, the account's default model, a tool from this project), and say what you chose.
+me what the agent should do."), ask exactly one question first. Don't ask it open-ended: offer these options, using
+your client's multiple-choice question UI if it has one (Claude Code's AskUserQuestion, say), else print the list:
+
+    What should your agent do? Pick one or describe your own:
+    1. Support agent: answers customers from your docs and calls your app's functions (e.g. look up an order)
+    2. Chat in your web app: a chat UI backed by an agent (React/Vue/Svelte/Solid)
+    3. Discord or Slack bot for your community
+    4. Scheduled worker: a daily digest or report that runs on its own
+    5. Other: tell me
+
+Then follow the recipe for the answer:
+
+| Answer | Read and follow |
+|---|---|
+| 1. Support agent | https://run.camelai.com/docs/guides/tools.md: tools from this project's own functions (step 3 below) |
+| 2. Chat in your web app | https://run.camelai.com/docs/frontend.md: `npm create @camelai/run-app` for a new app, or `createAgentHandler` and `@camelai/run-react` in this one |
+| 3. Discord or Slack bot | https://run.camelai.com/docs/guides/channels.md: a definition, then a channel that uses it |
+| 4. Scheduled worker | https://run.camelai.com/docs/concepts.md#waking-later: `agent.client.schedule({ text, everySeconds })`, or the `schedule` built-in |
+| 5. Other | what they describe, from this file and https://run.camelai.com/llms.txt |
+
+Ask nothing else: choose the rest yourself (the language from the project, the agent's key, its instructions, the
+account's default model, a tool from this project), and say what you chose.
 
 **No answer possible.** Only when you cannot ask (you run non-interactively) or get no answer, build a default:
 in a project, something small and useful (an agent that answers questions about its data or code, with one tool that
