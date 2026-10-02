@@ -16,24 +16,28 @@ https://run.camelai.com/docs/reference/sdk.md.
 
 ## 0. Say the plan, then go
 
-Tell the user this in one message, then start right away. Don't wait for an OK: the only thing to stop for is a
-missing API key (step 1).
+Tell the user this in one message, then start right away. Don't wait for an OK on the plan. The only things to stop
+for are the agent's goal, if the user hasn't said it (below), and a missing API key (step 1).
 
     Here's how I'll set up camelRun:
     1. Find your camelRun API key, or ask you to add one to .env.local yourself (never in this chat)
     2. Install the SDK and build the agent you asked for, with a tool from this project
     3. Run it once and show you its reply
 
-**What to build.** Build the agent the user asked for ("build an agent that …"). If they named nothing, or the prompt
-still says `<does X>`, don't ask: pick something small and useful in this project (an agent that answers questions
-about its data or code, with one tool that reads it), say what you picked, and build that. Choose sensible defaults
-the same way (the agent's key, its instructions, the account's default model) rather than asking.
+**What to build.** If the user said what the agent should do, build that. If they haven't (the usual prompt ends "Ask
+me what the agent should do."), ask exactly one short question first, "What should your agent do?", and build what
+they answer. Ask nothing else: choose the rest yourself (the language from the project, the agent's key, its
+instructions, the account's default model, a tool from this project), and say what you chose.
 
-**An empty folder.** With no project to read and no agent named, build a TypeScript ES module project
+**No answer possible.** Only when you cannot ask (you run non-interactively) or get no answer, build a default:
+in a project, something small and useful (an agent that answers questions about its data or code, with one tool that
+reads it); in an empty folder, the demo below. Say what you picked.
+
+**An empty folder.** With no project to read and no answer to the question, build a TypeScript ES module project
 (`npm init -y && npm pkg set type=module && npm install @camelai/run`) with a one-tool demo: an agent that answers
 questions about a small business from a `facts.json` it reads with a `get_facts` tool (opening hours, prices, a
 policy or two). Use Python instead only if the user asked for it. With an agent named but no project, build that
-agent the same way.
+agent in the same kind of project.
 
 **Just trying camelRun, with no code?** The hosted MCP server needs no API key: signing in with GitHub or Google
 creates the account. Offer it, and tell the user the command to run themselves:

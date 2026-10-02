@@ -14,7 +14,7 @@ describe("QuickstartPage", () => {
   it("leads with the coding-agent prompt and the no-key MCP path, at this console's origin", () => {
     render(<QuickstartPage />);
     const blocks = code();
-    expect(blocks[0]).toBe(`Read ${location.origin}/SKILL.md, set up camelRun in this project, and build an agent that <does X>.`);
+    expect(blocks[0]).toBe(`Read ${location.origin}/SKILL.md and set up camelRun in this project. Ask me what the agent should do.`);
     expect(blocks[1]).toContain(`claude mcp add --transport http camelrun ${location.origin}/mcp`);
     expect(blocks[1]).toContain(`codex mcp add camelrun --url ${location.origin}/mcp`);
     expect(screen.queryByText(/First add a model key/)).toBeNull();

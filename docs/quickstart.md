@@ -6,12 +6,11 @@ agent's history and its files; your tools stay in your code, with your
 credentials.
 
 **With a coding agent.** Paste this into Claude Code, Codex, Cursor or any coding
-agent, saying what the agent should do in place of `<does X>`. It installs the
-SDK, finds your API key without you pasting it into chat, and runs your first
-agent:
+agent. It asks you what the agent should do, installs the SDK, finds your API
+key without you pasting it into chat, and runs your first agent:
 
 ```text
-Read https://run.camelai.com/SKILL.md, set up camelRun in this project, and build an agent that <does X>.
+Read https://run.camelai.com/SKILL.md and set up camelRun in this project. Ask me what the agent should do.
 ```
 
 **Try it with no API key.** Connect your coding agent to the hosted MCP server.

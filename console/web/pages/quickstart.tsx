@@ -11,7 +11,7 @@ export function QuickstartPage() {
   const model = available.data?.[0]?.id ?? "<model id>";
   // The hosted runtime is the SDKs' default; another origin (a self-hosted console) is named explicitly.
   const hosted = url === "https://run.camelai.com" || url === "https://agents.camelai.dev";
-  const prompt = `Read ${url}/SKILL.md, set up camelRun in this project, and build an agent that <does X>.`;
+  const prompt = `Read ${url}/SKILL.md and set up camelRun in this project. Ask me what the agent should do.`;
   const mcp = `# Claude Code (then /mcp to sign in)
 claude mcp add --transport http camelrun ${url}/mcp
 
@@ -78,7 +78,7 @@ curl -s $BASE/v1/agents/$AGENT/requests/$REQ -H "$AUTH" | jq -r '.outcome.result
         <Card>
           <CardHeader>
             <CardTitle>Set up with your coding agent</CardTitle>
-            <CardDescription>Paste this into Claude Code, Codex, Cursor or any coding agent, saying what the agent should do in place of <code>&lt;does X&gt;</code>. It installs the SDK, has you add an API token to <code>.env.local</code> (never into the chat), and runs your first agent.</CardDescription>
+            <CardDescription>Paste this into Claude Code, Codex, Cursor or any coding agent. It asks you what the agent should do, installs the SDK, has you add an API token to <code>.env.local</code> (never into the chat), and runs your first agent.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <CodeBlock language="prompt" code={prompt} />

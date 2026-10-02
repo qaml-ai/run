@@ -3,7 +3,7 @@ import { join, relative, sep } from "node:path";
 
 /** The origin the docs are written for; a runtime elsewhere serves them pointing at itself. */
 const DOCS_ORIGIN = "https://run.camelai.com";
-/** Where the one-line prompt "Read https://run.camelai.com/SKILL.md, set up camelRun in this project, and build an agent that …" points. */
+/** Where the one-line prompt "Read https://run.camelai.com/SKILL.md and set up camelRun in this project. Ask me what the agent should do." points. */
 export const SKILL_PATHS = ["/SKILL.md", "/skill.md"];
 /** The docs for people: `/docs` on the runtime goes there. */
 export const DOCS_SITE = "https://camelai.com/docs/camelrun/overview";
