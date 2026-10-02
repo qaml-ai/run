@@ -14,7 +14,7 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
-import { compactionSettings, contextTokens, explicitKeyStream, needsCompaction, runCompaction } from "./compaction.ts";
+import { compactionSettings, contextTokens, explicitKeyStream, modelKeyFailure, needsCompaction, runCompaction } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
@@ -699,7 +699,7 @@ export function createAgentHost(hostIO: HostIO) {
       // A run that asked for structured output and ended without it, nor stopped for a reason of its own, failed.
       const missing = !given && !error && !stopped && agent.state.tools.some(tool => tool.name === OUTPUT_TOOL);
       return {
-        messages: transcript.total, ...answered, error, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
+        messages: transcript.total, ...answered, error, ...(error ? modelKeyFailure(error, config.model) : {}), ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
       };
     } finally {

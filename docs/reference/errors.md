@@ -91,16 +91,21 @@ A run ends in one of three ways: it answered, it waits on people
 
 | Code (SDK `RunError.code`) | Outcome | Meaning |
 | --- | --- | --- |
-| `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, an invalid key, content refused, context overflow that compaction could not fix |
+| `model_key_missing` | `result.code` (with `result.error`) | No key is set for the agent's model. The error names the model and the remedy: set a key with `PUT /v1/providers/<provider>/key` (or the key scope's entry), or move the agent to a model you can use (`GET /v1/models?available=true`) |
+| `model_key_invalid` | `result.code` (with `result.error`) | The provider refused the key (HTTP 401). The error says the same remedy, then the provider's own words |
+| `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, content refused, context overflow that compaction could not fix |
 | `output_missing` | `result.code` (with `result.error`) | A run sent with `output` ended without the model calling `final_output`: it answered in prose twice, the second time after a reminder. `text` has what it said. Send the prompt again, make the instructions say what the answer is for, or use a stronger model |
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
 | `spend_limit` | `result.stopped: "spend_limit"` | The agent's spend limit (or the tenant's monthly cap) stopped the turn after the response that crossed it; its tool calls ran. Raise the limit and send the next message |
 | `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](../guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
-| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent's model has no key, the agent was deleted, code execution failed, a queued run refused for credit |
+| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, code execution failed, a queued run refused for credit |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
 
 A request record (`GET …/requests/:requestId`, `GET …/state`) puts an ended run's
-`error`, whichever kind, and `stopped` on top: `error` set means it failed.
+`status` (`completed`, `input_required` or `failed`, as the SDKs' runs say it),
+`error`, whichever kind, and `stopped` on top. Its `state` says only whether it
+ended (`running`, `completed`): a failed run is `state: "completed"`,
+`status: "failed"`.
 
 A failed model response that is retried is retracted from history (`message_retracted`); the last one stays, with its `errorMessage`. A run
 whose node was lost mid-turn resumes on another (`turn_resumed`), with any tool

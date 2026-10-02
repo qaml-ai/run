@@ -292,9 +292,16 @@ const settled = (state: string) => state !== "running";
 /** The key scope an agent has once `update` applies: the one it names (null for none), else its own. */
 const scopeAfter = (header: SessionHeader, update: { keyScope?: unknown }) => Object.hasOwn(update, "keyScope") ? update.keyScope as string | null : header.keyScope;
 
-/** A request as callers see it: queued parameters stay internal, and an ended one's error and early stop are on top. */
-const visible = ({ params: _params, announce: _announce, ...record }: RequestRecord): RequestRecord =>
-  record.state === "completed" ? { ...record, ...outcomeEnding(record.outcome) } : record;
+/**
+ * A request as callers see it: queued parameters stay internal, and an ended one's error, early stop and `status` are on
+ * top. `state` says only whether it ended; `status` how, as the SDKs' runs say it: completed, input_required or failed.
+ */
+const visible = ({ params: _params, announce: _announce, ...record }: RequestRecord): RequestRecord => {
+  if (record.state !== "completed") return record;
+  const ending = outcomeEnding(record.outcome);
+  const status = ending.error !== undefined || ending.stopped === "spend_limit" || ending.stopped === "turn_limit" ? "failed" : ending.stopped === "input_required" ? "input_required" : "completed";
+  return { ...record, ...ending, status };
+};
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;

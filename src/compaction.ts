@@ -224,6 +224,16 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
  * gives credentials, the call uses them: an identity token for the tenant's own
  * endpoint, or a key scope's current entry. `modelHeaders()` are the agent's own headers.
  */
+/**
+ * Why a run's model call failed, when the remedy is the caller's: no key for the model (`model_key_missing`), or a key
+ * the provider refused (`model_key_invalid`, with what to do before the provider's own words). Anything else: undefined.
+ */
+export function modelKeyFailure(error: string, model: { provider: string; id: string }): { code: "model_key_missing" | "model_key_invalid"; error: string } | undefined {
+  if (/^No \S+ API key is configured for /.test(error)) return { code: "model_key_missing", error };
+  if (/^401\b/.test(error)) return { code: "model_key_invalid", error: `${model.provider} refused the API key for ${model.provider}/${model.id} (401): set a working one with PUT /v1/providers/${model.provider}/key (or the key scope's entry), or move the agent to a model you can use (GET /v1/models?available=true). ${model.provider} said: ${error}` };
+  return undefined;
+}
+
 export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);

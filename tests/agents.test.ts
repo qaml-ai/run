@@ -39,6 +39,14 @@ test("run() resolves with a typed Run; the agent's id is public and its token st
   assert.deepEqual(JSON.parse(JSON.stringify(agent)), { id: agent.id });
 });
 
+test("a key the provider refuses fails the run as model_key_invalid, with where to set a working one", async t => {
+  const { make } = await setup(t, () => ({ httpStatus: 401, message: "Incorrect API key provided" }));
+  const error = await (await make()).run("Hi").then(() => assert.fail("expected a RunError"), error => error);
+  assert.ok(error instanceof RunError);
+  assert.equal(error.code, "model_key_invalid");
+  assert.match(error.message, /^openrouter refused the API key for openrouter\/openai\/gpt-4o-mini \(401\): set a working one with PUT \/v1\/providers\/openrouter\/key.*GET \/v1\/models\?available=true.*Incorrect API key provided/s);
+});
+
 test("a failed run throws a RunError with the run, or resolves with it given throwOnError: false", async t => {
   const { make } = await setup(t, () => ({ httpStatus: 400, message: "model says no" }));
   const agent = await make();

@@ -25,6 +25,8 @@ export type RequestRecord = {
   error?: string;
   /** Why an ended run stopped early, from `outcome.result.stopped`. */
   stopped?: "input_required" | "spend_limit" | "turn_limit";
+  /** How an ended request ended: `failed` when it has an `error` or stopped at a limit. */
+  status?: "completed" | "input_required" | "failed";
   /** When the agent actually started this run (runs queue behind each other). */
   began?: number;
   /** Kept until the run begins, so a queued run survives a restart and runs exactly once. */

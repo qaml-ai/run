@@ -1579,6 +1579,15 @@
               "turn_limit"
             ],
             "description": "Why an ended run stopped early (outcome.result.stopped)"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "input_required",
+              "failed"
+            ],
+            "description": "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running"
           }
         },
         "required": [

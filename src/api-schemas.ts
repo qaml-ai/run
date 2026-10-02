@@ -278,6 +278,7 @@ export const RequestRecord = z.object({
   outcome: Outcome.optional().openapi({ description: "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?}, without arguments or results. result.output is a structured answer, for a prompt sent with output" }),
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
+  status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
 }).openapi("RequestRecord");
 export const AgentCreated = z.looseObject({
   id: z.string(),

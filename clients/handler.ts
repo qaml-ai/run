@@ -133,10 +133,10 @@ function waitSeconds(value: unknown): number | undefined {
 }
 
 /** What `send` and `wait` answer: the request, and once it ended, its reply, error or why it stopped. Never its other results. */
-function sent(record: { id: string; state: string; steeredInto?: string; error?: string; stopped?: string; outcome?: { result?: { reply?: unknown } } }) {
+function sent(record: { id: string; state: string; status?: string; steeredInto?: string; error?: string; stopped?: string; outcome?: { result?: { reply?: unknown } } }) {
   const reply = record.outcome?.result?.reply;
   return {
-    requestId: record.id, state: record.state, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}),
+    requestId: record.id, state: record.state, ...(record.status ? { status: record.status } : {}), ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}),
     ...(typeof reply === "string" ? { reply } : {}), ...(record.error !== undefined ? { error: record.error } : {}), ...(record.stopped ? { stopped: record.stopped } : {}),
   };
 }

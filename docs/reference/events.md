@@ -102,7 +102,8 @@ outcomes](#run-outcomes) for prompts); `outcome.error` means the runtime could n
 carry it out, and `uncertain: true` that nobody can tell whether its work took
 effect (a restart cut it short). The same outcome is at
 `GET …/requests/:requestId` and in `GET …/state`, which is what to trust. There,
-an ended request also carries `error` (the runtime's, or the model's from
+an ended request (`state: "completed"`) also carries `status` (`completed`,
+`input_required` or `failed`), `error` (the runtime's, or the model's from
 `result.error`) and `stopped` on top, so a failed run reads as failed without
 looking inside `result`. `GET …/requests/:requestId?wait=<seconds>` (at most 25)
 waits for a running request: it answers as soon as the request settles, or when
@@ -240,7 +241,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `replyIndex` | that message's index in the agent's history |
 | `messages` | how many messages the agent's history holds after the run |
 | `error` | the model's error (a provider refusal after retries), or `null` |
-| `code` | a stable name for `error`, where the runtime gives one: `output_missing` (a structured run ended without its output), `spend_limit`, `turn_limit` |
+| `code` | a stable name for `error`, where the runtime gives one: `model_key_missing` (no key for the agent's model), `model_key_invalid` (the provider refused the key), `output_missing` (a structured run ended without its output), `spend_limit`, `turn_limit` |
 | `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](../guides/models-and-keys.md#run-limits)), with the reason in `error` |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |

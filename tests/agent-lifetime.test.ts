@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { lastUser, OPERATOR, runtime, until } from "./runtime-server.ts";
 import { AgentRuntime } from "../clients/typescript.ts";
+import { Agents, RunError } from "../clients/node.ts";
 
 const system = (body: any) => body.messages.find((message: any) => message.role === "system" || message.role === "developer")?.content ?? "";
 
@@ -44,6 +45,17 @@ test("an agent is made without a model key; its first run says which key to set"
     return got.state === "completed" && got;
   }, "the run to end");
   assert.match(record.error, /No openrouter API key.*openrouter\/openai\/gpt-4o-mini; set one with PUT \/v1\/providers\/openrouter\/key.*GET \/v1\/models\?available=true/);
+  // It ended, and failed: the record says so on top, and the result names the cause.
+  assert.equal(record.status, "failed");
+  assert.equal(record.outcome.result.code, "model_key_missing");
+  // The SDK's RunError carries the code and the remedy.
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(() => agents.close());
+  const failed = await agents.upsert("keyless-sdk").then(agent => agent.run("hi")).then(() => assert.fail("expected a RunError"), error => error);
+  assert.ok(failed instanceof RunError);
+  assert.equal(failed.code, "model_key_missing");
+  assert.equal(failed.run.status, "failed");
+  assert.match(failed.message, /PUT \/v1\/providers\/openrouter\/key.*GET \/v1\/models\?available=true/);
   // A create with a first prompt is accepted too; that prompt's run says the same.
   const named = await r.call("/v1/agents", { body: { model: "anthropic/claude-sonnet-5", prompt: { text: "hi" } } });
   assert.equal(named.status, 201, named.text);
