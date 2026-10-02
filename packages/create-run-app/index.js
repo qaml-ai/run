@@ -35,7 +35,18 @@ function fail(message) { console.error(`create-run-app: ${message}`); process.ex
 
 const options = parse(process.argv.slice(2));
 if (options.help) {
-  console.log("Usage: npm create @camelai/run-app [directory] [--api-key <key>] [--base-url <url>] [--no-install]");
+  console.log(`Usage: npm create @camelai/run-app [directory] [-- options]
+
+Creates a Next.js app with a streaming chat to an agent on camelRun, in directory (default: agent-app).
+
+Options:
+  --api-key <key>   the API key to write to .env.local (default: CAMELAI_API_KEY). Prefer the environment
+                    variable: a key on the command line lands in your shell history
+  --base-url <url>  a self-hosted runtime (default: CAMELAI_BASE_URL, else https://run.camelai.com)
+  --no-install      skip installing dependencies
+  -h, --help        show this
+
+Create a key at https://run.camelai.com/console/tokens.`);
   process.exit(0);
 }
 const target = resolve(options.directory ?? "agent-app");

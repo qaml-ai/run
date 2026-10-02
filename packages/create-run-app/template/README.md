@@ -9,10 +9,13 @@
 A Next.js app with a streaming chat to an agent on [camelRun](https://run.camelai.com).
 
 ```sh
-cp .env.example .env.local   # add your CAMELAI_API_KEY (https://run.camelai.com/console/tokens)
 npm install
 npm run dev                  # http://localhost:3000
 ```
+
+`.env.local` holds your key: `npm create @camelai/run-app` wrote it from `CAMELAI_API_KEY`. Without one, add
+`CAMELAI_API_KEY=art_…` to it (create a key at https://run.camelai.com/console/tokens), and
+`CAMELAI_BASE_URL=…` for a self-hosted runtime.
 
 The agent uses your account's default model. To choose another, set `AGENT_MODEL` in `.env.local` to
 one your account can use: `npx -y @camelai/camelrun models --available` lists them.

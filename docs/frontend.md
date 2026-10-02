@@ -18,9 +18,12 @@ its questions and approvals are answered in place.
 ## Start a new app
 
 ```sh
-npm create @camelai/run-app my-app -- --api-key $CAMELAI_API_KEY
+export CAMELAI_API_KEY=art_...   # https://run.camelai.com/console/tokens
+npm create @camelai/run-app my-app
 cd my-app && npm run dev
 ```
+
+It writes the key from `CAMELAI_API_KEY` to the app's `.env.local`.
 
 A Next.js app with the chat, its route, a tool drawn by its own component, and a demo sign-in to
 replace with yours. Examples with Vite (React, Vue, Svelte, Solid), the read proxy and the AI SDK are in
