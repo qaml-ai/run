@@ -36,16 +36,42 @@ docker compose up -d
 curl -s localhost:8790/healthz
 ```
 
+The runtime listens on `127.0.0.1:8790` on the host. `AGENT_RUNTIME_PORT` and
+`AGENT_RUNTIME_BIND` in `.env` change the port and the address (`0.0.0.0` for
+every interface). The Compose project is named `agent-runtime`, and its
+volumes after it. To run a second copy beside another stack of that name, give
+it its own with `docker compose -p <name>` (or `COMPOSE_PROJECT_NAME`), the same
+one every time: a different name starts with empty volumes.
+
 Then, with the operator token from `.env`:
 
 ```sh
 curl -s localhost:8790/v1/me -H "Authorization: Bearer $AGENT_OPERATOR_TOKEN"
 ```
 
-Agents can be made before any model key is set, but their runs fail until one
-is: set `AGENT_TENANT_API_KEYS`, or `PUT /v1/providers/:provider/key` (or point
-agents at a [fake LLM](#local-harnesses-evals-end-to-end-tests) to try it
-without one).
+Agents can be made before any model key is set (image `0.2.0` and later;
+earlier images refuse to make one with `400 INVALID_REQUEST` until a key is
+set). Their runs fail with `model_key_missing`, saying which key to set, until
+one is: set `AGENT_TENANT_API_KEYS`, or `PUT /v1/providers/:provider/key` (add
+`"verify": false` to store a key without checking it with the provider), or
+point agents at a [fake LLM](#local-harnesses-evals-end-to-end-tests) to try
+it without one.
+
+### Point your application at it
+
+The SDKs, the CLI and `npm create @camelai/run-app` read the runtime's URL from
+`CAMELAI_BASE_URL` and the key from `CAMELAI_API_KEY`. On a self-hosted runtime
+the key is the operator token (`AGENT_OPERATOR_TOKEN` in `.env`):
+
+```sh
+export CAMELAI_BASE_URL=http://localhost:8790   # http://runtime:8790 from the Compose network
+export CAMELAI_API_KEY="$AGENT_OPERATOR_TOKEN"
+npx -y @camelai/camelrun whoami                 # the tenant, and the default model
+```
+
+Everything in the [Quickstart](../quickstart.md) then works against it
+unchanged. In code, `new Agents({ url, apiKey })` (Python `Agents(url=…,
+api_key=…)`) does the same.
 
 `AGENT_URL=http://localhost:8790 AGENT_RUNTIME_TOKEN=<token> SMOKE_PROMPT=1 node
 --experimental-strip-types deploy/smoke.ts` checks the sandbox, a client tool

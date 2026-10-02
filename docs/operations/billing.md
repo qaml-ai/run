@@ -19,6 +19,18 @@ per provider, never a `*` wildcard), if it is prepaid or an admin tenant:
   Use it for an outside operator's tenant that should never spend on the platform's
   accounts. (A prepaid entry cannot opt out: it pays for what it uses.)
 
+Which key a model call uses, in order, by tenant:
+
+| Tenant | Order a key is taken in |
+|---|---|
+| Signed up (prepaid) | key scope's, own, platform's (charged to credit) |
+| Signed up before billing (unbilled) | key scope's, own; never the platform's |
+| Admin tenant from the tenants file (`billing` `none`) | key scope's, own, the entry's `apiKeys`, platform's (unbilled, recorded as platform usage) |
+| Admin tenant with `"platformKeys": false` | key scope's, own, the entry's `apiKeys`; never the platform's |
+| Admin tenant with `"billing": "prepaid"` | key scope's, own, the entry's `apiKeys`, platform's (charged to credit) |
+
+A provider with the tenant's own key never uses the platform's, whatever the tenant.
+
 A **prepaid tenant** pays for:
 
 - **Model usage** on the platform's keys, at the provider's reported cost, or the

@@ -10,7 +10,8 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Managed Discord](managed-discord.md): the shared Camel application, onboarding, platform secrets and pilot checks
 - [Self-hosting](self-host.md): the image, Docker Compose, storage, networking
 - [Persistence](persistence.md): transcripts, history chunks, journals, retries, idle unload, limits per node and tenant
-- [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe
+- [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe, which keys a tenant's calls use
+- [Model endpoints](model-endpoints.md): a tenant's model calls through a pass-through gateway of the operator's
 - [Account data](privacy.md): export, deletion, what is kept and for how long; handling requests by email
 - [Tenant isolation](isolation.md)
 - [Sandbox](sandbox.md): the codemode sandbox's layers and limits

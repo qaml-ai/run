@@ -25,97 +25,22 @@ when the agent is made and stays its model. `GET /v1/me` says which
 
 A model call uses, in order: the key of the agent's [key scope](#key-scopes) for
 the model's provider, else your account's own key for the provider
-(`PUT /v1/providers/:provider/key`, or the console), else one the runtime's
-operator set for your account, else the platform's key: for prepaid accounts,
-charged to your credit, and for the operator's own (unbilled) accounts, free
-but still counted as platform usage. Agents cannot be made on a provider none
-of these has a key for. Web search and `web_fetch`'s page rendering take their
-keys (`exa`, `brave`, `parallel`, `firecrawl`) the same way, without key scopes.
+(`PUT /v1/providers/:provider/key`, or the console), else the platform's key,
+charged to your credit. An account that signed up before billing never uses the
+platform's. A provider with your own key never uses the platform's. An agent on
+a provider none of these has a key for is still made, and its runs fail with
+`model_key_missing`, naming the key to set. Web search and `web_fetch`'s page
+rendering take their keys (`exa`, `brave`, `parallel`, `firecrawl`) the same way,
+without key scopes.
 
-| Account | Order a key is taken in |
-|---|---|
-| Signed up (prepaid) | key scope's, own, platform's (charged to credit) |
-| Signed up before billing (unbilled) | key scope's, own; never the platform's |
-| Admin tenant from the tenants file (`billing` `none`) | key scope's, own, the admin's `apiKeys`, platform's (unbilled, recorded as platform usage) |
-| Admin tenant with `"platformKeys": false` | key scope's, own, the admin's `apiKeys`; never the platform's |
-| Admin tenant with `"billing": "prepaid"` | key scope's, own, the admin's `apiKeys`, platform's (charged to credit) |
+`PUT /v1/providers/:provider/key` checks the key with the provider before it
+stores it, and refuses one the provider rejects. `{"apiKey": "…", "verify": false}`
+stores it unchecked (a placeholder, a key for a provider the runtime cannot
+reach yet). A run on a key the provider refuses fails with `model_key_invalid`.
 
-A provider with your own key never uses the platform's, whatever the account.
-
-## Your own model endpoint
-
-A tenant can have its agents' model calls go through its own pass-through
-gateway, e.g. a proxy that checks credit per call, swaps in the real provider
-key (its customers' own, a subscription) and meters usage, the way Cloudflare's
-AI Gateway does. The runtime speaks each provider's native protocol to it, so
-nothing is translated: the gateway forwards the bytes as they are. Its entry in
-the tenants file names the endpoint as a provider:
-
-```json
-"camel": {"tokenSha256": "…", "modelEndpoints": {"chiridion": {
-  "baseUrl": "https://camelai.com/agent-runtime/llm",
-  "models": {"openrouter/deepseek/deepseek-v4:free": {"contextWindow": 128000, "maxTokens": 8192, "reasoning": true, "input": ["text"]}}
-}}}
-```
-
-- Agents name its models as `<name>/<provider>/<model id>`, e.g.
-  `"chiridion/anthropic/claude-opus-5"` or
-  `"chiridion/openrouter/anthropic/claude-sonnet-5:nitro"`, at creation, in a
-  definition or through `PATCH /v1/agents/:id/configuration`. Bedrock models also
-  name their region: `"chiridion/amazon-bedrock/us-west-2/us.anthropic.claude-sonnet-5"`.
-  The model is Pi's catalog model `<provider>/<model id>` (its metadata, API and
-  compatibility; a routing variant like `:nitro` or `:free` is looked up without
-  the suffix). Or it is one declared in `models` under everything after
-  `<name>/`. `GET /v1/models` lists the declared ones. The model id is sent
-  exactly as given, variant and all.
-- `<baseUrl>/<provider>` stands for the provider's API root below. The gateway
-  strips `<baseUrl>/<provider>` (plus the region, for Bedrock) and appends the
-  rest of the path, query included, to the root. The runtime puts its identity
-  token where the provider takes its key.
-
-  | provider | upstream root | requests | key header |
-  |---|---|---|---|
-  | `anthropic` | `https://api.anthropic.com` | `POST /v1/messages?beta=true` | `x-api-key` |
-  | `openai` | `https://api.openai.com/v1` | `POST /responses` | `Authorization: Bearer` |
-  | `openrouter` | `https://openrouter.ai/api` | `POST /v1/responses`; Anthropic models `POST /v1/messages?beta=true` | `Authorization: Bearer`; `x-api-key` |
-  | `google` | `https://generativelanguage.googleapis.com/v1beta` | `POST /models/<id>:streamGenerateContent?alt=sse` | `x-goog-api-key` |
-  | `amazon-bedrock` | `https://bedrock-runtime.<region>.amazonaws.com`, from `<baseUrl>/amazon-bedrock/<region>` | `POST /model/<URL-encoded id>/converse-stream` | `Authorization: Bearer` (unsigned; no SigV4) |
-  | `openai-codex` | `https://chatgpt.com/backend-api` | `POST /codex/responses` (SSE, body `Content-Encoding: zstd`) | `Authorization: Bearer`, with `chatgpt-account-id: passthrough` |
-
-  OpenRouter's models use its Responses API, stateless (`store: false`, the whole
-  conversation each call), with reasoning kept and sent back as it came
-  (`encrypted_content` or `signature`). Its Anthropic models keep its Messages API,
-  as in Pi's catalog, because Responses gets them no prompt caching. Bedrock
-  requests are HTTP/1.1, and their ids are sent as given: a model id
-  (`anthropic.claude-sonnet-5`) or an inference profile's (`us.…`, `eu.…`,
-  `global.…`); Pi's catalog has both.
-  `openai-codex` is ChatGPT's Codex backend, e.g.
-  `"chiridion/openai-codex/gpt-5.5"`: the tenant replaces `Authorization` with
-  the user's ChatGPT access token and sets the real `chatgpt-account-id`. Its
-  requests are stateless too, and also carry `originator`, `OpenAI-Beta`, and,
-  in a turn, `session-id` and `x-client-request-id` (the agent's id), which the
-  backend takes as they are.
-- Every call also carries the token as `X-Agent-Runtime-Identity`. This is the
-  EdDSA JWT that MCP servers with `auth: {"type": "runtime"}` get (see
-  [Identity tokens](tools.md#identity-who-a-call-is-for)). Its `aud` is the
-  endpoint's `baseUrl` exactly as configured, and it has the same claims:
-  `tenant`, `agent`, `sub`, `act` (the turn's actor), `ctx` and `definition`. A
-  fresh token is minted for every call, compaction summaries included, and lasts
-  two minutes. Verify it against `/.well-known/jwks.json`; the runtime sends no
-  key.
-- The runtime does not retry the endpoint's errors, since the gateway retries
-  itself. A refusal before the stream (e.g. an HTTP 402 or 429 in the
-  provider's error format), a 5xx or an error mid-stream ends the turn, with the
-  message as the outcome's `error`. A context overflow still compacts and
-  continues once.
-- Calls to it cost the runtime nothing. They are counted in `/v1/usage` under
-  `<name>/<provider>/<model id>` at zero cost, and are never charged as platform
-  tokens or counted toward `maxMonthlyCost`. Agent time is charged as with a
-  tenant's own key.
-- The endpoint is the operator's: it must be HTTPS (plain HTTP only to
-  localhost, for development), and its name cannot be one of Pi's providers.
-  Changes apply from the next tenants reload to agents created or configured
-  after it.
+A self-hosted runtime's operator can also give an account keys, and route its
+model calls through a gateway of the operator's own: see
+[Billing](../operations/billing.md) and [Model endpoints](../operations/model-endpoints.md).
 
 ## Key scopes
 
@@ -171,8 +96,8 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
   carried back as it came), whatever key they use, except Anthropic's, which keep
   its Messages API for prompt caching: the same rule as on a tenant's endpoint.
 - Each model call, compaction summaries included, takes the key of the agent's
-  scope for the model's provider, else the tenant's own key, else an admin's,
-  else the platform's (see the table above). It is read at the call, so a changed key applies
+  scope for the model's provider, else the tenant's own key, else the
+  platform's (see above). It is read at the call, so a changed key applies
   to every agent of the scope from its next call, within five seconds. An agent may be
   created on a provider only its scope has a key for.
 - Scope keys are the tenant's own: no platform token charge, like a tenant's key
@@ -228,9 +153,6 @@ SDKs' `runLimits`, `run_limits=` in Python) when you make it, or with
 `PATCH /v1/agents/:id/configuration` (`null` removes them), or for every agent of a
 [definition](definitions.md) with its `runLimits`. An agent's own stay when its
 definition is applied. Values above the runtime's maximums count as the maximums,
-which its operator sets (`AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS`), or sets for
-one tenant (`maxRunResponses`, `maxRunSeconds`: in an admin tenant's tenants-file entry,
-or `PUT /v1/tenants/{id}/limits` for a self-serve one). Admin tenants have no maximums
-unless their entry sets them: only their agents' own `runLimits` apply. Only you
-can set them, not the agent's own token. They are counted on the node running the
+which its operator sets (see [Configuration](../operations/configuration.md),
+`AGENT_MAX_RUN_RESPONSES`). Only you can set them, not the agent's own token. They are counted on the node running the
 turn: a turn resumed on another node after its node was lost counts again from there.
