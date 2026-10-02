@@ -96,7 +96,7 @@ export class StorageGc {
       where tenant = (select tenant from storage_gc where next_run <= $1 and (claimed_until is null or claimed_until < $1) order by next_run limit 1 for update skip locked)
       returning tenant`, [now, now + 60 * 60_000, now + this.intervalMs]);
     if (!rows[0]) return undefined;
-    try { return await this.run(rows[0].tenant, now); }
+    try { return { tenant: rows[0].tenant as string, ...await this.run(rows[0].tenant, now) }; }
     finally { await this.db.query("update storage_gc set claimed_until = null where tenant = $1", [rows[0].tenant]).catch(() => {}); }
   }
 
