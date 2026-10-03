@@ -403,6 +403,53 @@ A **definition** is a reusable configuration: model, instructions, tool sources
 
 ---
 
+<!-- https://run.camelai.com/docs/pricing.md -->
+
+# Pricing and credit
+
+camelRun is prepaid: you buy credit, and usage draws it down. There is no
+subscription and no per-seat or per-agent fee. `GET /v1/billing` (the console's
+**Billing** page) shows your balance, this month's spending by kind, and the
+rates below as your account is charged them.
+
+| What | Price |
+| --- | --- |
+| Model calls on the platform's keys | The provider's own reported cost, else the model catalog's price (`GET /v1/models`, `cost` per million tokens). No markup. OpenRouter models add what funding OpenRouter credit costs: ×1.055 |
+| Model calls on your own key (or a key scope's) | Nothing from camelRun: the provider bills you |
+| Agent time | $0.01 per hour an agent spends in a run (model calls and tool execution), metered continuously. An idle agent costs nothing |
+| Storage | $0.10 per GB-month of what your agents and volumes keep (history, files, snapshots), charged daily |
+| `web_search` on the platform's keys | Per search, by the provider that answered: Exa $0.007, Brave $0.005, Parallel $0.001 |
+| `web_fetch` page rendering on the platform's key | $0.00083 per page Firecrawl renders |
+
+## Credit
+
+- **Starting credit: $5**, once. GitHub accounts older than 30 days get it at
+  sign-up. Everyone else unlocks it by verifying a card on the **Billing** page;
+  the card is not charged.
+- **Buying credit:** $5 to $1,000 at a time, with a 5.5% fee on the purchase.
+  Auto top-up can buy more when your balance runs low.
+- **Before your first purchase:** at most $1 of model tokens and agent time an
+  hour, and 1 GB stored. After it, 100 GB stored, and the
+  [usage tiers](https://run.camelai.com/docs/reference/limits.md#usage-tiers) raise how many agents may be
+  busy at once as your purchases add up.
+- At zero balance, new runs and file writes get 402 `INSUFFICIENT_CREDIT`, and a
+  running turn ends after the response that spent the last credit. Nothing is
+  deleted: add credit and send the next message.
+
+## Spending less
+
+- Use your own provider keys (`PUT /v1/providers/:provider/key`): model calls
+  then cost you only what the provider charges, and camelRun charges agent time
+  and storage. See [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md).
+- Bound an agent or a run with a [spend limit](https://run.camelai.com/docs/guides/models-and-keys.md#spend-limits),
+  and see where credit goes with `GET /v1/usage` or the `usage.recorded`
+  [webhook](https://run.camelai.com/docs/guides/webhooks.md).
+
+A self-hosted runtime charges nothing unless its operator sets up billing; see
+[Self-hosting](https://run.camelai.com/docs/operations/self-host.md).
+
+---
+
 <!-- https://run.camelai.com/docs/guides/tools.md -->
 
 # Tools
@@ -2002,7 +2049,9 @@ Agents name a model as `provider/model-id` from the catalog: `GET /v1/models`
 **Models & keys**. For example `anthropic/claude-sonnet-5-5`,
 `openai/gpt-5.2`, `openrouter/anthropic/claude-sonnet-5`. Change an agent's model
 between runs with `upsert` (a changed `model`) or `agent.configure({ model })`;
-its history carries over.
+its history carries over. `?available=true` answers `[]` when your account has
+no key any model can use (a self-hosted runtime before its first key, say); that
+response's `X-Camelrun-Hint` header says how to set one.
 
 A model on a server of your own that speaks OpenAI's or Anthropic's API (vLLM,
 Ollama, a gateway, a hosted API the catalog lacks) is named the same way once
@@ -2793,6 +2842,49 @@ agent, with its history, from any process. `upsert` creates the agent the first
 time and later brings it to the configuration you pass. Nothing is stored on
 your side.
 
+> **Deploy topology: one process serves an agent's tools.** In the OpenAI Agents
+> SDK and LangGraph, every worker runs its own loop with its own tools. Here the
+> loop is in the runtime, and tools passed to `upsert(tools=…)` are served by
+> the **one** process holding the agent's connection. A straight port that
+> upserts with `tools` in every gunicorn or uvicorn worker, or every Celery
+> task, works with one worker and fails at two: `AgentError: Another process
+> serves this agent's tools…` (`APPLICATION_CONNECTED`). With several workers,
+> serve the tools over HTTPS instead, and make agents from a definition that
+> names the server, with no `tools`: then any worker can run any agent, and
+> deploys lose no call. See [Served tools](https://run.camelai.com/docs/guides/tools.md#served-tools-over-http-for-serverless-and-many-users).
+
+```python
+from camelai_run import serve_tools
+
+# In your web app (pip install "camelai-run[server]"): every worker serves the same tools.
+tools_app = serve_tools([lookup_order], runtime="https://run.camelai.com", tenant="acme")  # mount at /mcp
+
+# Once, at deploy time: a definition naming the server.
+definition = await agents.runtime.upsert_definition("support", name="Support", systemPrompt="You help with orders.",
+    mcpServers=[{"name": "shop", "url": "https://app.example.com/mcp", "auth": {"type": "runtime"}}])
+
+# In any worker or task: no tools here, so no worker holds them.
+agent = await agents.upsert("user-123", definition=definition["id"])
+run = await agent.run("Where is order 42?")
+```
+
+```ts
+import { serveTools } from "@camelai/run/server";
+
+// In your web app, on every instance: POST /mcp.
+export const POST = serveTools({ lookup_order }, { runtime: "https://run.camelai.com", tenant: "acme" });
+
+const definition = await agents.runtime.upsertDefinition("support", {
+  name: "Support", systemPrompt: "You help with orders.",
+  mcpServers: [{ name: "shop", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],
+});
+const agent = await agents.upsert("user-123", { definition: definition.id });
+```
+
+`tenant` is your account's id (`GET /v1/me`). One long-lived process that holds
+the tools, with every other process upserting with `attach=False`, works too;
+see [Several processes, workers and deploys](https://run.camelai.com/docs/guides/tools.md#several-processes-workers-and-deploys).
+
 ## OpenAI Agents SDK
 
 | OpenAI Agents SDK | camelRun |
@@ -2802,7 +2894,7 @@ your side.
 | `Runner.run_streamed` | `agent.stream(text)`: text, tool calls and results as they happen, then `done` with the run |
 | `@function_tool` | `@tool` (TypeScript: `tool({ input, execute })`). Arguments are checked against the schema first. See [Tools](https://run.camelai.com/docs/guides/tools.md) |
 | Sessions (`SQLiteSession`, Redis…) | The agent's key. History is durable and compacted when it gets long; `agent.history()` reads it |
-| `output_type=Model` | `run(text, output=Model)`, `run.output`. See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
+| `output_type=Model` | `run(text, output=Model)`, `run.output` (`pip install "camelai-run[pydantic]"`). See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
 | Handoffs | No built-in handoff; see [Handoffs and multi-agent](https://run.camelai.com/docs/guides/migrating.md#handoffs-and-multi-agent) |
 | `agent.as_tool()` | A tool that runs another agent; see below |
 | Input guardrails | Your code, before `run()`. With `createAgentHandler`, `onSend` can rewrite or refuse a message |
@@ -2960,6 +3052,58 @@ connector, with the agent's URL. Cursor and other clients configured with JSON:
 
 ---
 
+<!-- https://run.camelai.com/docs/guides/export.md -->
+
+# Exporting your data
+
+`GET /v1/account/export` (the console's **Account → Export data**) answers with a
+zip of everything camelRun stores for your account. Any API token of the account
+can call it; a browser token cannot.
+
+```sh
+curl -sf https://run.camelai.com/v1/account/export -H "Authorization: Bearer $CAMELAI_API_KEY" -o camelrun-export.zip
+```
+
+| In the zip | |
+| --- | --- |
+| `README.txt` | what each file is |
+| `account.json` | your account's id, the identity you sign in with, when it was made and exported |
+| `agents/<id>/agent.json` | each agent's configuration and schedules |
+| `agents/<id>/history/*.json` | each agent's whole history, a page of whole turns per file, named by its first message's index |
+| `definitions.json`, `channels.json`, `webhooks.json` | your definitions, channels and webhook endpoints (secrets and credentials left out or masked) |
+| `tokens.json`, `keys.json` | your API tokens' names and prefixes, and which provider keys are set (last four characters): never a token or key |
+| `oauth-grants.json`, `discord.json` | applications you let act for your account, and managed Discord bindings |
+| `volumes/<id>/volume.json`, `volumes/<id>/files/…` | each volume's name and size, and its files |
+| `billing/ledger.jsonl`, `billing/usage.json` | your credit ledger (newest first) and model usage per day and model |
+
+**An export is whole, or it fails.** Each agent's history is read from the node
+serving it, so it includes the turn that just ended. If anything cannot be read,
+the download stops before the zip's end, so no zip reader opens it as complete
+(`curl -f` fails, and `unzip` reports a missing central directory): export
+again. A zip that opens holds every agent.
+
+## Leaving, or moving to a self-hosted runtime
+
+The runtime is open source, and [Self-hosting](https://run.camelai.com/docs/operations/self-host.md) runs
+the same API on your own machines. **There is no import yet**: nothing loads an
+export into another runtime in one step. To carry agents over by hand:
+
+- **Configuration:** make each agent again from its `agent.json` (or each
+  definition from `definitions.json`) with the same key, pointing the SDK at the
+  new runtime (`CAMELAI_BASE_URL`).
+- **History:** each `history/*.json` file is a list of `{index, message}`. Take
+  the `message`s of every file, in order of the file names, and pass them as
+  `initialMessages` when you make the agent; see [Bringing in existing
+  conversations](https://run.camelai.com/docs/guides/multi-user.md#bringing-in-existing-conversations).
+- **Files:** upload a volume's `files/` to a new volume.
+- **Keys, tokens, channel credentials and webhook secrets** are not in the
+  export: set them again.
+
+To delete the account and everything in it, use **Delete account** on the
+console's Account page.
+
+---
+
 <!-- https://run.camelai.com/docs/production.md -->
 
 # Production checklist
@@ -3054,7 +3198,8 @@ Before you ship an application on the runtime, check each of these.
 
 The TypeScript SDK (`@camelai/run`) and the Python SDK
 (`camelai-run`). Start with the [Quickstart](https://run.camelai.com/docs/quickstart.md);
-this page is the reference.
+this page is the reference. The two have the same features, named in each
+language's style; their version numbers are their own and do not line up.
 
 ```sh
 npm install @camelai/run      # Node 22+, Bun, Deno, Cloudflare Workers
@@ -4380,6 +4525,11 @@ by it, and a call that runs twice acts once.
 | A failed run | `RunError extends AgentError`: `run` (the `Run`, `status: "failed"`, `error: {code, message, uncertain?}`) | `RunError`: `run` |
 | Another process took the agent's tools | `code: "APPLICATION_REPLACED"`, through `onError`; the client goes on without serving them | the same, through `on_error` |
 | A tool server's token check | `RuntimeTokenError` (`serveTools`, `verifyRuntimeToken`): the call gets 401 | `RuntimeTokenError` |
+
+A run's failure is not an HTTP response, so `RunError.status` is always 0, in
+both SDKs: it does not mean the network failed. Branch on `code`
+(`model_key_missing`, `spend_limit`, …: see [Run failures](https://run.camelai.com/docs/reference/errors.md#run-failures)). An
+`AgentError` with `status` 0 and no `code` is the connection's failure.
 
 Stopping a wait (`signal`, `timeoutMs`; Python `timeout`) throws the signal's
 reason (an `AbortError` or `TimeoutError`), or an `AgentError` saying the request may still be running:

@@ -129,3 +129,15 @@ test("the self-host Compose file runs the newest release in the release notes, a
   assert.match(await read("docs/operations/self-host.md"), new RegExp(`ghcr\\.io/qaml-ai/run:${newest.replaceAll(".", "\\.")}\``));
 });
 
+test("the pricing page states the runtime's default prices", async () => {
+  const { DEFAULT_PRICING, MICROS } = await import("../src/pricing.ts");
+  const page = await readFile(new URL("../docs/pricing.md", import.meta.url), "utf8");
+  const usd = (micros: number) => `$${(micros / MICROS).toLocaleString("en-US", { maximumFractionDigits: 5 })}`;
+  const p = DEFAULT_PRICING;
+  for (const [what, price] of [["agent hour", usd(p.agentHour)], ["GB-month", usd(p.storageGbMonth)], ["Exa", usd(p.webSearch.exa)], ["Brave", usd(p.webSearch.brave)],
+    ["Parallel", usd(p.webSearch.parallel)], ["render", usd(p.webRender)], ["starting", usd(p.startingGrant)], ["min purchase", usd(p.minPurchase)],
+    ["max purchase", usd(p.maxPurchase)], ["free hourly", usd(p.free.hourlySpend)]] as const) assert.ok(page.includes(price.replace(/\.(\d)$/, ".$10")), `${what}: ${price}`);
+  assert.ok(page.includes(`${p.purchaseFeeBps / 100}% fee`));
+  assert.ok(page.includes(`×${p.openrouterCreditMultiplier}`));
+  assert.ok(page.includes(`${p.free.maxStorageBytes / 1e9} GB stored`) && page.includes(`${p.maxStorageBytes / 1e9} GB stored`));
+});

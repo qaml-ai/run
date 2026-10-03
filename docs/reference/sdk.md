@@ -2,7 +2,8 @@
 
 The TypeScript SDK (`@camelai/run`) and the Python SDK
 (`camelai-run`). Start with the [Quickstart](../quickstart.md);
-this page is the reference.
+this page is the reference. The two have the same features, named in each
+language's style; their version numbers are their own and do not line up.
 
 ```sh
 npm install @camelai/run      # Node 22+, Bun, Deno, Cloudflare Workers

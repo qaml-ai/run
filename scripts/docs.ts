@@ -16,6 +16,7 @@ export const REPOSITORY_URL = "https://github.com/qaml-ai/run/blob/main";
 export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Start", path: "quickstart.md", about: "a working agent in five minutes, in TypeScript, Python or curl" },
   { section: "Start", path: "concepts.md", about: "durable keyed agents, runs, events, where tools run, processes, people in the loop, idempotency" },
+  { section: "Start", path: "pricing.md", about: "what runs, agent time, storage and web search cost; credit, starting credit and its limits" },
   { section: "Guides", path: "guides/tools.md", about: "writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources" },
   { section: "Guides", path: "guides/human-input.md", about: "approvals, questions and forms; answering them and resuming the run" },
   { section: "Guides", path: "guides/structured-output.md", about: "a run's answer as an object in your schema: zod, TypeBox, pydantic or JSON Schema" },
@@ -30,6 +31,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/channels.md", about: "Slack, Telegram, Discord, GitHub, email and any service that sends webhooks" },
   { section: "Guides", path: "guides/migrating.md", about: "coming from the OpenAI Agents SDK or LangGraph: sessions, handoffs, guardrails, tracing, structured output and the rest mapped, with what camelRun does not have" },
   { section: "Guides", path: "guides/mcp-server.md", about: "every agent as an MCP server with one tool, message: connecting Claude or Cursor to an agent" },
+  { section: "Guides", path: "guides/export.md", about: "the account export (GET /v1/account/export): what the zip holds, that it is whole or fails, and moving to a self-hosted runtime (no import yet)" },
   { section: "Guides", path: "production.md", about: "the checklist before shipping" },
   { section: "Reference", path: "reference/sdk.md", about: "the TypeScript and Python SDKs" },
   { section: "Reference", path: "reference/cli.md", about: "the camelRun CLI (camelrun) and MCP servers, hosted at /mcp and local: deploying agent.yaml manifests, running and managing agents from a terminal or a coding agent" },
