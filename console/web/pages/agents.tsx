@@ -16,6 +16,20 @@ export function AgentStatus({ agent }: { agent: Pick<AgentSummary, "running" | "
   return <Badge variant="outline" className="text-muted-foreground">Asleep</Badge>;
 }
 
+/** Agents in order, each sub-agent right under its parent, with how deep it sits; one whose parent is gone is listed on its own. */
+export function nested(agents: AgentSummary[]): { agent: AgentSummary; depth: number }[] {
+  const ids = new Set(agents.map(agent => agent.id));
+  const children = new Map<string, AgentSummary[]>();
+  for (const agent of agents) if (agent.parentAgentId && ids.has(agent.parentAgentId)) children.set(agent.parentAgentId, [...children.get(agent.parentAgentId) ?? [], agent]);
+  const rows: { agent: AgentSummary; depth: number }[] = [];
+  const visit = (agent: AgentSummary, depth: number) => {
+    rows.push({ agent, depth });
+    for (const child of children.get(agent.id) ?? []) visit(child, depth + 1);
+  };
+  for (const agent of agents) if (!agent.parentAgentId || !ids.has(agent.parentAgentId)) visit(agent, 0);
+  return rows;
+}
+
 export function AgentsPage({ agents, billing }: {
   agents: ReturnType<typeof useApi<AgentSummary[]>>;
   billing: ReturnType<typeof useApi<Billing>>;
@@ -57,9 +71,11 @@ export function AgentsPage({ agents, billing }: {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {agents.data.map(agent => (
+                {nested(agents.data).map(({ agent, depth }) => (
                   <TableRow key={agent.id} className="cursor-pointer" onClick={() => navigate(`agents/${agent.id}`)}>
-                    <TableCell className="font-medium"><Link to={`agents/${agent.id}`}>{agent.name}</Link></TableCell>
+                    <TableCell className="font-medium" style={depth ? { paddingLeft: `${0.5 + depth * 1.25}rem` } : undefined}>
+                      {depth > 0 && <span className="text-muted-foreground mr-1" aria-label="sub-agent of the row above">↳</span>}<Link to={`agents/${agent.id}`}>{agent.name}</Link>
+                    </TableCell>
                     <TableCell className="text-muted-foreground hidden sm:table-cell">{agent.type}</TableCell>
                     <TableCell className="font-mono text-xs">{agent.model}</TableCell>
                     <TableCell><AgentStatus agent={agent} /></TableCell>

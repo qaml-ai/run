@@ -72,7 +72,11 @@ export interface Model {
   id: string; provider: string; modelId: string; name: string; api: string; reasoning: boolean; input: string[];
   contextWindow: number; maxTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number }; available: boolean;
 }
-export interface AgentSummary { id: string; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null }
+export interface AgentSummary {
+  id: string; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null;
+  /** A sub-agent's parent: the agent whose delegate call made it. */
+  parentAgentId?: string;
+}
 export interface RequestRecord {
   id: string; method: string; state: "running" | "completed"; startedAt?: number; endedAt?: number; prompt?: string;
   outcome?: { result?: unknown; error?: string; uncertain?: boolean };
@@ -89,6 +93,10 @@ export interface AgentDetail extends AgentSummary {
   tools: { name: string; description: string }[]; toolSources: ToolSource[]; systemPrompt: string; requests: RequestRecord[]; mounts?: Mount[];
   /** For a fork: the agent it was forked from, and the index of that agent's last message it began with. */
   forkedFrom?: { agentId: string; atMessage: number | null };
+  /** A sub-agent: the run of parentAgentId that made it. */
+  parentRunId?: string;
+  /** The definition a handoff gave the conversation to, which runs the agent now. */
+  handedOff?: { definition: { id: string; revision: number }; name: string; at: number } | null;
 }
 export interface ApiToken { id: string; name: string; prefix: string; createdAt: number }
 export interface OAuthGrant { id: string; clientName: string; login: string | null; scope: string; createdAt: number; usedAt: number | null }
