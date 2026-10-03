@@ -86,6 +86,7 @@ its id (`def_…`).
 | `agents list` / `agents get <agent>` | agents; one agent's configuration and tool sources |
 | `agents create <key> [--definition d] [--model m] [--prompt text]` | an agent outside a manifest |
 | `agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]` | change one agent between its runs |
+| `agents fork <agent> [--key k] [--name n] [--at message]` | a new agent with its configuration, history and files ([Forking](../concepts.md#forking)); `--at` ends the history at a message index or a request id |
 | `agents delete <agent> --yes` | stop an agent and purge its history and files |
 | `run <agent> <message…>` | send a message and print the reply |
 | `runs get <agent> <requestId> [--wait s]` | a run's result |
@@ -121,7 +122,7 @@ and agents get JSON without asking. Errors go to stderr, as `{"error", "status",
 ## MCP tools
 
 Both MCP servers have tools for everything above: `deploy`, `list_agents`,
-`get_agent`, `create_agent`, `configure_agent`, `delete_agent`, `run_agent`,
+`get_agent`, `create_agent`, `configure_agent`, `fork_agent`, `delete_agent`, `run_agent`,
 `get_run`, `agent_history`, `abort_agent`, `list_inputs`, `answer_input`, the
 schedule and definition tools, `list_models`, `whoami`, and `read_docs`, which
 reads these docs.
@@ -138,7 +139,7 @@ something (`deploy`, `configure_agent`, `create_agent`, the deletes,
 `abort_agent`, `answer_input`) are marked destructive, so clients that ask
 before such calls ask you first. `create_agent` is because, for a key that
 already has an agent, it brings that agent to the configuration given (keeping
-its history). `run_agent`, `answer_input` and `add_schedule` are open-world:
+its history). `fork_agent` only adds an agent, so it is not. `run_agent`, `answer_input` and `add_schedule` are open-world:
 the runs they start can search and fetch the web and call the agent's tool
 servers. A result longer than 100,000 characters is cut, saying so.
 

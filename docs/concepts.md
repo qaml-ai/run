@@ -83,6 +83,52 @@ and the request again. Summaries are billed like model responses (`kind:
 "compaction"` in usage) and count against spend limits; one made between runs
 belongs to no run. An agent compacts one summary at a time.
 
+## Forking
+
+A **fork** is a new agent made from an existing one: the same configuration
+(model, instructions, definition, tools, built-ins, who it acts for, key scope,
+spend and run limits), a copy of its history, and a copy of its workspace files.
+From then on each is its own: a turn, a compaction or a file written in one never
+shows in the other. Fork to try another direction without losing the first, to
+branch a conversation where a user edits an earlier message, or to start many
+agents from one prepared one.
+
+```ts
+const branch = await agent.fork({ key: "thread-9f2c-b" });
+const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
+```
+
+- **Where it ends.** By default the copy ends with the agent's last finished
+  turn: never inside a turn that is running or waiting on a person, so forking a
+  busy agent is safe. `atMessage` ends it earlier: a history index (the `index`
+  of a [history page](reference/sdk.md#history-in-pages) entry) keeps that message
+  and the tool results that answer it; a run's request id keeps that run's whole
+  turn. A message in a turn that has not ended is a 409 `FORK_POINT_RUNNING`.
+- **Compaction.** The copy keeps the source's summaries, so the fork's model sees
+  what the source's would at that point: the summary, then the messages after it.
+  History (`/history`) has every message.
+- **Files.** The fork's workspace (`/workspace`) is a
+  [fork of the source's volume](guides/files.md#volumes) as it is when you fork,
+  not as it was at `atMessage`. Other volumes the source mounts are mounted as
+  they are, shared. Files the history refers to (attachments) stay the fork's,
+  whatever becomes of the source.
+- **Not copied:** schedules, channel bindings, pending inputs, runs and their
+  events, and what the source has spent.
+- **Keys.** A fork made with a `key` is a keyed agent: it lives until deleted,
+  and forking again with the same key returns the same fork (another agent's key
+  is a 409). Without one it is a scratch agent that lives a day, unless you set
+  `ttlSeconds`.
+- `forkedFrom: {agentId, atMessage}` on the fork (`GET /v1/agents/{id}`, the
+  console) says where it came from: `atMessage` is the index of the last message
+  it began with.
+
+A fork is an agent like any other: it counts toward your agents and their
+storage. The copy costs only storage; its history and files share stored content
+with the source. Over REST it is `POST /v1/agents/{id}/fork` with `{key?, name?,
+atMessage?, ttlSeconds?}` (the key may be the `Idempotency-Key` header instead);
+in the console, **Fork** on the agent's page, or **Fork from here** under a reply.
+Browser tokens cannot fork.
+
 ## The result is the truth; events are for display
 
 An agent's **events** stream every step: text as the model writes it, tool

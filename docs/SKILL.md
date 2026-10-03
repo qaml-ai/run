@@ -156,6 +156,9 @@ asyncio.run(main())
   `throw_on_error=False`, `context.idempotency_key`, a stream part's `is_error`.
 
 - **Keys.** `upsert(key, …)` with the same key is the same agent, with its history. Choose a stable key.
+- **Branching.** To branch a conversation (a user edits an earlier message, or you try another approach), fork the
+  agent: `agent.fork({ key, atMessage })` copies its configuration, history and files into a new agent. Don't rebuild
+  history by hand with `initialMessages`. See https://run.camelai.com/docs/concepts.md#forking.
 - **Model.** Leave out `model`, and the account's default is used: the first default model the account can use. To
   choose another, list the usable ones with `npx -y @camelai/camelrun models --available`.
 - **Where tools run.** Tools run in the process that called `upsert`, and one process serves an agent's tools at a

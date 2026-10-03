@@ -103,6 +103,7 @@ credentials of (`{id, token}`) without changing it.
 | `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort()` | `abort()` | stop the running turn |
+| `agent.fork({ key, name, atMessage, ttlSeconds })` | `fork(key=, name=, at_message=, ttl_seconds=)` | a new agent with its configuration, a copy of its history and of its files: see [Forking](#agentforkoptions) |
 | `agent.delete()` | `delete()` | delete it, its history and files |
 | `agent.close()` | `close()` | close this process's connection |
 | `agent.client` | `agent.client` | the lower-level `AgentClient` |
@@ -121,6 +122,27 @@ Run options (`run`, `stream`):
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](../guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
 | `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](../guides/structured-output.md) |
+
+### `agent.fork(options)`
+
+A new `Agent` made from this one: its configuration, a copy of its history and
+a fork of its workspace, each its own from then on ([Forking](../concepts.md#forking)).
+`atMessage` (Python `at_message=`) ends the copied history at a history index
+(that message and the tool results answering it) or a request id (that run's
+whole turn); by default it ends with the last turn that finished, never mid-turn.
+`key` is the fork's own: forking again with it returns the same fork, and
+`agents.get(key)` finds it; without one, the SDK makes one up for its own retries
+and the fork lives a day (`ttlSeconds` to change that), as `createAgent`'s
+does. It takes `tools`, `onEvent` and the rest as `agents.get` does.
+`fork.forkedFrom` (`forked_from`) is `{agentId, atMessage}`. `agents.fork(id,
+options)` forks an agent by id. Lower level: `runtime.forkAgent(id, options)`
+(`fork_agent`) returns the fork's credentials and `forkedFrom`. REST: `POST
+/v1/agents/{id}/fork`. From `@camelai/run` 0.13.1 and `camelai-run` 0.9.1.
+
+```ts
+const fork = await agent.fork({ key: "support-b", atMessage: 5 });
+await fork.run("Try the other approach");
+```
 
 ### `Run`
 

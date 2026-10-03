@@ -26,6 +26,7 @@ retry.
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
+| 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap |
 | 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent: no runs start and no files are stored |
@@ -35,6 +36,7 @@ retry.
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
+| 409 | `FORK_POINT_RUNNING` | A fork's `atMessage` is in a turn that has not ended (running, or waiting on a person); fork at an earlier message, or once it ends |
 | 409 | `REPLAY_GAP` | The Last-Event-ID is behind the buffer; read `/state` (or ask for a snapshot) and continue from its cursor |
 | 409 | `CONFLICT` | Another conflict, named in the message |
 | 410 | `GONE` | The agent was deleted or has expired |
@@ -79,6 +81,8 @@ In more detail:
 | `This Idempotency-Key was sent with another request…` | The same `Idempotency-Key` header on a different method, path or body | A key is for one request |
 | `A request with this Idempotency-Key is still running; retry` / `…just finished; retry` | A retry raced the first request | Retry shortly: it then gets the first one's answer |
 | `An existing agent's subject, context, definition, mounts cannot change…` | An upsert of an existing key with a different value for a field set only at creation | Delete the agent (`DELETE /v1/agents/:id`) or use another key |
+| `FORK_POINT_RUNNING: Message N is in a turn that has not ended yet…` | A fork's `atMessage` falls in the running turn, or in one waiting on a person (its tool calls have no results yet) | Fork without `atMessage` (it ends before that turn), at an earlier message, or once the turn ends |
+| `This key names another agent, not a fork of this one…` | A fork's key is already another agent's (one made with it, or a fork of another agent) | Use another key; the same key returns the same fork only for the same source |
 | `Idempotency key belongs to another tenant` | Two tenants' keys cannot collide in practice; this guards it | Use another key |
 | `This input is already answered` (or declined, cancelled, expired, superseded) | Someone answered first. The body's `input` says how. Answering again with the same answer is 200 | Show the input as it is |
 | `The definition is at revision N, not M` / `The definition changed meanwhile; retry` | A definition update with a stale `revision` | Read it again and retry |

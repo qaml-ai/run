@@ -298,6 +298,52 @@ and the request again. Summaries are billed like model responses (`kind:
 "compaction"` in usage) and count against spend limits; one made between runs
 belongs to no run. An agent compacts one summary at a time.
 
+## Forking
+
+A **fork** is a new agent made from an existing one: the same configuration
+(model, instructions, definition, tools, built-ins, who it acts for, key scope,
+spend and run limits), a copy of its history, and a copy of its workspace files.
+From then on each is its own: a turn, a compaction or a file written in one never
+shows in the other. Fork to try another direction without losing the first, to
+branch a conversation where a user edits an earlier message, or to start many
+agents from one prepared one.
+
+```ts
+const branch = await agent.fork({ key: "thread-9f2c-b" });
+const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
+```
+
+- **Where it ends.** By default the copy ends with the agent's last finished
+  turn: never inside a turn that is running or waiting on a person, so forking a
+  busy agent is safe. `atMessage` ends it earlier: a history index (the `index`
+  of a [history page](https://run.camelai.com/docs/reference/sdk.md#history-in-pages) entry) keeps that message
+  and the tool results that answer it; a run's request id keeps that run's whole
+  turn. A message in a turn that has not ended is a 409 `FORK_POINT_RUNNING`.
+- **Compaction.** The copy keeps the source's summaries, so the fork's model sees
+  what the source's would at that point: the summary, then the messages after it.
+  History (`/history`) has every message.
+- **Files.** The fork's workspace (`/workspace`) is a
+  [fork of the source's volume](https://run.camelai.com/docs/guides/files.md#volumes) as it is when you fork,
+  not as it was at `atMessage`. Other volumes the source mounts are mounted as
+  they are, shared. Files the history refers to (attachments) stay the fork's,
+  whatever becomes of the source.
+- **Not copied:** schedules, channel bindings, pending inputs, runs and their
+  events, and what the source has spent.
+- **Keys.** A fork made with a `key` is a keyed agent: it lives until deleted,
+  and forking again with the same key returns the same fork (another agent's key
+  is a 409). Without one it is a scratch agent that lives a day, unless you set
+  `ttlSeconds`.
+- `forkedFrom: {agentId, atMessage}` on the fork (`GET /v1/agents/{id}`, the
+  console) says where it came from: `atMessage` is the index of the last message
+  it began with.
+
+A fork is an agent like any other: it counts toward your agents and their
+storage. The copy costs only storage; its history and files share stored content
+with the source. Over REST it is `POST /v1/agents/{id}/fork` with `{key?, name?,
+atMessage?, ttlSeconds?}` (the key may be the `Idempotency-Key` header instead);
+in the console, **Fork** on the agent's page, or **Fork from here** under a reply.
+Browser tokens cannot fork.
+
 ## The result is the truth; events are for display
 
 An agent's **events** stream every step: text as the model writes it, tool
@@ -3299,6 +3345,7 @@ credentials of (`{id, token}`) without changing it.
 | `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort()` | `abort()` | stop the running turn |
+| `agent.fork({ key, name, atMessage, ttlSeconds })` | `fork(key=, name=, at_message=, ttl_seconds=)` | a new agent with its configuration, a copy of its history and of its files: see [Forking](https://run.camelai.com/docs/reference/sdk.md#agentforkoptions) |
 | `agent.delete()` | `delete()` | delete it, its history and files |
 | `agent.close()` | `close()` | close this process's connection |
 | `agent.client` | `agent.client` | the lower-level `AgentClient` |
@@ -3317,6 +3364,27 @@ Run options (`run`, `stream`):
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](https://run.camelai.com/docs/guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
 | `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
+
+### `agent.fork(options)`
+
+A new `Agent` made from this one: its configuration, a copy of its history and
+a fork of its workspace, each its own from then on ([Forking](https://run.camelai.com/docs/concepts.md#forking)).
+`atMessage` (Python `at_message=`) ends the copied history at a history index
+(that message and the tool results answering it) or a request id (that run's
+whole turn); by default it ends with the last turn that finished, never mid-turn.
+`key` is the fork's own: forking again with it returns the same fork, and
+`agents.get(key)` finds it; without one, the SDK makes one up for its own retries
+and the fork lives a day (`ttlSeconds` to change that), as `createAgent`'s
+does. It takes `tools`, `onEvent` and the rest as `agents.get` does.
+`fork.forkedFrom` (`forked_from`) is `{agentId, atMessage}`. `agents.fork(id,
+options)` forks an agent by id. Lower level: `runtime.forkAgent(id, options)`
+(`fork_agent`) returns the fork's credentials and `forkedFrom`. REST: `POST
+/v1/agents/{id}/fork`. From `@camelai/run` 0.13.1 and `camelai-run` 0.9.1.
+
+```ts
+const fork = await agent.fork({ key: "support-b", atMessage: 5 });
+await fork.run("Try the other approach");
+```
 
 ### `Run`
 
@@ -3734,6 +3802,7 @@ its id (`def_…`).
 | `agents list` / `agents get <agent>` | agents; one agent's configuration and tool sources |
 | `agents create <key> [--definition d] [--model m] [--prompt text]` | an agent outside a manifest |
 | `agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]` | change one agent between its runs |
+| `agents fork <agent> [--key k] [--name n] [--at message]` | a new agent with its configuration, history and files ([Forking](https://run.camelai.com/docs/concepts.md#forking)); `--at` ends the history at a message index or a request id |
 | `agents delete <agent> --yes` | stop an agent and purge its history and files |
 | `run <agent> <message…>` | send a message and print the reply |
 | `runs get <agent> <requestId> [--wait s]` | a run's result |
@@ -3769,7 +3838,7 @@ and agents get JSON without asking. Errors go to stderr, as `{"error", "status",
 ## MCP tools
 
 Both MCP servers have tools for everything above: `deploy`, `list_agents`,
-`get_agent`, `create_agent`, `configure_agent`, `delete_agent`, `run_agent`,
+`get_agent`, `create_agent`, `configure_agent`, `fork_agent`, `delete_agent`, `run_agent`,
 `get_run`, `agent_history`, `abort_agent`, `list_inputs`, `answer_input`, the
 schedule and definition tools, `list_models`, `whoami`, and `read_docs`, which
 reads these docs.
@@ -3786,7 +3855,7 @@ something (`deploy`, `configure_agent`, `create_agent`, the deletes,
 `abort_agent`, `answer_input`) are marked destructive, so clients that ask
 before such calls ask you first. `create_agent` is because, for a key that
 already has an agent, it brings that agent to the configuration given (keeping
-its history). `run_agent`, `answer_input` and `add_schedule` are open-world:
+its history). `fork_agent` only adds an agent, so it is not. `run_agent`, `answer_input` and `add_schedule` are open-world:
 the runs they start can search and fetch the web and call the agent's tool
 servers. A result longer than 100,000 characters is cut, saying so.
 
@@ -4423,6 +4492,7 @@ retry.
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
+| 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap |
 | 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent: no runs start and no files are stored |
@@ -4432,6 +4502,7 @@ retry.
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
+| 409 | `FORK_POINT_RUNNING` | A fork's `atMessage` is in a turn that has not ended (running, or waiting on a person); fork at an earlier message, or once it ends |
 | 409 | `REPLAY_GAP` | The Last-Event-ID is behind the buffer; read `/state` (or ask for a snapshot) and continue from its cursor |
 | 409 | `CONFLICT` | Another conflict, named in the message |
 | 410 | `GONE` | The agent was deleted or has expired |
@@ -4476,6 +4547,8 @@ In more detail:
 | `This Idempotency-Key was sent with another request…` | The same `Idempotency-Key` header on a different method, path or body | A key is for one request |
 | `A request with this Idempotency-Key is still running; retry` / `…just finished; retry` | A retry raced the first request | Retry shortly: it then gets the first one's answer |
 | `An existing agent's subject, context, definition, mounts cannot change…` | An upsert of an existing key with a different value for a field set only at creation | Delete the agent (`DELETE /v1/agents/:id`) or use another key |
+| `FORK_POINT_RUNNING: Message N is in a turn that has not ended yet…` | A fork's `atMessage` falls in the running turn, or in one waiting on a person (its tool calls have no results yet) | Fork without `atMessage` (it ends before that turn), at an earlier message, or once the turn ends |
+| `This key names another agent, not a fork of this one…` | A fork's key is already another agent's (one made with it, or a fork of another agent) | Use another key; the same key returns the same fork only for the same source |
 | `Idempotency key belongs to another tenant` | Two tenants' keys cannot collide in practice; this guards it | Use another key |
 | `This input is already answered` (or declined, cancelled, expired, superseded) | Someone answered first. The body's `input` says how. Answering again with the same answer is 200 | Show the input as it is |
 | `The definition is at revision N, not M` / `The definition changed meanwhile; retry` | A definition update with a stale `revision` | Read it again and retry |
