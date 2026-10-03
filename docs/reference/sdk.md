@@ -259,7 +259,9 @@ timeout unless you pass `timeoutMs` or `signal` (Python: `timeout`).
 `runtime.telemetry` (in the simple interface, `agents.runtime.telemetry`) is the
 tenant's trace export, `/v1/telemetry`: each run becomes an OpenTelemetry trace,
 with spans for its model calls and tool calls, sent to an OTLP/HTTP endpoint
-(LangSmith, Langfuse, Honeycomb, Datadog, Tempo, your own collector).
+(LangSmith, Langfuse, Honeycomb, Datadog, Tempo, your own collector). See
+[Observability](../guides/observability.md) for the spans, presets and what is
+exported.
 
 ```ts
 await agents.runtime.telemetry.set({ endpoint: "https://api.honeycomb.io/v1/traces", headers: { "x-honeycomb-team": key } });
@@ -273,10 +275,11 @@ result = await agents.runtime.telemetry.test()
 run = await agent.run("Summarize ticket 123", traceparent=traceparent)
 ```
 
-- `set` replaces the settings: options left out take their defaults, except
-  `headers`, which are stored encrypted and never returned:
-  `get()` lists their names. Left out of a later `set`, they stay while the
-  endpoint keeps its origin; `{}` removes them. `protocol` is `http/protobuf`
+- `set` changes only what it is given: options left out keep their current
+  values (their defaults the first time, when `endpoint` is needed). `headers`
+  are stored encrypted and never returned: `get()` lists their names. Left out
+  of a later `set`, they stay while the endpoint keeps its origin, and are
+  dropped when it moves; `{}` removes them. `protocol` is `http/protobuf`
   (default) or `http/json`, `sampleRate` (`sample_rate=`) the share of runs
   traced (default 1), and `include: { content: true }` (`include_content=True`)
   also exports prompts, replies and tool arguments and results.

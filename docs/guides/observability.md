@@ -22,11 +22,15 @@ is **not** exported unless you ask for it with `include: {content: true}`. See
 
 | Field | |
 | --- | --- |
-| `endpoint` | The OTLP/HTTP traces URL spans are POSTed to. HTTPS, and on the public internet (see [Endpoints the runtime refuses](#endpoints-the-runtime-refuses)). A collector's base URL (`https://collector.example.com:4318`) gets `/v1/traces` |
+| `endpoint` | Needed the first time. The OTLP/HTTP traces URL spans are POSTed to. HTTPS, and on the public internet (see [Endpoints the runtime refuses](#endpoints-the-runtime-refuses)). A collector's base URL (`https://collector.example.com:4318`) gets `/v1/traces` |
 | `headers` | Sent with every export: your backend's API key, a project name. Stored encrypted and never shown again: `GET` lists their names only. Left out of a later `PUT`, they stay as long as the endpoint keeps its origin, and are dropped when it moves elsewhere; `{}` removes them |
 | `protocol` | `http/protobuf` (default) or `http/json`. gRPC is not supported |
 | `sampleRate` | The share of runs traced, 0 to 1 (default 1). A run that continues your trace follows your `traceparent`'s sampled flag instead |
 | `include.content` | `true` to export prompts, replies, tool arguments and results, and error messages. Default `false` |
+
+A `PUT` changes only the fields it carries: the others keep their current values
+(their defaults the first time). So `{"include": {"content": true}}` turns content
+on and leaves the endpoint, headers, protocol and sample rate as they were.
 
 - `GET /v1/telemetry` shows the settings, header names, and `status`: when a node
   last exported, and why the last export failed (`HTTP 401`, `Could not connect
@@ -44,15 +48,18 @@ await runtime.telemetry.test();
 ```
 
 ```python
-runtime.telemetry.set(endpoint="https://api.honeycomb.io/v1/traces", headers={"x-honeycomb-team": key})
+await runtime.telemetry.set("https://api.honeycomb.io/v1/traces", headers={"x-honeycomb-team": key})
+await runtime.telemetry.test()
 ```
 
 ```sh
-camelrun telemetry set https://api.honeycomb.io/v1/traces --header x-honeycomb-team=$HONEYCOMB_KEY
+camelrun telemetry set https://api.honeycomb.io/v1/traces --header x-honeycomb-team=@env:HONEYCOMB_KEY
 camelrun telemetry test
 ```
 
-In the console: **Settings → Telemetry**, with a **Send test span** button.
+In the console: **Telemetry** in the sidebar, with presets and a **Send test span** button.
+
+See [SDKs](../reference/sdk.md#telemetry) and [CLI](../reference/cli.md#telemetry).
 
 ## Presets
 
@@ -96,7 +103,7 @@ const run = await agent.run("Summarize ticket 123", { traceparent });
 ```
 
 ```python
-run = agent.run("Summarize ticket 123", traceparent=traceparent)
+run = await agent.run("Summarize ticket 123", traceparent=traceparent)
 ```
 
 With the OpenTelemetry API in your process, take the header from the active span

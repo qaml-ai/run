@@ -114,18 +114,24 @@ JSON for a form, and `decline`.
 ### Telemetry
 
 ```sh
-camelrun telemetry set https://api.honeycomb.io/v1/traces --header x-honeycomb-team=$HONEYCOMB_KEY
+camelrun telemetry set https://api.honeycomb.io/v1/traces --header x-honeycomb-team=@env:HONEYCOMB_KEY
+op read op://ops/langsmith/key | camelrun telemetry set https://api.smith.langchain.com/otel/v1/traces \
+  --header x-api-key=@stdin --header Langsmith-Project=agents
+camelrun telemetry set --content   # change one option; the rest stay
 camelrun telemetry test          # one test span, sent now: what the endpoint answered, and its trace id
 camelrun telemetry get           # the endpoint, header names, and how the last export went
 camelrun telemetry clear         # stop exporting
 ```
 
-`set <endpoint>` replaces the settings (`PUT /v1/telemetry`): options left out
-take their defaults, except the headers. `--header name=value` (repeat it for
-several) is sent with every export, stored encrypted, and never shown again:
-`get` prints header names only, and no command prints a value. A later `set`
+`set [<endpoint>]` changes what it is given (`PUT /v1/telemetry`): options left
+out keep their current values (their defaults the first time, when the endpoint
+is needed). `--header` (repeat it for several) is sent with every export, stored
+encrypted, and never shown again: `get` prints header names only, and no command
+prints a value. Give the value as `name=@env:VAR` (from the environment) or
+`name=@stdin` (from standard input, one header), so the key stays out of your
+shell history and the process list; `name=value` works too. A later `set`
 without `--header` keeps the stored headers while the endpoint stays on the same
-origin. `--protocol` is `http/protobuf` (default) or `http/json`,
+origin, and drops them when it moves. See [Observability](../guides/observability.md). `--protocol` is `http/protobuf` (default) or `http/json`,
 `--sample-rate` the share of runs traced (0 to 1, default 1), and `--content`
 also exports prompts, replies and tool arguments and results (default
 `--no-content`). `test` exits 1 when the endpoint refused the span or could not
