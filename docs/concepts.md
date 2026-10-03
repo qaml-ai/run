@@ -57,7 +57,6 @@ A `Run` has:
 | `error` | `{code, message, uncertain?}` when it failed |
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
 | `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?, agentId?}`. A `delegate` call names its sub-agent (`agentId`). Arguments and results are in history |
-| `handoffs` | the run's [handoffs](guides/multi-agent.md#handoffs-handoff), in order: `{from, to, definition, toolCallId}` |
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent |
 
@@ -161,7 +160,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 | Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for. Safe through your deploys and restarts |
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
 | Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
-| Other agents: sub-agents for tasks, or another definition taking the conversation | **`delegate`** and **`handoff`** built-ins, with who they may reach | `delegate: { agents: ["researcher"] }`, `handoff: { definitions: ["billing"] }`. See [Multi-agent](guides/multi-agent.md) |
+| Other agents doing tasks for this one | The **`delegate`** built-in, with the agents it may reach | `delegate: { agents: ["researcher"] }`. See [Multi-agent](guides/multi-agent.md) |
 
 The same `tool({...})` definitions work attached and served, so you can start
 attached and move to served without changing a tool (see [Several processes,
@@ -244,7 +243,6 @@ A **definition** is a reusable configuration: model, instructions, tool sources
 Agents can work together, inside the runtime. With the `delegate` built-in, an
 agent hands a task to a **sub-agent** (an agent of its own, made from a
 definition for the task, or an existing one) and gets its answer back as the
-call's result; several at once run in parallel. With `handoff`, an agent hands
-the **conversation** to another definition, which takes over the same agent and
-history from its next model request. Both survive a lost node, and sub-agents
-count against the parent's limits. See [Multi-agent](guides/multi-agent.md).
+call's result; several at once run in parallel. A sub-agent survives a lost
+node, and counts against its parent's limits. There are no handoffs: the
+conversation stays with the agent that has it. See [Multi-agent](guides/multi-agent.md).

@@ -39,23 +39,3 @@ test("SDK: delegate settings on upsert bring their builtin; a run lists its chil
   assert.equal(start.agentId, end.agentId);
   assert.equal(end.status, "completed");
 });
-
-test("SDK: a definition upserted with handoff settings brings its builtin, and a run lists its handoffs", async t => {
-  const r = await runtime(t, body => {
-    const system = systemText(body);
-    return system.lastIndexOf("BILLING") > system.lastIndexOf("TRIAGE") ? { role: "assistant", content: "billing" } : toolCall("handoff", { to: "billing" }, `call_${body.messages.length}`);
-  });
-  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
-  t.after(() => agents.close());
-  await agents.runtime.upsertDefinition("billing", { name: "Billing", systemPrompt: "You are BILLING." });
-  const triage = await agents.runtime.upsertDefinition("triage", { name: "Triage", systemPrompt: "You are TRIAGE.", handoff: { definitions: ["billing"] } });
-  assert.deepEqual(triage.builtins, ["handoff"]);
-  const agent = await agents.upsert("conversation", { definition: triage.id });
-  const parts: StreamPart[] = [];
-  const stream = agent.stream("refund");
-  for await (const part of stream) parts.push(part);
-  const run = await stream.result();
-  assert.equal(run.text, "billing");
-  assert.deepEqual(run.handoffs.map(handoff => [handoff.from, handoff.to]), [["Triage", "billing"]]);
-  assert.ok(parts.some(part => part.type === "handoff" && part.to === "billing"));
-});

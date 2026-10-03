@@ -25,12 +25,11 @@ Saving a definition lists its MCP servers: credentials a server refuses are a
 
 A `description` (1–1,000 characters) says what its agents are for; models see it
 as the description of each agent's [MCP tool](mcp-server.md), and as what it is
-for when another definition can delegate or hand off to it.
+for when another definition can delegate to it.
 
-`delegate` and `handoff`, with their builtins, let its agents hand tasks to
-sub-agents and hand the conversation to other definitions:
-`"builtins": ["delegate", "handoff"], "delegate": {"agents": ["researcher"]}, "handoff": {"definitions": ["billing"]}`.
-They may name definitions not saved yet, so two can name each other. See
+`delegate`, with its builtin, lets its agents hand tasks to sub-agents:
+`"builtins": ["delegate"], "delegate": {"agents": ["researcher"]}`. It may name
+definitions not saved yet, so two can name each other. See
 [Multi-agent](multi-agent.md).
 
 The definition supplies the model, prompt, thinking level and tool sources;

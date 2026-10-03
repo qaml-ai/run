@@ -42,7 +42,7 @@ import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inp
 import { recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
-import { definitionId, delegateTool, handoffTool, MULTI_AGENT_LIMITS, multiAgentInput, PARENT_KEYS, SUBAGENT_EVENTS, type AgentTarget, type DelegateSettings, type HandoffSettings } from "./multi-agent.ts";
+import { definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SUBAGENT_EVENTS, type AgentTarget, type DelegateSettings } from "./multi-agent.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -79,36 +79,17 @@ interface SessionHeader {
   forkedFrom?: ForkedFrom;
   /** A child its parent's delegate call made (multi-agent.ts): the parent agent, its run and call, and how deep in the chain it is. */
   parent?: { agentId: string; runId: string; toolCallId: string; depth: number };
-  /**
-   * A conversation handed off to another definition: which one runs the agent now (its prompt, model, tools and limits are the
-   * agent's configuration until it hands off again), and the agent's own configuration, which a handoff back or a reconfiguration restores.
-   */
-  handoff?: { definition: DefinitionRef; name: string; at: number; own: { config: HandoffConfig; sources?: Sources } };
 }
 export type ForkedFrom = { agentId: string; atMessage: number | null };
-/** The configuration a handoff replaces: what a definition sets for its agents. */
-type HandoffConfig = Pick<SessionConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits">;
-const HANDOFF_FIELDS = ["model", "systemPrompt", "thinkingLevel", "fileTools", "runLimits"] as const;
-/** The definition an agent runs as now: the one it was handed off to, else the one it was made from. */
-const activeDefinition = (header: SessionHeader) => header.handoff?.definition ?? header.definition;
-/** `current` with a handoff's fields (`HANDOFF_FIELDS`) as `next` has them: one it does not set is removed. */
-function withConfig(current: SessionConfig, next: HandoffConfig): SessionConfig {
-  const merged: Record<string, unknown> = { ...current };
-  for (const field of HANDOFF_FIELDS) { if (next[field] === undefined) delete merged[field]; else merged[field] = next[field]; }
-  return merged as SessionConfig;
-}
 /**
- * An agent's own sources (one without a definition) once a configuration gives builtins, delegate or handoff: what it leaves
- * out stays, and a builtin's settings go with it (multiAgentInput).
+ * An agent's own sources (one without a definition) once a configuration gives builtins or delegate: what it leaves out
+ * stays, and the delegate settings go with their builtin (delegateSettings).
  */
-function ownSources(current: Sources | undefined, given: { builtins?: unknown; delegate?: unknown; handoff?: unknown }): Sources | undefined {
+function ownSources(current: Sources | undefined, given: { builtins?: unknown; delegate?: unknown }): Sources | undefined {
   const builtins = given.builtins !== undefined ? builtinsInput(given.builtins) as string[] : current?.builtins ?? [];
-  const settings = multiAgentInput(builtins, {
-    delegate: given.delegate !== undefined ? given.delegate : builtins.includes("delegate") ? current?.delegate : undefined,
-    handoff: given.handoff !== undefined ? given.handoff : builtins.includes("handoff") ? current?.handoff : undefined,
-  });
-  const { builtins: _builtins, delegate: _delegate, handoff: _handoff, ...rest } = current ?? {};
-  const next: Sources = { ...rest, ...(builtins.length ? { builtins } : {}), ...(settings.delegate ? { delegate: settings.delegate } : {}), ...(settings.handoff ? { handoff: settings.handoff } : {}) };
+  const delegate = delegateSettings(builtins, given.delegate !== undefined ? given.delegate : builtins.includes("delegate") ? current?.delegate : undefined);
+  const { builtins: _builtins, delegate: _delegate, ...rest } = current ?? {};
+  const next: Sources = { ...rest, ...(builtins.length ? { builtins } : {}), ...(delegate ? { delegate } : {}) };
   return Object.keys(next).length ? next : undefined;
 }
 /** A child a delegate call of the running run is waiting on: the agent, its request, and whether the runtime made it (a named agent it did not). */
@@ -219,8 +200,6 @@ type Session = {
   delegating?: { active: number; waiting: (() => void)[] };
   /** What each running run's children spent, which its own spend limit counts. */
   childSpend?: Map<string, number>;
-  /** The running run's handoffs, for its limit (`maxPerRun`) and outcome. */
-  handoffs?: { requestId: string; list: { from: string; to: string; definition: string; toolCallId: string }[] };
   /** Listeners on this agent's stream on this node: a parent relaying its child's events to its own (`subagent_event`). */
   taps?: Set<(data: ClientEvent) => void>;
   /** Runs an abort reached after they began but before the agent had them: they end without running (see `markAborted`). */
@@ -1304,8 +1283,7 @@ export class ClientSessions {
     const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
       ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
     const multiAgent = this.multiAgentServer(session, sources);
-    // A handed-off agent's sources are its active definition's, whose secrets are sealed under that definition.
-    const definition = activeDefinition(header);
+    const definition = header.definition;
     return [
       ...feature ? [view("channel", feature)] : [],
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
@@ -1464,23 +1442,18 @@ export class ClientSessions {
   }
 
   /**
-   * The delegate and handoff tools of an agent whose sources enable them (multi-agent.ts), answered here rather than by a tool
-   * source: a delegate call's child is an agent of its own, and a handoff reconfigures this one.
+   * The delegate tool of an agent whose sources enable it (multi-agent.ts), answered here rather than by a tool source: a
+   * delegate call's child is an agent of its own.
    */
   private multiAgentServer(session: Session, sources: Sources | undefined): ToolServer | undefined {
     const delegate = sources?.builtins?.includes("delegate") ? sources.delegate : undefined;
-    const handoff = sources?.builtins?.includes("handoff") ? sources.handoff : undefined;
-    if (!delegate && !handoff) return undefined;
-    const tools = async () => {
-      const describe = await this.targetDescriptions(session.header.tenant, [...delegate?.agents ?? [], ...handoff?.definitions ?? []]);
-      return [...delegate ? [delegateTool(delegate, describe)] : [], ...handoff ? [handoffTool(handoff, describe)] : []];
-    };
+    if (!delegate) return undefined;
+    const tools = async () => [delegateTool(delegate, await this.targetDescriptions(session.header.tenant, delegate.agents ?? []))];
     return {
       tools,
       sources: async () => (await tools()).map((tool): ToolSourceView => ({ kind: "builtin", name: tool.name, status: "listed", tools: [tool] })),
       call: async call => {
-        if (call.name === "delegate" && delegate) return this.delegate(session, delegate, call);
-        if (call.name === "handoff" && handoff) return this.handoff(session, handoff, call);
+        if (call.name === "delegate") return this.delegate(session, delegate, call);
         throw new Error(`Unknown tool ${call.name}`);
       },
     };
@@ -1573,6 +1546,8 @@ export class ClientSessions {
           if (budget !== undefined && budget <= 0) throw new Error("This run has no budget left for a sub-agent: its spend limit is reached");
           record = await submit(agent, tenant, { id: requestId, method: "prompt", params: {
             text: task, ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
+            // The child's run joins the parent's trace, under this call's span (not part of the request's fingerprint).
+            ...call.traceparent ? { traceparent: call.traceparent } : {},
             metadata: { [PARENT_KEYS.agent]: header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(",") },
           } });
         } catch (error) {
@@ -1703,54 +1678,6 @@ export class ClientSessions {
         await submit(child.agent, tenant, { id: `abort-${randomUUID()}`, method: "abort", params: {} });
       })().catch(error => console.error(JSON.stringify({ type: "subagent_abort_failed", agent: session.header.id, child: child.agent, error: safeError(error) })));
     }
-  }
-
-  /**
-   * A handoff call: the conversation passes to a definition on the handoff allowlist, which runs this same agent, with its
-   * history, from its next model request: its prompt, model, thinking level, tools and run limits. The header is written first,
-   * so a node that takes the agent over has it; then the running turn takes it (the host's `handoff`), recording a system message
-   * marked `handoff`. A handoff back to the definition the agent was made from restores its own configuration. At most
-   * `maxPerRun` a run, so two agents cannot hand a conversation back and forth for ever.
-   */
-  private async handoff(session: Session, settings: HandoffSettings, call: ToolCall): Promise<McpResult> {
-    const { header } = session;
-    const run = this.runningRun(session);
-    if (!run || !call.toolCallId || call.innerCallId) throw new Error("handoff is called directly, not from js_exec");
-    const { to, reason } = call.args as { to?: string; reason?: string };
-    const target = settings.definitions.find(entry => entry.name === to);
-    if (!target?.definition) throw new Error(`There is no agent ${to} to hand off to`);
-    const id = definitionId(header.tenant, target.definition);
-    const from = header.handoff?.name ?? header.metadata?.name ?? header.key ?? header.id;
-    const marker = { from, to: target.name, definition: id, toolCallId: call.toolCallId, ...(typeof reason === "string" && reason ? { reason } : {}) };
-    // The call's result says so to the model, and its details (in history) to whoever reads it.
-    const done = (details: Record<string, unknown>) => ({ content: [{ type: "text", text: `Transferred to ${target.name}. You are ${target.name} now: continue the conversation under your new instructions.` }], structuredContent: { handedOff: true, ...details } });
-    // Made again on a resumed turn (the header has it), or to the definition already in charge: nothing changes.
-    if (activeDefinition(header)?.id === id) return done({ to: target.name, definition: id });
-    const handoffs = session.handoffs?.requestId === run.id ? session.handoffs : session.handoffs = { requestId: run.id, list: [] };
-    const most = settings.maxPerRun ?? MULTI_AGENT_LIMITS.maxHandoffs;
-    if (handoffs.list.length >= most) throw new Error(`This run has handed off ${most} times, its limit: answer the user yourself`);
-    if (!this.options.definitionFor) throw new Error("Handoffs are not enabled on this runtime");
-    const own = header.handoff?.own ?? { config: Object.fromEntries(HANDOFF_FIELDS.filter(field => header.config[field] !== undefined).map(field => [field, header.config[field]])) as HandoffConfig, ...(header.sources ? { sources: header.sources } : {}) };
-    const back = header.definition?.id === id;
-    const resolved = back ? undefined : await this.options.definitionFor(header.tenant, id).catch(error => { throw new Error(`${target.name} cannot take the conversation: ${errorText(error)}`); });
-    const config = back ? own.config : resolved!.config as HandoffConfig;
-    const sources = back ? own.sources : resolved!.sources;
-    const key = await this.apiKey(session, config.model.provider, header.keyScope);
-    if (this.options.apiKeyFor && !key.key) throw new Error(`${target.name} cannot take the conversation: no ${config.model.provider} API key is configured`);
-    const tools = await this.toolset(session, { sources, fileTools: config.fileTools });
-    session.header.config = withConfig(header.config, config);
-    if (sources) session.header.sources = sources; else delete session.header.sources;
-    if (back) delete session.header.handoff;
-    else session.header.handoff = { definition: { id, revision: resolved!.revision }, name: target.name, at: Date.now(), own };
-    await this.writeHeader(session);
-    session.platformKey = key.platform;
-    await this.supervisor.request(header.id, "handoff", {
-      model: config.model, systemPrompt: config.systemPrompt ?? null, thinkingLevel: config.thinkingLevel, fileTools: config.fileTools, runLimits: config.runLimits ?? null, tools,
-      ...(key.key ? { apiKey: key.key } : {}), marker,
-    });
-    handoffs.list.push({ from, to: target.name, definition: id, toolCallId: call.toolCallId });
-    this.publish(session, { type: "event", requestId: run.id, event: { type: "handoff", ...marker } });
-    return done(marker);
   }
 
   /**
@@ -1935,7 +1862,7 @@ export class ClientSessions {
    * apply when an agent is made.
    */
   private reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
-    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "handoff"> = {}) {
+    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate"> = {}) {
     const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
     const fixed = [
       ...differs(header.identity?.subject, identity?.subject) ? ["subject"] : [], ...differs(header.identity?.context, identity?.context) ? ["context"] : [],
@@ -1947,7 +1874,7 @@ export class ClientSessions {
       provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
       systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, runLimits: config.runLimits ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
       // Only a definition's own fields are the agent's: the rest follow its definition.
-      ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null, handoff: own.handoff ?? null },
+      ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null },
     };
   }
 
@@ -1966,7 +1893,6 @@ export class ClientSessions {
     if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
     if (target.builtins !== undefined && differs(header.sources?.builtins ?? [], target.builtins)) changes.builtins = target.builtins;
     if (target.delegate !== undefined && differs(header.sources?.delegate, target.delegate)) changes.delegate = target.delegate;
-    if (target.handoff !== undefined && differs(header.sources?.handoff, target.handoff)) changes.handoff = target.handoff;
     return changes;
   }
 
@@ -1980,7 +1906,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; delegate?: DelegateSettings; handoff?: HandoffSettings; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] } } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; delegate?: DelegateSettings; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] } } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -1990,7 +1916,7 @@ export class ClientSessions {
     // A fork's volume was made for the id its key had a moment ago: another generation now (it was deleted meanwhile) is a retry.
     if (access.fork && access.fork.id !== id) throw new HttpError(503, "The fork's key changed agents while it was made; retry");
     const { apiKey: _key, ...safeConfig } = config;
-    const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.handoff ? { handoff: access.handoff } : {}) };
+    const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}) };
     const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(identity ? { identity } : {}) }));
     // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
     const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
@@ -2135,7 +2061,7 @@ export class ClientSessions {
     const name = input.name ?? (source.metadata?.name && `${source.metadata.name} (fork)`.slice(0, 120));
     const created = await this.create(source.definitions, config as Omit<AgentConfig, "id" | "directory" | "tools">, key, { ...source.metadata, ...(name ? { name } : {}) }, tenant, input.ttlMs, mounts,
       source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, identity,
-      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, handoff: source.sources?.handoff }, fork: { id: made.id, from, records: cut.records } }, steps);
+      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate }, fork: { id: made.id, from, records: cut.records } }, steps);
     // Made meanwhile by a retry: whatever it holds is the fork.
     if (created.reconfigure) return answer(this.sessions.get(created.id)?.header ?? (await this.readHeader(created.id))!.value);
     return { id: created.id, token: created.token, expiresAt: created.expiresAt, forkedFrom: from };
@@ -2239,8 +2165,7 @@ export class ClientSessions {
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
       ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
       ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
-      builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null, handoff: session.header.sources?.handoff ?? null,
-      handedOff: session.header.handoff ? { definition: session.header.handoff.definition, name: session.header.handoff.name, at: session.header.handoff.at } : null,
+      builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null,
       ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
       spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
       ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
@@ -2664,17 +2589,17 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "runLimits", "modelHeaders", "builtins", "delegate", "handoff", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "runLimits", "modelHeaders", "builtins", "delegate", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
       if (body.method === "configure" && !applying) {
-        const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, delegate, handoff, ...update } = body.params;
+        const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, delegate, ...update } = body.params;
         configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, update)));
-        const own = builtins !== undefined || delegate !== undefined || handoff !== undefined;
+        const own = builtins !== undefined || delegate !== undefined;
         if (own && session.header.definition) throw new HttpError(400, "This agent's builtins come from its definition; change them there");
         // An upsert gives the whole of them, which `execute` checks as it applies them; a change of some is checked now.
-        if (own && body.params.provisionHash === undefined) ownSources(session.header.sources, { builtins, delegate, handoff });
+        if (own && body.params.provisionHash === undefined) ownSources(session.header.sources, { builtins, delegate });
       }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
@@ -2977,7 +2902,7 @@ export class ClientSessions {
     if (endpoint && this.options.modelToken) {
       const actor = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began)?.actor;
       return { identity: true, apiKey: await this.options.modelToken(endpoint.baseUrl, {
-        tenant: header.tenant, agent: header.id, ...(activeDefinition(header) ? { definition: activeDefinition(header)!.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
+        tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
       }) };
     }
     const provider = header.config.model.provider;
@@ -3027,30 +2952,18 @@ export class ClientSessions {
     if (record.method === "abort") { this.markAborted(session); this.abortChildren(session); await this.cancelInputs(session, "aborted"); }
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
-      const handedOff = session.header.handoff;
-      // An upsert of the configuration the agent already has leaves a handoff in place: the conversation stays where it was handed.
-      if (handedOff && params.definition === undefined && params.provisionHash !== undefined && params.provisionHash === session.header.provisionHash) return { configured: true, changed: false };
-      // Any other upsert, or its definition applied, takes the agent back to its own configuration first, then changes that.
-      const restoring = handedOff && (params.definition !== undefined || params.provisionHash !== undefined) ? handedOff.own : undefined;
-      const header: SessionHeader = restoring ? { ...session.header, config: withConfig(session.header.config, restoring.config), ...(restoring.sources ? { sources: restoring.sources } : { sources: undefined }) } : session.header;
       const applied = params.definition !== undefined ? await this.definitionUpdate(session, params.definition) : undefined;
       // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
       // Of its target, only what the agent does not have already is applied.
       const { provisionHash, name, type, toolsHash: declared, ...asked } = params;
       // The hash of the tools as the application declared them: given by an upsert, else of a configure's own mcp.tools.
       const toolsHash = declared ?? (asked.mcp?.tools !== undefined ? hash(JSON.stringify(asked.mcp.tools)) : undefined);
-      const { builtins, delegate, handoff, ...changes } = provisionHash !== undefined ? this.upsertChanges(header, asked) : asked;
-      // The agent's own configuration, restored: the whole of it goes to the agent, whose live configuration is the handoff's.
-      const given = restoring ? {
-        systemPrompt: restoring.config.systemPrompt ?? null, thinkingLevel: restoring.config.thinkingLevel ?? "off", fileTools: restoring.config.fileTools !== false, runLimits: restoring.config.runLimits ?? null, ...changes,
-      } : changes;
+      const { builtins, delegate, ...given } = provisionHash !== undefined ? this.upsertChanges(session.header, asked) : asked;
       // The agent's own builtins and their settings (an agent from a definition has the definition's): its sources, with the tools they offer.
-      const reSourced = builtins !== undefined || delegate !== undefined || handoff !== undefined || !!restoring;
-      const sources = builtins !== undefined || delegate !== undefined || handoff !== undefined ? ownSources(header.sources, { builtins, delegate, handoff }) : header.sources;
+      const reSourced = builtins !== undefined || delegate !== undefined;
+      const sources = reSourced ? ownSources(session.header.sources, { builtins, delegate }) : session.header.sources;
       const changed = provisionHash === undefined || reSourced || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
       const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, given)))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
-      // Its own model as it was resolved, endpoint and all (a name would resolve to the catalog's).
-      if (restoring && update.model === undefined) update.model = restoring.config.model;
       // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
       const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;
@@ -3065,7 +2978,6 @@ export class ClientSessions {
       if (resolved && live) session.platformKey = resolved.platform;
       if (keyScope) session.header.keyScope = keyScope; else if (keyScope === null) delete session.header.keyScope;
       if (tools !== undefined) session.header.definitions = tools;
-      if (restoring) { session.header.config = header.config; delete session.header.handoff; }
       session.header.config = { ...session.header.config, ...config };
       if (reSourced) { if (sources) session.header.sources = sources; else delete session.header.sources; }
       if (applied) {
@@ -3227,7 +3139,6 @@ export class ClientSessions {
         session.toolErrors = undefined;
         session.toolCalls = undefined;
         session.children = undefined;
-        session.handoffs = undefined;
       }
       // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
       if (record.method === "prompt") await this.cancelInputs(session, "superseded");
@@ -3242,8 +3153,6 @@ export class ClientSessions {
       // Every tool call the run made, so a caller sees what it did without reading history.
       if (RUN_METHODS.includes(record.method) && session.toolCalls?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, toolCalls: session.toolCalls } };
       if (RUN_METHODS.includes(record.method) && session.sourceErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, sourceErrors: session.sourceErrors } };
-      // The conversation's handoffs in this run: who handed it to whom.
-      if (RUN_METHODS.includes(record.method) && session.handoffs?.requestId === record.id && session.handoffs.list.length && value.result && typeof value.result === "object") value = { result: { ...value.result, handoffs: session.handoffs.list } };
       // What its model responses used on this node (a turn resumed after its node was lost counts from the resume), and what its children spent.
       if (RUN_METHODS.includes(record.method) && value.result && typeof value.result === "object") {
         const usage = session.usage?.get(record.id), children = session.childSpend?.get(record.id);
@@ -3464,7 +3373,7 @@ export class ClientSessions {
     const header = session.header;
     const identity = {
       tenant: header.tenant, agent: header.id, sub: header.identity?.subject ?? header.id,
-      ...(activeDefinition(header) ? { definition: activeDefinition(header)!.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
+      ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
     };
     const _meta = {

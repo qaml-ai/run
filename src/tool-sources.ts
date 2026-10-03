@@ -12,7 +12,7 @@ import type { Scheduler } from "./scheduler.ts";
 import type { WebSearch } from "./web-search.ts";
 import type { WebRender } from "./web-render.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
-import type { DelegateSettings, HandoffSettings } from "./multi-agent.ts";
+import type { DelegateSettings } from "./multi-agent.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { callMeta, declaredTimeout, defaultExposure, timedOut, TOOL_DEADLINES, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
@@ -77,7 +77,7 @@ export interface OpenApiSpec {
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
 /** `humanInput`: how long inputs wait, what happens when they expire, and who else may answer them (inputs.ts). */
-export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings; delegate?: DelegateSettings; handoff?: HandoffSettings }
+export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings; delegate?: DelegateSettings }
 /**
  * The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal (MCP servers and
  * OpenAPI specs come only from one; an agent's own builtins have none), its mounts (for files in and out), and who
@@ -399,7 +399,7 @@ export class ToolSources {
           return { ...source, status: "listed", listedAt: listing.at, tools: listing.tools };
         }));
         return [
-          // delegate and handoff are listed by the sessions' own server.
+          // delegate is listed by the sessions' own server.
           ...(sources?.builtins ?? []).filter(name => builtinNames([name]).length).map((name): ToolSourceView => ({ kind: "builtin", name, status: "listed", tools: builtinDefinitions([name]) })),
           ...(sources?.openApi ?? []).map((api): ToolSourceView => ({ kind: "openapi", name: api.name, url: api.baseUrl, ...(api.exposure ? { exposure: api.exposure } : {}), status: "listed", tools: apiTools(api) })),
           ...mcp,

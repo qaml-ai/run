@@ -9,7 +9,7 @@ import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import { builtinsInput, managedBuiltinsRefusal } from "./builtins.ts";
-import { multiAgentInput, type DelegateSettings, type HandoffSettings } from "./multi-agent.ts";
+import { delegateSettings, type DelegateSettings } from "./multi-agent.ts";
 import { searchOrder } from "./web-search.ts";
 import { canonical } from "../shared/durable-json.ts";
 import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
@@ -38,7 +38,7 @@ export interface DefinitionSpec {
   openApi?: OpenApiSpec[];
   /** false: agents get no file tools but present_file; their mounts stay open to fs in js_exec. */
   fileTools?: boolean;
-  /** Built-in tools to enable: web_fetch, web_search, schedule, ask_user, delegate, handoff. */
+  /** Built-in tools to enable: web_fetch, web_search, schedule, ask_user, delegate. */
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
   webSearch?: { providers: string[] };
@@ -46,8 +46,6 @@ export interface DefinitionSpec {
   humanInput?: HumanInputSettings;
   /** With the delegate builtin: the agents its agents may start or message, and how deep and wide (multi-agent.ts). */
   delegate?: DelegateSettings;
-  /** With the handoff builtin: the definitions its agents may hand a conversation to. */
-  handoff?: HandoffSettings;
   /** Made for this channel, and deleted with it. */
   channel?: string;
 }
@@ -63,7 +61,7 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "handoff"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "fileTools", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
@@ -74,7 +72,7 @@ export function sources(spec: DefinitionSpec): Sources | undefined {
   const found: Sources = {
     ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.webSearch && spec.builtins?.includes("web_search") ? { webSearch: spec.webSearch } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
     ...(spec.openApi?.length ? { openApi: spec.openApi } : {}), ...(spec.humanInput ? { humanInput: spec.humanInput } : {}),
-    ...(spec.delegate && spec.builtins?.includes("delegate") ? { delegate: spec.delegate } : {}), ...(spec.handoff && spec.builtins?.includes("handoff") ? { handoff: spec.handoff } : {}),
+    ...(spec.delegate && spec.builtins?.includes("delegate") ? { delegate: spec.delegate } : {}),
   };
   return Object.keys(found).length ? found : undefined;
 }
@@ -300,9 +298,8 @@ export class Definitions {
       try { searchOrder((webSearch as { providers?: unknown }).providers, "webSearch.providers"); } catch (error) { throw new HttpError(400, errorText(error)); }
     }
     if (spec.humanInput !== undefined) humanInputSettings(spec.humanInput);
-    const { delegate, handoff } = multiAgentInput(spec.builtins, spec);
+    const delegate = delegateSettings(spec.builtins, spec.delegate);
     if (delegate) spec.delegate = delegate;
-    if (handoff) spec.handoff = handoff;
     const prefixes = [...spec.mcpServers ?? [], ...spec.openApi ?? []].map(source => source.name);
     const twice = prefixes.find((name, index) => prefixes.indexOf(name) !== index);
     if (twice) throw new HttpError(400, `${twice} names both an MCP server and an OpenAPI source; their tools would share ${twice}__`);

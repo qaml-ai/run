@@ -383,7 +383,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate", "handoff"]`.
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -404,8 +404,7 @@ it is made from (whose builtins it then has):
 - `ask_user` lets the model ask the user 1 to 4 multiple-choice questions; the
   run waits for the answer. See [Human input](human-input.md).
 - `delegate` (with `delegate: { agents }`) hands a task to a sub-agent and
-  returns its answer; `handoff` (with `handoff: { definitions }`) gives the
-  conversation to another definition. See [Multi-agent](multi-agent.md).
+  returns its answer. See [Multi-agent](multi-agent.md).
 
 ## Seeing an agent's tools
 

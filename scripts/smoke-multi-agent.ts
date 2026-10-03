@@ -1,4 +1,4 @@
-// Real-model smoke test for delegate and handoff, on OpenRouter (not part of the suite; needs OPENROUTER_API_KEY and the test database):
+// Real-model smoke test for delegate, on OpenRouter (not part of the suite; needs OPENROUTER_API_KEY and the test database):
 // node --experimental-strip-types --test scripts/smoke-multi-agent.ts   (SMOKE_MODEL=<openrouter model id> to pick the model)
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const key = process.env.OPENROUTER_API_KEY!;
 const MODEL = process.env.SMOKE_MODEL ?? "openai/gpt-4.1-mini";
 
-test("real model: delegate to a definition and hand off", { timeout: 300_000 }, async t => {
+test("real model: delegate to a definition, and to sub-agents of the model's own design in parallel", { timeout: 300_000 }, async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), { AGENT_BASE_URL: "https://openrouter.ai/api/v1", AGENT_MODEL: MODEL },
     { tenants: { alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: key } } } });
   const definition = async (idempotency: string, body: unknown) => {
@@ -25,13 +25,4 @@ test("real model: delegate to a definition and hand off", { timeout: 300_000 }, 
   assert.match(delegated.outcome.result.reply.replace(/,/g, ""), /7006652/);
   const calls = delegated.outcome.result.toolCalls.filter((call: any) => call.tool === "delegate");
   assert.ok(calls.length >= 3 && calls.every((call: any) => call.ok && call.agentId));
-
-  const billing = await definition("billing", { name: "Billing", systemPrompt: "You are the billing agent. Begin every reply with \"BILLING:\". You handle refunds.", model: `openrouter/${MODEL}` });
-  const triage = await definition("triage", { name: "Triage", systemPrompt: "You are the triage agent. Hand refund requests to billing with the handoff tool; do not answer them yourself.", model: `openrouter/${MODEL}`, builtins: ["handoff"], handoff: { definitions: [{ name: "billing", definition: "billing", description: "Refunds, invoices and charges" }] } });
-  const agent = (await r.call("/v1/agents", { body: { definition: triage } })).json.id;
-  const handed = await r.prompt(agent, "I was charged twice for order 42 and want a refund.");
-  console.log("HANDOFF reply:", handed.outcome?.result?.reply, "\nhandoffs:", JSON.stringify(handed.outcome?.result?.handoffs));
-  assert.equal(handed.error, undefined, JSON.stringify(handed));
-  assert.equal(handed.outcome.result.handoffs?.[0]?.definition, billing);
-  assert.match(handed.outcome.result.reply, /^BILLING:/);
 });

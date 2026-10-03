@@ -96,8 +96,6 @@ export type AgentEvent =
   | { type: "turn_resumed" | "turn_recovered"; reason: string }
   /** An event too large for the stream (`was` its type, e.g. message_end); history has the message. */
   | { type: "event_omitted"; reason: string; was?: string }
-  /** The conversation passed to another definition (`to`), which runs the agent from its next model request. */
-  | { type: "handoff"; from: string; to: string; definition: string; toolCallId: string; reason?: string }
   /** With `subagents: true`: a delegate call started (or found) its child agent `agentId`, running request `requestId`. */
   | { type: "subagent_start"; toolCallId: string; agentId: string; requestId: string; name: string; depth: number }
   /** With `subagents: true`: one of the child's events (its streamed text left out); a grandchild's arrive nested in its child's. */

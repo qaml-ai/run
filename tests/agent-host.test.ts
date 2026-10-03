@@ -210,33 +210,6 @@ test("resume: a lost delegate call is made again (it finds the child its call st
   assert.match(results[1].content[0].text, /the child's answer/);
 });
 
-test("a handoff recorded during a turn applies before its next model request: prompt, tools and a marked system message, durably", async t => {
-  const fake = await setup(t);
-  let seen: { system: string; tools: string[] } | undefined;
-  fake.respond(
-    answer(fauxToolCall("lookup", {}, { id: "pass" }), "toolUse"),
-    context => {
-      seen = { system: getSystemMessageText(getCurrentSystemMessage(context.messages)!), tools: getCurrentTools(context.messages).map(tool => tool.name) };
-      return answer("Billing here.");
-    },
-  );
-  const { host } = await fake.start({ call: async (_name, running) => {
-    // The sessions answer a handoff call by recording it with the host, then answering the call.
-    await running.handle("handoff", { model: fake.faux.getModel(), systemPrompt: "You are BILLING.", thinkingLevel: "off", tools: [{ name: "refund", description: "Refund an order", parameters: { type: "object" }, exposure: "direct" }], marker: { from: "triage", to: "billing" } });
-    return { handedOff: true };
-  } });
-  const run = await host.handle("prompt", { text: "refund please" });
-  assert.equal(run.reply, "Billing here.");
-  assert.match(seen!.system, /You are BILLING\./);
-  assert.ok(seen!.tools.includes("refund") && !seen!.tools.includes("lookup"), "billing's tools replaced triage's");
-  // The change is in the transcript, marked, after the call's result: another node loading the agent has it.
-  const after = await fake.history();
-  const view = after.view();
-  const marked = view.findIndex(message => message.role === "system" && (message as { handoff?: { to: string } }).handoff?.to === "billing");
-  assert.ok(marked > view.findIndex(message => message.role === "toolResult"), "after the handoff call's result");
-  assert.match(JSON.stringify(view[marked]), /You are BILLING/);
-});
-
 test("an abort that reaches a run before its model loop starts ends it, rather than finding nothing to stop", async t => {
   const fake = await setup(t);
   let asked = 0;

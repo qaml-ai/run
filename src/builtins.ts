@@ -22,8 +22,8 @@ export { readableText };
  * fetches (a PDF, an image) to the agent's workspace (tool-files.ts), `web_search` asks web
  * search APIs in turn (see web-search.ts), `schedule` lets an agent set, list and
  * cancel its own wake-ups in the shared scheduler, and `ask_user` asks the user questions,
- * suspending the turn until they answer (inputs.ts). `delegate` and `handoff` (multi-agent.ts) are the sessions' own:
- * no tool source answers them here.
+ * suspending the turn until they answer (inputs.ts). `delegate` (multi-agent.ts) is the sessions' own: no tool source
+ * answers it here.
  */
 export const BUILTINS = {
   web_fetch: ["web_fetch"],
@@ -31,7 +31,6 @@ export const BUILTINS = {
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
   ask_user: ["ask_user"],
   delegate: [],
-  handoff: [],
 } as const;
 export type Builtin = keyof typeof BUILTINS;
 /**

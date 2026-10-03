@@ -354,8 +354,6 @@ export interface CreateAgentOptions extends AgentOptions {
   builtins?: Builtin[];
   /** Who the agent may hand tasks to (sub-agents), without a definition; it adds the delegate builtin. See the multi-agent guide. */
   delegate?: DelegateSettings;
-  /** The definitions the agent may hand the conversation to, without a definition; it adds the handoff builtin. */
-  handoff?: HandoffSettings;
   /**
    * A first prompt, sent in the same call once the agent is made (upsertAgent returns its request, or why it was refused).
    * Give it a `requestId`: a retried call with the same key and requestId sends it once.
@@ -366,19 +364,17 @@ export interface CreateAgentOptions extends AgentOptions {
 }
 /**
  * A tool the runtime answers itself: web_fetch, web_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
- * delegate (sub-agents: needs `delegate` settings) or handoff (another definition takes the conversation: needs `handoff` settings).
+ * or delegate (sub-agents: needs `delegate` settings).
  */
-export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate" | "handoff";
+export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate";
 /**
- * A delegate or handoff target: a definition's key or id, as a string or `{ definition }`, or for delegate an existing agent's key
+ * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
  * what it is for (default: the definition's).
  */
 export type AgentTarget = string | { name?: string; definition: string; description?: string } | { name?: string; agent: string; description?: string };
 /** Sub-agents: who the model may delegate to, whether it may write a child's instructions itself, and how deep (default 2) and wide (default 4 at once). */
 export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number }
-/** Handoffs: the definitions the model may hand the conversation to, and how many times a run may (default 3). */
-export interface HandoffSettings { definitions: (string | { name?: string; definition: string; description?: string })[]; maxPerRun?: number }
 /** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
 /** How a tool source is authenticated: a stored bearer token, or identity tokens the runtime signs for each request. */
 export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" };
@@ -392,8 +388,6 @@ export interface DefinitionInput {
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
   /** Who its agents may hand tasks to (sub-agents); it adds the delegate builtin. */
   delegate?: DelegateSettings;
-  /** The definitions its agents may hand the conversation to; it adds the handoff builtin. */
-  handoff?: HandoffSettings;
   /** The search providers web_search tries, in order, instead of the runtime's. */
   webSearch?: { providers: ("exa" | "brave" | "parallel")[] };
   mcpServers?: (SourceOptions & { url: string })[];
@@ -578,11 +572,7 @@ export interface RunResult {
   toolCalls?: RunToolCall[];
   /** Tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools. */
   sourceErrors?: { kind: string; source: string; message: string }[];
-  /** The run's handoffs, in order: the conversation went from one agent to another (see the multi-agent guide). */
-  handoffs?: Handoff[];
 }
-/** A handoff: who gave the conversation to whom (by their names), the definition that took it, and the call that did it. */
-export interface Handoff { from: string; to: string; definition: string; toolCallId: string; reason?: string }
 /**
  * A tool call that did not complete. `code`: timeout or connection_lost (with `outcomeUnknown`: it may have
  * taken effect), not_connected (no application was connected to run it: it did not run), source_unavailable, failed.
@@ -719,13 +709,12 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "delegate", "handoff", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "delegate", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
-/** `delegate` and `handoff` settings bring their builtins: given the settings, the builtin is added. */
-function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown; handoff?: unknown }>(input: T): T {
-  const wanted = (["delegate", "handoff"] as const).filter(name => input[name] && !input.builtins?.includes(name));
-  return wanted.length ? { ...input, builtins: [...input.builtins ?? [], ...wanted] } : input;
+/** `delegate` settings bring their builtin: given the settings, the builtin is added. */
+function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown }>(input: T): T {
+  return input.delegate && !input.builtins?.includes("delegate") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
 }
 
 /** The `traceparent` header, when there is one to send. */
@@ -847,7 +836,7 @@ export class AgentRuntime {
     if (!AGENT_KEY.test(key)) throw new AgentError(`A definition's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
     return this.transport.json("/v1/definitions", this.operator(), "POST", withMultiAgent(input), true, { "Idempotency-Key": key });
   }
-  /** Replace the fields given (null removes one); `apply: "all"` also reconfigures its live agents between their turns. Here `builtins` is given whole: list delegate or handoff in it with their settings. */
+  /** Replace the fields given (null removes one); `apply: "all"` also reconfigures its live agents between their turns. Here `builtins` is given whole: list delegate in it with its settings. */
   updateDefinition(id: string, input: Partial<DefinitionInput> & { revision?: number; apply?: "all" }): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "PATCH", input, false); }
   definition(id: string): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator()); }
   /**

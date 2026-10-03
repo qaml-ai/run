@@ -291,7 +291,7 @@ test("the CLI reads the runtime's URL from CAMELAI_BASE_URL, as the SDKs do, or 
   assert.equal(resolve({ url: "http://flag" }, { ...env, CAMELAI_BASE_URL: "http://runtime:8790" }).url, "http://flag");
 });
 
-test("a manifest's delegate and handoff settings bring their builtins", () => {
-  const manifest = parseManifest({ key: "lead", builtins: ["web_search"], delegate: { agents: ["researcher"] }, handoff: { definitions: ["billing"] } }, "lead.yaml");
-  assert.deepEqual(manifest.definition.builtins, ["web_search", "delegate", "handoff"]);
+test("a manifest's delegate settings bring their builtin", () => {
+  const manifest = parseManifest({ key: "lead", builtins: ["web_search"], delegate: { agents: ["researcher"] } }, "lead.yaml");
+  assert.deepEqual(manifest.definition.builtins, ["web_search", "delegate"]);
 });

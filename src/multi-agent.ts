@@ -3,18 +3,15 @@ import { HttpError } from "./http.ts";
 import type { ToolDefinition } from "./protocol.ts";
 
 /**
- * Multi-agent built-ins, answered by the runtime's sessions (client-sessions.ts) rather than a tool source:
- * `delegate` starts a child agent on a task and returns its answer (subagents), and `handoff` transfers the
- * conversation to another definition, which runs the same agent from its next model request (OpenAI-style handoffs).
- * Each needs its builtin enabled and an allowlist of targets, beside `builtins` on an agent or a definition.
+ * Sub-agents: the `delegate` built-in, answered by the runtime's sessions (client-sessions.ts) rather than a tool source,
+ * starts a child agent on a task and returns its answer. It needs its builtin enabled and an allowlist of targets
+ * (`delegate`), beside `builtins` on an agent or a definition.
  */
 export const MULTI_AGENT_LIMITS = Object.freeze({
   /** How deep delegation goes by default (a child's child is depth 2), and the most a setting may allow. */
   maxDepth: 2, depthCeiling: 5,
   /** Delegate calls of one run in flight at once by default (more wait their turn), and the most a setting may allow. */
   maxParallel: 4, parallelCeiling: 16,
-  /** Handoffs in one run by default (a guard against ping-pong), and the most a setting may allow. */
-  maxHandoffs: 3, handoffsCeiling: 20,
   /** Targets in one allowlist. */
   targets: 32,
   /** How long a child the runtime makes lives: a scratch agent's day. */
@@ -23,7 +20,7 @@ export const MULTI_AGENT_LIMITS = Object.freeze({
   taskChars: 100_000, instructionsChars: 32_000, descriptionChars: 1_000,
 });
 
-/** A delegate or handoff target: a definition (by id or key) or, for delegate, an existing agent (by key), named for the model. */
+/** A delegate target: a definition (by id or key) or an existing agent (by key), named for the model. */
 export type AgentTarget = { name: string; definition?: string; agent?: string; description?: string };
 export interface DelegateSettings {
   /** Agents the model may start (a definition: a new child each call) or message (an agent: its own history). */
@@ -33,7 +30,6 @@ export interface DelegateSettings {
   maxDepth?: number;
   maxParallel?: number;
 }
-export interface HandoffSettings { definitions: AgentTarget[]; maxPerRun?: number }
 
 /** Stream events of an agent's children, sent only to subscribers that ask for them (`?subagents=1`). */
 export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_event", "subagent_end"];
@@ -49,15 +45,15 @@ const integer = (value: unknown, field: string, min: number, max: number) => {
 };
 
 /** One allowlist: definition keys or ids as strings, or `{ name?, definition | agent, description? }`. */
-function targetsInput(value: unknown, field: string, agents: boolean): AgentTarget[] {
-  const shape = `${field} is a list of definition keys or ids, or { name?, definition${agents ? " | agent" : ""}, description? }`;
+function targetsInput(value: unknown, field: string): AgentTarget[] {
+  const shape = `${field} is a list of definition keys or ids, or { name?, definition | agent, description? }`;
   if (!Array.isArray(value) || value.length > MULTI_AGENT_LIMITS.targets) throw new HttpError(400, `${shape}, at most ${MULTI_AGENT_LIMITS.targets}`);
   const targets = value.map((entry): AgentTarget => {
     const given = typeof entry === "string" ? { definition: entry } : entry;
     if (!given || typeof given !== "object" || Array.isArray(given)) throw new HttpError(400, shape);
     const { name, definition, agent, description, ...rest } = given as Record<string, unknown>;
     const ref = definition ?? agent;
-    if (Object.keys(rest).length || (definition !== undefined) === (agent !== undefined) || (agent !== undefined && !agents) || typeof ref !== "string" || !KEY.test(ref)) throw new HttpError(400, shape);
+    if (Object.keys(rest).length || (definition !== undefined) === (agent !== undefined) || typeof ref !== "string" || !KEY.test(ref)) throw new HttpError(400, shape);
     const shown = name ?? ref;
     if (typeof shown !== "string" || !NAME.test(shown)) throw new HttpError(400, `${field}: a name is 1 to 64 letters, digits, _ and -`);
     if (description !== undefined && (typeof description !== "string" || !description.trim() || description.length > MULTI_AGENT_LIMITS.descriptionChars)) throw new HttpError(400, `${field}: a description is 1 to ${MULTI_AGENT_LIMITS.descriptionChars} characters`);
@@ -76,7 +72,7 @@ export function delegateInput(value: unknown): DelegateSettings {
   if (Object.keys(rest).length) throw new HttpError(400, `Unknown delegate field: ${Object.keys(rest)[0]}`);
   if (instructions !== undefined && typeof instructions !== "boolean") throw new HttpError(400, "delegate.instructions is true or false");
   const settings: DelegateSettings = {
-    ...(agents !== undefined ? { agents: targetsInput(agents, "delegate.agents", true) } : {}), ...(instructions !== undefined ? { instructions } : {}),
+    ...(agents !== undefined ? { agents: targetsInput(agents, "delegate.agents") } : {}), ...(instructions !== undefined ? { instructions } : {}),
     ...(maxDepth !== undefined ? { maxDepth: integer(maxDepth, "delegate.maxDepth", 1, MULTI_AGENT_LIMITS.depthCeiling) } : {}),
     ...(maxParallel !== undefined ? { maxParallel: integer(maxParallel, "delegate.maxParallel", 1, MULTI_AGENT_LIMITS.parallelCeiling) } : {}),
   };
@@ -84,28 +80,12 @@ export function delegateInput(value: unknown): DelegateSettings {
   return settings;
 }
 
-/** `handoff` as an agent or a definition gives it. */
-export function handoffInput(value: unknown): HandoffSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "handoff is { definitions, maxPerRun? }");
-  const { definitions, maxPerRun, ...rest } = value as Record<string, unknown>;
-  if (Object.keys(rest).length) throw new HttpError(400, `Unknown handoff field: ${Object.keys(rest)[0]}`);
-  const targets = targetsInput(definitions, "handoff.definitions", false);
-  if (!targets.length) throw new HttpError(400, "handoff needs at least one definition to hand off to");
-  return { definitions: targets, ...(maxPerRun !== undefined ? { maxPerRun: integer(maxPerRun, "handoff.maxPerRun", 1, MULTI_AGENT_LIMITS.handoffsCeiling) } : {}) };
-}
-
-/**
- * Check `delegate` and `handoff` against `builtins`: each setting goes with its builtin, and the builtin needs its setting.
- * Returns the settings to keep (undefined for one not given).
- */
-export function multiAgentInput(builtins: readonly string[] | undefined, input: { delegate?: unknown; handoff?: unknown }) {
-  const delegate = input.delegate === undefined || input.delegate === null ? undefined : delegateInput(input.delegate);
-  const handoff = input.handoff === undefined || input.handoff === null ? undefined : handoffInput(input.handoff);
-  for (const [name, settings] of [["delegate", delegate], ["handoff", handoff]] as const) {
-    if (settings && !builtins?.includes(name)) throw new HttpError(400, `${name} settings need the ${name} builtin: add "${name}" to builtins`);
-    if (!settings && builtins?.includes(name)) throw new HttpError(400, `The ${name} builtin needs ${name === "delegate" ? "delegate: { agents } (or instructions: true)" : "handoff: { definitions }"}: who it may ${name === "delegate" ? "delegate" : "hand off"} to`);
-  }
-  return { delegate, handoff };
+/** Check `delegate` against `builtins`: the settings go with the builtin, and the builtin needs them. Undefined: none given. */
+export function delegateSettings(builtins: readonly string[] | undefined, value: unknown): DelegateSettings | undefined {
+  const delegate = value === undefined || value === null ? undefined : delegateInput(value);
+  if (delegate && !builtins?.includes("delegate")) throw new HttpError(400, `delegate settings need the delegate builtin: add "delegate" to builtins`);
+  if (!delegate && builtins?.includes("delegate")) throw new HttpError(400, "The delegate builtin needs delegate: { agents } (or instructions: true): who it may delegate to");
+  return delegate;
 }
 
 /** A definition's id from a target's reference: an id as given, a key as the definition upsert by that key made it. */
@@ -133,17 +113,5 @@ export function delegateTool(settings: DelegateSettings, describe: (target: Agen
       settings.instructions ? `${agents.length ? "Or give" : "Give"} instructions to start a sub-agent of your own design, with your model.` : "",
     ].filter(Boolean).join("\n\n"),
     parameters: { type: "object", additionalProperties: false, required: ["task", ...(agents.length && !settings.instructions ? ["agent"] : [])], properties },
-  };
-}
-
-/** The handoff tool as the model sees it. */
-export function handoffTool(settings: HandoffSettings, describe: (target: AgentTarget) => string | undefined): ToolDefinition {
-  return {
-    name: "handoff", exposure: "direct", executionMode: "sequential",
-    description: `Transfer this conversation to another agent, which takes it over from your next step: it has its own instructions and tools, and sees the whole conversation so far. Use it when another agent is better suited to what the user needs; say why in reason. Agents you can hand off to:\n${listed(settings.definitions, describe)}`,
-    parameters: { type: "object", additionalProperties: false, required: ["to"], properties: {
-      to: { type: "string", enum: settings.definitions.map(target => target.name), description: "The agent to hand the conversation to" },
-      reason: { type: "string", maxLength: 2_000, description: "Why, and what the next agent should know" },
-    } },
   };
 }

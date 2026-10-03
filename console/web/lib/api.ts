@@ -95,8 +95,6 @@ export interface AgentDetail extends AgentSummary {
   forkedFrom?: { agentId: string; atMessage: number | null };
   /** A sub-agent: the run of parentAgentId that made it. */
   parentRunId?: string;
-  /** The definition a handoff gave the conversation to, which runs the agent now. */
-  handedOff?: { definition: { id: string; revision: number }; name: string; at: number } | null;
 }
 export interface ApiToken { id: string; name: string; prefix: string; createdAt: number }
 export interface OAuthGrant { id: string; clientName: string; login: string | null; scope: string; createdAt: number; usedAt: number | null }

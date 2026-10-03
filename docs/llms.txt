@@ -29,9 +29,9 @@ are current: prefer them to your training data.
 - [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md): the model catalog, your own keys and endpoints, key scopes, model headers, spend limits
 - [Custom models](https://run.camelai.com/docs/guides/custom-models.md): any server that speaks OpenAI's or Anthropic's APIs as a provider of your own or of a key scope: hosted APIs, gateways, vLLM, Ollama
 - [Definitions](https://run.camelai.com/docs/guides/definitions.md): reusable configurations, and rolling changes out to their agents
-- [Multi-agent: sub-agents and handoffs](https://run.camelai.com/docs/guides/multi-agent.md): sub-agents (the delegate built-in: tasks to other agents, in parallel) and handoffs (another definition takes the conversation), their limits, and how they map to the OpenAI Agents SDK and LangGraph
+- [Multi-agent: sub-agents](https://run.camelai.com/docs/guides/multi-agent.md): sub-agents: the delegate built-in hands tasks to other agents, in parallel; their limits, cancelling, crash safety and progress events, and how they map to the OpenAI Agents SDK and LangGraph
 - [Channels](https://run.camelai.com/docs/guides/channels.md): Slack, Telegram, Discord, GitHub, email and any service that sends webhooks
-- [Coming from the OpenAI Agents SDK or LangGraph](https://run.camelai.com/docs/guides/migrating.md): coming from the OpenAI Agents SDK or LangGraph: sessions, handoffs and sub-agents, guardrails, tracing, structured output and the rest mapped, with what camelRun does not have
+- [Coming from the OpenAI Agents SDK or LangGraph](https://run.camelai.com/docs/guides/migrating.md): coming from the OpenAI Agents SDK or LangGraph: sessions, handoffs (not supported) and sub-agents, guardrails, tracing, structured output and the rest mapped, with what camelRun does not have
 - [Agents as MCP servers](https://run.camelai.com/docs/guides/mcp-server.md): every agent as an MCP server with one tool, message: connecting Claude or Cursor to an agent
 - [Exporting your data](https://run.camelai.com/docs/guides/export.md): the account export (GET /v1/account/export): what the zip holds, that it is whole or fails, and moving to a self-hosted runtime (no import yet)
 - [Production checklist](https://run.camelai.com/docs/production.md): the checklist before shipping

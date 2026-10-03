@@ -86,33 +86,3 @@ test("parallel children on a cluster: an abort of the parent sent to any node ab
   }
   assert.ok(record.outcome, JSON.stringify(record));
 });
-
-test("a handed-off conversation stays with its new definition when another node loads the agent", { timeout: 120_000 }, async t => {
-  const c = await cluster(t);
-  const model = await fakeModel(t, body => {
-    const system = systemText(body);
-    if (system.lastIndexOf("BILLING") > system.lastIndexOf("TRIAGE")) return { role: "assistant", content: "Billing here." };
-    return toolCalls(["handoff", { to: "billing" }, `call_${body.messages.length}`]);
-  });
-  const a = await c.start("a", model.env);
-  const b = await c.start("b", model.env);
-  const onA = api(a.url), onB = api(b.url);
-  const definition = async (key: string, body: unknown) => {
-    const response = await fetch(`${a.url}/v1/definitions`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) });
-    assert.equal(response.status, 201, await response.clone().text());
-    return (await response.json()).id as string;
-  };
-  await definition("billing", { name: "Billing", systemPrompt: "You are BILLING." });
-  const triage = await definition("triage", { name: "Triage", systemPrompt: "You are TRIAGE.", builtins: ["handoff"], handoff: { definitions: ["billing"] } });
-  const agent = (await onA("/v1/agents", { definition: triage })).json.id;
-  await onA(`/v1/agents/${agent}/prompt`, { text: "refund", requestId: "first" });
-  assert.equal((await settled(onA, agent, "first")).outcome.result.reply, "Billing here.");
-  a.child.kill("SIGKILL");
-  await once(a.child, "close");
-  await until(async () => (await onB(`/v1/agents/${agent}/prompt`, { text: "and again", requestId: "second" })).status === 202, "node b took the agent", 30_000);
-  const second = await settled(onB, agent, "second");
-  assert.equal(second.outcome.result.reply, "Billing here.");
-  assert.equal(second.outcome.result.handoffs, undefined, "no handoff needed: billing has the conversation");
-  assert.equal((await onB(`/v1/agents/${agent}`)).json.handedOff.name, "billing");
-  assert.match(systemText(model.bodies.at(-1)), /BILLING/);
-});

@@ -1,17 +1,14 @@
-# Multi-agent: sub-agents and handoffs
+# Multi-agent: sub-agents
 
-Two built-in tools let agents work together, and the runtime runs both:
+The `delegate` built-in lets an agent hand a task to a **sub-agent** and get its
+answer back as the call's result, while it keeps the conversation. This is the
+OpenAI Agents SDK's `agent.as_tool()` and LangGraph's supervisor. The runtime
+runs it, and it is durable: a sub-agent is an agent of its own, and a parent
+whose node is lost while it waits collects the sub-agent's answer on another
+node.
 
-- **`delegate`**: the agent hands a task to a **sub-agent** and gets its answer
-  back as the call's result, while it keeps the conversation. This is the
-  OpenAI Agents SDK's `agent.as_tool()` and LangGraph's supervisor.
-- **`handoff`**: the agent hands the **conversation** to another definition. The
-  same agent goes on with the same history, under that definition's
-  instructions, model and tools. This is the OpenAI Agents SDK's `handoffs`.
-
-Both are durable. A sub-agent is an agent of its own, and a parent whose node is
-lost while it waits collects the sub-agent's answer on another node. A handoff
-is written to the agent before it takes effect, so it holds through restarts.
+camelRun has no handoffs: an agent cannot pass its conversation to another
+agent. See [Coming from the OpenAI Agents SDK](#coming-from-the-openai-agents-sdk).
 
 ## Sub-agents: `delegate`
 
@@ -118,6 +115,7 @@ can pass the parent's limit by at most one sub-agent's spend each.
 
 An agent cannot delegate to an agent already working on its chain (it would
 wait on itself), and an agent's own key cannot change any of these settings.
+The model calls `delegate` directly, never from `js_exec`.
 
 ### Cancelling
 
@@ -163,90 +161,14 @@ A sub-agent's events are relayed while it runs on the same node as its parent,
 which it does unless a node was lost; its own stream and history always have
 everything.
 
-## Handoffs: `handoff`
-
-Give a definition the `handoff` builtin and the definitions it may hand the
-conversation to. A triage agent hands a refund to billing:
-
-```ts
-await agents.runtime.upsertDefinition("billing", {
-  name: "Billing", description: "Refunds, invoices and charges",
-  systemPrompt: "You are the billing agent. You can issue refunds.",
-  mcpServers: [{ name: "payments", url: "https://payments.example.com/mcp", auth: { type: "runtime" } }],
-});
-const triage = await agents.runtime.upsertDefinition("triage", {
-  name: "Triage", systemPrompt: "You help customers. Hand billing questions to billing.",
-  handoff: { definitions: ["billing"] },
-});
-
-const agent = await agents.upsert(`support-${userId}`, { definition: triage.id });
-const run = await agent.run("I was charged twice for order 42.");
-run.handoffs; // [{ from: "Triage", to: "billing", definition: "def_…", toolCallId: "…" }]
-run.text;     // billing's answer
-```
-
-```python
-await agents.runtime.upsert_definition("billing", name="Billing", description="Refunds, invoices and charges",
-    systemPrompt="You are the billing agent. You can issue refunds.")
-triage = await agents.runtime.upsert_definition("triage", name="Triage",
-    systemPrompt="You help customers. Hand billing questions to billing.", handoff={"definitions": ["billing"]})
-
-agent = await agents.upsert(f"support-{user_id}", definition=triage["id"])
-run = await agent.run("I was charged twice for order 42.")
-run.handoffs  # [{"from": "Triage", "to": "billing", ...}]
-```
-
-The model gets a `handoff` tool with `to` (one of the definitions, by name) and
-an optional `reason`. When it calls it:
-
-1. The runtime records the handoff on the agent: from now on, its configuration
-   is the target definition's: system prompt, model, thinking level, tools
-   (builtins, MCP servers, OpenAPI sources) and run limits. The tools your
-   application serves the agent stay, as does `systemPromptAppend`.
-2. From the next model request, in the same run, the target definition answers,
-   and sees the whole conversation. Nothing is summarized or filtered.
-3. The history keeps the `handoff` call, with `{ from, to, definition, reason }`
-   in its result's details. The stream has a `handoff` event, and the run's
-   result its `handoffs`.
-
-The conversation stays with the target in later runs, until it hands off again.
-`GET /v1/agents/{id}` shows where it is: `handedOff: { definition, name, at }`,
-or null while the agent runs as it was made.
-
-### Handing back, and ping-pong
-
-To hand back, give the target a `handoff` of its own that lists the first
-definition. A handoff to the definition the agent was made from restores its
-own configuration (`handedOff` becomes null).
-
-A run may hand off at most `maxPerRun` times (default 3, at most 20). Past it,
-the call fails and the model has to answer itself, so two definitions cannot
-pass a conversation back and forth for ever.
-
-### Handoffs and your configuration
-
-- **Upserting the same configuration** (as an app does before each run) leaves
-  the conversation where it was handed.
-- **An upsert with a different configuration**, or applying the agent's
-  definition (`apply: "all"`), takes the agent back to its own configuration
-  first, then changes it.
-- Applying a target definition's new revision does not reach agents handed off
-  to it; their next handoff to it does.
-- `handoff` needs a definition to hand off to, and is called by the model
-  directly, never from `js_exec`. The same goes for `delegate`.
-
 ## Coming from the OpenAI Agents SDK
 
 | OpenAI Agents SDK | camelRun |
 | --- | --- |
-| `Agent(handoffs=[billing_agent])` | `handoff: { definitions: ["billing"] }` on the agent's definition (or on the agent) |
-| `handoff(agent, tool_name_override=…, tool_description_override=…)` | `{ name, definition, description }` in `handoff.definitions` |
-| `on_handoff` callback | The `handoff` event on the stream, or `run.handoffs` after the run |
-| `input_filter` (trim what the next agent sees) | Not supported: the next definition sees the whole conversation |
-| `result.last_agent`, running it for the next turn | Not needed: the agent stays handed off. `GET /v1/agents/{id}` shows `handedOff` |
 | `agent.as_tool(tool_name, tool_description)` | `delegate: { agents: [{ name, definition, description }] }` |
 | Agents as tools in parallel (`asyncio.gather` in a tool) | Several `delegate` calls in one response run at once (`maxParallel`) |
-| `max_turns` across handoffs | The run's `runLimits` (the target definition's after a handoff), and `handoff.maxPerRun` |
+| `handoffs=[…]`, `handoff()` | Not supported: there are no handoffs. Delegate to the specialist instead: the conversation stays with the first agent, which relays the answer. Or route in your code, running the agent the message is for (see [Migrating](migrating.md#handoffs-and-multi-agent)) |
+| `max_turns` | The run's `runLimits`, and `delegate.maxDepth` for chains of agents |
 
 ## Coming from LangGraph
 
@@ -255,7 +177,7 @@ pass a conversation back and forth for ever.
 | Supervisor (`create_supervisor`, or a supervisor node routing to workers) | A lead agent with `delegate: { agents: [...] }`: the model routes, workers answer as tool results |
 | Subgraphs (a compiled graph as a node) | A definition per subgraph, delegated to. Its history is its own agent's |
 | `Send` (map-reduce over items) | Parallel `delegate` calls, one per item |
-| Swarm (`create_swarm`, `create_handoff_tool`), `Command(goto=…)` | `handoff`: the active agent changes, the history is shared |
-| Shared state between nodes | The conversation, for handoffs. For sub-agents, the task text and a shared [volume](files.md#volumes) |
-| `recursion_limit` | `delegate.maxDepth`, `handoff.maxPerRun` and the run's `runLimits` |
+| Swarm (`create_swarm`), `Command(goto=…)` | Not supported: there are no handoffs. Use a supervisor (`delegate`) instead |
+| Shared state between nodes | The task text, and a shared [volume](files.md#volumes) |
+| `recursion_limit` | `delegate.maxDepth` and the run's `runLimits` |
 | Checkpointed subgraph state | Each sub-agent's own history, read by its id (`run.toolCalls[i].agentId`) |

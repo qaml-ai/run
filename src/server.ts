@@ -66,7 +66,7 @@ import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { builtinsInput, builtinWarnings } from "./builtins.ts";
-import { multiAgentInput } from "./multi-agent.ts";
+import { delegateSettings } from "./multi-agent.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
@@ -288,17 +288,17 @@ async function createAgent(tenant: string, params: any, key?: string, parent?: {
 
 async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
-  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, delegate: delegating, handoff: handing, ...rest } = params ?? {};
+  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, delegate: delegating, ...rest } = params ?? {};
   // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
   const mcpTools = params?.mcp?.tools;
   // Who the agent acts for, and context for its tool servers' identity tokens.
   const identity = identityInput(params ?? {});
   if (keyScope !== undefined) checkScope(keyScope);
   // An agent's own built-in tools; one made from a definition has its definition's.
-  if ((asked !== undefined || delegating !== undefined || handing !== undefined) && params.definition !== undefined) throw new HttpError(400, "builtins come from the definition; change them there");
+  if ((asked !== undefined || delegating !== undefined) && params.definition !== undefined) throw new HttpError(400, "builtins come from the definition; change them there");
   const builtins = asked === undefined ? undefined : builtinsInput(asked);
-  // delegate and handoff, with their builtins: who the agent may delegate to, and hand a conversation to.
-  const { delegate, handoff } = multiAgentInput(builtins, { delegate: delegating, handoff: handing });
+  // With the delegate builtin, who the agent may delegate to.
+  const delegate = delegateSettings(builtins, delegating);
   const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
   const modelHeaders = headers === undefined ? null : modelHeadersInput(headers);
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -317,7 +317,7 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
   const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-    { keyScope, spendLimit, builtins, delegate, handoff, ...(parent ? { parent } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) }, steps);
+    { keyScope, spendLimit, builtins, delegate, ...(parent ? { parent } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) }, steps);
   outcome.agent = made_.id;
   outcome.upsert = !!reconfigure;
   const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });

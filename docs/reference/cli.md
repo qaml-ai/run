@@ -45,9 +45,9 @@ agents:                          # keyed agents made from it on deploy
 - Every field but `key`, `agents`, `systemPromptFile` and an OpenAPI source's
   `specFile` is sent as the [definition](../guides/definitions.md) (`name`,
   `model`, `systemPrompt`, `thinkingLevel`, `fileTools`, `builtins`, `webSearch`,
-  `mcpServers`, `openApi`, `limits`, `mounts`, `delegate`, `handoff`), and the
-  runtime validates it. `delegate` and `handoff` ([Multi-agent](../guides/multi-agent.md))
-  add their builtins.
+  `mcpServers`, `openApi`, `limits`, `mounts`, `delegate`), and the runtime
+  validates it. `delegate` ([Multi-agent](../guides/multi-agent.md)) adds its
+  builtin.
   `name` defaults to the key.
 - `${NAME}` and `${NAME:-default}` in the manifest's strings read the
   environment, so credentials stay out of the file; an unset one is an error.

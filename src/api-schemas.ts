@@ -226,13 +226,13 @@ export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeade
 });
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
-const Builtin = z.enum(["web_fetch", "web_search", "schedule", "ask_user", "delegate", "handoff"]).openapi("Builtin");
+const Builtin = z.enum(["web_fetch", "web_search", "schedule", "ask_user", "delegate"]).openapi("Builtin");
 const AgentTarget = z.union([
   z.string().openapi({ description: "A definition's key or id; the model sees it by that name" }),
   z.strictObject({
     name: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional().openapi({ description: "What the model calls it; default: the definition's or agent's key" }),
     definition: z.string().optional().openapi({ description: "A definition's key or id" }),
-    agent: z.string().optional().openapi({ description: "delegate only: an existing agent's key. The agent keeps its history across calls; a definition makes a new child each call" }),
+    agent: z.string().optional().openapi({ description: "An existing agent's key. The agent keeps its history across calls; a definition makes a new child each call" }),
     description: z.string().max(1000).optional().openapi({ description: "What it is for, for the model; default: the definition's description" }),
   }),
 ]).openapi("AgentTarget");
@@ -242,10 +242,6 @@ export const DelegateSettings = z.strictObject({
   maxDepth: z.number().int().min(1).max(5).optional().openapi({ description: "How deep delegation may go: a child is depth 1, its child depth 2. Default 2" }),
   maxParallel: z.number().int().min(1).max(16).optional().openapi({ description: "delegate calls of one run in flight at once; more wait their turn. Default 4" }),
 }).openapi("DelegateSettings", { description: "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide" });
-export const HandoffSettings = z.strictObject({
-  definitions: z.array(AgentTarget).min(1).max(32).openapi({ description: "The definitions the model may hand the conversation to" }),
-  maxPerRun: z.number().int().min(1).max(20).optional().openapi({ description: "Handoffs in one run, a guard against two agents passing a conversation back and forth. Default 3" }),
-}).openapi("HandoffSettings", { description: "With the handoff builtin: who the conversation may be handed to. See the multi-agent guide" });
 export const PromptInput = z.object({
   text: z.string({ error: SEND_TEXT }).refine(text => !!text.trim(), SEND_TEXT),
   actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
@@ -282,9 +278,8 @@ export const AgentInput = z.object({
   mounts: z.array(Mount).optional().openapi({ description: "Volumes for the agent's file tools; default: a new workspace volume at /workspace" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
-  builtins: z.array(Builtin).max(8).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, handoff), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
+  builtins: z.array(Builtin).max(8).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
   delegate: DelegateSettings.optional().openapi({ description: "With the delegate builtin: who the agent may hand tasks to. Not with a definition, whose own it takes" }),
-  handoff: HandoffSettings.optional().openapi({ description: "With the handoff builtin: the definitions the agent may hand the conversation to. Not with a definition, whose own it takes" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
   spendLimit: SpendLimitInput.optional(),
   runLimits: RunLimits.optional().openapi({ description: "The most one run may take (model responses, seconds); an agent from a definition gets the definition's unless this is given" }),
@@ -321,7 +316,7 @@ export const RequestRecord = z.object({
   suspension: z.string().optional().openapi({ description: "resume: the request whose turn waited on human input" }),
   metadata: z.record(z.string(), z.string()).optional().openapi({ description: "The metadata sent with the message" }),
   steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares" }),
-  outcome: Outcome.optional().openapi({ description: "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.handoffs lists the run's handoffs ({from, to, definition, toolCallId}), and result.usage.subagentCostUsd what its children spent" }),
+  outcome: Outcome.optional().openapi({ description: "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent" }),
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
   status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
@@ -421,8 +416,6 @@ export const AgentDetail = AgentSummary.extend({
   modelHeaders: ModelHeaders.nullable(),
   builtins: z.array(Builtin).openapi({ description: "The tools the runtime answers itself: its own, or its definition's" }),
   delegate: DelegateSettings.nullable().openapi({ description: "Who it may delegate to, with the delegate builtin" }),
-  handoff: HandoffSettings.nullable().openapi({ description: "Who it may hand the conversation to, with the handoff builtin" }),
-  handedOff: z.object({ definition: z.object({ id: z.string(), revision: z.number() }), name: z.string(), at: z.number() }).nullable().openapi({ description: "The definition a handoff gave the conversation to, which runs the agent now (its prompt, model, tools and limits); null while it runs as made. An upsert of a different configuration, or applying its definition, ends it" }),
   parentRunId: z.string().optional().openapi({ description: "For a child a delegate call made: the run of parentAgentId that made it" }),
   spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
   runLimits: RunLimits.nullable().openapi({ description: "Its own run limits, as set; null: the runtime's" }),
@@ -583,7 +576,6 @@ const definitionFields = {
   mcpServers: z.array(McpServerInput).max(64).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
   openApi: z.array(OpenApiInput).max(64).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
   delegate: DelegateSettings,
-  handoff: HandoffSettings,
   humanInput: z.strictObject({
     expiresInSeconds: z.number().int().min(60).max(30 * 86_400).optional().openapi({ description: "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry" }),
     onExpire: z.enum(["close", "resume"]).optional().openapi({ description: "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues" }),
@@ -633,7 +625,6 @@ export const ConfigureInput = z.object({
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
   builtins: z.array(Builtin).max(8).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
   delegate: DelegateSettings.nullable().optional().openapi({ description: "Replaces who the agent may delegate to (with the delegate builtin); null removes it" }),
-  handoff: HandoffSettings.nullable().optional().openapi({ description: "Replaces who the agent may hand the conversation to (with the handoff builtin); null removes it" }),
 }).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
 
 const ChannelAccess = z.object({

@@ -100,7 +100,7 @@ see [Several processes, workers and deploys](tools.md#several-processes-workers-
 | `@function_tool` | `@tool` (TypeScript: `tool({ input, execute })`). Arguments are checked against the schema first. See [Tools](tools.md) |
 | Sessions (`SQLiteSession`, Redis…) | The agent's key. History is durable and compacted when it gets long; `agent.history()` reads it |
 | `output_type=Model` | `run(text, output=Model)`, `run.output` (`pip install "camelai-run[pydantic]"`). See [Structured output](structured-output.md) |
-| Handoffs (`handoffs=[billing_agent]`) | The `handoff` built-in: `handoff: { definitions: ["billing"] }` on the agent or its definition. The same agent and history go on under the target's instructions, model and tools. See [Multi-agent](multi-agent.md#handoffs-handoff) |
+| Handoffs | Not supported: camelRun has no handoffs. Delegate instead, or route in your code; see [Handoffs and multi-agent](#handoffs-and-multi-agent) |
 | `agent.as_tool()` | The `delegate` built-in: `delegate: { agents: ["researcher"] }`. The sub-agent's answer is the call's result; several calls run in parallel. See [Multi-agent](multi-agent.md#sub-agents-delegate) |
 | Input guardrails | Your code, before `run()`. With `createAgentHandler`, `onSend` can rewrite or refuse a message |
 | Output guardrails | Your code, on `run.text` or `run.output`, before you use it |
@@ -125,9 +125,8 @@ see [Several processes, workers and deploys](tools.md#several-processes-workers-
 | `Command(resume=…)` | `run.inputs[0].answer(value)` |
 | `graph.stream(…, stream_mode="messages")` | `agent.stream(text)`, or the agent's events |
 | `response_format`, `with_structured_output` | `run(text, output=Model)` |
-| Supervisor (`create_supervisor`) and subgraphs | A lead agent with the `delegate` built-in, each worker or subgraph a definition. See [Multi-agent](multi-agent.md#coming-from-langgraph) |
-| Swarm (`create_swarm`), handoff tools, `Command(goto=…)` | The `handoff` built-in: the active definition changes, the history is shared |
-| A custom `StateGraph` | Where the model decides, `delegate` and `handoff`; where your code decides, a sequence of runs, branching on `run.output`. There is no graph DSL; see below |
+| Supervisor (`create_supervisor`) and subgraphs | A lead agent with the `delegate` built-in, each worker or subgraph a definition. See [Multi-agent](multi-agent.md#coming-from-langgraph). A swarm (handoffs between agents) is not supported |
+| A custom `StateGraph` | Where the model decides, `delegate`; where your code decides, a sequence of runs, branching on `run.output`. There is no graph DSL; see below |
 | `Send` (map-reduce) | Parallel `delegate` calls in one response, or `asyncio.gather` over runs of several agents |
 | Long-term memory (`Store`) | Files. Mount a shared [volume](files.md#volumes) in several agents |
 | Time travel (`get_state_history`, replay from a checkpoint) | [Fork](../concepts.md#forking) the agent at an earlier message (`agent.fork({ atMessage })`): a new agent goes on from there. An agent cannot be rewound in place |
@@ -135,13 +134,14 @@ see [Several processes, workers and deploys](tools.md#several-processes-workers-
 
 ## Handoffs and multi-agent
 
-Both are built in, and the runtime runs them: see [Multi-agent](multi-agent.md)
-for everything below, with TypeScript.
+camelRun has no handoffs: an agent cannot pass its conversation to another
+agent, and there is no graph. Use one of these instead.
 
 **Delegate.** The agent hands a task to a sub-agent and gets its answer back as
 the call's result, while the conversation stays with it: the Agents SDK's
 `as_tool`, or a LangGraph supervisor. The sub-agent is an agent of its own, made
-from a definition for each call, and the parent's limits cover it.
+from a definition for each call, and the parent's limits cover it. See
+[Multi-agent](multi-agent.md).
 
 ```python
 await agents.runtime.upsert_definition("billing-specialist", name="Billing specialist",
@@ -154,23 +154,8 @@ Several `delegate` calls in one response run in parallel. To keep one
 specialist's history across calls, name an existing agent instead of a
 definition: `{"agent": f"billing-{user_id}"}`.
 
-**Handoff.** The agent hands the conversation itself to another definition: the
-same agent and history go on under the target's instructions, model and tools,
-from the next model request. The Agents SDK's `handoffs`, or a LangGraph swarm.
-
-```python
-await agents.runtime.upsert_definition("billing", name="Billing", systemPrompt="You handle refunds.")
-triage = await agents.runtime.upsert_definition("triage", name="Triage", systemPrompt="Hand billing questions to billing.",
-    handoff={"definitions": ["billing"]})
-agent = await agents.upsert("support-user-123", definition=triage["id"])
-run = await agent.run("I was charged twice.")  # run.handoffs: [{"from": "Triage", "to": "billing", ...}]
-```
-
-The next definition sees the whole conversation: there is no `input_filter`. The
-agent stays with it in later runs until it hands off again.
-
-**Route.** Your code picks the agent for each message, when the choice is yours
-rather than the model's. A small agent with structured output can make it:
+**Route.** Your code picks the agent for each message. A small agent with
+structured output can make the decision:
 
 ```python
 class Route(BaseModel):
@@ -180,6 +165,10 @@ router = await agents.upsert("router", instructions="Pick the team that should a
 team = (await router.run(message, output=Route)).output.team
 answer = await (await agents.upsert(f"{team}-user-123", instructions=PROMPTS[team])).run(message)
 ```
+
+What does not carry over: in a handoff, the receiving agent takes over the
+conversation and sees its history. In camelRun each agent has its own history,
+so pass what the other agent needs in the task or the message.
 
 ## Bringing conversations over
 

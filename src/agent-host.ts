@@ -50,9 +50,7 @@ export interface HostIO {
 }
 
 /** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
-const RERUN = ["delegate", "handoff"];
-/** What a handoff gives the agent (client-sessions.ts `handoff`): its new configuration, and the marker its system message carries. */
-type Handoff = Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits" | "apiKey"> & { tools: AgentConfig["tools"]; marker: Record<string, unknown> };
+const RERUN = ["delegate"];
 
 /** The latest assistant message's tool calls that have no result yet. */
 function openCalls(messages: AgentMessage[]): ToolCall[] {
@@ -98,8 +96,6 @@ export function createAgentHost(hostIO: HostIO) {
   let steers: { message: AgentMessage; whileRunning: boolean }[] = [];
   /** What the current run's final_output call gave, once the model made one that fit its schema. */
   let output: { value: unknown } | undefined;
-  /** A handoff the sessions recorded (`handoff`): the configuration the agent takes before its next model request. */
-  let handoff: Handoff | undefined;
   /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
   let rerun: ToolCall[] = [];
 
@@ -184,15 +180,6 @@ export function createAgentHost(hostIO: HostIO) {
       agent!.state.messages = [leadingSystemMessage(config, tools), ...messages.filter(message => message.role !== "system")];
       return;
     }
-    const change = configurationChange(messages, tools);
-    if (!change) return;
-    // Pi takes the change once it is written.
-    await declare(change, messages[0] as SystemMessage);
-    agent!.state.messages = [...messages, change];
-  }
-
-  /** The system message that brings `messages`' system messages to the configuration and `tools`, with `extra` fields; undefined when nothing changes. */
-  function configurationChange(messages: AgentMessage[], tools: Tool[], extra: Record<string, unknown> = {}): SystemMessage | undefined {
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     const current = getCurrentSystemMessage(messages)?.sections ?? {};
     const wanted = {
@@ -200,47 +187,19 @@ export function createAgentHost(hostIO: HostIO) {
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
-    if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length && !Object.keys(extra).length) return undefined;
-    return {
+    if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return;
+    const change: SystemMessage = {
       role: "system", content: "", timestamp: Date.now(), ...(Object.keys(sections).length ? { sections } : {}),
-      ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}), ...extra,
-    } as SystemMessage;
+      ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}),
+    };
+    // Pi takes the change once it is written.
+    await declare(change, messages[0] as SystemMessage);
+    agent!.state.messages = [...messages, change];
   }
 
   /**
-   * Take a recorded handoff's configuration (prompt, model, thinking level, tools; the agent's history stays) and return the
-   * system message that says so, marked `handoff`, for the caller to record: Pi before its next model request, or `takeHandoff`.
-   */
-  function applyHandoff(): SystemMessage | undefined {
-    const next = handoff;
-    if (!next) return undefined;
-    handoff = undefined;
-    config.systemPrompt = next.systemPrompt ?? undefined;
-    config.model = next.model;
-    agent!.state.model = next.model;
-    config.thinkingLevel = next.thinkingLevel;
-    agent!.state.thinkingLevel = next.thinkingLevel ?? "off";
-    config.fileTools = next.fileTools;
-    config.runLimits = next.runLimits;
-    if (next.apiKey !== undefined) config.apiKey = next.apiKey;
-    config.tools = next.tools;
-    // js_exec first, the new direct tools, and a run's final_output if it has one.
-    const kept = agent!.state.tools.find(tool => tool.name === OUTPUT_TOOL);
-    agent!.state.tools = [agent!.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools), ...(kept ? [kept] : [])];
-    return configurationChange(agent!.state.messages, agent!.state.tools.map(toToolDeclaration), { handoff: next.marker });
-  }
-
-  /** A handoff recorded while no turn could take it (the run ended first): its change is written before the next run starts. */
-  async function takeHandoff() {
-    const change = applyHandoff();
-    if (!change) return;
-    await declare(change, agent!.state.messages[0] as SystemMessage);
-    agent!.state.messages = [...agent!.state.messages, change];
-  }
-
-  /**
-   * Make again the calls a lost node left open that are safe to repeat (RERUN: delegate finds the child its call started, handoff
-   * finds it done), all at once as the model made them, and record their results in order.
+   * Make again the calls a lost node left open that are safe to repeat (RERUN: delegate finds the child its call started),
+   * all at once as the model made them, and record their results in order.
    */
   async function rerunOpenCalls(signal: AbortSignal) {
     const calls = rerun;
@@ -740,12 +699,6 @@ export function createAgentHost(hostIO: HostIO) {
           io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
           return { action: "end" };
         },
-        // A handoff made in this step takes effect before the next model request: its configuration, and its system message.
-        prepareNextTurnWithContext: turn => {
-          const change = applyHandoff();
-          if (!change) return undefined;
-          return { context: { ...turn.context, tools: agent!.state.tools }, messages: [change], model: config.model, thinkingLevel: config.thinkingLevel ?? "off" };
-        },
         sessionId: config.id,
         toolExecution: "parallel",
       });
@@ -813,8 +766,6 @@ export function createAgentHost(hostIO: HostIO) {
       return params.whileRunning === "steer" ? { steered: true } : { queued: true, running: busy };
     }
     if (method === "abort") { active?.abort(); agent.abort(); return { aborted: true }; }
-    // The sessions recorded a handoff during a tool call of the running turn: it applies before the next model request.
-    if (method === "handoff") { handoff = params as Handoff; return { pending: true }; }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
     if (transcript.failed !== undefined) throw new Error(`Session persistence failed: ${String(transcript.failed)}`);
@@ -828,7 +779,6 @@ export function createAgentHost(hostIO: HostIO) {
     output = undefined;
     active = new AbortController();
     try {
-      if (method !== "execute") await takeHandoff();
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
         const { returned: _returned, ...result } = await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });

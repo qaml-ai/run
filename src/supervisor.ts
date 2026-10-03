@@ -250,11 +250,10 @@ export class AgentSupervisor {
   unreserve(id: string) { this.reserved.delete(id); }
 
   /** A request to the agent's host: a client request's method, or one of the runtime's own reads of its history. */
-  async request(id: string, method: RequestMethod | "history" | "historyTail" | "handoff", params: any = {}, onEvent?: (event: any) => void) {
+  async request(id: string, method: RequestMethod | "history" | "historyTail", params: any = {}, onEvent?: (event: any) => void) {
     const handle = this.agents.get(id);
     if (!handle) throw new Error("Agent not found");
-    // A handoff (made during one of its turns) and a configuration both bring new tools.
-    const tools = (method === "configure" || method === "handoff") && params.tools !== undefined;
+    const tools = method === "configure" && params.tools !== undefined;
     if (tools) validateDefinitions(params.tools);
     if (method === "abort") this.cancelTools(handle);
     if (onEvent) handle.listeners.add(onEvent);
