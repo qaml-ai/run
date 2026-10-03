@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Agents, type StreamPart } from "../clients/node.ts";
-import { OPERATOR, runtime, toolCall, toolResults } from "./runtime-server.ts";
+import { watchAgent } from "../clients/watch.ts";
+import { OPERATOR, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
@@ -22,8 +23,16 @@ test("SDK: delegate settings on upsert bring their builtin; a run lists its chil
   assert.match(call.agentId!, /^client_/);
   assert.ok(run.usage);
 
+  // A browser's watcher follows the sub-agent too, under its delegate call.
+  const minted = (await r.call(`/v1/agents/${agent.id}/browser-tokens`, { body: {} })).json;
+  const watcher = watchAgent({ url: r.base, agentId: agent.id, token: minted.token, expiresAt: minted.expiresAt, subagents: true });
+  t.after(() => watcher.close());
+  await until(() => watcher.state.connected, "the watcher connected");
+
   const parts: StreamPart[] = [];
   for await (const part of agent.stream("again")) parts.push(part);
+  const followed = await until(() => [...watcher.state.subagents.values()].find(child => child.status === "completed"), "the watcher saw the sub-agent end");
+  assert.ok(followed.messages.some(message => message.role === "assistant" && JSON.stringify(message.content).includes("helped")));
   const start = parts.find(part => part.type === "subagent_start") as Extract<StreamPart, { type: "subagent_start" }>;
   const end = parts.find(part => part.type === "subagent_end") as Extract<StreamPart, { type: "subagent_end" }>;
   assert.ok(start && end, JSON.stringify(parts.map(part => part.type)));

@@ -1,5 +1,5 @@
 import { memo, useId, useState, type FormEvent } from "react";
-import type { ChatInput, InputAnswer, InputValue, ToolPart } from "@camelai/run/chat";
+import type { ChatInput, InputAnswer, InputValue, SubagentView, ToolPart } from "@camelai/run/chat";
 import { useAgent, useToolRendererFor } from "../index.tsx";
 import { useUI } from "./context.tsx";
 
@@ -44,12 +44,31 @@ export function ToolCard({ part }: { part: ToolPart }) {
           <pre><code>{code ?? pretty(part.args)}</code></pre>
         </div>
         {progress?.text && part.state !== "done" && <pre className="agent-chat__tool-output"><code>{clip(progress.text)}</code></pre>}
+        {part.subagent && <SubagentTranscript subagent={part.subagent} />}
         {part.result && (
           <div className="agent-chat__tool-section">
             <div className="agent-chat__tool-heading">{labels.result}</div>
             <pre><code>{clip(part.result.data !== undefined && typeof part.result.data === "object" ? pretty(part.result.data) : part.result.text)}</code></pre>
           </div>
         )}
+      </div>
+    </details>
+  );
+}
+
+/** A delegate call's sub-agent, collapsed: what it wrote and which tools it called, as it finishes each message. */
+function SubagentTranscript({ subagent }: { subagent: SubagentView }) {
+  const { labels } = useUI();
+  return (
+    <details className="agent-chat__tool agent-chat__subagent" data-state={subagent.status === "failed" ? "error" : subagent.status ? "done" : "running"}>
+      <summary><span className="agent-chat__tool-label">{labels.subagent(subagent.name, subagent.messages.length)}</span></summary>
+      <div className="agent-chat__tool-body">
+        {subagent.messages.map((message, index) => {
+          const blocks = Array.isArray(message.content) ? message.content as { type: string; text?: string; name?: string }[] : [{ type: "text", text: String(message.content) }];
+          const text = blocks.flatMap(block => block.type === "text" && block.text ? [block.text] : block.type === "toolCall" ? [`→ ${localName(block.name ?? "")}`] : []).join("\n");
+          return text ? <pre key={index} className="agent-chat__tool-output" data-role={message.role}><code>{clip(text)}</code></pre> : null;
+        })}
+        {subagent.error && <pre className="agent-chat__tool-output"><code>{subagent.error}</code></pre>}
       </div>
     </details>
   );

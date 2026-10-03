@@ -50,6 +50,20 @@ describe("<AgentChat>", () => {
     expect(screen.getByText("sales.csv").closest("a")!.getAttribute("href")).toBe("https://files.test/workspace/sales.csv");
   });
 
+  it("shows a delegate call's sub-agent as a collapsible transcript under its call", () => {
+    const chat = scripted();
+    render(<AgentChat chat={chat.chat} />);
+    const messages = [user("Research it", 1), assistant([{ type: "toolCall", id: "d1", name: "delegate", arguments: { agent: "researcher", task: "dig" } }], 2, { stopReason: "toolUse" })];
+    const working = { agentId: "client_child", name: "researcher", messages: [assistant([{ type: "toolCall", id: "w1", name: "web__search", arguments: {} }], 3, { stopReason: "toolUse" })] };
+    chat.show({ messages, running: true, subagents: new Map([["d1", working]]) }, "streaming");
+    expect(screen.getByText("Sub-agent researcher · 1 message")).toBeTruthy();
+    expect(screen.getByText("→ search")).toBeTruthy();
+    const done = { ...working, status: "completed" as const, messages: [...working.messages, assistant([{ type: "text", text: "Found three sources." }], 4)] };
+    chat.show({ messages: [...messages, toolResult("d1", JSON.stringify({ status: "completed", text: "Found three sources." }), 5)], subagents: new Map([["d1", done]]) });
+    expect(screen.getByText("Sub-agent researcher · 2 messages").closest("details")!.getAttribute("data-state")).toBe("done");
+    expect(screen.getByText("Found three sources.", { selector: "code" })).toBeTruthy();
+  });
+
   it("does not remount a sent message when the agent's copy arrives, nor the reply while it streams", () => {
     const chat = scripted();
     const mounts = new Map<string, number>();

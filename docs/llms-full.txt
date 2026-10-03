@@ -2725,6 +2725,12 @@ for await (const part of lead.stream("…")) {
 }
 ```
 
+In a browser, the watcher (`@camelai/run/watch`, with `subagents: true`) folds
+them into `state.subagents`, by delegate call, and a chat made with
+`watch: { subagents: true }` shows each sub-agent as a collapsible transcript
+under its call in `<AgentChat>` (`part.subagent` for a tool renderer of your own).
+A browser token that lists its `events` needs these types listed too.
+
 A sub-agent's events are relayed while it runs on the same node as its parent,
 which it does unless a node was lost; its own stream and history always have
 everything.

@@ -40,6 +40,8 @@ export interface Labels {
   toolWaiting: (name: string) => string;
   arguments: string;
   result: string;
+  /** A delegate call's sub-agent and how many messages it has finished. */
+  subagent: (name: string, messages: number) => string;
 }
 
 export const defaultLabels: Labels = {
@@ -79,6 +81,7 @@ export const defaultLabels: Labels = {
   toolWaiting: name => `${name} is waiting for you`,
   arguments: "Arguments",
   result: "Result",
+  subagent: (name, messages) => `Sub-agent ${name} · ${messages} message${messages === 1 ? "" : "s"}`,
 };
 
 /** Parts of the chat you can replace with your own components. */

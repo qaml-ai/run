@@ -40,7 +40,11 @@ export interface WatchOptions {
   /** Close the stream while the page is hidden, after this long (default 30 s; 0: never). */
   hiddenGraceMs?: number;
   fetch?: typeof fetch;
+  /** Also follow the agent's sub-agents (its delegate calls' children): `state.subagents`. */
+  subagents?: boolean;
 }
+/** A sub-agent a delegate call started, as its relayed events tell it: its finished messages, and how it ended. */
+export interface SubagentView { agentId: string; name: string; messages: Message[]; status?: "completed" | "input_required" | "failed"; error?: string }
 /** What a watcher knows of its agent. */
 export interface AgentView {
   /**
@@ -53,6 +57,8 @@ export interface AgentView {
   partial: AssistantMessage | null;
   /** The latest progress of each tool call still running, by tool call id. */
   progress: Map<string, unknown>;
+  /** With `subagents`: each delegate call's sub-agent, by the call's id. */
+  subagents: Map<string, SubagentView>;
   /** Whether a turn runs. */
   running: boolean;
   /** Human input the agent waits on. */
@@ -184,7 +190,7 @@ export function watchAgent(options: WatchOptions): Watcher {
   let token = options.token, expiresAt = options.expiresAt;
   const closed = new AbortController();
   const messages = new Map<number, Message>();
-  const state: AgentView = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: false, expired: false };
+  const state: AgentView = { messages: [], indexes: [], partial: null, progress: new Map(), subagents: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: false, expired: false };
   /** Where the page older than those held ends (its `before`); null: there is none; undefined: no page yet. */
   let before: number | null | undefined;
   /** The index the next finished message takes, once the stream has said (a run's start, or a snapshot). */
@@ -309,13 +315,25 @@ export function watchAgent(options: WatchOptions): Watcher {
       case "tool_execution_end": state.progress.delete(event.toolCallId); break;
       case "input_required": state.pendingInputs = [...state.pendingInputs.filter(input => input.id !== event.input.id), event.input]; break;
       case "input_resolved": state.pendingInputs = state.pendingInputs.filter(input => input.id !== event.id); break;
+      // A sub-agent's messages as it finishes them, under its delegate call; each change is a new view and map.
+      case "subagent_start": state.subagents = new Map(state.subagents).set(event.toolCallId, { agentId: event.agentId, name: event.name, messages: [] }); break;
+      case "subagent_event": {
+        const child = state.subagents.get(event.toolCallId);
+        if (child && event.event?.type === "message_end") state.subagents = new Map(state.subagents).set(event.toolCallId, { ...child, messages: [...child.messages, event.event.message] });
+        break;
+      }
+      case "subagent_end": {
+        const child = state.subagents.get(event.toolCallId);
+        if (child) state.subagents = new Map(state.subagents).set(event.toolCallId, { ...child, status: event.status, ...(event.error ? { error: event.error } : {}) });
+        break;
+      }
     }
     options.onEvent?.(event);
   }
 
   /** One SSE stream until it ends; true when it delivered anything (so streams work here). */
   async function sse(signal: AbortSignal): Promise<boolean> {
-    const response = await get("/events?snapshot=1", { headers: { Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) } }, signal);
+    const response = await get(`/events?snapshot=1${options.subagents ? "&subagents=1" : ""}`, { headers: { Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) } }, signal);
     if (!response.ok || !response.body) throw Object.assign(new Error(`events: HTTP ${response.status}`), { status: response.status });
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -346,7 +364,7 @@ export function watchAgent(options: WatchOptions): Watcher {
 
   /** One long poll. */
   async function poll(signal: AbortSignal) {
-    const response = await get("/events?poll=1&wait=25&snapshot=1", { headers: cursor ? { "Last-Event-ID": String(cursor) } : {} }, signal);
+    const response = await get(`/events?poll=1&wait=25&snapshot=1${options.subagents ? "&subagents=1" : ""}`, { headers: cursor ? { "Last-Event-ID": String(cursor) } : {} }, signal);
     if (!response.ok) throw Object.assign(new Error(`events: HTTP ${response.status}`), { status: response.status });
     const answer = await response.json() as { cursor: number; events: { id: number; data: unknown }[] };
     state.connected = true;

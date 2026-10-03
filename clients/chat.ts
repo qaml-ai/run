@@ -11,10 +11,10 @@
  * snapshot to the next, so a UI re-renders only what changed (and keys rows by `id`: a sent message
  * keeps its id when the agent's copy of it arrives).
  */
-import { watchAgent, type AgentView, type Watcher, type WatchOptions } from "./watch.ts";
+import { watchAgent, type AgentView, type SubagentView, type Watcher, type WatchOptions } from "./watch.ts";
 import type { AgentInput, Sender } from "./typescript.ts";
 import type { AgentEvent, AssistantMessage, ImageContent, Message, TextContent, ToolResultMessage } from "./types.ts";
-export type { AgentInput, Sender };
+export type { AgentInput, Sender, SubagentView };
 
 export type ChatStatus = "connecting" | "ready" | "submitted" | "streaming" | "input_required" | "error";
 
@@ -41,6 +41,8 @@ export interface ToolPart {
   progress?: ToolProgress;
   /** What the call waits on from a person, while `input_required`. */
   input?: ChatInput;
+  /** A delegate call's sub-agent as it works, when the chat follows sub-agents (`watch: { subagents: true }`). */
+  subagent?: SubagentView;
 }
 export type UserPart = TextPart | ImagePart;
 export type AssistantPart = TextPart | ReasoningPart | ToolPart | FilePart;
@@ -98,8 +100,8 @@ export interface AgentChatOptions {
   whileRunning?: "queue" | "steer";
   /** Connect at once (default true). false: call `connect()` (a React provider does, in an effect). */
   autoConnect?: boolean;
-  /** Passed to the watcher: `transport`, `pageSize`, `hiddenGraceMs`, `stallMs`. */
-  watch?: Pick<WatchOptions, "transport" | "pageSize" | "hiddenGraceMs" | "stallMs">;
+  /** Passed to the watcher: `transport`, `pageSize`, `hiddenGraceMs`, `stallMs`, and `subagents` (each delegate call's sub-agent as `part.subagent`). */
+  watch?: Pick<WatchOptions, "transport" | "pageSize" | "hiddenGraceMs" | "stallMs" | "subagents">;
   /** Every event of the agent's stream, as it arrives. */
   onEvent?: (event: AgentEvent) => void;
   onError?: (error: ChatError) => void;
@@ -180,6 +182,8 @@ export interface ProjectInput {
   indexes: readonly number[];
   partial: AssistantMessage | null;
   progress?: ReadonlyMap<string, unknown>;
+  /** Delegate calls' sub-agents, by call id. */
+  subagents?: ReadonlyMap<string, SubagentView>;
   running: boolean;
   inputs?: readonly ChatInput[];
   local?: readonly LocalSend[];
@@ -321,7 +325,7 @@ export function projectMessages(input: ProjectInput, memo: ProjectMemo = new Map
     for (const assistant of [...group.assistants, ...(partial ? [partial] : [])]) {
       for (const block of assistant.content as Block[]) {
         if (block?.type !== "toolCall") continue;
-        sources.push(results.get(block.id), inputs.get(block.id), input.progress?.get(block.id));
+        sources.push(results.get(block.id), inputs.get(block.id), input.progress?.get(block.id), input.subagents?.get(block.id));
         if (isPresentFile(block.name) && typeof block.arguments?.path === "string") sources.push(input.files?.get(block.arguments.path as string));
       }
     }
@@ -355,7 +359,11 @@ export function projectMessages(input: ProjectInput, memo: ProjectMemo = new Map
               parts.push(remember(`${id}:${callId}:file`, [block, result, url], () => fileAt(callId, args, result, url)));
               return;
             }
-            parts.push(remember(`${id}:${callId}`, [block, result, pending, progress, writing], () => toolAt(callId, name, args, result, pending, progress, writing)));
+            const subagent = input.subagents?.get(callId);
+            parts.push(remember(`${id}:${callId}`, [block, result, pending, progress, writing, subagent], () => {
+              const part = toolAt(callId, name, args, result, pending, progress, writing);
+              return subagent ? { ...part, subagent } : part;
+            }));
           }
         });
       }
@@ -507,7 +515,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
     for (const [path, link] of files) if (!link.expiresAt || link.expiresAt > now + 30_000) links.set(path, link.url);
     if (links.size !== fileUrls.size || [...links].some(([path, url]) => fileUrls.get(path) !== url)) fileUrls = links;
     const messages = projectMessages({
-      messages: view?.messages ?? [], indexes: view?.indexes ?? [], partial: view?.partial ?? null, progress: view?.progress,
+      messages: view?.messages ?? [], indexes: view?.indexes ?? [], partial: view?.partial ?? null, progress: view?.progress, subagents: view?.subagents,
       running: view?.running ?? false, inputs: stableInputs, local, files: fileUrls,
     }, memo);
     const waiting = local.some(send => send.status !== "failed");
