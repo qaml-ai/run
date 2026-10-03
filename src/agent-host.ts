@@ -326,8 +326,8 @@ export function createAgentHost(hostIO: HostIO) {
           }
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
-            if (value.isError === true) throw new Error(value.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") || "Tool execution failed");
-            return { ...value, content: await capped(toolCallId, value.content) };
+            // A failed call (an MCP tool's isError, an OpenAPI operation's HTTP error) is an error result that keeps its content and details.
+            return { ...value, content: await capped(toolCallId, value.content), isError: value.isError === true };
           }
           return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]), details: value };
         },

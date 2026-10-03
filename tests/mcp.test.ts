@@ -24,7 +24,7 @@ async function mcpServer(t: T, token = "s3cret") {
     const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
     server.registerTool("echo", { description: "Echo some text", inputSchema: { text: z.string() } }, async ({ text: value }) => { seen.calls.push(`echo:${value}`); return text(`echo: ${value}`); });
     server.registerTool("picture", { description: "A tiny picture" }, async () => ({ content: [{ type: "text", text: "a dot" }, { type: "image", data: PNG, mimeType: "image/png" }] }));
-    server.registerTool("fail", { description: "Always fails" }, async () => ({ isError: true, content: [{ type: "text", text: "it broke" }] }));
+    server.registerTool("fail", { description: "Always fails" }, async () => ({ isError: true, content: [{ type: "text", text: "it broke" }, { type: "image", data: PNG, mimeType: "image/png" }], structuredContent: { reason: "broken" } }));
     server.registerTool("hidden.tool", { description: "Denied by the definition" }, async () => text("should not be called"));
     if (later.added) addLater(server);
     servers.push(server);
@@ -88,6 +88,11 @@ test("an MCP server's tools reach the model and js_exec; its credentials are sea
   assert.ok(JSON.stringify(r.model.bodies[4].messages).includes(`data:image/png;base64,${PNG}`), "the image reaches the model");
   assert.match(toolResults(r.model.bodies[4]).at(-2), /\[File \/workspace\/tool-outputs\/kb__picture\/[a-f0-9]{8}\/image-1\.png \(image\/png/, "and is saved to the workspace");
   assert.match(toolResults(r.model.bodies[4]).at(-1), /it broke/);
+  // A failed call returned, not thrown, is an error result that keeps what the tool gave: its image and structured content.
+  const failed = (await r.call(`/v1/agents/${agent.id}/history`)).json.messages.find((message: any) => message.role === "toolResult" && message.toolName === "kb__fail");
+  assert.equal(failed.isError, true);
+  assert.deepEqual(failed.details, { reason: "broken" });
+  assert.ok(failed.content.some((part: any) => part.type === "file" && part.contentType === "image/png") || failed.content.some((part: any) => part.type === "image"), JSON.stringify(failed.content));
   assert.match(toolResults(r.model.bodies[5]).at(-1), /Validation failed[\s\S]*required properties text/, "arguments are checked against the server's schema before it is called");
   assert.deepEqual(mcp.seen.calls, ["echo:hi", "echo:from code"]);
   assert.deepEqual([...mcp.seen.authorizations], ["Bearer s3cret"]);
