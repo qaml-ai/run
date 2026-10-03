@@ -52,6 +52,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
+import type { RequestRecord } from "../shared/client-protocol.ts";
 import type { HistoryPage } from "./history-pages.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
@@ -65,6 +66,7 @@ import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { builtinsInput, builtinWarnings } from "./builtins.ts";
+import { multiAgentInput } from "./multi-agent.ts";
 import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
@@ -267,12 +269,15 @@ webhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 // Idempotency keys' answers are kept a day.
 setInterval(() => void expireIdempotencyKeys(db).catch(error => console.error(JSON.stringify({ type: "idempotency_expiry_failed", error: errorText(error) }))), 60 * 60_000).unref();
 
-/** Provision an agent for `tenant` (POST /v1/agents), recording how long each step took (`create_timing`). */
-async function createAgent(tenant: string, params: any, key?: string) {
+/**
+ * Provision an agent for `tenant` (POST /v1/agents), recording how long each step took (`create_timing`). `parent` is the run
+ * that made it with a delegate call: the runtime's own, never a caller's.
+ */
+async function createAgent(tenant: string, params: any, key?: string, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }) {
   const steps = new Steps();
   const made: { agent?: string; upsert: boolean } = { upsert: false };
   try {
-    const result = await provisionAgent(tenant, params, key, steps, made);
+    const result = await provisionAgent(tenant, params, key, steps, made, parent);
     recordCreate(steps, { tenant, ...made });
     return result;
   } catch (error) {
@@ -281,17 +286,19 @@ async function createAgent(tenant: string, params: any, key?: string) {
   }
 }
 
-async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }) {
+async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
-  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, ...rest } = params ?? {};
+  const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, delegate: delegating, handoff: handing, ...rest } = params ?? {};
   // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
   const mcpTools = params?.mcp?.tools;
   // Who the agent acts for, and context for its tool servers' identity tokens.
   const identity = identityInput(params ?? {});
   if (keyScope !== undefined) checkScope(keyScope);
   // An agent's own built-in tools; one made from a definition has its definition's.
-  if (asked !== undefined && params.definition !== undefined) throw new HttpError(400, "builtins come from the definition; change them there");
+  if ((asked !== undefined || delegating !== undefined || handing !== undefined) && params.definition !== undefined) throw new HttpError(400, "builtins come from the definition; change them there");
   const builtins = asked === undefined ? undefined : builtinsInput(asked);
+  // delegate and handoff, with their builtins: who the agent may delegate to, and hand a conversation to.
+  const { delegate, handoff } = multiAgentInput(builtins, { delegate: delegating, handoff: handing });
   const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
   const modelHeaders = headers === undefined ? null : modelHeadersInput(headers);
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
@@ -310,7 +317,7 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
   const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-    { keyScope, spendLimit, builtins, ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) }, steps);
+    { keyScope, spendLimit, builtins, delegate, handoff, ...(parent ? { parent } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) }, steps);
   outcome.agent = made_.id;
   outcome.upsert = !!reconfigure;
   const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
@@ -368,11 +375,11 @@ async function route(url = ""): Promise<{ node: string; actor?: string } | undef
 const internalSignature = (timestamp: string, path: string, body: string) =>
   createHmac("sha256", sessionSecret!).update(`internal:${timestamp}:${path}:${createHash("sha256").update(body).digest("hex")}`).digest("hex");
 
-function signedPost(owner: string, path: string, payload: unknown, timeoutMs = 15_000) {
+function signedPost(owner: string, path: string, payload: unknown, timeoutMs = 15_000, signal?: AbortSignal) {
   const body = JSON.stringify(payload);
   const timestamp = String(Date.now());
   return fetch(new URL(path, owner), {
-    method: "POST", body, signal: AbortSignal.timeout(timeoutMs),
+    method: "POST", body, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     headers: { "Content-Type": "application/json", "x-agent-runtime-internal": `${timestamp}.${internalSignature(timestamp, path, body)}` },
   });
 }
@@ -399,6 +406,19 @@ async function submitAnywhere(agent: string, tenant: string, request: { id: stri
     throw new HttpError(response.status, error ?? `Owner rejected the request: HTTP ${response.status}`, code, Object.keys(details).length ? details : undefined);
   }
   return response.json();
+}
+
+/** One of an agent's requests once it settles or `waitMs` passes (`awaitRequest`), wherever the agent is served: here, or on the node that owns it. */
+async function requestAnywhere(agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal): Promise<RequestRecord | undefined> {
+  const owner = await clients.ownerElsewhere(agent);
+  if (!owner) return clients.awaitRequest(agent, tenant, requestId, waitMs, signal);
+  const response = await signedPost(owner, `/internal/agents/${agent}/request`, { tenant, requestId, waitMs }, waitMs + 15_000, signal).catch(error => { ownership.forget(agent); throw error; });
+  if (!response.ok) {
+    ownership.forget(agent);
+    const { error, code } = await response.json().catch(() => ({})) as { error?: string; code?: string };
+    throw new HttpError(response.status, error ?? `Owner could not read the request: HTTP ${response.status}`, code);
+  }
+  return (await response.json() as { record: RequestRecord | null }).record ?? undefined;
 }
 
 /** Delete an agent wherever it is served: here, or on the node that owns it. */
@@ -541,11 +561,14 @@ const clients = new ClientSessions(supervisor, {
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
     const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
-    return { id, revision, config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, runLimits: spec.runLimits ?? null }, sources: sources(spec) };
+    return { id, revision, ...(spec.description ? { description: spec.description } : {}), config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, runLimits: spec.runLimits ?? null }, sources: sources(spec) };
   },
   sources: toolSources,
   inputs,
   submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
+  // The delegate builtin's children: agents made as POST /v1/agents makes them, and their requests waited on wherever they run.
+  createAgent: (tenant, params, key, parent) => createAgent(tenant, params, key, parent) as Promise<{ id: string }>,
+  requestAnywhere: (agent, tenant, requestId, waitMs, signal) => requestAnywhere(agent, tenant, requestId, waitMs, signal),
 });
 // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
 // A tenant's webhook endpoints changed on some node: read them again at its next run.
@@ -742,6 +765,20 @@ app.post("/internal/agents/:id{client_[a-f0-9]{40}}/requests", async c => {
     return c.json(await clients.submit(c.req.param("id"), tenant, request), 202);
   } catch (error) {
     return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode);
+  }
+});
+app.post("/internal/agents/:id{client_[a-f0-9]{40}}/request", async c => {
+  let body: string | undefined;
+  try { body = await signedBody(c); } catch { return c.body(null, 413); }
+  if (body === undefined) return c.body(null, 401);
+  try {
+    const { tenant, requestId, waitMs } = JSON.parse(body);
+    // The asking node's connection closing ends the wait.
+    const closed = new AbortController();
+    c.env.outgoing.once("close", () => closed.abort());
+    return c.json({ record: await clients.awaitRequest(c.req.param("id"), tenant, String(requestId), Number(waitMs) || 0, closed.signal) ?? null });
+  } catch (error) {
+    return c.json({ error: errorText(error), code: errorCode(error, errorStatus(error, 400)) }, errorStatus(error, 400) as ContentfulStatusCode);
   }
 });
 app.post("/internal/agents/:id{client_[a-f0-9]{40}}/delete", async c => {

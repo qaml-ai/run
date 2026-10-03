@@ -49,6 +49,22 @@ export interface HostIO {
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
 
+/** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
+const RERUN = ["delegate", "handoff"];
+/** What a handoff gives the agent (client-sessions.ts `handoff`): its new configuration, and the marker its system message carries. */
+type Handoff = Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits" | "apiKey"> & { tools: AgentConfig["tools"]; marker: Record<string, unknown> };
+
+/** The latest assistant message's tool calls that have no result yet. */
+function openCalls(messages: AgentMessage[]): ToolCall[] {
+  const open = new Map<string, ToolCall>();
+  for (const message of messages) {
+    if (message.role === "assistant") { open.clear(); for (const part of message.content) if (part.type === "toolCall") open.set(part.id, part); }
+    else if (message.role === "toolResult") open.delete(message.toolCallId);
+    else if (message.role === "user") open.clear();
+  }
+  return [...open.values()];
+}
+
 /**
  * One agent: its Pi loop, working-set transcript, compaction and retries. It runs
  * in its own process (agent-child.ts) or inline in a worker hosting many agents.
@@ -82,6 +98,10 @@ export function createAgentHost(hostIO: HostIO) {
   let steers: { message: AgentMessage; whileRunning: boolean }[] = [];
   /** What the current run's final_output call gave, once the model made one that fit its schema. */
   let output: { value: unknown } | undefined;
+  /** A handoff the sessions recorded (`handoff`): the configuration the agent takes before its next model request. */
+  let handoff: Handoff | undefined;
+  /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
+  let rerun: ToolCall[] = [];
 
   /**
    * Add what the history index lacks to it, in the background. Like the log's own segments, chunks
@@ -164,6 +184,15 @@ export function createAgentHost(hostIO: HostIO) {
       agent!.state.messages = [leadingSystemMessage(config, tools), ...messages.filter(message => message.role !== "system")];
       return;
     }
+    const change = configurationChange(messages, tools);
+    if (!change) return;
+    // Pi takes the change once it is written.
+    await declare(change, messages[0] as SystemMessage);
+    agent!.state.messages = [...messages, change];
+  }
+
+  /** The system message that brings `messages`' system messages to the configuration and `tools`, with `extra` fields; undefined when nothing changes. */
+  function configurationChange(messages: AgentMessage[], tools: Tool[], extra: Record<string, unknown> = {}): SystemMessage | undefined {
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     const current = getCurrentSystemMessage(messages)?.sections ?? {};
     const wanted = {
@@ -171,14 +200,67 @@ export function createAgentHost(hostIO: HostIO) {
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
-    if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return;
-    const change: SystemMessage = {
+    if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length && !Object.keys(extra).length) return undefined;
+    return {
       role: "system", content: "", timestamp: Date.now(), ...(Object.keys(sections).length ? { sections } : {}),
-      ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}),
-    };
-    // Pi takes the change once it is written.
-    await declare(change, messages[0] as SystemMessage);
-    agent!.state.messages = [...messages, change];
+      ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}), ...extra,
+    } as SystemMessage;
+  }
+
+  /**
+   * Take a recorded handoff's configuration (prompt, model, thinking level, tools; the agent's history stays) and return the
+   * system message that says so, marked `handoff`, for the caller to record: Pi before its next model request, or `takeHandoff`.
+   */
+  function applyHandoff(): SystemMessage | undefined {
+    const next = handoff;
+    if (!next) return undefined;
+    handoff = undefined;
+    config.systemPrompt = next.systemPrompt ?? undefined;
+    config.model = next.model;
+    agent!.state.model = next.model;
+    config.thinkingLevel = next.thinkingLevel;
+    agent!.state.thinkingLevel = next.thinkingLevel ?? "off";
+    config.fileTools = next.fileTools;
+    config.runLimits = next.runLimits;
+    if (next.apiKey !== undefined) config.apiKey = next.apiKey;
+    config.tools = next.tools;
+    // js_exec first, the new direct tools, and a run's final_output if it has one.
+    const kept = agent!.state.tools.find(tool => tool.name === OUTPUT_TOOL);
+    agent!.state.tools = [agent!.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools), ...(kept ? [kept] : [])];
+    return configurationChange(agent!.state.messages, agent!.state.tools.map(toToolDeclaration), { handoff: next.marker });
+  }
+
+  /** A handoff recorded while no turn could take it (the run ended first): its change is written before the next run starts. */
+  async function takeHandoff() {
+    const change = applyHandoff();
+    if (!change) return;
+    await declare(change, agent!.state.messages[0] as SystemMessage);
+    agent!.state.messages = [...agent!.state.messages, change];
+  }
+
+  /**
+   * Make again the calls a lost node left open that are safe to repeat (RERUN: delegate finds the child its call started, handoff
+   * finds it done), all at once as the model made them, and record their results in order.
+   */
+  async function rerunOpenCalls(signal: AbortSignal) {
+    const calls = rerun;
+    rerun = [];
+    if (!calls.length) return;
+    for (const call of calls) io.emit({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: call.arguments });
+    const results = await Promise.all(calls.map(async (call): Promise<Settled> => {
+      const tool = agent!.state.tools.find(entry => entry.name === call.name);
+      try {
+        if (!tool) throw new Error(`${call.name} is no longer available to this agent`);
+        return await tool.execute(call.id, validateToolArguments(tool, call), signal) as Settled;
+      } catch (error) { return { content: [{ type: "text", text: errorText(error) }], isError: true }; }
+    }));
+    for (const [index, call] of calls.entries()) {
+      const result = results[index];
+      io.emit({ type: "tool_execution_end", toolCallId: call.id, toolName: call.name, result, isError: !!result.isError });
+      const message = { role: "toolResult", toolCallId: call.id, toolName: call.name, content: result.content, ...(result.details !== undefined ? { details: result.details } : {}), isError: !!result.isError, timestamp: Date.now() } as AgentMessage;
+      await transcript.push(message);
+      io.emit({ type: "message_end", message });
+    }
   }
 
   /** Whether each model call asks the supervisor for its credentials. */
@@ -570,11 +652,14 @@ export function createAgentHost(hostIO: HostIO) {
       } else if (transcript.active && config.resume) {
         // A response cut off when its node stopped is not history; the model is asked again.
         for (let last = transcript.context.at(-1); last?.role === "assistant" && ["aborted", "error"].includes(last.stopReason) && transcript.total > transcript.turnStart; last = transcript.context.at(-1)) await transcript.retract();
-        // Answer tool calls whose outcome was lost as unknown, never by running them again.
-        await transcript.append(interruptedTurnRepairs(transcript.context, false));
+        // Answer tool calls whose outcome was lost as unknown, never by running them again; but for calls keyed by the call
+        // itself (a delegate call finds the child it started, and collects its answer), made again as the turn continues.
+        rerun = openCalls(transcript.context).filter(call => RERUN.includes(call.name));
+        await transcript.append(interruptedTurnRepairs(transcript.context, false, rerun.map(call => call.id)));
         const last = transcript.context.at(-1);
+        if (rerun.length) resume = { continue: true };
         // At a step boundary the model is simply called again; a final answer (final_output's, too) means the turn had ended.
-        if (last?.role === "toolResult" && last.toolName === OUTPUT_TOOL && !last.isError && transcript.total > transcript.turnStart) {
+        else if (last?.role === "toolResult" && last.toolName === OUTPUT_TOOL && !last.isError && transcript.total > transcript.turnStart) {
           const said = transcript.context.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
           resume = { finished: { messages: transcript.total, ...answer(said), output: (last.details as { output?: unknown } | undefined)?.output } };
           await transcript.setActive(false);
@@ -655,6 +740,12 @@ export function createAgentHost(hostIO: HostIO) {
           io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
           return { action: "end" };
         },
+        // A handoff made in this step takes effect before the next model request: its configuration, and its system message.
+        prepareNextTurnWithContext: turn => {
+          const change = applyHandoff();
+          if (!change) return undefined;
+          return { context: { ...turn.context, tools: agent!.state.tools }, messages: [change], model: config.model, thinkingLevel: config.thinkingLevel ?? "off" };
+        },
         sessionId: config.id,
         toolExecution: "parallel",
       });
@@ -722,6 +813,8 @@ export function createAgentHost(hostIO: HostIO) {
       return params.whileRunning === "steer" ? { steered: true } : { queued: true, running: busy };
     }
     if (method === "abort") { active?.abort(); agent.abort(); return { aborted: true }; }
+    // The sessions recorded a handoff during a tool call of the running turn: it applies before the next model request.
+    if (method === "handoff") { handoff = params as Handoff; return { pending: true }; }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
     if (transcript.failed !== undefined) throw new Error(`Session persistence failed: ${String(transcript.failed)}`);
@@ -735,6 +828,7 @@ export function createAgentHost(hostIO: HostIO) {
     output = undefined;
     active = new AbortController();
     try {
+      if (method !== "execute") await takeHandoff();
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
         const { returned: _returned, ...result } = await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
@@ -754,7 +848,13 @@ export function createAgentHost(hostIO: HostIO) {
         }
         agent.state.messages = stateMessages();
         await agent.continue();
-      } else if (method === "continue") await agent.continue();
+      } else if (method === "continue") {
+        if (rerun.length) {
+          await rerunOpenCalls(active.signal);
+          agent.state.messages = stateMessages();
+        }
+        await agent.continue();
+      }
       else {
         // A new message supersedes calls still waiting on input: each is closed first, so the model sees why.
         if (transcript.awaiting.length) {

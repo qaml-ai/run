@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, getCurrentSystemMessage, getCurrentTools, getSystemMessageText, type AssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { createAgentHost, type HostIO } from "../src/agent-host.ts";
 import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
@@ -25,14 +25,15 @@ async function setup(t: Context) {
   const tools: ToolDefinition[] = [
     { name: "lookup", description: "Look something up", parameters: { type: "object" }, exposure: "direct" },
     { name: "approve", description: "Needs a person", parameters: { type: "object" }, exposure: "direct" },
+    { name: "delegate", description: "A sub-agent", parameters: { type: "object" }, exposure: "direct" },
   ];
   /** A host over the transcript file, as a node starting the agent: `call` answers its tools. */
-  async function start(options: { resume?: boolean; call?: (name: string) => unknown; log?: AppendLog<TranscriptRecord>; initialMessages?: AgentMessage[] } = {}) {
+  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; log?: AppendLog<TranscriptRecord>; initialMessages?: AgentMessage[] } = {}) {
     const events: any[] = [];
     const log = options.log ?? fileAppendLog<TranscriptRecord>(path);
     const io: HostIO = {
       emit: event => events.push(event),
-      tool: async name => (options.call ?? (() => "found"))(name),
+      tool: async name => (options.call ?? (() => "found"))(name, host),
       cancelTools: async () => null,
       runLimit: async () => undefined,
       transcript: log,
@@ -190,4 +191,48 @@ test("the leading system message and a change after it are one commit", async t 
   await host.handle("configure", { systemPrompt: "New rules" });
   const declared = flushes.find(batch => batch.some(record => record.t === "system"))!;
   assert.deepEqual(declared.map(record => record.t === "system" && (record.leading ? "leading" : "change")), ["leading", "change"]);
+});
+
+test("resume: a lost delegate call is made again (it finds the child its call started), while other open calls are closed as unknown", async t => {
+  const fake = await setup(t);
+  await fake.crashedTurn([user("research both"), answer([fauxToolCall("lookup", {}, { id: "look" }), fauxToolCall("delegate", { task: "dig" }, { id: "dig" })], "toolUse")]);
+  const calls: string[] = [];
+  const { host, init } = await fake.start({ resume: true, call: name => { calls.push(name); return { agentId: "client_child", status: "completed", text: "the child's answer" }; } });
+  assert.deepEqual(init.resume, { continue: true });
+  const repaired = await fake.history();
+  assert.deepEqual(repaired.context.filter(message => message.role === "toolResult").map(message => (message as { toolCallId: string }).toolCallId), ["look"], "only the lookup is closed");
+  fake.respond(answer("Both done."));
+  const run = await host.handle("continue", {});
+  assert.equal(run.reply, "Both done.");
+  assert.deepEqual(calls, ["delegate"], "the delegate call ran again; the lookup did not");
+  const results = (await fake.history()).context.filter(message => message.role === "toolResult") as { toolCallId: string; content: { text: string }[] }[];
+  assert.deepEqual(results.map(message => message.toolCallId), ["look", "dig"]);
+  assert.match(results[1].content[0].text, /the child's answer/);
+});
+
+test("a handoff recorded during a turn applies before its next model request: prompt, tools and a marked system message, durably", async t => {
+  const fake = await setup(t);
+  let seen: { system: string; tools: string[] } | undefined;
+  fake.respond(
+    answer(fauxToolCall("lookup", {}, { id: "pass" }), "toolUse"),
+    context => {
+      seen = { system: getSystemMessageText(getCurrentSystemMessage(context.messages)!), tools: getCurrentTools(context.messages).map(tool => tool.name) };
+      return answer("Billing here.");
+    },
+  );
+  const { host } = await fake.start({ call: async (_name, running) => {
+    // The sessions answer a handoff call by recording it with the host, then answering the call.
+    await running.handle("handoff", { model: fake.faux.getModel(), systemPrompt: "You are BILLING.", thinkingLevel: "off", tools: [{ name: "refund", description: "Refund an order", parameters: { type: "object" }, exposure: "direct" }], marker: { from: "triage", to: "billing" } });
+    return { handedOff: true };
+  } });
+  const run = await host.handle("prompt", { text: "refund please" });
+  assert.equal(run.reply, "Billing here.");
+  assert.match(seen!.system, /You are BILLING\./);
+  assert.ok(seen!.tools.includes("refund") && !seen!.tools.includes("lookup"), "billing's tools replaced triage's");
+  // The change is in the transcript, marked, after the call's result: another node loading the agent has it.
+  const after = await fake.history();
+  const view = after.view();
+  const marked = view.findIndex(message => message.role === "system" && (message as { handoff?: { to: string } }).handoff?.to === "billing");
+  assert.ok(marked > view.findIndex(message => message.role === "toolResult"), "after the handoff call's result");
+  assert.match(JSON.stringify(view[marked]), /You are BILLING/);
 });

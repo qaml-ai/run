@@ -1579,6 +1579,10 @@
               "after"
             ],
             "description": "Loads of its unfinished work that failed, or found no room, and when the next may be tried: put off, doubling, at most an hour apart, never for good"
+          },
+          "parentAgentId": {
+            "type": "string",
+            "description": "For a child a delegate call made: the agent whose run made it"
           }
         },
         "required": [
@@ -1788,7 +1792,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?}, without arguments or results. result.output is a structured answer, for a prompt sent with output"
+        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.handoffs lists the run's handoffs ({from, to, definition, toolCallId}), and result.usage.subagentCostUsd what its children spent"
       },
       "AgentInput": {
         "type": "object",
@@ -1865,7 +1869,13 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
+            "description": "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, handoff), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
+          },
+          "delegate": {
+            "$ref": "#/components/schemas/DelegateSettings"
+          },
+          "handoff": {
+            "$ref": "#/components/schemas/HandoffSettings"
           },
           "keyScope": {
             "type": "string",
@@ -1924,8 +1934,98 @@
           "web_fetch",
           "web_search",
           "schedule",
-          "ask_user"
+          "ask_user",
+          "delegate",
+          "handoff"
         ]
+      },
+      "DelegateSettings": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentTarget"
+            },
+            "maxItems": 32,
+            "description": "Who the model may delegate to: definitions (a new child agent for each call) and existing agents by key"
+          },
+          "instructions": {
+            "type": "boolean",
+            "description": "Let the model start a child with instructions of its own instead, on its own model"
+          },
+          "maxDepth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "How deep delegation may go: a child is depth 1, its child depth 2. Default 2"
+          },
+          "maxParallel": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16,
+            "description": "delegate calls of one run in flight at once; more wait their turn. Default 4"
+          }
+        },
+        "additionalProperties": false,
+        "description": "With the delegate builtin: who the agent may hand tasks to. Not with a definition, whose own it takes"
+      },
+      "AgentTarget": {
+        "anyOf": [
+          {
+            "type": "string",
+            "description": "A definition's key or id; the model sees it by that name"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                "description": "What the model calls it; default: the definition's or agent's key"
+              },
+              "definition": {
+                "type": "string",
+                "description": "A definition's key or id"
+              },
+              "agent": {
+                "type": "string",
+                "description": "delegate only: an existing agent's key. The agent keeps its history across calls; a definition makes a new child each call"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 1000,
+                "description": "What it is for, for the model; default: the definition's description"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "HandoffSettings": {
+        "type": "object",
+        "properties": {
+          "definitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentTarget"
+            },
+            "minItems": 1,
+            "maxItems": 32,
+            "description": "The definitions the model may hand the conversation to"
+          },
+          "maxPerRun": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Handoffs in one run, a guard against two agents passing a conversation back and forth. Default 3"
+          }
+        },
+        "required": [
+          "definitions"
+        ],
+        "additionalProperties": false,
+        "description": "With the handoff builtin: the definitions the agent may hand the conversation to. Not with a definition, whose own it takes"
       },
       "SpendLimitInput": {
         "type": "object",
@@ -2198,6 +2298,73 @@
                 },
                 "description": "The tools the runtime answers itself: its own, or its definition's"
               },
+              "delegate": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/DelegateSettings"
+                  },
+                  {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "description": "Who it may delegate to, with the delegate builtin"
+                  }
+                ]
+              },
+              "handoff": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/HandoffSettings"
+                  },
+                  {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "description": "Who it may hand the conversation to, with the handoff builtin"
+                  }
+                ]
+              },
+              "handedOff": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "definition": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "revision": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "revision"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "at": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "definition",
+                  "name",
+                  "at"
+                ],
+                "description": "The definition a handoff gave the conversation to, which runs the agent now (its prompt, model, tools and limits); null while it runs as made. An upsert of a different configuration, or applying its definition, ends it"
+              },
+              "parentRunId": {
+                "type": "string",
+                "description": "For a child a delegate call made: the run of parentAgentId that made it"
+              },
               "spendLimit": {
                 "type": [
                   "object",
@@ -2267,6 +2434,9 @@
               "keyScope",
               "modelHeaders",
               "builtins",
+              "delegate",
+              "handoff",
+              "handedOff",
               "spendLimit",
               "runLimits",
               "cursor",
@@ -2860,6 +3030,68 @@
             },
             "maxItems": 8,
             "description": "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's"
+          },
+          "delegate": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "agents": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AgentTarget"
+                },
+                "maxItems": 32,
+                "description": "Who the model may delegate to: definitions (a new child agent for each call) and existing agents by key"
+              },
+              "instructions": {
+                "type": "boolean",
+                "description": "Let the model start a child with instructions of its own instead, on its own model"
+              },
+              "maxDepth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "How deep delegation may go: a child is depth 1, its child depth 2. Default 2"
+              },
+              "maxParallel": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16,
+                "description": "delegate calls of one run in flight at once; more wait their turn. Default 4"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Replaces who the agent may delegate to (with the delegate builtin); null removes it"
+          },
+          "handoff": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "definitions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AgentTarget"
+                },
+                "minItems": 1,
+                "maxItems": 32,
+                "description": "The definitions the model may hand the conversation to"
+              },
+              "maxPerRun": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Handoffs in one run, a guard against two agents passing a conversation back and forth. Default 3"
+              }
+            },
+            "required": [
+              "definitions"
+            ],
+            "additionalProperties": false,
+            "description": "Replaces who the agent may hand the conversation to (with the handoff builtin); null removes it"
           }
         },
         "additionalProperties": false,
@@ -4401,6 +4633,26 @@
               "$ref": "#/components/schemas/OpenApi"
             }
           },
+          "delegate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DelegateSettings"
+              },
+              {
+                "description": "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "handoff": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HandoffSettings"
+              },
+              {
+                "description": "With the handoff builtin: who the conversation may be handed to. See the multi-agent guide"
+              }
+            ]
+          },
           "humanInput": {
             "type": "object",
             "properties": {
@@ -4793,6 +5045,26 @@
             },
             "maxItems": 64,
             "description": "OpenAPI specs whose operations the runtime calls for the agent, as tools"
+          },
+          "delegate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DelegateSettings"
+              },
+              {
+                "description": "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "handoff": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HandoffSettings"
+              },
+              {
+                "description": "With the handoff builtin: who the conversation may be handed to. See the multi-agent guide"
+              }
+            ]
           },
           "humanInput": {
             "type": "object",
@@ -5274,6 +5546,34 @@
             },
             "maxItems": 64,
             "description": "OpenAPI specs whose operations the runtime calls for the agent, as tools"
+          },
+          "delegate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DelegateSettings"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "handoff": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HandoffSettings"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "With the handoff builtin: who the conversation may be handed to. See the multi-agent guide"
+              }
+            ]
           },
           "humanInput": {
             "type": [
@@ -7620,6 +7920,19 @@
             "required": false,
             "description": "By default, where the stream cannot replay (no Last-Event-ID, or one behind the buffer), it starts with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot. 0: no snapshot; behind the buffer is a 409",
             "name": "snapshot",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ],
+              "description": "Also send the agent's children's progress, from its delegate calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end. Without it, none of them"
+            },
+            "required": false,
+            "description": "Also send the agent's children's progress, from its delegate calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end. Without it, none of them",
+            "name": "subagents",
             "in": "query"
           },
           {

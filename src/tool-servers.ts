@@ -54,10 +54,10 @@ export type ToolError = { tool: string; toolCallId?: string; innerCallId?: strin
 /**
  * A tool call a run made, as its outcome lists it (`toolCalls`): which tool, and whether it answered (`ok`) or why not:
  * a `ToolErrorCode`, `tool_error` (it answered with an error), `input_required` (it waits on a person) or `aborted`.
- * Its arguments and result are in history, not here.
+ * Its arguments and result are in history, not here. A delegate call names the child agent it ran (`agentId`).
  */
 export type ToolCallCode = ToolErrorCode | "tool_error" | "input_required" | "aborted";
-export type RunToolCall = { tool: string; toolCallId?: string; innerCallId?: string; ok: boolean; code?: ToolCallCode };
+export type RunToolCall = { tool: string; toolCallId?: string; innerCallId?: string; ok: boolean; code?: ToolCallCode; agentId?: string };
 export class ToolFailure extends Error {
   readonly code: ToolErrorCode;
   readonly outcomeUnknown: boolean;

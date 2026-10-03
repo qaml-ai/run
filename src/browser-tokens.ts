@@ -115,6 +115,8 @@ export function readableFrame(claims: BrowserClaims, data: any): unknown {
   if (data?.type !== "event") return undefined;
   const type = data.event?.type;
   if (claims.events ? !claims.events.includes(type) : INTERNAL_EVENTS.has(type)) return undefined;
+  // A sub-agent's event (`?subagents=1`) is shown as the event it carries would be: one the token may not see is left out.
+  if (type === "subagent_event" && readableFrame(claims, { type: "event", event: data.event.event }) === undefined) return undefined;
   return readableMessage(claims, data);
 }
 

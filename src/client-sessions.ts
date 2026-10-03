@@ -32,7 +32,7 @@ import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol
 import { AttachedServer } from "./attached.ts";
 import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
-import { callMeta, compose, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { callMeta, compose, jsonResult, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
@@ -42,6 +42,7 @@ import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inp
 import { recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
+import { definitionId, delegateTool, handoffTool, MULTI_AGENT_LIMITS, multiAgentInput, PARENT_KEYS, SUBAGENT_EVENTS, type AgentTarget, type DelegateSettings, type HandoffSettings } from "./multi-agent.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -76,8 +77,42 @@ interface SessionHeader {
   toolsHash?: string;
   /** The agent it was forked from, and the index of the last message of that agent's history it began with (null: none). */
   forkedFrom?: ForkedFrom;
+  /** A child its parent's delegate call made (multi-agent.ts): the parent agent, its run and call, and how deep in the chain it is. */
+  parent?: { agentId: string; runId: string; toolCallId: string; depth: number };
+  /**
+   * A conversation handed off to another definition: which one runs the agent now (its prompt, model, tools and limits are the
+   * agent's configuration until it hands off again), and the agent's own configuration, which a handoff back or a reconfiguration restores.
+   */
+  handoff?: { definition: DefinitionRef; name: string; at: number; own: { config: HandoffConfig; sources?: Sources } };
 }
 export type ForkedFrom = { agentId: string; atMessage: number | null };
+/** The configuration a handoff replaces: what a definition sets for its agents. */
+type HandoffConfig = Pick<SessionConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits">;
+const HANDOFF_FIELDS = ["model", "systemPrompt", "thinkingLevel", "fileTools", "runLimits"] as const;
+/** The definition an agent runs as now: the one it was handed off to, else the one it was made from. */
+const activeDefinition = (header: SessionHeader) => header.handoff?.definition ?? header.definition;
+/** `current` with a handoff's fields (`HANDOFF_FIELDS`) as `next` has them: one it does not set is removed. */
+function withConfig(current: SessionConfig, next: HandoffConfig): SessionConfig {
+  const merged: Record<string, unknown> = { ...current };
+  for (const field of HANDOFF_FIELDS) { if (next[field] === undefined) delete merged[field]; else merged[field] = next[field]; }
+  return merged as SessionConfig;
+}
+/**
+ * An agent's own sources (one without a definition) once a configuration gives builtins, delegate or handoff: what it leaves
+ * out stays, and a builtin's settings go with it (multiAgentInput).
+ */
+function ownSources(current: Sources | undefined, given: { builtins?: unknown; delegate?: unknown; handoff?: unknown }): Sources | undefined {
+  const builtins = given.builtins !== undefined ? builtinsInput(given.builtins) as string[] : current?.builtins ?? [];
+  const settings = multiAgentInput(builtins, {
+    delegate: given.delegate !== undefined ? given.delegate : builtins.includes("delegate") ? current?.delegate : undefined,
+    handoff: given.handoff !== undefined ? given.handoff : builtins.includes("handoff") ? current?.handoff : undefined,
+  });
+  const { builtins: _builtins, delegate: _delegate, handoff: _handoff, ...rest } = current ?? {};
+  const next: Sources = { ...rest, ...(builtins.length ? { builtins } : {}), ...(settings.delegate ? { delegate: settings.delegate } : {}), ...(settings.handoff ? { handoff: settings.handoff } : {}) };
+  return Object.keys(next).length ? next : undefined;
+}
+/** A child a delegate call of the running run is waiting on: the agent, its request, and whether the runtime made it (a named agent it did not). */
+type Child = { agent: string; requestId: string; made: boolean; done?: boolean };
 /**
  * Upserts of request records, appended as their state changes, and ended runs whose webhook event (`run.completed` or
  * `run.failed`) is written (`announced`). Journals from before tool calls were MCP also hold call records, which are skipped.
@@ -178,6 +213,18 @@ type Session = {
   background?: Promise<BackgroundSpans | undefined>;
   /** Where each of the running agent's tools comes from, for its tool calls' spans. */
   toolSources?: Map<string, ToolSource>;
+  /** The children the running run's delegate calls wait on, by call id: an abort of the run aborts them. */
+  children?: Map<string, Child>;
+  /** The running run's delegate calls in flight, and those waiting for one to finish (its `maxParallel`). */
+  delegating?: { active: number; waiting: (() => void)[] };
+  /** What each running run's children spent, which its own spend limit counts. */
+  childSpend?: Map<string, number>;
+  /** The running run's handoffs, for its limit (`maxPerRun`) and outcome. */
+  handoffs?: { requestId: string; list: { from: string; to: string; definition: string; toolCallId: string }[] };
+  /** Listeners on this agent's stream on this node: a parent relaying its child's events to its own (`subagent_event`). */
+  taps?: Set<(data: ClientEvent) => void>;
+  /** Runs an abort reached after they began but before the agent had them: they end without running (see `markAborted`). */
+  aborted?: Set<string>;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -281,6 +328,9 @@ function throttled<T>(publish: (value: T) => void, onFlush: (flush: () => void) 
  */
 export type StreamReader = { show(data: ClientEvent | TurnSnapshot): unknown; until: number };
 const readers = new WeakMap<ServerResponse, StreamReader>();
+/** Streams that asked for the agent's children's events (`?subagents=1`); the others never get them. */
+const subagentReaders = new WeakSet<ServerResponse>();
+const isSubagent = (data: ClientEvent | TurnSnapshot) => data.type === "event" && SUBAGENT_EVENTS.includes(data.event?.type);
 /** Whether a request's client has gone: its connection closed before the response was written. */
 const gone = (c: Context<ClientEnv>) => c.env.incoming.destroyed || c.env.outgoing.destroyed || !!c.env.outgoing.socket?.destroyed;
 /** Write an SSE frame, cutting off a subscriber that does not keep up. */
@@ -400,9 +450,16 @@ export interface ClientSessionOptions {
   tracing?: Tracing;
   /** Submit a request to an agent on whichever node serves it (resuming a suspension that expired). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
+  /**
+   * Make an agent for the delegate builtin, as POST /v1/agents does with `params` and `key`, linked to the run that made it
+   * (`parent`). Without it, agents cannot delegate.
+   */
+  createAgent?: (tenant: string, params: Record<string, unknown>, key: string, parent: NonNullable<SessionHeader["parent"]>) => Promise<{ id: string }>;
+  /** One of an agent's requests on whichever node serves it, once it settles or `waitMs` passes (see `awaitRequest`). */
+  requestAnywhere?: (agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal) => Promise<RequestRecord | undefined>;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
-export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits">; sources?: Sources };
+export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits">; sources?: Sources; description?: string };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
@@ -729,6 +786,7 @@ export class ClientSessions {
   private publish(session: Session, data: ClientEvent) {
     if (this.closed || session.fault) return;
     if (data.type === "event" && (session.spans || this.options.tracing)) this.traceEvent(session, data.requestId, data.event);
+    const nested = isSubagent(data);
     // A message_update is its delta alone; the runtime keeps the latest message it updates, for snapshots.
     if (data.type === "event") {
       const inner = data.event;
@@ -739,6 +797,8 @@ export class ClientSessions {
     const sent = data;
     let text = JSON.stringify(data);
     const oversized = Buffer.byteLength(text) > FRAME_BYTES;
+    // A child's event too large to relay is left out: its own stream and history have it.
+    if (oversized && nested) return;
     if (oversized) {
       // Control outcomes remain in the journal; oversized display events are explicit gaps, which say what they were.
       const was = data.type === "event" ? data.event?.type : data.type;
@@ -754,12 +814,14 @@ export class ClientSessions {
     this.follow(session, sent, text, oversized);
     const frame = `id: ${event.id}\ndata: ${text}\n\n`;
     for (const res of this.streams(session)) {
+      if (nested && !subagentReaders.has(res)) continue;
       const reader = readers.get(res);
       if (!reader) { send(res, frame); continue; }
       const shown = reader.show(data);
       if (shown !== undefined) send(res, shown === data ? frame : `id: ${event.id}\ndata: ${JSON.stringify(shown)}\n\n`);
     }
     for (const wake of [...session.polls]) wake();
+    for (const tap of session.taps ?? []) tap(sent);
   }
 
   /** Keep the running turn as its events fold, for snapshots: the messages its run finished, from the run's start to its response. */
@@ -1037,6 +1099,7 @@ export class ClientSessions {
     const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), asked);
     const release = mode === "watch" ? this.hold(session.header.tenant, session.watchers.size + session.polls.size) : undefined;
     const res = c.env.outgoing;
+    if (c.req.query("subagents") === "1") subagentReaders.add(res);
     let ready: Record<string, unknown> = { version: 5, agentId: session.header.id };
     // A reader's stream ends as its token expires: it reconnects with a fresh one, so access changes apply within a token's life.
     const expiry = reader ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
@@ -1063,6 +1126,7 @@ export class ClientSessions {
     if (snapshot) send(res, `id: ${snapshot.cursor}\ndata: ${JSON.stringify(reader ? reader.show(snapshot) : snapshot)}\n\n`);
     for (const event of events) {
       if (res.destroyed) break;
+      if (isSubagent(event.data) && !subagentReaders.has(res)) continue;
       const shown = reader ? reader.show(event.data) : event.data;
       if (shown !== undefined) send(res, `id: ${event.id}\ndata: ${JSON.stringify(shown)}\n\n`);
     }
@@ -1096,9 +1160,11 @@ export class ClientSessions {
     }
     const { cursor, snapshot, events } = read;
     const shown = (data: ClientEvent | TurnSnapshot) => reader ? reader.show(data) : data;
+    const nested = c.req.query("subagents") === "1";
     return json(c, 200, {
       cursor: events.at(-1)?.id ?? (cursor || session.cursor),
       events: [...snapshot ? [{ id: snapshot.cursor, data: shown(snapshot) }] : [], ...events.flatMap(({ id, data }) => {
+        if (isSubagent(data) && !nested) return [];
         const visible = shown(data);
         return visible === undefined ? [] : [{ id, data: visible }];
       })],
@@ -1237,11 +1303,15 @@ export class ClientSessions {
     const volumes = this.options.volumes;
     const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
       ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
+    const multiAgent = this.multiAgentServer(session, sources);
+    // A handed-off agent's sources are its active definition's, whose secrets are sealed under that definition.
+    const definition = activeDefinition(header);
     return [
       ...feature ? [view("channel", feature)] : [],
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
       ...volumes && header.mounts?.length ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
-      ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
+      ...multiAgent ? [multiAgent] : [],
+      ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
     ];
   }
 
@@ -1329,7 +1399,9 @@ export class ClientSessions {
       if (innerSpan) spans!.innerCall(call, innerSpan, started, Date.now(), code, answer);
       // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
       const calls = session.toolCalls ??= [];
-      if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}) });
+      // A delegate call names the child agent it ran.
+      const child = call.name === "delegate" && call.toolCallId && !call.innerCallId ? session.children?.get(call.toolCallId)?.agent : undefined;
+      if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
     }
   }
 
@@ -1388,6 +1460,319 @@ export class ClientSessions {
       (session.toolErrors ??= []).push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}),
         code: failure.code, ...(failure.outcomeUnknown ? { outcomeUnknown: true } : {}), message: failure.message });
       throw failure;
+    }
+  }
+
+  /**
+   * The delegate and handoff tools of an agent whose sources enable them (multi-agent.ts), answered here rather than by a tool
+   * source: a delegate call's child is an agent of its own, and a handoff reconfigures this one.
+   */
+  private multiAgentServer(session: Session, sources: Sources | undefined): ToolServer | undefined {
+    const delegate = sources?.builtins?.includes("delegate") ? sources.delegate : undefined;
+    const handoff = sources?.builtins?.includes("handoff") ? sources.handoff : undefined;
+    if (!delegate && !handoff) return undefined;
+    const tools = async () => {
+      const describe = await this.targetDescriptions(session.header.tenant, [...delegate?.agents ?? [], ...handoff?.definitions ?? []]);
+      return [...delegate ? [delegateTool(delegate, describe)] : [], ...handoff ? [handoffTool(handoff, describe)] : []];
+    };
+    return {
+      tools,
+      sources: async () => (await tools()).map((tool): ToolSourceView => ({ kind: "builtin", name: tool.name, status: "listed", tools: [tool] })),
+      call: async call => {
+        if (call.name === "delegate" && delegate) return this.delegate(session, delegate, call);
+        if (call.name === "handoff" && handoff) return this.handoff(session, handoff, call);
+        throw new Error(`Unknown tool ${call.name}`);
+      },
+    };
+  }
+
+  /** What each definition target is for, as its definition describes it, for the tools' descriptions. */
+  private async targetDescriptions(tenant: string, targets: AgentTarget[]) {
+    const found = new Map<string, string>();
+    await Promise.all(targets.filter(target => target.definition !== undefined && !target.description).map(async target => {
+      const id = definitionId(tenant, target.definition!);
+      const description = await this.options.definitionFor?.(tenant, id).then(definition => definition.description, () => undefined);
+      if (description) found.set(id, description);
+    }));
+    return (target: AgentTarget) => target.definition !== undefined ? found.get(definitionId(tenant, target.definition)) : undefined;
+  }
+
+  /** The agent's run that has begun: the one its tool calls are made in. */
+  private runningRun(session: Session) {
+    return [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
+  }
+
+  /**
+   * A delegate call: a child agent on the task, and its answer. The child is a real agent, made from a definition target or
+   * with the model's instructions (a named target is an existing agent, with its own history), keyed by this call, and its
+   * prompt's request id is the call's too: made again (a turn resumed on another node), the call finds the same child and run
+   * and collects its answer, never running it twice. Children count against the tenant's busy agents, spend and run rate as
+   * any agent does; the parent's spend limits bound theirs and are charged with what they spent; a chain is at most `maxDepth`
+   * deep, and at most `maxParallel` of a run's calls are in flight at once (the rest wait).
+   */
+  private async delegate(session: Session, settings: DelegateSettings, call: ToolCall): Promise<McpResult> {
+    const { header } = session;
+    const tenant = header.tenant;
+    const run = this.runningRun(session);
+    const { createAgent, submit } = this.options;
+    if (!createAgent || !submit) throw new Error("Delegation is not enabled on this runtime");
+    if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("delegate is called directly, not from js_exec");
+    const toolCallId = call.toolCallId;
+    const { agent: name, instructions, task, output: schema } = call.args as { agent?: string; instructions?: string; task?: unknown; output?: unknown };
+    const target = name === undefined ? undefined : settings.agents?.find(entry => entry.name === name);
+    if (name !== undefined && !target) throw new Error(`There is no agent ${name} to delegate to`);
+    if (instructions !== undefined && !settings.instructions) throw new Error("Name an agent to delegate to: instructions of your own are not allowed here");
+    if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? "Name an agent to delegate to, or give instructions: one of them" : settings.instructions ? "Give the sub-agent's instructions" : "Name an agent to delegate to");
+    if (typeof task !== "string" || !task.trim()) throw new Error("Give the task to delegate");
+    const output = schema === undefined ? undefined : outputInput({ schema });
+    // Where this run is in its chain: the prompt that started it says so, if a delegate call sent it.
+    const metadata = run.metadata ?? {};
+    const depth = (Number(metadata[PARENT_KEYS.depth]) || 0) + 1;
+    const maxDepth = Math.min(Number(metadata[PARENT_KEYS.maxDepth]) || MULTI_AGENT_LIMITS.depthCeiling, settings.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
+    if (depth > maxDepth) throw new Error(`Delegation has reached its depth limit of ${maxDepth}: do this task yourself`);
+    const chain = [...(metadata[PARENT_KEYS.chain] ?? "").split(",").filter(Boolean), header.id];
+    await this.delegationSlot(session, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel, call.signal);
+    let untap: (() => void) | undefined;
+    let child: Child | undefined;
+    try {
+      const key = `delegate-${call.idempotencyKey}`;
+      const requestId = `delegate_${call.idempotencyKey}`;
+      const made = target?.agent === undefined;
+      let agent = made ? this.agentId(tenant, key) : await this.agentByKey(tenant, target!.agent!);
+      if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
+      if (chain.includes(agent)) throw new Error(`${target!.name} is already working on this task's chain: delegating to it would wait on itself`);
+      // Made again (a resumed turn): the same child and request, with the answer it has or will have.
+      let record = await this.requestOf(agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
+      if (!record) {
+        if (made) {
+          const web = (header.sources?.builtins ?? []).filter(builtin => builtin === "web_search" || builtin === "web_fetch");
+          // An inline child has its parent's model: as it is (its endpoint too), or by name on the tenant's own providers, which take only names.
+          const { provider, id: modelId } = header.config.model;
+          const named = Object.hasOwn(this.options.modelEndpoints?.(tenant) ?? {}, provider) || Object.hasOwn(await this.options.customProviders?.(tenant, header.keyScope) ?? {}, provider);
+          agent = (await createAgent(tenant, {
+            ...target?.definition !== undefined ? { definition: definitionId(tenant, target.definition) } : {
+              model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: instructions, ...web.length ? { builtins: web } : {},
+            },
+            name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
+            // It acts for whom its parent acts, with the same keys.
+            ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
+            ...header.keyScope ? { keyScope: header.keyScope } : {},
+          }, key, { agentId: header.id, runId: run.id, toolCallId, depth })).id;
+        }
+      }
+      child = { agent, requestId, made };
+      (session.children ??= new Map()).set(toolCallId, child);
+      const at = { toolCallId, agentId: agent, requestId };
+      const end = (status: string, error?: string) => this.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_end", ...at, status, ...(error ? { error } : {}) } });
+      this.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_start", ...at, name: target?.name ?? "subagent", depth } });
+      // Listening before the child's run is sent, so its first events are relayed too.
+      untap = this.relay(session, run.id, at);
+      if (!record) {
+        try {
+          const budget = await this.budgetLeft(session, run.id);
+          if (budget !== undefined && budget <= 0) throw new Error("This run has no budget left for a sub-agent: its spend limit is reached");
+          record = await submit(agent, tenant, { id: requestId, method: "prompt", params: {
+            text: task, ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
+            metadata: { [PARENT_KEYS.agent]: header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(",") },
+          } });
+        } catch (error) {
+          // Refused (the tenant's busy agents, its spend, the child's own limits): the call fails with why.
+          child.done = true;
+          end("failed", errorText(error));
+          throw error;
+        }
+      }
+      const finished = record.state === "completed" ? record : await this.childOutcome(agent, tenant, requestId, call.signal).catch(error => {
+        // The parent's run stopped waiting (aborted, or its node stopping): its stream says the child is no longer followed.
+        if (call.signal.aborted) end("failed", "The parent's run stopped waiting for it");
+        throw error;
+      });
+      child.done = true;
+      const result = (finished.outcome?.result ?? {}) as { reply?: string; output?: unknown; usage?: { costUsd?: number; subagentCostUsd?: number } | null };
+      // What the child spent counts against this agent's spend limit and this run's.
+      const cost = (result.usage?.costUsd ?? 0) + (result.usage?.subagentCostUsd ?? 0);
+      if (cost > 0) {
+        this.spent(session, cost);
+        (session.childSpend ??= new Map()).set(run.id, (session.childSpend.get(run.id) ?? 0) + cost);
+      }
+      const status = finished.status ?? "failed";
+      end(status, finished.error);
+      const value = {
+        agentId: agent, requestId, status, ...(result.reply ? { text: result.reply } : {}), ...(result.output !== undefined ? { output: result.output } : {}),
+        ...(finished.error ? { error: finished.error } : {}), ...(finished.stopped ? { stopped: finished.stopped } : {}),
+      };
+      return { ...jsonResult(value), ...(status === "completed" ? {} : { isError: true }) };
+    } finally {
+      untap?.();
+      this.releaseDelegation(session);
+    }
+  }
+
+  /** Wait until one of the running run's delegate calls may go: at most `max` are in flight at once. */
+  private async delegationSlot(session: Session, max: number, signal: AbortSignal) {
+    const slots = session.delegating ??= { active: 0, waiting: [] };
+    while (slots.active >= max) {
+      signal.throwIfAborted();
+      await new Promise<void>(resolve => { slots.waiting.push(resolve); signal.addEventListener("abort", () => resolve(), { once: true }); });
+    }
+    signal.throwIfAborted();
+    slots.active++;
+  }
+  private releaseDelegation(session: Session) {
+    const slots = session.delegating;
+    if (!slots) return;
+    slots.active--;
+    // Each waiter looks again: one takes the slot, the rest wait on.
+    for (const wake of slots.waiting.splice(0)) wake();
+  }
+
+  /** The tenant's live agent made with `key`, if there is one. */
+  private async agentByKey(tenant: string, key: string): Promise<string | undefined> {
+    const { rows } = await this.db.query("select id from agents where tenant = $1 and header->>'key' = $2 and not revoked and (expires_at is null or expires_at > $3) order by id limit 1", [tenant, key, Date.now()]);
+    return rows[0]?.id;
+  }
+
+  /** What the running run may still spend, within its own spend limit and its agent's; undefined when neither has one. */
+  private async budgetLeft(session: Session, runId: string) {
+    const spend = await this.spendOf(session);
+    const own = session.runLimits?.get(runId);
+    const left = Math.min(spend ? spend.usd - spend.spent : Infinity, own !== undefined ? own - (session.usage?.get(runId)?.costUsd ?? 0) - (session.childSpend?.get(runId) ?? 0) : Infinity);
+    return Number.isFinite(left) ? Math.max(0, left) : undefined;
+  }
+
+  /** An agent's request, here or on the node serving it (see `awaitRequest`). */
+  private requestOf(agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal) {
+    return this.options.requestAnywhere ? this.options.requestAnywhere(agent, tenant, requestId, waitMs, signal) : this.awaitRequest(agent, tenant, requestId, waitMs, signal);
+  }
+
+  /** Wait for a child's request to settle, wherever the child is served, riding out its moves between nodes. */
+  private async childOutcome(agent: string, tenant: string, requestId: string, signal: AbortSignal): Promise<RequestRecord> {
+    for (let delay = 250; ;) {
+      signal.throwIfAborted();
+      let record: RequestRecord | undefined;
+      try { record = await this.requestOf(agent, tenant, requestId, MAX_POLL_WAIT_MS, signal); }
+      catch (error) {
+        signal.throwIfAborted();
+        const status = (error as HttpError).status;
+        if (status === 404 || status === 410) throw new Error("The sub-agent was deleted before it answered");
+        // The child is moving between nodes, or its node has no room yet: ask again shortly.
+        await sleep(delay);
+        delay = Math.min(delay * 2, 5_000);
+        continue;
+      }
+      if (!record) throw new Error("The sub-agent no longer has this task's request");
+      if (record.state === "completed") return record;
+      delay = 250;
+    }
+  }
+
+  /** Relay a child's events of its request to this agent's stream as `subagent_event`, while the child runs on this node. Returns the undo. */
+  private relay(session: Session, runId: string, at: { toolCallId: string; agentId: string; requestId: string }) {
+    const child = this.sessions.get(at.agentId);
+    if (!child) return undefined;
+    // Streamed text is left out: a child's progress is its finished messages, tool calls and its own children.
+    const tap = (data: ClientEvent) => {
+      if (data.type !== "event" || data.requestId !== at.requestId || data.event?.type === "message_update") return;
+      this.publish(session, { type: "event", requestId: runId, event: { type: "subagent_event", agentId: at.agentId, toolCallId: at.toolCallId, event: data.event } });
+    };
+    (child.taps ??= new Set()).add(tap);
+    return () => { child.taps?.delete(tap); };
+  }
+
+  /** Mark the run that has begun as aborted, so it does not start if the agent does not have it yet (see `execute`). */
+  private markAborted(session: Session) {
+    const run = this.runningRun(session);
+    if (run) (session.aborted ??= new Set()).add(run.id);
+  }
+
+  /**
+   * Abort the children the running run's delegate calls wait on: an abort or a delete of this agent cascades to them. A named
+   * agent is aborted only while it runs this run's request, never another's.
+   */
+  private abortChildren(session: Session) {
+    const submit = this.options.submit;
+    const children = [...session.children?.values() ?? []].filter(child => !child.done);
+    if (!submit || !children.length) return;
+    const tenant = session.header.tenant;
+    for (const child of children) {
+      void (async () => {
+        if (!child.made) {
+          const record = await this.requestOf(child.agent, tenant, child.requestId, 0);
+          if (record?.state !== "running" || !record.began) return;
+        }
+        await submit(child.agent, tenant, { id: `abort-${randomUUID()}`, method: "abort", params: {} });
+      })().catch(error => console.error(JSON.stringify({ type: "subagent_abort_failed", agent: session.header.id, child: child.agent, error: safeError(error) })));
+    }
+  }
+
+  /**
+   * A handoff call: the conversation passes to a definition on the handoff allowlist, which runs this same agent, with its
+   * history, from its next model request: its prompt, model, thinking level, tools and run limits. The header is written first,
+   * so a node that takes the agent over has it; then the running turn takes it (the host's `handoff`), recording a system message
+   * marked `handoff`. A handoff back to the definition the agent was made from restores its own configuration. At most
+   * `maxPerRun` a run, so two agents cannot hand a conversation back and forth for ever.
+   */
+  private async handoff(session: Session, settings: HandoffSettings, call: ToolCall): Promise<McpResult> {
+    const { header } = session;
+    const run = this.runningRun(session);
+    if (!run || !call.toolCallId || call.innerCallId) throw new Error("handoff is called directly, not from js_exec");
+    const { to, reason } = call.args as { to?: string; reason?: string };
+    const target = settings.definitions.find(entry => entry.name === to);
+    if (!target?.definition) throw new Error(`There is no agent ${to} to hand off to`);
+    const id = definitionId(header.tenant, target.definition);
+    const from = header.handoff?.name ?? header.metadata?.name ?? header.key ?? header.id;
+    const marker = { from, to: target.name, definition: id, toolCallId: call.toolCallId, ...(typeof reason === "string" && reason ? { reason } : {}) };
+    // The call's result says so to the model, and its details (in history) to whoever reads it.
+    const done = (details: Record<string, unknown>) => ({ content: [{ type: "text", text: `Transferred to ${target.name}. You are ${target.name} now: continue the conversation under your new instructions.` }], structuredContent: { handedOff: true, ...details } });
+    // Made again on a resumed turn (the header has it), or to the definition already in charge: nothing changes.
+    if (activeDefinition(header)?.id === id) return done({ to: target.name, definition: id });
+    const handoffs = session.handoffs?.requestId === run.id ? session.handoffs : session.handoffs = { requestId: run.id, list: [] };
+    const most = settings.maxPerRun ?? MULTI_AGENT_LIMITS.maxHandoffs;
+    if (handoffs.list.length >= most) throw new Error(`This run has handed off ${most} times, its limit: answer the user yourself`);
+    if (!this.options.definitionFor) throw new Error("Handoffs are not enabled on this runtime");
+    const own = header.handoff?.own ?? { config: Object.fromEntries(HANDOFF_FIELDS.filter(field => header.config[field] !== undefined).map(field => [field, header.config[field]])) as HandoffConfig, ...(header.sources ? { sources: header.sources } : {}) };
+    const back = header.definition?.id === id;
+    const resolved = back ? undefined : await this.options.definitionFor(header.tenant, id).catch(error => { throw new Error(`${target.name} cannot take the conversation: ${errorText(error)}`); });
+    const config = back ? own.config : resolved!.config as HandoffConfig;
+    const sources = back ? own.sources : resolved!.sources;
+    const key = await this.apiKey(session, config.model.provider, header.keyScope);
+    if (this.options.apiKeyFor && !key.key) throw new Error(`${target.name} cannot take the conversation: no ${config.model.provider} API key is configured`);
+    const tools = await this.toolset(session, { sources, fileTools: config.fileTools });
+    session.header.config = withConfig(header.config, config);
+    if (sources) session.header.sources = sources; else delete session.header.sources;
+    if (back) delete session.header.handoff;
+    else session.header.handoff = { definition: { id, revision: resolved!.revision }, name: target.name, at: Date.now(), own };
+    await this.writeHeader(session);
+    session.platformKey = key.platform;
+    await this.supervisor.request(header.id, "handoff", {
+      model: config.model, systemPrompt: config.systemPrompt ?? null, thinkingLevel: config.thinkingLevel, fileTools: config.fileTools, runLimits: config.runLimits ?? null, tools,
+      ...(key.key ? { apiKey: key.key } : {}), marker,
+    });
+    handoffs.list.push({ from, to: target.name, definition: id, toolCallId: call.toolCallId });
+    this.publish(session, { type: "event", requestId: run.id, event: { type: "handoff", ...marker } });
+    return done(marker);
+  }
+
+  /**
+   * One of a tenant's agent's requests once it settles, or as it is after `waitMs` (at most 25 s): a delegate call's wait for its
+   * child, from this node or another's. It loads the agent here, which resumes work a lost node left. Undefined: no such request.
+   */
+  async awaitRequest(id: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal): Promise<RequestRecord | undefined> {
+    if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
+    await this.roomFor(id);
+    const session = await this.load(id);
+    if (!session) throw new HttpError(404, "Unknown agent");
+    const until = Date.now() + Math.min(waitMs, MAX_POLL_WAIT_MS);
+    for (;;) {
+      const record = session.requests.get(requestId);
+      if (!record) return undefined;
+      if (record.state === "completed" || Date.now() >= until || this.closed || session.fault || this.sessions.get(id) !== session || signal?.aborted) return visible(record);
+      await new Promise<void>(resolve => {
+        const done = () => { clearTimeout(timer); session.polls.delete(done); signal?.removeEventListener("abort", done); resolve(); };
+        const timer = setTimeout(done, until - Date.now());
+        session.polls.add(done);
+        signal?.addEventListener("abort", done, { once: true });
+      });
     }
   }
 
@@ -1550,7 +1935,7 @@ export class ClientSessions {
    * apply when an agent is made.
    */
   private reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
-    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, builtins?: string[]) {
+    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "handoff"> = {}) {
     const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
     const fixed = [
       ...differs(header.identity?.subject, identity?.subject) ? ["subject"] : [], ...differs(header.identity?.context, identity?.context) ? ["context"] : [],
@@ -1562,7 +1947,7 @@ export class ClientSessions {
       provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
       systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, runLimits: config.runLimits ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
       // Only a definition's own fields are the agent's: the rest follow its definition.
-      ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: builtins ?? [] },
+      ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null, handoff: own.handoff ?? null },
     };
   }
 
@@ -1580,6 +1965,8 @@ export class ClientSessions {
     if ("runLimits" in target && differs(current.runLimits, target.runLimits)) changes.runLimits = target.runLimits;
     if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
     if (target.builtins !== undefined && differs(header.sources?.builtins ?? [], target.builtins)) changes.builtins = target.builtins;
+    if (target.delegate !== undefined && differs(header.sources?.delegate, target.delegate)) changes.delegate = target.delegate;
+    if (target.handoff !== undefined && differs(header.sources?.handoff, target.handoff)) changes.handoff = target.handoff;
     return changes;
   }
 
@@ -1593,7 +1980,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] } } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; delegate?: DelegateSettings; handoff?: HandoffSettings; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] } } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -1603,11 +1990,12 @@ export class ClientSessions {
     // A fork's volume was made for the id its key had a moment ago: another generation now (it was deleted meanwhile) is a retry.
     if (access.fork && access.fork.id !== id) throw new HttpError(503, "The fork's key changed agents while it was made; retry");
     const { apiKey: _key, ...safeConfig } = config;
-    const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...(access.builtins?.length ? { builtins: access.builtins } : {}) }, ...(identity ? { identity } : {}) }));
+    const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.handoff ? { handoff: access.handoff } : {}) };
+    const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(identity ? { identity } : {}) }));
     // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
-    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, access.builtins), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
-    // An agent's own sources are its builtins; one made from a definition has the definition's.
-    const sources: Sources | undefined = origin ? origin.sources : access.builtins?.length ? { builtins: access.builtins } : undefined;
+    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
+    // An agent's own sources are its builtins (and their settings); one made from a definition has the definition's.
+    const sources: Sources | undefined = origin ? origin.sources : own.builtins ? own : undefined;
     if (existing) {
       if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       const changed = changes(existing.value);
@@ -1644,7 +2032,7 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -1747,7 +2135,7 @@ export class ClientSessions {
     const name = input.name ?? (source.metadata?.name && `${source.metadata.name} (fork)`.slice(0, 120));
     const created = await this.create(source.definitions, config as Omit<AgentConfig, "id" | "directory" | "tools">, key, { ...source.metadata, ...(name ? { name } : {}) }, tenant, input.ttlMs, mounts,
       source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, identity,
-      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, builtins: source.definition ? undefined : source.sources?.builtins, fork: { id: made.id, from, records: cut.records } }, steps);
+      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, handoff: source.sources?.handoff }, fork: { id: made.id, from, records: cut.records } }, steps);
     // Made meanwhile by a retry: whatever it holds is the fork.
     if (created.reconfigure) return answer(this.sessions.get(created.id)?.header ?? (await this.readHeader(created.id))!.value);
     return { id: created.id, token: created.token, expiresAt: created.expiresAt, forkedFrom: from };
@@ -1790,7 +2178,7 @@ export class ClientSessions {
   /** A tenant's live agents. `running` covers agents served by any node. */
   async list(tenant: string) {
     const { rows } = await this.db.query(`
-      select a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, n.node is not null as served from agents a
+      select a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, a.header->'parent'->>'agentId' as parent, n.node is not null as served from agents a
       left join actor_owners o on o.actor = a.id
       left join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
       where a.tenant = $1 and not a.revoked and (a.expires_at is null or a.expires_at > $2) order by a.id`, [tenant, Date.now()]);
@@ -1799,7 +2187,7 @@ export class ClientSessions {
       const response = local?.response;
       const running = this.supervisor.agents.has(row.id) || (!local && row.served);
       return { id: row.id as string, key: row.key as string | null, name: row.name as string, type: row.type as string, model: row.model as string, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
-        resume: row.resume_failures ? { failures: row.resume_failures as number, after: Number(row.resume_after) } : null };
+        resume: row.resume_failures ? { failures: row.resume_failures as number, after: Number(row.resume_after) } : null, ...(row.parent ? { parentAgentId: row.parent as string } : {}) };
     });
   }
 
@@ -1851,7 +2239,9 @@ export class ClientSessions {
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
       ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
       ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
-      builtins: session.header.sources?.builtins ?? [],
+      builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null, handoff: session.header.sources?.handoff ?? null,
+      handedOff: session.header.handoff ? { definition: session.header.handoff.definition, name: session.header.handoff.name, at: session.header.handoff.at } : null,
+      ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
       spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
       ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
@@ -2033,6 +2423,8 @@ export class ClientSessions {
       if (session) await this.cancelInputs(session, "aborted");
     }
     await this.sessions.get(id)?.starting?.catch(() => {});
+    const session = this.sessions.get(id);
+    if (session) { this.markAborted(session); this.abortChildren(session); }
     if (this.supervisor.agents.has(id)) await this.supervisor.request(id, "abort");
     return true;
   }
@@ -2272,15 +2664,17 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "runLimits", "modelHeaders", "builtins", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "runLimits", "modelHeaders", "builtins", "delegate", "handoff", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
       if (body.method === "configure" && !applying) {
-        const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, ...update } = body.params;
+        const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, delegate, handoff, ...update } = body.params;
         configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, update)));
-        if (builtins !== undefined && session.header.definition) throw new HttpError(400, "This agent's builtins come from its definition; change them there");
-        if (builtins !== undefined) builtinsInput(builtins);
+        const own = builtins !== undefined || delegate !== undefined || handoff !== undefined;
+        if (own && session.header.definition) throw new HttpError(400, "This agent's builtins come from its definition; change them there");
+        // An upsert gives the whole of them, which `execute` checks as it applies them; a change of some is checked now.
+        if (own && body.params.provisionHash === undefined) ownSources(session.header.sources, { builtins, delegate, handoff });
       }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
@@ -2583,7 +2977,7 @@ export class ClientSessions {
     if (endpoint && this.options.modelToken) {
       const actor = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began)?.actor;
       return { identity: true, apiKey: await this.options.modelToken(endpoint.baseUrl, {
-        tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
+        tenant: header.tenant, agent: header.id, ...(activeDefinition(header) ? { definition: activeDefinition(header)!.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
       }) };
     }
     const provider = header.config.model.provider;
@@ -2629,37 +3023,51 @@ export class ClientSessions {
     await session.starting?.catch(() => {});
     const live = this.supervisor.agents.has(id);
     if (record.method === "status" && !live) return { running: false };
-    // Aborting a suspended turn cancels its inputs: the turn is closed without the model.
-    if (record.method === "abort") await this.cancelInputs(session, "aborted");
+    // Aborting a suspended turn cancels its inputs: the turn is closed without the model. Its children are aborted too.
+    if (record.method === "abort") { this.markAborted(session); this.abortChildren(session); await this.cancelInputs(session, "aborted"); }
     if (record.method === "abort" && !live) return { aborted: false, running: false };
     if (record.method === "configure") {
+      const handedOff = session.header.handoff;
+      // An upsert of the configuration the agent already has leaves a handoff in place: the conversation stays where it was handed.
+      if (handedOff && params.definition === undefined && params.provisionHash !== undefined && params.provisionHash === session.header.provisionHash) return { configured: true, changed: false };
+      // Any other upsert, or its definition applied, takes the agent back to its own configuration first, then changes that.
+      const restoring = handedOff && (params.definition !== undefined || params.provisionHash !== undefined) ? handedOff.own : undefined;
+      const header: SessionHeader = restoring ? { ...session.header, config: withConfig(session.header.config, restoring.config), ...(restoring.sources ? { sources: restoring.sources } : { sources: undefined }) } : session.header;
       const applied = params.definition !== undefined ? await this.definitionUpdate(session, params.definition) : undefined;
       // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
       // Of its target, only what the agent does not have already is applied.
       const { provisionHash, name, type, toolsHash: declared, ...asked } = params;
       // The hash of the tools as the application declared them: given by an upsert, else of a configure's own mcp.tools.
       const toolsHash = declared ?? (asked.mcp?.tools !== undefined ? hash(JSON.stringify(asked.mcp.tools)) : undefined);
-      const { builtins, ...given } = provisionHash !== undefined ? this.upsertChanges(session.header, asked) : asked;
-      // The agent's own builtins (an agent from a definition has the definition's): its sources, with the tools they offer.
-      const sources = builtins === undefined ? session.header.sources : (builtins as string[]).length ? { ...session.header.sources, builtins: builtins as string[] } : undefined;
-      const changed = provisionHash === undefined || builtins !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
+      const { builtins, delegate, handoff, ...changes } = provisionHash !== undefined ? this.upsertChanges(header, asked) : asked;
+      // The agent's own configuration, restored: the whole of it goes to the agent, whose live configuration is the handoff's.
+      const given = restoring ? {
+        systemPrompt: restoring.config.systemPrompt ?? null, thinkingLevel: restoring.config.thinkingLevel ?? "off", fileTools: restoring.config.fileTools !== false, runLimits: restoring.config.runLimits ?? null, ...changes,
+      } : changes;
+      // The agent's own builtins and their settings (an agent from a definition has the definition's): its sources, with the tools they offer.
+      const reSourced = builtins !== undefined || delegate !== undefined || handoff !== undefined || !!restoring;
+      const sources = builtins !== undefined || delegate !== undefined || handoff !== undefined ? ownSources(header.sources, { builtins, delegate, handoff }) : header.sources;
+      const changed = provisionHash === undefined || reSourced || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
       const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, given)))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean };
+      // Its own model as it was resolved, endpoint and all (a name would resolve to the catalog's).
+      if (restoring && update.model === undefined) update.model = restoring.config.model;
       // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
       const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;
       if (resolved && this.options.apiKeyFor && !apiKey) throw new Error(`No ${(update.model ?? session.header.config.model).provider} API key is configured for this tenant; set one with PUT /v1/providers/${(update.model ?? session.header.config.model).provider}/key`);
       // An agent that is not running takes its new configuration when it next starts.
-      const result = !Object.keys(update).length && !keyScope && keyScope !== null && builtins === undefined ? { configured: true } : live ? await this.supervisor.request(id, "configure", {
+      const result = !Object.keys(update).length && !keyScope && keyScope !== null && !reSourced ? { configured: true } : live ? await this.supervisor.request(id, "configure", {
         ...update, ...apiKey ? { apiKey } : {},
         // Replacing the application's tools keeps the runtime's own.
-        ...update.tools || "fileTools" in update || builtins !== undefined ? { tools: await this.toolset(session, { ...update.tools ? { tools: update.tools } : {}, sources: applied ? applied.sources : sources, ..."fileTools" in update ? { fileTools: update.fileTools } : {} }) } : {},
+        ...update.tools || "fileTools" in update || reSourced ? { tools: await this.toolset(session, { ...update.tools ? { tools: update.tools } : {}, sources: applied ? applied.sources : sources, ..."fileTools" in update ? { fileTools: update.fileTools } : {} }) } : {},
       }) : { configured: true };
       const { tools, ...config } = update;
       if (resolved && live) session.platformKey = resolved.platform;
       if (keyScope) session.header.keyScope = keyScope; else if (keyScope === null) delete session.header.keyScope;
       if (tools !== undefined) session.header.definitions = tools;
+      if (restoring) { session.header.config = header.config; delete session.header.handoff; }
       session.header.config = { ...session.header.config, ...config };
-      if (builtins !== undefined) { if (sources) session.header.sources = sources; else delete session.header.sources; }
+      if (reSourced) { if (sources) session.header.sources = sources; else delete session.header.sources; }
       if (applied) {
         session.header.definition = applied.definition;
         if (applied.sources) session.header.sources = applied.sources; else delete session.header.sources;
@@ -2684,6 +3092,8 @@ export class ClientSessions {
       (session.runLimits ??= new Map()).set(record.id, spendLimit.usd);
       params = rest;
     }
+    // Aborted since it began, before the agent had it: an abort sent to the agent now would find nothing to stop.
+    if (session.aborted?.delete(record.id)) throw new Error("The run was aborted");
     try {
       return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
       ? event => {
@@ -2816,6 +3226,8 @@ export class ClientSessions {
         session.outputs = { files: new Map(), presented: [] };
         session.toolErrors = undefined;
         session.toolCalls = undefined;
+        session.children = undefined;
+        session.handoffs = undefined;
       }
       // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
       if (record.method === "prompt") await this.cancelInputs(session, "superseded");
@@ -2830,8 +3242,13 @@ export class ClientSessions {
       // Every tool call the run made, so a caller sees what it did without reading history.
       if (RUN_METHODS.includes(record.method) && session.toolCalls?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, toolCalls: session.toolCalls } };
       if (RUN_METHODS.includes(record.method) && session.sourceErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, sourceErrors: session.sourceErrors } };
-      // What its model responses used on this node (a turn resumed after its node was lost counts from the resume).
-      if (RUN_METHODS.includes(record.method) && value.result && typeof value.result === "object") value = { result: { ...value.result, usage: session.usage?.get(record.id) ?? null } };
+      // The conversation's handoffs in this run: who handed it to whom.
+      if (RUN_METHODS.includes(record.method) && session.handoffs?.requestId === record.id && session.handoffs.list.length && value.result && typeof value.result === "object") value = { result: { ...value.result, handoffs: session.handoffs.list } };
+      // What its model responses used on this node (a turn resumed after its node was lost counts from the resume), and what its children spent.
+      if (RUN_METHODS.includes(record.method) && value.result && typeof value.result === "object") {
+        const usage = session.usage?.get(record.id), children = session.childSpend?.get(record.id);
+        value = { result: { ...value.result, usage: usage || children ? { ...usage ?? { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }, ...children ? { subagentCostUsd: children } : {} } : null } };
+      }
       const failed = value.result as { code?: string; error?: string } | undefined;
       if (failed?.code === "model_key_missing" && this.options.modelKeyHint) value = { result: { ...failed, error: `${failed.error} ${this.options.modelKeyHint}` } };
       // A suspended turn's outcome lists what it waits on.
@@ -2853,6 +3270,8 @@ export class ClientSessions {
       const announcing = run && !!session.announcing;
       const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now(), ...(announcing ? { announce: true as const } : {}) });
       session.runLimits?.delete(record.id);
+      session.childSpend?.delete(record.id);
+      session.aborted?.delete(record.id);
       const steered = this.endSteered(session, record.id, value, announcing);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
@@ -2958,7 +3377,7 @@ export class ClientSessions {
   /** Why the running run may not spend more: it has spent its own limit (`runLimits`). */
   private runSpendLimit(session: Session): string | undefined {
     for (const [id, usd] of session.runLimits ?? []) {
-      const spent = session.usage?.get(id)?.costUsd ?? 0;
+      const spent = (session.usage?.get(id)?.costUsd ?? 0) + (session.childSpend?.get(id) ?? 0);
       if (session.running.has(id) && spent >= usd) return `This run has reached its spend limit of ${dollars(usd)} (${dollars(spent)} spent)`;
     }
     return undefined;
@@ -3045,7 +3464,7 @@ export class ClientSessions {
     const header = session.header;
     const identity = {
       tenant: header.tenant, agent: header.id, sub: header.identity?.subject ?? header.id,
-      ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
+      ...(activeDefinition(header) ? { definition: activeDefinition(header)!.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
     };
     const _meta = {
@@ -3095,6 +3514,7 @@ export class ClientSessions {
     if (!session || (session.header.revoked && !session.unsettled)) return;
     session.header.revoked = true;
     await this.writeHeader(session);
+    this.abortChildren(session);
     await this.interrupt(session, "Session revoked");
     this.endStreams(session);
     await this.releaseVolumes(session.header, session.claim);
