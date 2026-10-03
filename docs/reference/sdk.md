@@ -66,6 +66,9 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
 | `name` | `name=` | a label, shown in the console |
+| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate`, `handoff` |
+| `delegate`, `handoff` | `delegate=`, `handoff=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`) and definitions it may hand the conversation to (`{ definitions, maxPerRun? }`); each brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
+| `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
 | `takeover` | `takeover=` | replace the process serving the tools now |
 | `onEvent(event, runId)` | `on_event=` | every event, for display; runs in order, apart from the connection; plain or async |
@@ -148,10 +151,12 @@ await fork.run("Try the other approach");
 
 ### `Run`
 
-`{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
-(Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
+`{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, handoffs, raw }`
+(Python: `tool_errors`, `tool_calls`, `source_errors`, `handoffs`). `toolCalls` lists every
 tool call the run made, with `ok` or an error `code`, not their arguments or
-results (see [Run outcomes](events.md#run-outcomes)). `status` is `completed`,
+results (see [Run outcomes](events.md#run-outcomes)); a `delegate` call has its
+sub-agent's `agentId`. `handoffs` lists the run's handoffs, `{ from, to,
+definition, toolCallId }`, and `usage.subagentCostUsd` what its sub-agents spent. `status` is `completed`,
 `input_required` or `failed`; `error` is `{ code, message, uncertain? }`.
 `output` is a run with `output`'s answer, typed by its schema (`Run<T>`; Python:
 an instance of the pydantic model). See
@@ -170,13 +175,15 @@ input](../guides/human-input.md#answering).
 | `text` | `text`: reply text as it is written (successive messages separated by a blank line) |
 | `tool_call` | `id`, `name`, `arguments` |
 | `tool_result` | `id`, `name`, `output` (the result's text), `isError` (`is_error`) |
+| `input_required` | `input`, with `answer()` |
+| `handoff` | `from`, `to` (Python: `name` is `to`): the conversation passed to another definition |
+| `subagent_start`, `subagent_end` | with `subagents: true`: `toolCallId` (Python `id`), `agentId` (`agent_id`), `name` at the start, `status` at the end |
+| `done` | `run`: always last |
 
 `run.toolCalls` names a call's tool `tool` and its id `toolCallId`; stream parts
 have the same values as `name` and `id`, and, from `@camelai/run` 0.13.1 and
 `camelai-run` 0.9.1, also as `tool` and `toolCallId` (`tool_call_id`), so code
 can use one name for both. `name` and `id` stay.
-| `input_required` | `input`, with `answer()` |
-| `done` | `run`: always last |
 
 Every part but `done` has `raw`, the event it came from. `stream.result()`
 resolves with the run; breaking out of the loop stops the reading, not the run.

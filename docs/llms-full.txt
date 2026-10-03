@@ -271,9 +271,10 @@ A `Run` has:
 | `inputs` | what it waits on, each with `answer()` |
 | `error` | `{code, message, uncertain?}` when it failed |
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
-| `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?}`. Arguments and results are in history |
+| `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?, agentId?}`. A `delegate` call names its sub-agent (`agentId`). Arguments and results are in history |
+| `handoffs` | the run's [handoffs](https://run.camelai.com/docs/guides/multi-agent.md#handoffs-handoff), in order: `{from, to, definition, toolCallId}` |
 | `files` | files the run wrote |
-| `usage` | what its model calls used, where the runtime reports it |
+| `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent |
 
 `run()` has no timeout: runs can take minutes, and a run waiting on a person can
 wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
@@ -375,6 +376,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 | Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for. Safe through your deploys and restarts |
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
 | Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
+| Other agents: sub-agents for tasks, or another definition taking the conversation | **`delegate`** and **`handoff`** built-ins, with who they may reach | `delegate: { agents: ["researcher"] }`, `handoff: { definitions: ["billing"] }`. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
 
 The same `tool({...})` definitions work attached and served, so you can start
 attached and move to served without changing a tool (see [Several processes,
@@ -451,6 +453,16 @@ A **definition** is a reusable configuration: model, instructions, tool sources
 (MCP servers, OpenAPI specs, built-ins), limits and mounts. Make agents from one
 (`definition: "def_…"` on `upsert`), and roll a change out to all of them with
 `apply: "all"`. See [Definitions](https://run.camelai.com/docs/guides/definitions.md).
+
+## Several agents
+
+Agents can work together, inside the runtime. With the `delegate` built-in, an
+agent hands a task to a **sub-agent** (an agent of its own, made from a
+definition for the task, or an existing one) and gets its answer back as the
+call's result; several at once run in parallel. With `handoff`, an agent hands
+the **conversation** to another definition, which takes over the same agent and
+history from its next model request. Both survive a lost node, and sub-agents
+count against the parent's limits. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md).
 
 ---
 
@@ -888,7 +900,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "schedule", "ask_user"]`.
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate", "handoff"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -908,6 +920,9 @@ it is made from (whose builtins it then has):
   wake-ups (100 per agent, at most a year ahead, repeats at least a minute apart).
 - `ask_user` lets the model ask the user 1 to 4 multiple-choice questions; the
   run waits for the answer. See [Human input](https://run.camelai.com/docs/guides/human-input.md).
+- `delegate` (with `delegate: { agents }`) hands a task to a sub-agent and
+  returns its answer; `handoff` (with `handoff: { definitions }`) gives the
+  conversation to another definition. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md).
 
 ## Seeing an agent's tools
 
@@ -2482,7 +2497,14 @@ Saving a definition lists its MCP servers: credentials a server refuses are a
 400 that says so, and the answer's `toolSources` shows what each offers.
 
 A `description` (1–1,000 characters) says what its agents are for; models see it
-as the description of each agent's [MCP tool](https://run.camelai.com/docs/guides/mcp-server.md).
+as the description of each agent's [MCP tool](https://run.camelai.com/docs/guides/mcp-server.md), and as what it is
+for when another definition can delegate or hand off to it.
+
+`delegate` and `handoff`, with their builtins, let its agents hand tasks to
+sub-agents and hand the conversation to other definitions:
+`"builtins": ["delegate", "handoff"], "delegate": {"agents": ["researcher"]}, "handoff": {"definitions": ["billing"]}`.
+They may name definitions not saved yet, so two can name each other. See
+[Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md).
 
 The definition supplies the model, prompt, thinking level and tool sources;
 `name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
@@ -2543,6 +2565,266 @@ and survives a restart; poll it for the outcome, and reuse `requestId` to retry.
 A model must be in `GET /v1/models`, and the tenant must have a key for its
 provider, or the change is refused with `400`. An agent that is not running
 takes the change when it next starts.
+
+---
+
+<!-- https://run.camelai.com/docs/guides/multi-agent.md -->
+
+# Multi-agent: sub-agents and handoffs
+
+Two built-in tools let agents work together, and the runtime runs both:
+
+- **`delegate`**: the agent hands a task to a **sub-agent** and gets its answer
+  back as the call's result, while it keeps the conversation. This is the
+  OpenAI Agents SDK's `agent.as_tool()` and LangGraph's supervisor.
+- **`handoff`**: the agent hands the **conversation** to another definition. The
+  same agent goes on with the same history, under that definition's
+  instructions, model and tools. This is the OpenAI Agents SDK's `handoffs`.
+
+Both are durable. A sub-agent is an agent of its own, and a parent whose node is
+lost while it waits collects the sub-agent's answer on another node. A handoff
+is written to the agent before it takes effect, so it holds through restarts.
+
+## Sub-agents: `delegate`
+
+Give an agent the `delegate` builtin and say whom it may delegate to: its
+`agents`, by definition key or id. The SDKs add the builtin when you pass the
+settings.
+
+```ts
+await agents.runtime.upsertDefinition("researcher", {
+  name: "Researcher", description: "Finds sources and summarizes them",
+  systemPrompt: "You research a question and answer with sources.", builtins: ["web_search", "web_fetch"],
+});
+
+const lead = await agents.upsert("research-lead", {
+  instructions: "You plan research and write the report. Delegate each question to the researcher.",
+  delegate: { agents: ["researcher"] },
+});
+const run = await lead.run("Compare the three largest EV makers' 2025 margins.");
+```
+
+```python
+await agents.runtime.upsert_definition("researcher", name="Researcher", description="Finds sources and summarizes them",
+    systemPrompt="You research a question and answer with sources.", builtins=["web_search", "web_fetch"])
+
+lead = await agents.upsert("research-lead",
+    instructions="You plan research and write the report. Delegate each question to the researcher.",
+    delegate={"agents": ["researcher"]})
+run = await lead.run("Compare the three largest EV makers' 2025 margins.")
+```
+
+A definition takes the same settings, for every agent made from it:
+
+```json
+{ "name": "Research lead", "systemPrompt": "…", "builtins": ["delegate"], "delegate": { "agents": ["researcher", "writer"] } }
+```
+
+The model gets a `delegate` tool that lists the agents with what each is for
+(the definition's `description`, unless the entry gives its own):
+
+| Argument | |
+| --- | --- |
+| `agent` | Which agent, by its name in the list |
+| `instructions` | Instead of `agent`, with `instructions: true` in the settings: a system prompt for a sub-agent the model designs itself, on its own model |
+| `task` | What to do. The sub-agent sees only this, not the conversation |
+| `output` | A JSON Schema for an object: the answer comes back in that shape (see [Structured output](https://run.camelai.com/docs/guides/structured-output.md)) |
+
+The call's result is `{ agentId, requestId, status, text, output?, error? }`.
+`status` is `completed`, `input_required` (the sub-agent waits on a person) or
+`failed`. The model sees a failed or waiting sub-agent as a failed call, with
+the reason.
+
+### Who the sub-agent is
+
+An entry in `agents` is one of these:
+
+| Entry | The sub-agent |
+| --- | --- |
+| `"researcher"` or `{ definition: "researcher", name?, description? }` | A new agent made from the definition, for each call |
+| `{ agent: "billing-specialist", name?, description? }` | Your existing agent with that key. It keeps its own history across calls. Runs queue, one at a time, like any of its runs |
+| `instructions: true` (a setting, not an entry) | A new agent with the model's instructions, the parent's model, and the parent's `web_search` and `web_fetch` if it has them |
+
+A sub-agent the runtime makes is a real agent:
+
+- It is **linked to its parent**: `parentAgentId` and `parentRunId` in
+  `GET /v1/agents/{id}` and the agent list, and in the metadata of its run.
+- It **acts for whom the parent acts** (`subject`, `context`) and uses the
+  parent's key scope. It is billed to the same account.
+- It has its **own workspace**. Pass it what it needs in the task, or mount a
+  shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) in both definitions.
+- It **lives a day**, as a scratch agent does. Read its history in the meantime
+  with its id, from `run.toolCalls`:
+
+```ts
+const call = run.toolCalls.find(call => call.tool === "delegate");
+const child = await agents.get(call.agentId!);
+console.log(await child.history());
+```
+
+### Parallel sub-agents
+
+The model may call `delegate` several times in one response. The calls run at
+once, up to `maxParallel` (default 4) per run; the rest wait their turn. This is
+map-reduce: one call per item, and the model combines the answers.
+
+```ts
+delegate: { agents: ["researcher"], maxParallel: 8 }
+```
+
+### Limits
+
+Sub-agents are agents, so everything that bounds agents bounds them, and the
+parent's limits cover them:
+
+| Limit | |
+| --- | --- |
+| Depth | A sub-agent's sub-agents count. Delegation stops at `maxDepth` (default 2: a parent, its children and theirs; at most 5). Past it, the call fails and the model does the work itself |
+| Fan-out | `maxParallel` calls in flight per run (default 4, at most 16) |
+| Busy agents | A running sub-agent takes one of your account's busy slots. At the limit, the call fails with `BUSY_AGENT_LIMIT` |
+| Spend | Your account's spend limits apply to sub-agents too. A parent's own spend limits (the agent's, and the run's `spendLimit`) bound its sub-agents: each gets what the parent has left as its run's spend limit, and what it spent counts against the parent's. `run.usage.subagentCostUsd` says how much that was |
+| Run rate and run limits | A sub-agent's run counts against your account's run rate. Its definition's `runLimits` apply to it |
+
+Parallel sub-agents each start with what the parent has left, so together they
+can pass the parent's limit by at most one sub-agent's spend each.
+
+An agent cannot delegate to an agent already working on its chain (it would
+wait on itself), and an agent's own key cannot change any of these settings.
+
+### Cancelling
+
+Aborting the parent's run (`agent.abort()`, `POST /v1/agents/{id}/abort`)
+aborts the sub-agents it is waiting on. So does deleting the parent. A named
+agent is aborted only while it runs the parent's task, never another.
+
+### When a node is lost
+
+A sub-agent is keyed by the parent's tool call, and its run by the call too. If
+the parent's node is lost while it waits, the parent's run resumes on another
+node and makes the call again. That call finds the same sub-agent and run, and
+waits for its answer; the task never runs twice. The sub-agent, if its own node
+was lost, resumes like any agent.
+
+### Watching sub-agents
+
+A sub-agent's progress can appear on its parent's event stream. Ask for it:
+`subagents: true` in the SDKs, or `?subagents=1` on the events URL. Without it
+you get none of these events.
+
+| Event | |
+| --- | --- |
+| `subagent_start` | `{ toolCallId, agentId, requestId, name, depth }`: the call started its sub-agent |
+| `subagent_event` | `{ toolCallId, agentId, event }`: one of the sub-agent's events (its streamed text left out). A grandchild's events arrive nested in its parent's |
+| `subagent_end` | `{ toolCallId, agentId, requestId, status, error? }` |
+
+```ts
+const lead = await agents.upsert("research-lead", { delegate: { agents: ["researcher"] }, subagents: true });
+for await (const part of lead.stream("…")) {
+  if (part.type === "subagent_start") console.log(`→ ${part.name} (${part.agentId})`);
+  if (part.type === "subagent_end") console.log(`← ${part.agentId}: ${part.status}`);
+}
+```
+
+A sub-agent's events are relayed while it runs on the same node as its parent,
+which it does unless a node was lost; its own stream and history always have
+everything.
+
+## Handoffs: `handoff`
+
+Give a definition the `handoff` builtin and the definitions it may hand the
+conversation to. A triage agent hands a refund to billing:
+
+```ts
+await agents.runtime.upsertDefinition("billing", {
+  name: "Billing", description: "Refunds, invoices and charges",
+  systemPrompt: "You are the billing agent. You can issue refunds.",
+  mcpServers: [{ name: "payments", url: "https://payments.example.com/mcp", auth: { type: "runtime" } }],
+});
+const triage = await agents.runtime.upsertDefinition("triage", {
+  name: "Triage", systemPrompt: "You help customers. Hand billing questions to billing.",
+  handoff: { definitions: ["billing"] },
+});
+
+const agent = await agents.upsert(`support-${userId}`, { definition: triage.id });
+const run = await agent.run("I was charged twice for order 42.");
+run.handoffs; // [{ from: "Triage", to: "billing", definition: "def_…", toolCallId: "…" }]
+run.text;     // billing's answer
+```
+
+```python
+await agents.runtime.upsert_definition("billing", name="Billing", description="Refunds, invoices and charges",
+    systemPrompt="You are the billing agent. You can issue refunds.")
+triage = await agents.runtime.upsert_definition("triage", name="Triage",
+    systemPrompt="You help customers. Hand billing questions to billing.", handoff={"definitions": ["billing"]})
+
+agent = await agents.upsert(f"support-{user_id}", definition=triage["id"])
+run = await agent.run("I was charged twice for order 42.")
+run.handoffs  # [{"from": "Triage", "to": "billing", ...}]
+```
+
+The model gets a `handoff` tool with `to` (one of the definitions, by name) and
+an optional `reason`. When it calls it:
+
+1. The runtime records the handoff on the agent: from now on, its configuration
+   is the target definition's: system prompt, model, thinking level, tools
+   (builtins, MCP servers, OpenAPI sources) and run limits. The tools your
+   application serves the agent stay, as does `systemPromptAppend`.
+2. From the next model request, in the same run, the target definition answers,
+   and sees the whole conversation. Nothing is summarized or filtered.
+3. The history keeps the `handoff` call, with `{ from, to, definition, reason }`
+   in its result's details. The stream has a `handoff` event, and the run's
+   result its `handoffs`.
+
+The conversation stays with the target in later runs, until it hands off again.
+`GET /v1/agents/{id}` shows where it is: `handedOff: { definition, name, at }`,
+or null while the agent runs as it was made.
+
+### Handing back, and ping-pong
+
+To hand back, give the target a `handoff` of its own that lists the first
+definition. A handoff to the definition the agent was made from restores its
+own configuration (`handedOff` becomes null).
+
+A run may hand off at most `maxPerRun` times (default 3, at most 20). Past it,
+the call fails and the model has to answer itself, so two definitions cannot
+pass a conversation back and forth for ever.
+
+### Handoffs and your configuration
+
+- **Upserting the same configuration** (as an app does before each run) leaves
+  the conversation where it was handed.
+- **An upsert with a different configuration**, or applying the agent's
+  definition (`apply: "all"`), takes the agent back to its own configuration
+  first, then changes it.
+- Applying a target definition's new revision does not reach agents handed off
+  to it; their next handoff to it does.
+- `handoff` needs a definition to hand off to, and is called by the model
+  directly, never from `js_exec`. The same goes for `delegate`.
+
+## Coming from the OpenAI Agents SDK
+
+| OpenAI Agents SDK | camelRun |
+| --- | --- |
+| `Agent(handoffs=[billing_agent])` | `handoff: { definitions: ["billing"] }` on the agent's definition (or on the agent) |
+| `handoff(agent, tool_name_override=…, tool_description_override=…)` | `{ name, definition, description }` in `handoff.definitions` |
+| `on_handoff` callback | The `handoff` event on the stream, or `run.handoffs` after the run |
+| `input_filter` (trim what the next agent sees) | Not supported: the next definition sees the whole conversation |
+| `result.last_agent`, running it for the next turn | Not needed: the agent stays handed off. `GET /v1/agents/{id}` shows `handedOff` |
+| `agent.as_tool(tool_name, tool_description)` | `delegate: { agents: [{ name, definition, description }] }` |
+| Agents as tools in parallel (`asyncio.gather` in a tool) | Several `delegate` calls in one response run at once (`maxParallel`) |
+| `max_turns` across handoffs | The run's `runLimits` (the target definition's after a handoff), and `handoff.maxPerRun` |
+
+## Coming from LangGraph
+
+| LangGraph | camelRun |
+| --- | --- |
+| Supervisor (`create_supervisor`, or a supervisor node routing to workers) | A lead agent with `delegate: { agents: [...] }`: the model routes, workers answer as tool results |
+| Subgraphs (a compiled graph as a node) | A definition per subgraph, delegated to. Its history is its own agent's |
+| `Send` (map-reduce over items) | Parallel `delegate` calls, one per item |
+| Swarm (`create_swarm`, `create_handoff_tool`), `Command(goto=…)` | `handoff`: the active agent changes, the history is shared |
+| Shared state between nodes | The conversation, for handoffs. For sub-agents, the task text and a shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) |
+| `recursion_limit` | `delegate.maxDepth`, `handoff.maxPerRun` and the run's `runLimits` |
+| Checkpointed subgraph state | Each sub-agent's own history, read by its id (`run.toolCalls[i].agentId`) |
 
 ---
 
@@ -2946,8 +3228,8 @@ see [Several processes, workers and deploys](https://run.camelai.com/docs/guides
 | `@function_tool` | `@tool` (TypeScript: `tool({ input, execute })`). Arguments are checked against the schema first. See [Tools](https://run.camelai.com/docs/guides/tools.md) |
 | Sessions (`SQLiteSession`, Redis…) | The agent's key. History is durable and compacted when it gets long; `agent.history()` reads it |
 | `output_type=Model` | `run(text, output=Model)`, `run.output` (`pip install "camelai-run[pydantic]"`). See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
-| Handoffs | No built-in handoff; see [Handoffs and multi-agent](https://run.camelai.com/docs/guides/migrating.md#handoffs-and-multi-agent) |
-| `agent.as_tool()` | A tool that runs another agent; see below |
+| Handoffs (`handoffs=[billing_agent]`) | The `handoff` built-in: `handoff: { definitions: ["billing"] }` on the agent or its definition. The same agent and history go on under the target's instructions, model and tools. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md#handoffs-handoff) |
+| `agent.as_tool()` | The `delegate` built-in: `delegate: { agents: ["researcher"] }`. The sub-agent's answer is the call's result; several calls run in parallel. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md#sub-agents-delegate) |
 | Input guardrails | Your code, before `run()`. With `createAgentHandler`, `onSend` can rewrite or refuse a message |
 | Output guardrails | Your code, on `run.text` or `run.output`, before you use it |
 | Tool approval (`needs_approval`), interruptions | `@tool(needs_approval=True)`; the run ends `input_required` and `run.inputs[0].answer(True)` resumes it, from any process, days later if need be. See [Human input](https://run.camelai.com/docs/guides/human-input.md) |
@@ -2971,36 +3253,52 @@ see [Several processes, workers and deploys](https://run.camelai.com/docs/guides
 | `Command(resume=…)` | `run.inputs[0].answer(value)` |
 | `graph.stream(…, stream_mode="messages")` | `agent.stream(text)`, or the agent's events |
 | `response_format`, `with_structured_output` | `run(text, output=Model)` |
-| A custom `StateGraph` | Your own code: a sequence of runs, branching on `run.output`. There is no graph DSL; see below |
-| `Send` (map-reduce) | `asyncio.gather` over runs of several agents |
+| Supervisor (`create_supervisor`) and subgraphs | A lead agent with the `delegate` built-in, each worker or subgraph a definition. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md#coming-from-langgraph) |
+| Swarm (`create_swarm`), handoff tools, `Command(goto=…)` | The `handoff` built-in: the active definition changes, the history is shared |
+| A custom `StateGraph` | Where the model decides, `delegate` and `handoff`; where your code decides, a sequence of runs, branching on `run.output`. There is no graph DSL; see below |
+| `Send` (map-reduce) | Parallel `delegate` calls in one response, or `asyncio.gather` over runs of several agents |
 | Long-term memory (`Store`) | Files. Mount a shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) in several agents |
-| Time travel (`get_state_history`, replay from a checkpoint) | Not supported. A conversation cannot be forked or rewound |
+| Time travel (`get_state_history`, replay from a checkpoint) | [Fork](https://run.camelai.com/docs/concepts.md#forking) the agent at an earlier message (`agent.fork({ atMessage })`): a new agent goes on from there. An agent cannot be rewound in place |
 | LangSmith | Export traces to LangSmith's OTLP endpoint (`PUT /v1/telemetry`, [preset](https://run.camelai.com/docs/guides/observability.md#presets)); include content to see messages |
 
 ## Handoffs and multi-agent
 
-camelRun has no handoff primitive, and no graph. Two patterns cover most uses:
+Both are built in, and the runtime runs them: see [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md)
+for everything below, with TypeScript.
 
-**Delegate.** One agent calls another through a tool, and the conversation stays
-with the first agent (the equivalent of the Agents SDK's `as_tool`, or a
-LangGraph supervisor):
+**Delegate.** The agent hands a task to a sub-agent and gets its answer back as
+the call's result, while the conversation stays with it: the Agents SDK's
+`as_tool`, or a LangGraph supervisor. The sub-agent is an agent of its own, made
+from a definition for each call, and the parent's limits cover it.
 
 ```python
-@tool(timeout=300)  # a run can take longer than a tool's default 15 seconds
-async def ask_billing(question: str) -> str:
-    """Ask the billing specialist a question about invoices, refunds or charges."""
-    specialist = await agents.upsert("billing-specialist", instructions="You answer billing questions.")
-    return (await specialist.run(question)).text
-
-support = await agents.upsert("support-user-123", instructions="You help customers.", tools=[ask_billing])
+await agents.runtime.upsert_definition("billing-specialist", name="Billing specialist",
+    description="Answers questions about invoices, refunds and charges", systemPrompt="You answer billing questions.")
+support = await agents.upsert("support-user-123", instructions="You help customers.",
+    delegate={"agents": ["billing-specialist"]})
 ```
 
-The specialist is an ordinary agent with its own history. Key it per customer
-(`f"billing-{user_id}"`) if it should remember earlier questions, or keep one
-key to share it.
+Several `delegate` calls in one response run in parallel. To keep one
+specialist's history across calls, name an existing agent instead of a
+definition: `{"agent": f"billing-{user_id}"}`.
 
-**Route.** Your code picks the agent for each message. A small agent with
-structured output can make the decision:
+**Handoff.** The agent hands the conversation itself to another definition: the
+same agent and history go on under the target's instructions, model and tools,
+from the next model request. The Agents SDK's `handoffs`, or a LangGraph swarm.
+
+```python
+await agents.runtime.upsert_definition("billing", name="Billing", systemPrompt="You handle refunds.")
+triage = await agents.runtime.upsert_definition("triage", name="Triage", systemPrompt="Hand billing questions to billing.",
+    handoff={"definitions": ["billing"]})
+agent = await agents.upsert("support-user-123", definition=triage["id"])
+run = await agent.run("I was charged twice.")  # run.handoffs: [{"from": "Triage", "to": "billing", ...}]
+```
+
+The next definition sees the whole conversation: there is no `input_filter`. The
+agent stays with it in later runs until it hands off again.
+
+**Route.** Your code picks the agent for each message, when the choice is yours
+rather than the model's. A small agent with structured output can make it:
 
 ```python
 class Route(BaseModel):
@@ -3010,10 +3308,6 @@ router = await agents.upsert("router", instructions="Pick the team that should a
 team = (await router.run(message, output=Route)).output.team
 answer = await (await agents.upsert(f"{team}-user-123", instructions=PROMPTS[team])).run(message)
 ```
-
-What does not carry over: in a handoff, the receiving agent takes over the
-conversation and sees its history. In camelRun each agent has its own history,
-so pass what the other agent needs in the message.
 
 ## Bringing conversations over
 
@@ -3316,6 +3610,9 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
 | `name` | `name=` | a label, shown in the console |
+| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate`, `handoff` |
+| `delegate`, `handoff` | `delegate=`, `handoff=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`) and definitions it may hand the conversation to (`{ definitions, maxPerRun? }`); each brings its builtin. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
+| `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
 | `takeover` | `takeover=` | replace the process serving the tools now |
 | `onEvent(event, runId)` | `on_event=` | every event, for display; runs in order, apart from the connection; plain or async |
@@ -3398,10 +3695,12 @@ await fork.run("Try the other approach");
 
 ### `Run`
 
-`{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
-(Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
+`{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, handoffs, raw }`
+(Python: `tool_errors`, `tool_calls`, `source_errors`, `handoffs`). `toolCalls` lists every
 tool call the run made, with `ok` or an error `code`, not their arguments or
-results (see [Run outcomes](https://run.camelai.com/docs/reference/events.md#run-outcomes)). `status` is `completed`,
+results (see [Run outcomes](https://run.camelai.com/docs/reference/events.md#run-outcomes)); a `delegate` call has its
+sub-agent's `agentId`. `handoffs` lists the run's handoffs, `{ from, to,
+definition, toolCallId }`, and `usage.subagentCostUsd` what its sub-agents spent. `status` is `completed`,
 `input_required` or `failed`; `error` is `{ code, message, uncertain? }`.
 `output` is a run with `output`'s answer, typed by its schema (`Run<T>`; Python:
 an instance of the pydantic model). See
@@ -3420,13 +3719,15 @@ input](https://run.camelai.com/docs/guides/human-input.md#answering).
 | `text` | `text`: reply text as it is written (successive messages separated by a blank line) |
 | `tool_call` | `id`, `name`, `arguments` |
 | `tool_result` | `id`, `name`, `output` (the result's text), `isError` (`is_error`) |
+| `input_required` | `input`, with `answer()` |
+| `handoff` | `from`, `to` (Python: `name` is `to`): the conversation passed to another definition |
+| `subagent_start`, `subagent_end` | with `subagents: true`: `toolCallId` (Python `id`), `agentId` (`agent_id`), `name` at the start, `status` at the end |
+| `done` | `run`: always last |
 
 `run.toolCalls` names a call's tool `tool` and its id `toolCallId`; stream parts
 have the same values as `name` and `id`, and, from `@camelai/run` 0.13.1 and
 `camelai-run` 0.9.1, also as `tool` and `toolCallId` (`tool_call_id`), so code
 can use one name for both. `name` and `id` stay.
-| `input_required` | `input`, with `answer()` |
-| `done` | `run`: always last |
 
 Every part but `done` has `raw`, the event it came from. `stream.result()`
 resolves with the run; breaking out of the loop stops the reading, not the run.
@@ -4110,6 +4411,7 @@ Query parameters and headers:
 | `Last-Event-ID: <cursor>` | resume after this event id. Absent or `0` takes everything still buffered. |
 | `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](https://run.camelai.com/docs/reference/events.md#snapshot) of the running turn first instead of a 409. Watchers and polls (`?watch=1`, `?poll=1`, `/v1/agents/:id/events`) get one by default (`?snapshot=0` opts out); the application's connection only when it asks, as the SDKs do. |
 | `?poll=1&wait=N` | answer once, as JSON, instead of streaming: `{cursor, events: [{id, data}]}`, where `data` is a frame. With `wait` (seconds, at most 25) and nothing buffered, it answers when the next event arrives or the wait ends. Poll again with `Last-Event-ID: <cursor>`. For clients that cannot hold a stream open. |
+| `?subagents=1` | also send the agent's sub-agents' progress, from its `delegate` calls: [`subagent_start`, `subagent_event` and `subagent_end`](https://run.camelai.com/docs/reference/events.md#sub-agents-and-handoffs). Without it, none of them. The SDKs: `subagents: true` |
 | `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](https://run.camelai.com/docs/reference/events.md#one-application-at-a-time). |
 | `X-Agent-Connection: <connection>` | (application connection only) reconnecting: the `connection` the last `ready` named, so the runtime knows it is the same application coming back. |
 
@@ -4300,6 +4602,17 @@ Messages (`message` fields, and history) are one of:
 | `input_required` | `input` | the turn waits on a person: a question, an approval, a form or a URL step. `input`: `{id, agent, requestId, toolCallId, kind: "question" \| "approval" \| "form" \| "url", message, detail, responders: {audience?}, state, createdAt, expiresAt}`; `detail` by kind: question `{questions}`, approval `{tool, source, arguments, argumentsHash, reason?}` (`arguments` an object, as in the call; past 4,000 characters of JSON, `argumentsPreview` instead), form `{requestedSchema}`, url `{url, origin}`. See [Human input](https://run.camelai.com/docs/guides/human-input.md) |
 | `input_resolved` | `id`, `state` (`answered`, `declined`, `cancelled`, `expired`, `superseded`), `by?` | an input settled |
 
+### Sub-agents and handoffs
+
+See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md). The `subagent_*` events reach only streams that ask for them (`?subagents=1`).
+
+| Type | Fields | When |
+| --- | --- | --- |
+| `handoff` | `from`, `to`, `definition`, `toolCallId`, `reason?` | a `handoff` call gave the conversation to definition `definition` (`to` is its name in the allowlist): it answers from the next model request |
+| `subagent_start` | `toolCallId`, `agentId`, `requestId`, `name`, `depth` | a `delegate` call started (or, on a resumed turn, found) its sub-agent `agentId`, running request `requestId` |
+| `subagent_event` | `toolCallId`, `agentId`, `event` | one of the sub-agent's events, as its own stream has it, its streamed text (`message_update`) left out. A sub-agent's own `subagent_*` events arrive nested in its `subagent_event`s. Relayed while the sub-agent runs on its parent's node; its own stream has them all |
+| `subagent_end` | `toolCallId`, `agentId`, `requestId`, `status` (`completed`, `input_required`, `failed`), `error?` | the sub-agent's run ended, or its parent stopped waiting for it |
+
 ### The runtime
 
 | Type | Fields | When |
@@ -4330,8 +4643,10 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |
 | `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](https://run.camelai.com/docs/reference/errors.md#tool-errors) |
-| `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?}`. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
+| `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?, agentId?}`; `agentId` is the sub-agent a `delegate` call ran. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
 | `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
+| `handoffs` | the run's handoffs, in order: `{from, to, definition, toolCallId, reason?}`. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
+| `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`) |
 
 An `execute` request's result is `{output: string[], truncated}` (plus `files`,
 `presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt shares its
@@ -4339,7 +4654,7 @@ turn's outcome, and its record names the turn's request as `steeredInto`.
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
 `failed`), `text`, `output`, `inputs`, `error: {code, message, uncertain?}`, `files`,
-`toolErrors`, `toolCalls`, `sourceErrors`. A browser token never sees a run's
+`toolErrors`, `toolCalls`, `sourceErrors`, `handoffs`. A browser token never sees a run's
 result, `toolCalls` included: only whether and why it stopped.
 
 ## Webhook events
@@ -4527,6 +4842,23 @@ reading them and sending them input do not count; only runs do.
 | Answers in one batch (`POST …/inputs`) | 1–100; one answer's body 256 KiB |
 | Approvers (`humanInput.approvers`) | 100 |
 | `ask_user` | 1–4 questions, each with 2–4 options and a header of at most 12 characters |
+
+## Sub-agents and handoffs
+
+See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md).
+
+| Limit | Value |
+| --- | --- |
+| Delegation depth (`delegate.maxDepth`) | 2 by default (a parent, its children and theirs); 1–5 |
+| `delegate` calls in flight per run (`delegate.maxParallel`) | 4 by default, 1–16; more wait their turn |
+| A sub-agent's spend | what its parent's run and agent spend limits have left when it starts, as its run's spend limit; what it spent counts against both |
+| A sub-agent's lifetime | a day (86,400 s), as a scratch agent's; one named by key (`{ agent }`) is yours and keeps its own |
+| A `delegate` task | 100,000 characters; inline `instructions` 32,000 |
+| Handoffs per run (`handoff.maxPerRun`) | 3 by default, 1–20 |
+| Agents in one allowlist (`delegate.agents`, `handoff.definitions`) | 32; a name 1–64 letters, digits, `_` and `-`; a description at most 1,000 characters |
+
+Sub-agents are agents: each counts against busy agents, the run rate and your
+spend limits like any other.
 
 ## Streams and browsers
 

@@ -165,6 +165,23 @@ reading them and sending them input do not count; only runs do.
 | Approvers (`humanInput.approvers`) | 100 |
 | `ask_user` | 1–4 questions, each with 2–4 options and a header of at most 12 characters |
 
+## Sub-agents and handoffs
+
+See [Multi-agent](../guides/multi-agent.md).
+
+| Limit | Value |
+| --- | --- |
+| Delegation depth (`delegate.maxDepth`) | 2 by default (a parent, its children and theirs); 1–5 |
+| `delegate` calls in flight per run (`delegate.maxParallel`) | 4 by default, 1–16; more wait their turn |
+| A sub-agent's spend | what its parent's run and agent spend limits have left when it starts, as its run's spend limit; what it spent counts against both |
+| A sub-agent's lifetime | a day (86,400 s), as a scratch agent's; one named by key (`{ agent }`) is yours and keeps its own |
+| A `delegate` task | 100,000 characters; inline `instructions` 32,000 |
+| Handoffs per run (`handoff.maxPerRun`) | 3 by default, 1–20 |
+| Agents in one allowlist (`delegate.agents`, `handoff.definitions`) | 32; a name 1–64 letters, digits, `_` and `-`; a description at most 1,000 characters |
+
+Sub-agents are agents: each counts against busy agents, the run rate and your
+spend limits like any other.
+
 ## Streams and browsers
 
 | Limit | Value |
