@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { safeError } from "./metrics.ts";
 import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -751,7 +752,7 @@ export function api(context: ApiContext) {
     // Past the first bytes the status is sent: a failure cuts the zip off before its directory, so no reader takes it as whole.
     const zip = (async function* () {
       try { yield* exportAccount(options, tenant); }
-      catch (error) { console.error(JSON.stringify({ type: "account_export_failed", tenant, error: errorText(error) })); throw error; }
+      catch (error) { console.error(JSON.stringify({ type: "account_export_failed", tenant, error: safeError(error) })); throw error; }
     })();
     return new Response(Readable.toWeb(Readable.from(zip)) as ReadableStream, { headers: {
       "Content-Type": "application/zip", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
