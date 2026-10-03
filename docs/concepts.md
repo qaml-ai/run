@@ -115,9 +115,9 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
 - **Not copied:** schedules, channel bindings, pending inputs, runs and their
   events, and what the source has spent.
 - **Its own:** `subject` and `context` (who it acts for, and its tool servers'
-  context, fixed once it is made as at a create) and `systemPromptAppend` may be
-  given for the fork instead of the source's: a fork for another conversation
-  names that conversation.
+  context, fixed once it is made as at a create), `systemPromptAppend` and
+  `modelHeaders` may be given for the fork instead of the source's: a fork for
+  another conversation names that conversation.
 - **Keys.** A fork made with a `key` is a keyed agent: it lives until deleted,
   and forking again with the same key returns the same fork (another agent's key
   is a 409). Without one it is a scratch agent that lives a day, unless you set
@@ -129,7 +129,7 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
 A fork is an agent like any other: it counts toward your agents and their
 storage. The copy costs only storage; its history and files share stored content
 with the source. Over REST it is `POST /v1/agents/{id}/fork` with `{key?, name?,
-atMessage?, ttlSeconds?, subject?, context?, systemPromptAppend?}` (the key may be
+atMessage?, ttlSeconds?, subject?, context?, systemPromptAppend?, modelHeaders?}` (the key may be
 the `Idempotency-Key` header instead);
 in the console, **Fork** on the agent's page, or **Fork from here** under a reply.
 Browser tokens cannot fork.

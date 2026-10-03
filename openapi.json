@@ -2528,6 +2528,16 @@
             "type": "string",
             "maxLength": 32000,
             "description": "The fork's own text after the system prompt (e.g. its conversation's context), instead of the source's; \"\" removes it"
+          },
+          "modelHeaders": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The fork's own headers on each model call (e.g. its conversation for attribution), instead of the source's; null removes them"
           }
         }
       },

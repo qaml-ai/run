@@ -378,6 +378,7 @@ export const AgentForkInput = z.object({
   subject: z.string().optional().openapi({ description: "Who the fork acts for, instead of the source's subject (fixed once it is made, as at a create)" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Context for the fork's tool servers' identity tokens, instead of the source's (fixed once it is made, as at a create)" }),
   systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "The fork's own text after the system prompt (e.g. its conversation's context), instead of the source's; \"\" removes it" }),
+  modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "The fork's own headers on each model call (e.g. its conversation for attribution), instead of the source's; null removes them" }),
 }).openapi("AgentForkInput");
 export const AgentForked = z.object({
   id: z.string(),

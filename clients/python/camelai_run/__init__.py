@@ -465,14 +465,14 @@ class AgentRuntime:
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input)
 
-    async def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None):
+    async def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
         """A new agent with this one's configuration, a copy of its history and a fork of its workspace. Returns its
         credentials and where it came from ({"id", "token", "expiresAt", "forkedFrom": {"agentId", "atMessage"}}).
         `at_message` ends its history at a history index (that message, and the tool results answering it) or a request
         id (that request's whole turn); by default, at the last turn that ended. `key` is the fork's own: a retry with it
         returns the same fork (default: one made up, and a day's lifetime, as create_agent's). `subject`, `context` and
         `instructions_append` are the fork's own instead of the source's: who it acts for, its tool servers' context, and
-        its text after the instructions ("" removes it)."""
+        its text after the instructions ("" removes it); `model_headers` too (None removes them)."""
         import re
         if key is not None and (not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key)):
             raise AgentError(f"A fork's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
@@ -484,6 +484,8 @@ class AgentRuntime:
         for field, value in (("subject", subject), ("context", context), ("systemPromptAppend", instructions_append)):
             if value is not None:
                 body[field] = value
+        if model_headers is not _DEFAULT:
+            body["modelHeaders"] = model_headers
         if ttl_seconds is not _DEFAULT:
             body["ttlSeconds"] = ttl_seconds
         elif key is None:
@@ -1659,14 +1661,14 @@ class Agent:
         return await self.client.abort()
 
     async def fork(self, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None,
-                   tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
+                   model_headers=_DEFAULT, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
         """A new agent with this one's configuration, a copy of its history and a fork of its workspace, each its own from
         then on: try another direction without losing this one. By default the history ends with the last turn that ended
         (never mid-turn); `at_message` ends it at a history index or a request's turn. The same `key` returns the same fork."""
         if self._agents is None:
             raise AgentError("fork needs the Agents this agent came from (agents.upsert, get or agent)")
         return await self._agents.fork(self.id, key=key, name=name, at_message=at_message, ttl_seconds=ttl_seconds, subject=subject, context=context,
-                                       instructions_append=instructions_append, tools=tools,
+                                       instructions_append=instructions_append, model_headers=model_headers, tools=tools,
                                        on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
 
     async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
@@ -1741,10 +1743,10 @@ class Agents:
         return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
 
     async def fork(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None,
-                   tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
+                   model_headers=_DEFAULT, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
         """A new agent forked from `agent_id` (see Agent.fork). Pass `tools` to serve them, as for get."""
         answer = await self.runtime.fork_agent(agent_id, key=key, name=name, at_message=at_message, ttl_seconds=ttl_seconds, subject=subject,
-                                               context=context, instructions_append=instructions_append)
+                                               context=context, instructions_append=instructions_append, model_headers=model_headers)
         agent = await self.agent(answer, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
         agent.forked_from = answer.get("forkedFrom")
         return agent

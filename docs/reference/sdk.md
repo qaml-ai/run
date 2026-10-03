@@ -133,8 +133,8 @@ whole turn); by default it ends with the last turn that finished, never mid-turn
 `key` is the fork's own: forking again with it returns the same fork, and
 `agents.get(key)` finds it; without one, the SDK makes one up for its own retries
 and the fork lives a day (`ttlSeconds` to change that), as `createAgent`'s
-does. `subject`, `context` and `instructionsAppend` (Python `instructions_append=`)
-are the fork's own instead of the source's. It takes `tools`, `onEvent` and the rest as `agents.get` does.
+does. `subject`, `context`, `instructionsAppend` (Python `instructions_append=`)
+and `modelHeaders` (`model_headers=`) are the fork's own instead of the source's. It takes `tools`, `onEvent` and the rest as `agents.get` does.
 `fork.forkedFrom` (`forked_from`) is `{agentId, atMessage}`. `agents.fork(id,
 options)` forks an agent by id. Lower level: `runtime.forkAgent(id, options)`
 (`fork_agent`) returns the fork's credentials and `forkedFrom`. REST: `POST

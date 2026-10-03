@@ -424,6 +424,8 @@ export interface ForkOptions {
   subject?: string; context?: Record<string, unknown>;
   /** The fork's own text after its instructions (systemPromptAppend), instead of the source's; "" removes it. */
   instructionsAppend?: string;
+  /** The fork's own headers on each model call, instead of the source's; null removes them. */
+  modelHeaders?: Record<string, string> | null;
 }
 export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
@@ -750,6 +752,7 @@ export class AgentRuntime {
       {
         key: options.key ?? globalThis.crypto.randomUUID(), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.atMessage !== undefined ? { atMessage: options.atMessage } : {}), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
         ...(options.subject !== undefined ? { subject: options.subject } : {}), ...(options.context !== undefined ? { context: options.context } : {}), ...(options.instructionsAppend !== undefined ? { systemPromptAppend: options.instructionsAppend } : {}),
+        ...(options.modelHeaders !== undefined ? { modelHeaders: options.modelHeaders } : {}),
       }, true);
     return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, forkedFrom: answer.forkedFrom };
   }

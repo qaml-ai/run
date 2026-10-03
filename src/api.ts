@@ -9,7 +9,7 @@ import { answerList, type ClientSessions } from "./client-sessions.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
 import type { OAuth } from "./oauth.ts";
 import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
-import { resolveModel } from "./session-config.ts";
+import { modelHeadersInput, resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
@@ -483,7 +483,7 @@ export function api(context: ApiContext) {
     request: { params: agentId, headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "The fork's key, when the body gives none" }) }), body: content(schema.AgentForkInput) },
     responses: { 201: reply("A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace", schema.AgentForked), 409: reply("FORK_POINT_RUNNING: atMessage is in a turn that has not ended; or the key names another agent", schema.ApiError) },
   }), async c => {
-    const { key: given, name, atMessage, ttlSeconds, subject, context: identityContext, systemPromptAppend } = parse(schema.AgentForkInput, await readJson(c.req.raw.body, 64 * 1024, {}));
+    const { key: given, name, atMessage, ttlSeconds, subject, context: identityContext, systemPromptAppend, modelHeaders } = parse(schema.AgentForkInput, await readJson(c.req.raw.body, 64 * 1024, {}));
     const identity = identityInput({ subject, context: identityContext });
     const key = given ?? c.req.header("idempotency-key");
     validTtl(ttlSeconds);
@@ -491,7 +491,7 @@ export function api(context: ApiContext) {
     await context.rateLimits?.agentCreate(tenant);
     // Lives as long as a create's agent would: with a key until deleted, without one a day, unless it says.
     const ttlMs = ttlSeconds === undefined ? (key !== undefined ? null : undefined) : ttlSeconds === null ? null : ttlSeconds * 1000;
-    return json(c, 201, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend }));
+    return json(c, 201, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend, ...(modelHeaders !== undefined ? { modelHeaders: modelHeadersInput(modelHeaders) } : {}) }));
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/events",
