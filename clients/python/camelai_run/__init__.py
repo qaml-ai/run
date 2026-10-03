@@ -441,7 +441,7 @@ class AgentRuntime:
         # The tenant's OpenTelemetry trace export: get, set, clear, test.
         self.telemetry = Telemetry(self)
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, prompt=None, traceparent=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, handoff=None, subagents=False, prompt=None, traceparent=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -458,7 +458,7 @@ class AgentRuntime:
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
-                             prompt=prompt)
+                             delegate=delegate, handoff=handoff, prompt=prompt)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
@@ -467,7 +467,7 @@ class AgentRuntime:
             body["ttlSeconds"] = 86400
         session = await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", body,
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
-        return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input)
+        return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input, subagents=subagents)
 
     async def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
         """A new agent with this one's configuration, a copy of its history and a fork of its workspace. Returns its
@@ -515,14 +515,15 @@ class AgentRuntime:
         # The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
         return await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", _provisioning(tools, **fields), headers={"Idempotency-Key": key, **_trace_header(traceparent)})
 
-    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True):
+    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False):
         """`on_event(event, request_id)` hears every event, for display (a run's result is the truth): a plain or async
         function, called in order apart from the connection, so a slow one never holds up tool calls; what it raises goes
         to on_error. `on_input(input)` hears each question, approval or setup step the agent's turn now waits on: return an
         answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer().
         `attach=False` follows the agent and runs it without answering its tool calls, as any number of processes may; one
-        process at a time answers them, and another fails with APPLICATION_CONNECTED unless `takeover=True` replaces it."""
-        agent = AgentClient(self.base, session, tools, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools)
+        process at a time answers them, and another fails with APPLICATION_CONNECTED unless `takeover=True` replaces it.
+        `subagents=True` also delivers the agent's sub-agents' progress: subagent_start, subagent_event and subagent_end."""
+        agent = AgentClient(self.base, session, tools, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools, subagents=subagents)
         self.agents.append(agent)
         try:
             await agent.connect()
@@ -539,7 +540,7 @@ class AgentRuntime:
     # Definitions: reusable agent configurations with their tool sources (mcpServers, openApi, builtins).
     # Make agents from one with create_agent(definition=id). Fields use the REST names (systemPrompt, mcpServers...).
     async def create_definition(self, **fields):
-        return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", fields, retry=False)
+        return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", _with_multi_agent(fields), retry=False)
 
     async def upsert_definition(self, key, **fields):
         """The definition for `key`, set to `fields` whole: made if there is none, else a new revision if they change it.
@@ -547,10 +548,11 @@ class AgentRuntime:
         import re
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
             raise AgentError(f"A definition's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
-        return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", fields, headers={"Idempotency-Key": key})
+        return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", _with_multi_agent(fields), headers={"Idempotency-Key": key})
 
     async def update_definition(self, definition_id, **fields):
-        """Replace the fields given (None removes one); apply="all" also reconfigures its live agents."""
+        """Replace the fields given (None removes one); apply="all" also reconfigures its live agents. Here builtins are
+        given whole: list "delegate" or "handoff" in them with their settings."""
         return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "PATCH", fields, retry=False)
 
     async def definition(self, definition_id):
@@ -685,12 +687,19 @@ class Telemetry:
 
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
-                  subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None, prompt=None):
+                  subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
+                  delegate=None, handoff=None, prompt=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
-                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "builtins": builtins, "prompt": prompt}
-    return {"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}}
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "builtins": builtins, "delegate": delegate, "handoff": handoff, "prompt": prompt}
+    return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
+
+
+def _with_multi_agent(fields):
+    """`delegate` and `handoff` settings bring their builtins: given the settings, the builtin is added."""
+    wanted = [name for name in ("delegate", "handoff") if fields.get(name) and name not in (fields.get("builtins") or [])]
+    return {**fields, "builtins": [*(fields.get("builtins") or []), *wanted]} if wanted else fields
 
 
 class Volume:
@@ -836,7 +845,7 @@ class AgentClient:
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
-    def __init__(self, base, session, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True):
+    def __init__(self, base, session, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
@@ -853,6 +862,8 @@ class AgentClient:
         self.takeover = takeover
         # Declare this client's tools as it connects when they differ from the agent's (a process restarted with changed tools).
         self.sync_tools = sync_tools
+        # Also receive the agent's sub-agents' events (subagent_start, subagent_event, subagent_end).
+        self.subagents = subagents
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.path = f"/clients/{session['id']}"
         # The last event taken from the stream: a reconnect resumes after it (a new client starts from a snapshot).
@@ -948,7 +959,7 @@ class AgentClient:
         while not self.closed:
             try:
                 # One application serves an agent's tools at a time: a reconnect names the connection it held; takeover replaces another's, once.
-                mode = "&watch=1" if not self.attach else "&takeover=true" if self.takeover and not self.connection else ""
+                mode = ("&watch=1" if not self.attach else "&takeover=true" if self.takeover and not self.connection else "") + ("&subagents=1" if self.subagents else "")
                 async with self.http.stream("GET", self.base + self.path + "/events?snapshot=1" + mode, headers={
                     "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream", "Last-Event-ID": str(self.cursor),
                     **({"X-Agent-Connection": self.connection} if self.attach and self.connection else {})}, timeout=20) as response:
@@ -1423,10 +1434,13 @@ class Run:
     # code "not_connected": no process served the agent's tools, so the call did not run.
     tool_errors: list = field(default_factory=list)
     # The tool calls it made (the first 100), those from js_exec's code included: {"tool", "toolCallId"?, "innerCallId"?,
-    # "ok", "code"?}. code: a tool error's, "tool_error", "input_required" or "aborted". Arguments and results are in history.
+    # "ok", "code"?, "agentId"?}. code: a tool error's, "tool_error", "input_required" or "aborted"; agentId: a delegate
+    # call's child agent. Arguments and results are in history.
     tool_calls: list = field(default_factory=list)
     # Tool sources (MCP servers, OpenAPI specs) that could not be reached: {"kind", "source", "message"}.
     source_errors: list = field(default_factory=list)
+    # Its handoffs, in order: {"from", "to", "definition", "toolCallId", "reason"?}. The last one's "to" has the conversation now.
+    handoffs: list = field(default_factory=list)
     # The runtime's result as sent.
     raw: dict | None = field(default=None, repr=False)
 
@@ -1509,8 +1523,9 @@ def _answer_for(input, value):
 @dataclass
 class StreamPart:
     """What agent.stream() yields. type: "text" (text), "tool_call" (id, name, arguments), "tool_result" (id, name, output,
-    is_error), "input_required" (input) or, last, "done" (run). raw: the event it came from. `tool` and `tool_call_id`
-    are `name` and `id` as run.tool_calls names them."""
+    is_error), "input_required" (input), "handoff" (name: who has the conversation now), with subagents=True
+    "subagent_start" and "subagent_end" (id: the delegate call's, agent_id: its child's; status at the end), or, last,
+    "done" (run). raw: the event it came from. `tool` and `tool_call_id` are `name` and `id` as run.tool_calls names them."""
     type: str
     text: str | None = None
     id: str | None = None
@@ -1520,6 +1535,8 @@ class StreamPart:
     is_error: bool | None = None
     input: RunInput | None = None
     run: Run | None = None
+    agent_id: str | None = None
+    status: str | None = None
     raw: dict | None = field(default=None, repr=False)
 
     @property
@@ -1572,6 +1589,10 @@ class RunStream:
                                                   is_error=bool(event.get("isError")), raw=event))
             elif kind == "input_required":
                 self._parts.put_nowait(StreamPart("input_required", input=RunInput(agent, event["input"], output), raw=event))
+            elif kind == "handoff":
+                self._parts.put_nowait(StreamPart("handoff", name=event.get("to"), raw=event))
+            elif kind in ("subagent_start", "subagent_end"):
+                self._parts.put_nowait(StreamPart(kind, id=event.get("toolCallId"), agent_id=event.get("agentId"), name=event.get("name"), status=event.get("status"), raw=event))
 
         self._listen = listen
         agent.client.listeners.add(listen)
@@ -1682,7 +1703,7 @@ class Agent:
         return Run(request_id, status, text=result.get("reply") or "", output=value, inputs=[RunInput(self, input, output) for input in result.get("inputs") or []], error=error,
                    usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],
                    tool_calls=result.get("toolCalls") or [],
-                   source_errors=result.get("sourceErrors") or [], raw=result)
+                   source_errors=result.get("sourceErrors") or [], handoffs=result.get("handoffs") or [], raw=result)
 
     async def _respond(self, input, answer, from_, throw_on_error, timeout):
         audience = (input.get("responders") or {}).get("audience")
@@ -1781,20 +1802,23 @@ class Agents:
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
-                     builtins=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
+                     builtins=None, delegate=None, handoff=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
         then answers the agent's tool calls, one process at a time: serverless or several processes, serve tools over
         HTTP (serve_tools) and name them in a definition instead. `builtins` are tools the runtime answers itself
-        ("web_fetch", "web_search", "schedule", "ask_user"), without a definition. attach=False declares the tools
-        without serving them (another process does); takeover=True replaces the process serving them now."""
+        ("web_fetch", "web_search", "schedule", "ask_user"), without a definition. `delegate` ({"agents": [...]}) lets it hand
+        tasks to sub-agents, and `handoff` ({"definitions": [...]}) hand the conversation to another definition (their
+        builtins come with them; see the multi-agent guide); subagents=True delivers its sub-agents' progress as events.
+        attach=False declares the tools without serving them (another process does); takeover=True replaces the process serving them now."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
-                                                  model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins)
+                                                  model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
+                                                  delegate=delegate, handoff=handoff)
         # The upsert declared these tools already (between the agent's turns, if it runs).
-        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, _sync=False)
+        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents, _sync=False)
 
     async def get(self, key_or_id, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
         """The existing agent with this key (or id), without changing it: upsert sets an agent to what it is given, get
@@ -1811,12 +1835,12 @@ class Agents:
         agent.forked_from = answer.get("forkedFrom")
         return agent
 
-    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, _sync=True):
+    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, subagents=False, _sync=True):
         """An agent you hold the credentials of ({"id", "token"}, from another process say). Tools that differ from those
         the agent has are declared as it connects."""
         tools = list(tools or [])
         client = await self.runtime.connect_agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error,
-                                                  attach=bool(tools) if attach is None else attach, takeover=takeover, sync_tools=_sync)
+                                                  attach=bool(tools) if attach is None else attach, takeover=takeover, sync_tools=_sync, subagents=subagents)
         agent = Agent(client, self._open.discard, self)
         self._open.add(agent)
         return agent

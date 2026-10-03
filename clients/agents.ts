@@ -11,7 +11,7 @@
  */
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
-  type AgentFiles, type Builtin, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
+  type AgentFiles, type Builtin, type DelegateSettings, type Handoff, type HandoffSettings, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type ForkedFrom, type ForkOptions, type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
@@ -51,8 +51,17 @@ export interface AgentConfig {
   mcp?: ToolServer;
   /** A definition (reusable configuration with tool sources: MCP servers, OpenAPI specs, built-ins) to make it from. */
   definition?: string;
-  /** Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user), without a definition. */
+  /** Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, handoff), without a definition. */
   builtins?: Builtin[];
+  /**
+   * Sub-agents: who the agent may hand tasks to (definitions, or agents by key), with `delegate` as its tool. Without a definition;
+   * the delegate builtin comes with it. See the multi-agent guide.
+   */
+  delegate?: DelegateSettings;
+  /** Handoffs: the definitions the agent may hand the conversation to, with `handoff` as its tool. Without a definition. */
+  handoff?: HandoffSettings;
+  /** Also receive its sub-agents' progress as events (subagent_start, subagent_event, subagent_end), in `onEvent` and `stream()`. */
+  subagents?: boolean;
   thinkingLevel?: ThinkingLevel;
   /** Who the agent acts for (a user id in your app): `identity.subject` in its tool calls. Set when it is made. */
   subject?: string;
@@ -118,6 +127,8 @@ export interface Run<T = unknown> {
   toolCalls: RunToolCall[];
   /** Tool sources (MCP servers, OpenAPI specs) that could not be reached, so the model went without their tools. */
   sourceErrors: { kind: string; source: string; message: string }[];
+  /** Its handoffs, in order: who gave the conversation to whom. The last one's `to` has it now. */
+  handoffs: Handoff[];
   /** The runtime's result as sent. */
   raw: RunResult | null;
 }
@@ -196,6 +207,11 @@ export type StreamPart =
   /** `output`: the result's text. */
   | { type: "tool_result"; id: string; toolCallId: string; name: string; tool: string; output: string; isError: boolean; raw: AgentEvent }
   | { type: "input_required"; input: RunInput; raw: AgentEvent }
+  /** The conversation passed to another agent (a handoff): it answers from here on. */
+  | { type: "handoff"; from: string; to: string; raw: AgentEvent }
+  /** With `subagents: true`: a delegate call's child agent started on its task, and ended. */
+  | { type: "subagent_start"; toolCallId: string; agentId: string; name: string; raw: AgentEvent }
+  | { type: "subagent_end"; toolCallId: string; agentId: string; status: "completed" | "input_required" | "failed"; raw: AgentEvent }
   /** Always last: the run as it ended. */
   | { type: "done"; run: Run };
 
@@ -347,6 +363,9 @@ export class Agent {
         case "tool_execution_start": push({ type: "tool_call", id: event.toolCallId, toolCallId: event.toolCallId, name: event.toolName, tool: event.toolName, arguments: event.args, raw: event }); break;
         case "tool_execution_end": push({ type: "tool_result", id: event.toolCallId, toolCallId: event.toolCallId, name: event.toolName, tool: event.toolName, output: textOf(event.result), isError: event.isError, raw: event }); break;
         case "input_required": push({ type: "input_required", input: this.input(event.input), raw: event }); break;
+        case "handoff": push({ type: "handoff", from: event.from, to: event.to, raw: event }); break;
+        case "subagent_start": push({ type: "subagent_start", toolCallId: event.toolCallId, agentId: event.agentId, name: event.name, raw: event }); break;
+        case "subagent_end": push({ type: "subagent_end", toolCallId: event.toolCallId, agentId: event.agentId, status: event.status, raw: event }); break;
       }
     });
     const result = this.settle<OutputOf<S>>(id, this.client.prompt(text, promptOptions(id, options)), false, options.output).then(run => {
@@ -383,7 +402,7 @@ export class Agent {
     catch (error) {
       // A run that ended in an error settles with it; anything else (a refused request, a closed client) is not a run.
       if (!(error instanceof AgentError) || error.status !== 0 || error.requestId !== id || /^Client closed/.test(error.message)) throw error;
-      run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}) } };
+      run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], handoffs: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}) } };
     }
     if (run.error && throwOnError) throw new RunError(run);
     return run;
@@ -407,7 +426,7 @@ export class Agent {
     return {
       id, status: error ? "failed" : raw?.stopped === "input_required" ? "input_required" : "completed",
       text: raw?.reply ?? "", ...(output !== undefined ? { output } : {}), inputs: (raw?.inputs ?? []).map(input => this.input<T>(input, schema)), error,
-      usage: raw?.usage ?? null, files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], toolCalls: raw?.toolCalls ?? [], sourceErrors: raw?.sourceErrors ?? [], raw,
+      usage: raw?.usage ?? null, files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], toolCalls: raw?.toolCalls ?? [], sourceErrors: raw?.sourceErrors ?? [], handoffs: raw?.handoffs ?? [], raw,
     };
   }
 
@@ -419,7 +438,7 @@ export class Agent {
       if (request) return this.settle<T>(request.id, this.client.waitForRequest(request.id, { ...(options.signal ? { signal: options.signal } : {}) }), options.throwOnError, schema);
       // Other inputs of the run still wait: it resumes once they are answered too.
       const pending = (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId);
-      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
+      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], handoffs: [], raw: null };
     };
     return {
       ...input,

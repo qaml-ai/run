@@ -275,6 +275,11 @@ export interface AgentOptions {
    * a process restarted with changed tools updates its agent. The declaration applies between the agent's turns.
    */
   syncTools?: boolean;
+  /**
+   * Also receive the agent's sub-agents' progress (its delegate calls' children): `subagent_start`, `subagent_event`
+   * (a child's event, its streamed text left out) and `subagent_end`. Default false: none of them.
+   */
+  subagents?: boolean;
 }
 /**
  * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
@@ -347,6 +352,10 @@ export interface CreateAgentOptions extends AgentOptions {
   mounts?: Mount[];
   /** Tools the runtime answers itself, for an agent without a definition (one made from a definition has its definition's). */
   builtins?: Builtin[];
+  /** Who the agent may hand tasks to (sub-agents), without a definition; it adds the delegate builtin. See the multi-agent guide. */
+  delegate?: DelegateSettings;
+  /** The definitions the agent may hand the conversation to, without a definition; it adds the handoff builtin. */
+  handoff?: HandoffSettings;
   /**
    * A first prompt, sent in the same call once the agent is made (upsertAgent returns its request, or why it was refused).
    * Give it a `requestId`: a retried call with the same key and requestId sends it once.
@@ -355,8 +364,21 @@ export interface CreateAgentOptions extends AgentOptions {
   /** A W3C trace context for the first `prompt`, sent as the `traceparent` header: its run continues that trace. */
   traceparent?: string;
 }
-/** A tool the runtime answers itself: web_fetch, web_search, schedule (wake-ups) or ask_user (questions, waiting for the answer). */
-export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user";
+/**
+ * A tool the runtime answers itself: web_fetch, web_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
+ * delegate (sub-agents: needs `delegate` settings) or handoff (another definition takes the conversation: needs `handoff` settings).
+ */
+export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate" | "handoff";
+/**
+ * A delegate or handoff target: a definition's key or id, as a string or `{ definition }`, or for delegate an existing agent's key
+ * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
+ * what it is for (default: the definition's).
+ */
+export type AgentTarget = string | { name?: string; definition: string; description?: string } | { name?: string; agent: string; description?: string };
+/** Sub-agents: who the model may delegate to, whether it may write a child's instructions itself, and how deep (default 2) and wide (default 4 at once). */
+export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number }
+/** Handoffs: the definitions the model may hand the conversation to, and how many times a run may (default 3). */
+export interface HandoffSettings { definitions: (string | { name?: string; definition: string; description?: string })[]; maxPerRun?: number }
 /** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
 /** How a tool source is authenticated: a stored bearer token, or identity tokens the runtime signs for each request. */
 export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" };
@@ -368,6 +390,10 @@ export interface DefinitionInput {
   description?: string;
   model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
+  /** Who its agents may hand tasks to (sub-agents); it adds the delegate builtin. */
+  delegate?: DelegateSettings;
+  /** The definitions its agents may hand the conversation to; it adds the handoff builtin. */
+  handoff?: HandoffSettings;
   /** The search providers web_search tries, in order, instead of the runtime's. */
   webSearch?: { providers: ("exa" | "brave" | "parallel")[] };
   mcpServers?: (SourceOptions & { url: string })[];
@@ -411,7 +437,11 @@ export interface ProviderSummary {
   custom?: { type: CustomProviderType; baseUrl: string; auth: "x-api-key" | "bearer"; headers?: string[]; models: CustomModel[] };
 }
 /** An agent as GET /v1/agents lists it. */
-export interface AgentSummary { id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null }
+export interface AgentSummary {
+  id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null;
+  /** A sub-agent's parent: the agent whose delegate call made it. */
+  parentAgentId?: string;
+}
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
 /** Where a fork came from: the agent, and the history index of its last message the fork began with (null: none). */
 export interface ForkedFrom { agentId: string; atMessage: number | null }
@@ -443,7 +473,11 @@ export interface AgentHistory { messages: RecordedMessage[] }
 /** A page of history: whole turns, oldest first, each message at its index in the agent's history. `next` is the older page's `before` (null at the start). */
 export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true }
 /** What a run's model responses used (`run.completed`, `run.failed`); null when it made none on the node that ended it. */
-export interface RunUsage { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number }
+export interface RunUsage {
+  responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number;
+  /** What its sub-agents (its delegate calls' children, and theirs) spent, apart from `costUsd`. */
+  subagentCostUsd?: number;
+}
 type RunFacts = { agentId: string; requestId: string; method: "prompt" | "continue" | "resume" | "execute"; actor?: string; metadata?: Record<string, string> };
 /**
  * An event a tenant's webhook endpoint receives (`POST /v1/webhooks {url, events}`), signed per Standard Webhooks.
@@ -544,7 +578,11 @@ export interface RunResult {
   toolCalls?: RunToolCall[];
   /** Tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools. */
   sourceErrors?: { kind: string; source: string; message: string }[];
+  /** The run's handoffs, in order: the conversation went from one agent to another (see the multi-agent guide). */
+  handoffs?: Handoff[];
 }
+/** A handoff: who gave the conversation to whom (by their names), the definition that took it, and the call that did it. */
+export interface Handoff { from: string; to: string; definition: string; toolCallId: string; reason?: string }
 /**
  * A tool call that did not complete. `code`: timeout or connection_lost (with `outcomeUnknown`: it may have
  * taken effect), not_connected (no application was connected to run it: it did not run), source_unavailable, failed.
@@ -555,7 +593,11 @@ export interface ToolError { tool: string; toolCallId?: string; innerCallId?: st
  * whether it answered (`ok`), else why not (`code`): a `ToolError` code, tool_error (it answered with an error),
  * input_required (it waits on a person) or aborted. Its arguments and result are in the agent's history.
  */
-export interface RunToolCall { tool: string; toolCallId?: string; innerCallId?: string; ok: boolean; code?: ToolError["code"] | "tool_error" | "input_required" | "aborted" }
+export interface RunToolCall {
+  tool: string; toolCallId?: string; innerCallId?: string; ok: boolean; code?: ToolError["code"] | "tool_error" | "input_required" | "aborted";
+  /** A delegate call's child agent: read its run and history like any agent's. */
+  agentId?: string;
+}
 /** An error body's stable name: its `code`, or the prefix of its message (`APPLICATION_CONNECTED: …`). */
 function codeOf(value: { error?: unknown; code?: unknown }): { code?: string } {
   if (typeof value.code === "string") return { code: value.code };
@@ -677,8 +719,13 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "prompt"] as const;
-  return Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]]));
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "delegate", "handoff", "prompt"] as const;
+  return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
+}
+/** `delegate` and `handoff` settings bring their builtins: given the settings, the builtin is added. */
+function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown; handoff?: unknown }>(input: T): T {
+  const wanted = (["delegate", "handoff"] as const).filter(name => input[name] && !input.builtins?.includes(name));
+  return wanted.length ? { ...input, builtins: [...input.builtins ?? [], ...wanted] } : input;
 }
 
 /** The `traceparent` header, when there is one to send. */
@@ -794,13 +841,13 @@ export class AgentRuntime {
    * Definitions: reusable agent configurations with their tool sources (MCP servers, OpenAPI
    * specs, built-ins). Make agents from one with `createAgent({ definition: id })`.
    */
-  createDefinition(input: DefinitionInput): Promise<Definition> { return this.transport.json("/v1/definitions", this.operator(), "POST", input, false); }
+  createDefinition(input: DefinitionInput): Promise<Definition> { return this.transport.json("/v1/definitions", this.operator(), "POST", withMultiAgent(input), false); }
   /** The definition for `key`, set to `input` whole: made if there is none, else a new revision if `input` changes it. The same key is the same definition. */
   upsertDefinition(key: string, input: DefinitionInput): Promise<Definition> {
     if (!AGENT_KEY.test(key)) throw new AgentError(`A definition's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
-    return this.transport.json("/v1/definitions", this.operator(), "POST", input, true, { "Idempotency-Key": key });
+    return this.transport.json("/v1/definitions", this.operator(), "POST", withMultiAgent(input), true, { "Idempotency-Key": key });
   }
-  /** Replace the fields given (null removes one); `apply: "all"` also reconfigures its live agents between their turns. */
+  /** Replace the fields given (null removes one); `apply: "all"` also reconfigures its live agents between their turns. Here `builtins` is given whole: list delegate or handoff in it with their settings. */
   updateDefinition(id: string, input: Partial<DefinitionInput> & { revision?: number; apply?: "all" }): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "PATCH", input, false); }
   definition(id: string): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator()); }
   /**
@@ -1005,7 +1052,7 @@ export class AgentClient {
       touch();
       try {
         // One application serves an agent's tools at a time: a reconnect names the connection it held; `takeover` replaces another's, once.
-        const mode = !this.attaching ? "&watch=1" : this.options.takeover && !this.connection ? "&takeover=true" : "";
+        const mode = (!this.attaching ? "&watch=1" : this.options.takeover && !this.connection ? "&takeover=true" : "") + (this.options.subagents ? "&subagents=1" : "");
         const response = await this.transport.fetcher(this.transport.base + this.path(`/events?snapshot=1${mode}`), {
           headers: {
             Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.cursor),
