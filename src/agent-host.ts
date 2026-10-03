@@ -15,7 +15,7 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
-import { compactionSettings, contextTokens, explicitKeyStream, modelKeyFailure, needsCompaction, runCompaction } from "./compaction.ts";
+import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, modelKeyFailure, runCompaction } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
@@ -189,10 +189,62 @@ export function createAgentHost(hostIO: HostIO) {
   /** Whether each model call asks the supervisor for its credentials. */
   const perCall = () => config.apiKey === IDENTITY_KEY || config.apiKey === SCOPE_KEY;
 
-  /** Summarize older context into the transcript. Failures leave the context as is; the next request retries. */
+  /** The compaction running now, if any: an agent compacts one at a time. */
+  let compacting: { done: Promise<boolean>; controller: AbortController; background: boolean } | undefined;
+
+  /** Wait for `promise` to settle, or until `signal` aborts (then throw its reason). */
+  function until(promise: Promise<unknown>, signal?: AbortSignal): Promise<unknown> {
+    const settled = promise.catch(() => {});
+    if (!signal) return settled;
+    signal.throwIfAborted();
+    return Promise.race([settled, new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
+  }
+
+  /**
+   * Summarize older context into the transcript before the next request: a turn's context that would not fit (or that
+   * the provider refused) waits for it. One compaction at a time: one running already (in the background) is waited for first.
+   */
   async function compactNow(reason: "threshold" | "overflow", signal?: AbortSignal): Promise<boolean> {
-    if (!config.apiKey) return false;
-    io.emit({ type: "compaction_start", reason });
+    while (compacting) await until(compacting.done, signal);
+    return startCompaction(reason, false, signal).done;
+  }
+
+  /**
+   * Compact in the background when the context is near its limit (`compactionNeed`) and no compaction runs: turns go on
+   * with the whole context meanwhile, and the summary takes over once it is written. `messages` are Pi's live state.
+   */
+  function compactInBackground(messages = agent?.state.messages) {
+    if (compacting || !messages || !config.apiKey || persistenceError || !measure(messages).need) return;
+    startCompaction("threshold", true).done.catch(() => {});
+  }
+
+  function startCompaction(reason: "threshold" | "overflow", background: boolean, signal?: AbortSignal) {
+    const controller = new AbortController();
+    const abort = () => controller.abort(signal!.reason);
+    signal?.addEventListener("abort", abort, { once: true });
+    const current = { controller, background, done: compact(reason, background, controller.signal) };
+    compacting = current;
+    current.done.finally(() => {
+      signal?.removeEventListener("abort", abort);
+      if (compacting === current) compacting = undefined;
+    }).catch(() => {});
+    return current;
+  }
+
+  /**
+   * Summarize the working set as it is now, up to a cut that keeps recent context. Messages appended meanwhile (a turn
+   * that went on) follow the cut, so the summary replaces only the prefix it covered. The transcript's write is fenced
+   * by the owner's claim like every other: a node that lost the agent cannot write it. Failures leave the context as
+   * is; a later request tries again.
+   */
+  async function compact(reason: "threshold" | "overflow", background: boolean, signal: AbortSignal): Promise<boolean> {
+    const apiKey = config.apiKey;
+    if (!apiKey) return false;
+    // A tenant or agent at its spend cap makes no more model calls, summaries included, until a run needs one.
+    if (background && (await io.runLimit().catch(() => undefined))?.stopped === "spend_limit") return false;
+    const flag = background ? { background: true } : {};
+    io.emit({ type: "compaction_start", reason, ...flag });
+    const previous = transcript.compaction;
     try {
       const context = transcript.context.slice();
       const offset = transcript.offset;
@@ -200,34 +252,71 @@ export function createAgentHost(hostIO: HostIO) {
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
-        context: renderMessages(context), offset, previous: transcript.compaction, model: config.model, apiKey: perCall() ? () => io.modelAuth() : config.apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders,
-        onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp }),
+        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders,
+        onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp, ...flag }),
       });
       if ("skipped" in outcome) {
-        io.emit({ type: "compaction_end", reason, skipped: outcome.skipped });
+        io.emit({ type: "compaction_end", reason, skipped: outcome.skipped, ...flag });
+        return false;
+      }
+      // Only onto the working set it summarized: never past what history holds now, nor over a newer summary.
+      if (transcript.compaction !== previous || outcome.state.cut < transcript.offset || outcome.state.cut > transcript.total) {
+        io.emit({ type: "compaction_end", reason, skipped: "The working set changed while it was summarized", ...flag });
         return false;
       }
       // System messages before the cut fold into the leading one: the summary starts a new prefix anyway.
       const folded = transcript.updates.filter(update => update.at <= outcome.state.cut).map(update => update.message);
       const system = folded.length ? getCurrentSystemMessage([leading(), ...folded]) : undefined;
+      try { await transcript.compact(outcome.state, system); }
+      catch (error) { persistenceError = error; throw error; }
+      // A running turn leaves what the summary folded at its next request (liveView); between runs, Pi starts from the summary.
       for (const message of [...context.slice(0, outcome.state.cut - offset), ...folded]) dropped.add(message);
-      await transcript.compact(outcome.state, system);
-      io.emit({ type: "compaction_end", reason, tokensBefore: outcome.state.tokensBefore, summarizedMessages: outcome.state.cut - offset, keptMessages: transcript.context.length });
+      if (!busy) { agent!.state.messages = stateMessages(); dropped = new WeakSet(); }
+      io.emit({ type: "compaction_end", reason, tokensBefore: outcome.state.tokensBefore, summarizedMessages: outcome.state.cut - offset, keptMessages: transcript.context.length, ...flag });
       return true;
     } catch (error) {
-      if (signal?.aborted) throw error;
-      io.emit({ type: "compaction_end", reason, error: error instanceof Error ? error.message : String(error) });
+      if (signal.aborted) throw error;
+      io.emit({ type: "compaction_end", reason, error: error instanceof Error ? error.message : String(error), ...flag });
       return false;
     }
   }
 
-  /** Before every model request: compact when the context is too big, trimming only as a last resort. */
+  const systemTokens = (system: SystemMessage) => Math.ceil(getSystemMessageText(system).length / 4);
+
+  /**
+   * Before every model request: a context near its limit starts compacting in the background and is sent whole; one
+   * that would not fit waits for a compaction running already, else compacts first. Trimming is the last resort.
+   */
+  /**
+   * The model's context for `messages` and whether it needs compacting: `blocking` when it would not fit the window less
+   * the reserve, `background` within `backgroundTokens` of that (`compactionNeed`). Measured the way trimming measures it
+   * too (its JSON characters), so a context is compacted, not trimmed, wherever compaction can bring it within budget.
+   */
+  function measure(messages: AgentMessage[]) {
+    const [system, ...view] = liveView(messages) as [SystemMessage, ...AgentMessage[]];
+    const budget = config.model.contextWindow - compactionSettings(config.model).reserveTokens - systemTokens(system);
+    const trims = (tokens: number) => { try { return boundedContext(view, tokens).length !== view.length; } catch { return true; } };
+    let need = compactionNeed(view, config.model, systemTokens(system));
+    if (need === "blocking" || trims(budget)) need = "blocking";
+    else need ??= trims(budget - backgroundTokens(config.model)) ? "background" : undefined;
+    return { system, view, budget, need };
+  }
+
+  /**
+   * Before every model request: a context near its limit starts compacting in the background and is sent whole; one
+   * that would not fit waits for a compaction running already, else compacts first. Trimming is the last resort.
+   */
   async function contextFor(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> {
-    let [system, ...view] = liveView(messages) as [SystemMessage, ...AgentMessage[]];
-    const systemTokens = Math.ceil(getSystemMessageText(system).length / 4);
-    if (needsCompaction(view, config.model, systemTokens) && await compactNow("threshold", signal)) [system, ...view] = liveView(messages) as [SystemMessage, ...AgentMessage[]];
-    // Same budget as the compaction threshold, so this only trims when compaction could not run.
-    const budget = config.model.contextWindow - compactionSettings(config.model).reserveTokens - systemTokens;
+    let measured = measure(messages);
+    if (measured.need === "blocking" && compacting) {
+      await until(compacting.done, signal);
+      measured = measure(messages);
+    }
+    if (measured.need === "blocking" && await compactNow("threshold", signal)) measured = measure(messages);
+    else if (measured.need === "background") compactInBackground(messages);
+    const { view, budget } = measured;
+    let system = measured.system;
+    // Trimming is left for a context compaction could not bring within the budget.
     const bounded = boundedContext(view, budget);
     if (bounded.length !== view.length) {
       io.emit({ type: "context_trimmed", retainedMessages: bounded.length, omittedMessages: view.length - bounded.length });
@@ -719,7 +808,11 @@ export function createAgentHost(hostIO: HostIO) {
       await io.cancelTools();
       active = undefined;
       busy = false;
-      if (method !== "execute") void index();
+      if (method !== "execute") {
+        void index();
+        // After the turn: the summary is made while the agent waits for its next message.
+        compactInBackground();
+      }
     }
   }
 
@@ -777,6 +870,7 @@ export function createAgentHost(hostIO: HostIO) {
   async function dispose(flushMs = HISTORY_FLUSH_MS) {
     active?.abort();
     agent?.abort();
+    compacting?.controller.abort();
     if (flushMs > 0) await Promise.race([index(true), sleep(flushMs)]);
     await transcript?.log.close();
   }

@@ -80,6 +80,12 @@ export class AgentSupervisor {
     }
     finally { handle.calls.delete(controller); }
   }
+  /** A run's events reach its listeners; background work's (a compaction between runs) goes to the bridge instead, whether or not a run is open. */
+  private dispatchEvent(handle: Handle, event: any, copy = false) {
+    // Copies keep an inline agent from sharing objects with the supervisor, as IPC would.
+    if (event?.background === true) { handle.bridge.background?.(copy ? structuredClone(event) : event); return; }
+    for (const listener of handle.listeners) listener(copy ? structuredClone(event) : event);
+  }
   private cancelTools(handle: Handle) { for (const call of handle.calls) call.abort(); return null; }
 
   /** Start an agent. `claim` is its owner's, which fences the transcript's writes. */
@@ -112,7 +118,7 @@ export class AgentSupervisor {
     };
     child.once("exit", cleanup);
     child.once("error", cleanup);
-    rpc.onEvent = event => { for (const listener of handle.listeners) listener(event); };
+    rpc.onEvent = event => this.dispatchEvent(handle, event);
     rpc.handler = async (method, params) => {
       if (method === "cancel-tools") return this.cancelTools(handle);
       if (method === "transcript") return this.transcriptRequest(handle, params);
@@ -191,8 +197,7 @@ export class AgentSupervisor {
     const handle = { kind: "inline", bridge, calls: new Set(), listeners: new Set(), stop: stopped.reject, stopped: stopped.promise, transcript } as unknown as InlineHandle;
     handle.host = createAgentHost({
       transcript,
-      // Copies keep the agent from sharing objects with the supervisor, as IPC would.
-      emit: event => { for (const listener of handle.listeners) listener(structuredClone(event)); },
+      emit: event => this.dispatchEvent(handle, event, true),
       tool: (name, args, call) => this.dispatchTool(handle, { name, args: structuredClone(args), ...call }),
       cancelTools: async () => this.cancelTools(handle),
       runLimit: async () => handle.bridge.runLimit?.(),

@@ -86,10 +86,10 @@ export type AgentEvent =
   | { type: "output"; text: string }
   | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
   | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-  | { type: "compaction_start"; reason: string }
+  | { type: "compaction_start"; reason: string; background?: boolean }
   /** The model call that summarized the history, and what it used (not sent to browser tokens). */
-  | { type: "compaction_usage"; provider: string; model: string; usage: MessageUsage; timestamp: number }
-  | { type: "compaction_end"; reason: string; skipped?: boolean; error?: string; tokensBefore?: number; summarizedMessages?: number; keptMessages?: number }
+  | { type: "compaction_usage"; provider: string; model: string; usage: MessageUsage; timestamp: number; background?: boolean }
+  | { type: "compaction_end"; reason: string; skipped?: string; error?: string; tokensBefore?: number; summarizedMessages?: number; keptMessages?: number; background?: boolean }
   | { type: "context_trimmed"; retainedMessages: number; omittedMessages: number }
   | { type: "spend_limit_reached"; message: string }
   | { type: "turn_limit_reached"; message: string }

@@ -1184,6 +1184,7 @@ export class ClientSessions {
         modelAuth: () => this.modelAuth(session),
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: query => this.searchTools(session, query),
+        background: event => this.backgroundEvent(session, event),
         history: {
           // One whose create failed before writing its row begins it now, and is indexed from its log.
           indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0),
@@ -2529,8 +2530,7 @@ export class ClientSessions {
             this.tally(session, record.id, event.message.usage);
           }
           if (event?.type === "compaction_usage" && event.usage) {
-            this.options.onUsage?.(session.header.tenant, id, { ...event, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
-            this.spent(session, responseCost(event.usage));
+            this.compactionUsage(session, event, run);
             this.tally(session, record.id, event.usage);
           }
           // A prompt steered into this turn has been taken: it ends with the turn.
@@ -2731,6 +2731,26 @@ export class ClientSessions {
     if (usd === null) await this.db.query("delete from agent_spend_limits where agent = $1", [id]);
     else await this.db.query("insert into agent_spend_limits (agent, usd, spent, set_at) values ($1, $2, 0, $3) on conflict (agent) do update set usd = excluded.usd, spent = 0, set_at = excluded.set_at", [id, usd, setAt]);
     session.spend = usd === null ? null : { usd, spent: 0, setAt };
+  }
+
+  /**
+   * A compaction summary's usage, billed like a response: to the tenant (`onUsage`, kind compaction) and against the
+   * agent's spend limit. One made in the background belongs to no run (`run` has no requestId).
+   */
+  private compactionUsage(session: Session, event: any, run: Record<string, unknown>) {
+    // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
+    const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
+    this.options.onUsage?.(session.header.tenant, session.header.id, { ...event, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
+    this.spent(session, responseCost(event.usage));
+  }
+
+  /** Events of a compaction made between runs: billed here, as no run's stream carries them, and shown on the agent's stream. */
+  private backgroundEvent(session: Session, event: any) {
+    if (event?.type === "compaction_usage" && event.usage) {
+      const { identity, keyScope } = session.header;
+      this.compactionUsage(session, event, { ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
+    }
+    this.publish(session, { type: "event", requestId: "", event });
   }
 
   /** Count a model response's cost against the agent's spend limit, if it has one. */

@@ -8,27 +8,39 @@ import { join } from "node:path";
 import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
-import { explicitKeyStream, runCompaction } from "../src/compaction.ts";
+import { contextTokens, explicitKeyStream, runCompaction } from "../src/compaction.ts";
 import { readTranscript } from "../src/transcript.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
-import { fileStorage } from "../shared/storage.ts";
+import { fileStorage, memoryStorage } from "../shared/storage.ts";
+import { postgresTail } from "../src/log-tail.ts";
+import { Ownership } from "../src/ownership.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
 const isSummarization = (body: Body) => text(body).includes("context summarization assistant");
 
-/** An OpenAI-compatible provider that reports no usage, like some proxies, unless `usage` is set. */
-async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowAboveChars?: number; usage?: boolean } = {}) {
+/**
+ * An OpenAI-compatible provider that reports no usage, like some proxies, unless `usage` is set. With `gated`,
+ * summaries wait until `release()`; `inflight` counts summaries asked for and not yet answered.
+ */
+async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowAboveChars?: number; usage?: boolean; gated?: boolean } = {}) {
   const requests: Body[] = [];
   let summaries = 0;
+  let gate = Promise.withResolvers<void>();
+  const state = { inflight: 0, maxInflight: 0 };
   const server = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw) as Body;
     requests.push(body);
+    if (isSummarization(body)) {
+      state.maxInflight = Math.max(state.maxInflight, ++state.inflight);
+      if (options.gated) await gate.promise;
+      res.once("finish", () => state.inflight--);
+    }
     if (!isSummarization(body) && options.overflowAboveChars && text(body).length > options.overflowAboveChars) {
       res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: `This endpoint's maximum context length is 8000 tokens. However, you requested about ${Math.round(text(body).length / 4)} tokens`, type: "invalid_request_error" } }));
       return;
@@ -42,12 +54,14 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  t.after(async () => { gate.resolve(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  /** Answer the summaries waiting, and let later ones wait again. */
+  const release = () => { gate.resolve(); gate = Promise.withResolvers<void>(); };
   const model = (contextWindow: number, id = "fixture") => ({
     id, name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
     reasoning: false, input: ["text"], cost: { input: 1, output: 10, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 1000,
   }) as Model<Api>;
-  return { requests, model, chat: () => requests.filter(body => !isSummarization(body)), summarizations: () => requests.filter(isSummarization) };
+  return { requests, model, release, state, chat: () => requests.filter(body => !isSummarization(body)), summarizations: () => requests.filter(isSummarization) };
 }
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
@@ -127,7 +141,9 @@ test("a transcript written by pi 0.80.6 loads, replays its tool history and summ
   const before = await readTranscript(directory);
   assert.equal(before.length, 20);
   const inspect = { definitions: [{ name: "inspect", description: "Inspect", parameters: { type: "object" }, exposure: "direct" as const }], async call() { return "inspected"; } };
-  const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture" }, inspect);
+  // Compactions between runs report to the bridge, as no run's stream carries them.
+  const events: any[] = [];
+  const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture" }, { ...inspect, background: (event: any) => events.push(event) });
   assert.equal(started.messages, 20);
   assert.deepEqual((await supervisor.request("legacy", "history")).messages, before);
   const result = await supervisor.request("legacy", "prompt", { text: "After the upgrade" });
@@ -137,9 +153,8 @@ test("a transcript written by pi 0.80.6 loads, replays its tool history and summ
   assert.doesNotMatch(sent, /TURN-0 /);
   assert.match(sent, /"name":"inspect"/, "stored tool calls replay");
   assert.match(sent, /"role":"tool"/, "stored tool results replay");
-  const events: any[] = [];
   for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
-  assert.ok(events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0));
+  await until(() => events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0), "a compaction ran");
   assert.match(text(fake.summarizations()[0]), /SUMMARY-write-4/, "the stored summary seeds the next one");
   assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 20), before);
 });
@@ -158,7 +173,9 @@ test("a transcript written by pi 0.87.1 loads on pi 1.0, replays its summary, to
   assert.equal(before.length, 26);
   assert.deepEqual(before.filter(message => message.role === "toolResult" && message.isError).map(message => (message as { toolName: string }).toolName), ["fails"]);
   const definitions = ["inspect", "fails"].map(name => ({ name, description: name, parameters: { type: "object" }, exposure: "direct" as const }));
-  const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture", systemPrompt: "Changed rules" }, { definitions, async call() { return "inspected"; } });
+  // Compactions between runs report to the bridge, as no run's stream carries them.
+  const events: any[] = [];
+  const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture", systemPrompt: "Changed rules" }, { definitions, async call() { return "inspected"; }, background: event => events.push(event) });
   assert.equal(started.messages, 26);
   assert.deepEqual((await supervisor.request("legacy", "history")).messages, before);
   assert.equal((await supervisor.request("legacy", "status")).compacted, true);
@@ -169,9 +186,11 @@ test("a transcript written by pi 0.87.1 loads on pi 1.0, replays its summary, to
   assert.doesNotMatch(text(sent), /IMPORTED-|TOOL FAIL/, "what the summary covers stays out");
   assert.match(text(sent), /"name":"inspect"/, "stored tool calls replay");
   assert.match(text(sent), /"role":"tool"/, "stored tool results replay");
-  const events: any[] = [];
   for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
-  assert.ok(events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0));
+  for (let tries = 0; !events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0); tries++) {
+    assert.ok(tries < 200, "a compaction ran");
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
   assert.match(text(fake.summarizations()[0]), /SUMMARY-087-2/, "the stored summary seeds the next one");
   assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 26), before);
 });
@@ -231,6 +250,8 @@ test("compaction summaries bill their tokens and cost to the tenant, apart from 
     }
     assert.equal((sessions.sessions.get(id)!.requests.get(`turn-${index}`)!.outcome as any).result.error, null);
   }
+  // A summary may still be made in the background after the last turn.
+  await until(async () => fake.state.inflight === 0 && (await accounts.usage("acme", Date.now() - 86_400_000)).totals.responses === 4 + fake.summarizations().length, "every response was billed");
   const summaries = fake.summarizations().length;
   assert.ok(summaries >= 1, "a summary was requested");
   const usage = await accounts.usage("acme", Date.now() - 86_400_000);
@@ -350,4 +371,214 @@ test("model and summarization requests carry only the tenant's key, whatever pro
       assert.equal(key, `tenant-${model.provider}`, `${model.provider}/${model.id}`);
     }
   } finally { for (const name of Object.keys(hostEnv)) delete process.env[name]; }
+});
+
+// Background compaction ---------------------------------------------------------------------------------------
+
+/** Wait until `done()` holds, polling; fails after about 5 s. */
+async function until(done: () => boolean | Promise<boolean>, what: string) {
+  for (let tries = 0; !await done(); tries++) {
+    assert.ok(tries < 200, `timed out waiting until ${what}`);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+const small = (index: number) => `TURN-${index} ${"y".repeat(3000)}`;
+type Records = Array<{ t: string; cut?: number; message?: { content?: unknown } }>;
+const records = (log: { read(): Promise<unknown[]> }) => log.read() as Promise<Records>;
+
+/** An agent of `fake`'s with an 8,000-token window, its background events collected, its turns run until a summary is asked for. */
+async function nearLimit(t: { after(fn: () => Promise<void>): void }, fake: Awaited<ReturnType<typeof provider>>, supervisor: AgentSupervisor, id: string, extra: Record<string, unknown> = {}) {
+  const background: any[] = [];
+  await supervisor.start(id, { model: fake.model(8000), apiKey: "fixture" }, { ...bridge, background: (event: any) => background.push(event), ...extra } as never);
+  const turns: any[] = [];
+  for (let index = 0; !fake.state.inflight; index++) {
+    assert.ok(index < 12, "the context reached the background threshold");
+    const result = await supervisor.request(id, "prompt", { text: small(index) }, event => turns.push(event));
+    assert.equal(result.error, null);
+    // The summary is asked for as the turn ends.
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.ok(background.some(event => event.type === "compaction_start" && event.background), "started in the background");
+  assert.equal(turns.filter(event => event.type === "compaction_start").length, 0, "no turn waited for a summary");
+  return background;
+}
+
+test("past the threshold, the next turn starts at once with the whole context while the summary is made in the background", async t => {
+  const fake = await provider(t, { gated: true });
+  const supervisor = await fixture(t);
+  const background = await nearLimit(t, fake, supervisor, "eager");
+  const before = fake.chat().length;
+  const started = Date.now();
+  const events: any[] = [];
+  const result = await supervisor.request("eager", "prompt", { text: "NEXT-TURN" }, event => events.push(event));
+  assert.equal(result.error, null);
+  assert.ok(Date.now() - started < 2_000, "the turn did not wait for the summary");
+  assert.equal(fake.chat().length, before + 1);
+  assert.match(text(fake.chat().at(-1)!), /TURN-0 /, `it went with the whole context: ${text(fake.chat().at(-1)!).match(/TURN-[0-9]+|SUMMARY[^\\]*/g)}`);
+  assert.equal(events.filter(event => event.type.startsWith("compaction")).length, 0, "the run's stream carries no compaction");
+  assert.equal(fake.state.inflight, 1, "the summary is still being made");
+  assert.equal((await supervisor.request("eager", "status")).compacted, false);
+
+  fake.release();
+  await until(() => background.some(event => event.type === "compaction_end"), "the compaction ended");
+  const ended = background.find(event => event.type === "compaction_end");
+  assert.ok(ended.summarizedMessages > 0 && ended.background, JSON.stringify(ended));
+  assert.ok(background.some(event => event.type === "compaction_usage" && event.background));
+  assert.equal((await supervisor.request("eager", "status")).compacted, true);
+  await supervisor.request("eager", "prompt", { text: "AFTER" });
+  assert.match(text(fake.chat().at(-1)!), /SUMMARY-MARKER-1/, "the summary took over");
+  assert.doesNotMatch(text(fake.chat().at(-1)!), /TURN-0 /);
+});
+
+test("messages appended while a background summary is made follow its cut: the summary replaces only the prefix it covered", async t => {
+  const fake = await provider(t, { gated: true });
+  const root = await mkdtemp(join(tmpdir(), "compaction-concurrent-"));
+  const storage = fileStorage(join(root, "state"));
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
+  const background = await nearLimit(t, fake, supervisor, "concurrent");
+  const summarizing = (await supervisor.request("concurrent", "status")).messages;
+  // Two more turns while the summary is made: their messages land after everything it read.
+  for (const marker of ["CONCURRENT-A", "CONCURRENT-B"]) assert.equal((await supervisor.request("concurrent", "prompt", { text: marker })).error, null);
+  fake.release();
+  await until(() => background.some(event => event.type === "compaction_end"), "the compaction ended");
+  const log = await records(storage.log(AgentSupervisor.transcriptKey("concurrent")));
+  const compactions = log.filter(record => record.t === "compaction");
+  assert.equal(compactions.length, 1);
+  assert.ok(compactions[0].cut! < summarizing, "the cut is within what the summary read");
+  const status = await supervisor.request("concurrent", "status");
+  assert.equal(status.messages, summarizing + 4);
+  assert.equal(status.contextMessages, status.messages - compactions[0].cut!, "everything after the cut stays in the working set");
+  await supervisor.request("concurrent", "prompt", { text: "AFTER" });
+  const sent = text(fake.chat().at(-1)!);
+  assert.match(sent, /SUMMARY-MARKER-1/);
+  assert.match(sent, /CONCURRENT-A[\s\S]*CONCURRENT-B[\s\S]*AFTER/, "the turns made meanwhile are kept, in order");
+  assert.doesNotMatch(text(fake.summarizations()[0]), /CONCURRENT-/, "and were not summarized");
+  // After a restart, the log replays to the same working set.
+  await supervisor.stop("concurrent");
+  await supervisor.start("concurrent", { model: fake.model(8000), apiKey: "fixture" }, bridge);
+  assert.equal((await supervisor.request("concurrent", "status")).contextMessages, status.contextMessages + 2);
+  assert.equal((await supervisor.request("concurrent", "history")).messages.length, status.messages + 2);
+});
+
+test("a turn that would not fit waits for the background summary instead of starting another, and one with none running compacts first", async t => {
+  const fake = await provider(t, { gated: true });
+  const supervisor = await fixture(t);
+  const background = await nearLimit(t, fake, supervisor, "waits");
+  const before = fake.chat().length;
+  const events: any[] = [];
+  // Past the window less its reserve: this turn cannot go until the context is compacted.
+  const pending = supervisor.request("waits", "prompt", { text: `HUGE ${"z".repeat(6000)}` }, event => events.push(event));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(fake.chat().length, before, "it waits for the summary");
+  fake.release();
+  assert.equal((await pending).error, null);
+  assert.equal(fake.state.maxInflight, 1, "one compaction at a time");
+  assert.equal(events.filter(event => event.type === "compaction_start").length, 0, "the summary that made it fit was the background one");
+  assert.ok(background.some(event => event.type === "compaction_end" && event.summarizedMessages > 0));
+  assert.match(text(fake.chat().at(-1)!), /SUMMARY-MARKER-1[\s\S]*HUGE/);
+
+  // Without one running, a turn that would not fit compacts first, on its own stream.
+  const fresh = await provider(t);
+  const initialMessages = Array.from({ length: 6 }, (_, index) => [
+    { role: "user", content: `IMPORTED-${index} ${"w".repeat(3000)}`, timestamp: index * 2 },
+    { role: "assistant", content: [{ type: "text", text: `answer ${index}` }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", timestamp: index * 2 + 1,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+  ]).flat() as any[];
+  const forced: any[] = [];
+  await supervisor.start("forced", { model: fresh.model(8000), apiKey: "fixture", initialMessages }, bridge);
+  assert.equal((await supervisor.request("forced", "prompt", { text: `HUGE ${"z".repeat(9000)}` }, event => forced.push(event))).error, null);
+  const start = forced.find(event => event.type === "compaction_start");
+  assert.ok(start && !start.background, "the turn compacted first");
+  assert.ok(forced.findIndex(event => event.type === "compaction_end") < forced.findIndex(event => event.type === "message_update"), "before its model request");
+  assert.ok(fresh.requests.findIndex(isSummarization) < fresh.requests.findIndex(body => !isSummarization(body)));
+  assert.doesNotMatch(text(fresh.chat().at(-1)!), /IMPORTED-0 /);
+});
+
+test("a node lost mid-compaction cannot write its summary: the next owner serves the agent, compacts once, and history stays whole", async t => {
+  const fake = await provider(t, { gated: true });
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const root = await mkdtemp(join(tmpdir(), "compaction-failover-"));
+  const owners = [new Ownership(db, { node: "http://a" }), new Ownership(db, { node: "http://b" })];
+  const [a, b] = ["a", "b"].map(name => new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage }));
+  for (const owner of owners) await owner.start();
+  t.after(async () => {
+    fake.release();
+    for (const node of [a, b]) await node.close().catch(() => {});
+    for (const owner of owners) await owner.close().catch(() => {});
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+  const id = "failover";
+  const claim = async (owner: Ownership) => { const taken = await owner.acquire(id); assert.ok("claim" in taken); return taken.claim; };
+  const model = fake.model(8000);
+  const onA: any[] = [];
+  await a.start(id, { model, apiKey: "fixture" }, { ...bridge, background: (event: any) => onA.push(event) } as never, await claim(owners[0]));
+  for (let index = 0; !fake.state.inflight; index++) {
+    assert.ok(index < 12, "the context reached the background threshold");
+    assert.equal((await a.request(id, "prompt", { text: small(index) })).error, null);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  const total = (await a.request(id, "status")).messages;
+
+  // A's heartbeat lapses while its summary is being made, and B takes the agent over: A's claim is no longer current.
+  await db.query("update actor_owners set node = null, session = null where actor = $1", [id]);
+  const onB: any[] = [];
+  const started = await b.start(id, { model, apiKey: "fixture" }, { ...bridge, background: (event: any) => onB.push(event) } as never, await claim(owners[1]));
+  assert.equal(started.messages, total, "B loads the whole history");
+  assert.equal((await b.request(id, "prompt", { text: "ON-B" })).error, null, "B serves the agent meanwhile");
+  await until(() => fake.state.inflight === 2, "B began its own summary");
+
+  fake.release();
+  await until(() => onA.some(event => event.type === "compaction_end") && onB.some(event => event.type === "compaction_end"), "both compactions ended");
+  assert.ok(onA.find(event => event.type === "compaction_end").error, "A's write was fenced");
+  assert.ok(onB.find(event => event.type === "compaction_end").summarizedMessages > 0, "B's summary was written");
+  const log = await records(storage.log(AgentSupervisor.transcriptKey(id)));
+  assert.equal(log.filter(record => record.t === "compaction").length, 1, "one compaction, B's");
+  assert.equal(log.filter(record => record.t === "message").length, total + 2);
+  assert.equal((await b.request(id, "prompt", { text: "AFTER" })).error, null);
+  assert.match(text(fake.chat().at(-1)!), /SUMMARY-MARKER-\d[\s\S]*ON-B[\s\S]*AFTER/);
+  assert.equal((await b.request(id, "history")).messages.length, total + 4);
+});
+
+test("a background compaction is billed like any: to the tenant as compaction, outside any run, and against the agent's spend limit", async t => {
+  const fake = await provider(t, { usage: true });
+  const supervisor = await fixture(t);
+  const { db } = await testDatabase();
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db });
+  const root = await mkdtemp(join(tmpdir(), "compaction-background-usage-"));
+  const recorded: any[] = [];
+  const sessions = new ClientSessions(supervisor, { db, root, secret: "compaction-usage-secret-32-characters", apiKeyFor: () => "fixture", onUsage: (tenant, agent, message) => { recorded.push(message); accounts.recordUsage(tenant, agent, message); } });
+  t.after(async () => { await sessions.close(); await rm(root, { recursive: true, force: true }); });
+  const { id } = await sessions.create([], { model: fake.model(8000, "turns") }, "billed", {}, "acme");
+  const run = async (request: string, method: string, params: Record<string, unknown>) => {
+    await sessions.submit(id, "acme", { id: request, method, params });
+    await until(() => sessions.sessions.get(id)!.requests.get(request)!.state === "completed", `${request} finished`);
+    return (sessions.sessions.get(id)!.requests.get(request)!.outcome as any).result;
+  };
+  await run("budget", "configure", { spendLimit: { usd: 100 } });
+  for (let index = 0; !recorded.some(message => message.kind === "compaction"); index++) {
+    assert.ok(index < 12, "a compaction ran");
+    assert.equal((await run(`turn-${index}`, "prompt", { text: small(index) })).error, null);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  await until(() => fake.state.inflight === 0 && recorded.filter(message => message.kind === "compaction").length === fake.summarizations().length, "every summary was billed");
+  const summaries = recorded.filter(message => message.kind === "compaction");
+  assert.ok(summaries.every(message => message.requestId === undefined && message.background), "made between runs, by no run");
+  const turns = recorded.filter(message => message.kind !== "compaction").length;
+  const usage = await accounts.usage("acme", Date.now() - 86_400_000);
+  assert.deepEqual(usage.days.filter(row => row.kind === "compaction").map(row => [row.model, row.responses, row.input, row.output]), [["openai/turns", summaries.length, 3000 * summaries.length, 200 * summaries.length]]);
+  const [{ spent }] = (await db.query("select spent from agent_spend_limits where agent = $1", [id])).rows;
+  assert.ok(Math.abs(Number(spent) - (summaries.length * 5000 + turns * 20) / 1e6) < 1e-9, `the agent's spend counts the summaries: ${spent}`);
+});
+
+test("usage a response reported before the summary was written does not count against the context that replaced it", () => {
+  const usage = (input: number) => ({ input, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: input + 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+  const answer = (timestamp: number, input: number) => ({ role: "assistant", content: [{ type: "text", text: "ok" }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", usage: usage(input), timestamp }) as any;
+  const summary = { role: "compactionSummary", summary: "S".repeat(400), tokensBefore: 100_000, timestamp: 2_000 } as any;
+  const user = { role: "user", content: "next", timestamp: 2_500 } as any;
+  // Made while the summary was being written (before it), from the whole context: about 100k tokens.
+  assert.ok(contextTokens([summary, answer(1_500, 100_000), user]) < 200);
+  // Once a request carried the summary, its report is the measure.
+  assert.ok(contextTokens([summary, answer(1_500, 100_000), user, answer(3_000, 5_000)]) >= 5_010);
 });

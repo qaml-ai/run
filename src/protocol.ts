@@ -26,6 +26,8 @@ export interface ToolBridge {
   fs?(op: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** The agent's history index (history-pages.ts): how many messages it has, and writing a chunk where it ends (returning where it ends then). */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
+  /** Events of work the agent does apart from any run (`background: true`: a background compaction's), which reach no run's stream. */
+  background?(event: any): void;
 }
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 export const IDENTITY_KEY = "agent-runtime:identity-token";

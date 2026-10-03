@@ -42,7 +42,9 @@ export function contextTokens(messages: AgentMessage[]): number {
   let estimated = 0;
   const files = messages.map(message => Math.ceil(fileChars(message) / 4));
   messages.forEach((message, index) => { estimated += estimateTokens(message) + files[index]; });
-  const reported = estimateContextTokens(messages);
+  // A response from before the summary was written reported the context it replaced: its usage says nothing now.
+  const since = messages.find(message => message.role === "compactionSummary")?.timestamp ?? -Infinity;
+  const reported = estimateContextTokens(messages.map(message => message.role === "assistant" && message.timestamp < since ? { ...message, usage: undefined as never } : message));
   const trailing = files.slice((reported.lastUsageIndex ?? -1) + 1).reduce((sum, tokens) => sum + tokens, 0);
   return Math.max(reported.tokens + trailing, estimated);
 }
@@ -53,13 +55,27 @@ function fileChars(message: AgentMessage): number {
   return Array.isArray(content) ? content.reduce((sum: number, block) => sum + (validFileRef(block) ? charsOf(block) : 0), 0) : 0;
 }
 
-/** `fixedTokens` covers what every request carries besides messages, such as the system prompt. */
-export function needsCompaction(messages: AgentMessage[], model: Model<Api>, fixedTokens = 0): boolean {
+/**
+ * How far below the blocking threshold background compaction starts: pi-durable's 32k tokens, scaled
+ * down for small context windows like the reserve. Enough room for a few turns while the summary is made.
+ */
+export function backgroundTokens(model: Model<Api>): number {
+  return Math.min(32_768, Math.floor(model.contextWindow * 0.15));
+}
+
+/**
+ * Whether the context needs compacting before its next request (`blocking`: it would not fit, past the
+ * window less the reserve or MAX_WORKING_CHARS), may compact in the background while requests go on
+ * (`background`: within `backgroundTokens` of that), or neither. `fixedTokens` covers what every request
+ * carries besides messages, such as the system prompt.
+ */
+export function compactionNeed(messages: AgentMessage[], model: Model<Api>, fixedTokens = 0): "blocking" | "background" | undefined {
   const settings = compactionSettings(model);
-  if (shouldCompact(contextTokens(messages) + fixedTokens, model.contextWindow, settings)) return true;
+  const tokens = contextTokens(messages) + fixedTokens;
+  if (shouldCompact(tokens, model.contextWindow, settings)) return "blocking";
   let chars = 0;
-  for (const message of messages) if ((chars += messageChars(message)) > MAX_WORKING_CHARS) return true;
-  return false;
+  for (const message of messages) if ((chars += messageChars(message)) > MAX_WORKING_CHARS) return "blocking";
+  return shouldCompact(tokens, model.contextWindow, { ...settings, reserveTokens: settings.reserveTokens + backgroundTokens(model) }) ? "background" : undefined;
 }
 
 /** Where a call to a tenant's own endpoint carries its identity token, besides where the provider takes its key. */
