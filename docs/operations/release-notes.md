@@ -1,5 +1,24 @@
 # Release notes
 
+## Unreleased — background compaction, Pi 1.0
+
+Compaction no longer holds up the next run. Once an agent's context comes within 32k tokens (15% of a
+smaller window) of its compaction threshold, the summary is made in the background, after a run or
+between model requests, and runs go on with the whole context until it is written. Only a run whose
+context would not fit waits for it, or compacts first when none is running. One compaction runs at a
+time per agent. Its events carry `background: true` and reach the agent's stream outside any run
+(`requestId` empty); its usage is billed as `compaction`, with no `requestId`, and counts against
+spend limits as before. Measured on gpt-4o-mini with 110k tokens of history, the run that crossed the
+threshold started its reply in 1.1 s instead of 12.6 s (6.3 s when it was sent straight after the
+previous run, while the summary was still being made).
+
+Context estimates no longer count usage that a response reported before the latest summary: it
+measured the context the summary replaced, and could start a second compaction straight after the first.
+
+The runtime runs on Pi 1.0 (`@earendil-works/pi-agent-core` and `pi-ai`). Transcripts written by
+earlier releases load unchanged. A tool result an MCP server or OpenAPI operation returns with
+`isError` keeps its content and structured content in history.
+
 ## Unreleased — rate limits
 
 The API answers 429 `RATE_LIMITED` with `Retry-After` and the limit reached (`limit: {name, scope, max,

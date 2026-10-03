@@ -65,6 +65,24 @@ wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
 run itself goes on, and `agent.abort()` stops it. A failed run throws a
 `RunError` carrying the run, unless you pass `throwOnError: false`.
 
+### Long conversations
+
+An agent's history can outgrow its model's context window, so the runtime
+**compacts** it: older messages are summarized, and the model sees the summary
+followed by the recent messages. History keeps every message (`/history`); only
+what the model is sent changes.
+
+Compaction runs in the background. Once the context comes within a margin of
+its limit (32k tokens, or 15% of a smaller window, before the window less a
+reserve for the reply), the summary is made after the run ends, or between
+model requests, while the agent goes on: the next run starts at once with the
+whole context, and the summary takes over when it is written. Only a run whose
+context would not fit waits, for the summary being made or, if none is, for one
+of its own. A provider that rejects a request as too long also gets a summary
+and the request again. Summaries are billed like model responses (`kind:
+"compaction"` in usage) and count against spend limits; one made between runs
+belongs to no run. An agent compacts one summary at a time.
+
 ## The result is the truth; events are for display
 
 An agent's **events** stream every step: text as the model writes it, tool

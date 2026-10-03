@@ -223,9 +223,9 @@ Messages (`message` fields, and history) are one of:
 | --- | --- | --- |
 | `auto_retry_start` | `attempt`, `maxAttempts`, `delayMs`, `errorMessage` | a transient provider failure (overload, rate limit, 5xx, dropped stream) is being retried; the failed response was retracted |
 | `auto_retry_end` | `success`, `attempt`, `finalError?` | retrying ended |
-| `compaction_start` | `reason` | the conversation is being summarized to fit the model's context |
-| `compaction_end` | `reason`, and `skipped`, or `tokensBefore`, `summarizedMessages`, `keptMessages`, or `error` | summarizing ended |
-| `compaction_usage` *internal* | `provider`, `model`, `usage`, `timestamp` | what the summary's model call used |
+| `compaction_start` | `reason`, `background?` | the conversation is being summarized to fit the model's context. With `background: true` it is made between or alongside runs, outside any run's request (`requestId` is empty), and nothing waits for it |
+| `compaction_end` | `reason`, `background?`, and `skipped`, or `tokensBefore`, `summarizedMessages`, `keptMessages`, or `error` | summarizing ended |
+| `compaction_usage` *internal* | `provider`, `model`, `usage`, `timestamp`, `background?` | what the summary's model call used |
 | `context_trimmed` | `retainedMessages`, `omittedMessages` | older messages were left out of a model request to fit it |
 | `spend_limit_reached` *internal* | `message` | the agent (or tenant) reached its spend limit; the turn stops after this response's tool calls |
 | `turn_limit_reached` *internal* | `message` | the run reached its limit of model responses or time (`runLimits`); the turn stops after this response's tool calls |

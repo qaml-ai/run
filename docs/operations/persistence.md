@@ -43,6 +43,20 @@ effect blindly, and the model continues from there. A turn that cannot resume
 and its request completes with an `uncertain` error. Tool calls are never re-sent,
 and nothing blocks later requests.
 
+**Compaction.** The agent host keeps only its working set in memory: the latest
+compaction summary and the messages after its cut. A compaction is one
+transcript record, `{t: "compaction", summary, cut, tokensBefore, at}`, where
+`cut` is the absolute index of the first message it keeps; the messages before
+it stay in the log and the history index. Background compaction summarizes the
+working set as it was when it began, and turns go on meanwhile: their messages
+are appended after everything the summary read, so they follow the cut and stay.
+The record is appended under the owner's claim like every other, and only onto
+the working set it summarized (never past the history's end, nor over a newer
+summary). A node that loses the agent mid-compaction cannot write its summary;
+the next owner loads the transcript without it and compacts again if the context
+still needs it. An agent runs one compaction at a time; a run whose context would
+not fit waits for the one running instead of starting another.
+
 Transient provider failures (overload, rate limits, 5xx, dropped streams) are
 retried in the same turn with exponential backoff (3 attempts from 2 s).
 Context overflow is not retried.
