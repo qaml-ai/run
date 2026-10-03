@@ -144,6 +144,38 @@ test("a transcript written by pi 0.80.6 loads, replays its tool history and summ
   assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 20), before);
 });
 
+test("a transcript written by pi 0.87.1 loads on pi 1.0, replays its summary, tool history and system change, and keeps compacting", async t => {
+  const fake = await provider(t);
+  const root = await mkdtemp(join(tmpdir(), "compaction-087-"));
+  const directory = join(root, "agents", "legacy");
+  await mkdir(directory, { recursive: true });
+  // Recorded by the runtime on pi 0.87.1 (long turns shortened): an import with a compactionSummary, an image prompt,
+  // tool calls with thinking, a failed tool call, a prompt change, and a compaction that folded the change in.
+  await copyFile(new URL("./fixtures/pi-0.87.1-transcript.jsonl", import.meta.url), join(directory, "transcript.jsonl"));
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
+  const before = await readTranscript(directory);
+  assert.equal(before.length, 26);
+  assert.deepEqual(before.filter(message => message.role === "toolResult" && message.isError).map(message => (message as { toolName: string }).toolName), ["fails"]);
+  const definitions = ["inspect", "fails"].map(name => ({ name, description: name, parameters: { type: "object" }, exposure: "direct" as const }));
+  const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture", systemPrompt: "Changed rules" }, { definitions, async call() { return "inspected"; } });
+  assert.equal(started.messages, 26);
+  assert.deepEqual((await supervisor.request("legacy", "history")).messages, before);
+  assert.equal((await supervisor.request("legacy", "status")).compacted, true);
+  assert.equal((await supervisor.request("legacy", "prompt", { text: "After the upgrade" })).error, null);
+  const sent = fake.chat().at(-1)!;
+  assert.match(text(sent), /compacted into the following summary:\\n\\n<summary>\\n## Goal\\nSUMMARY-087-2/, "the stored summary is the context's start");
+  assert.match(JSON.stringify(sent.messages[0]), /Changed rules/, "the folded prompt change leads the context");
+  assert.doesNotMatch(text(sent), /IMPORTED-|TOOL FAIL/, "what the summary covers stays out");
+  assert.match(text(sent), /"name":"inspect"/, "stored tool calls replay");
+  assert.match(text(sent), /"role":"tool"/, "stored tool results replay");
+  const events: any[] = [];
+  for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
+  assert.ok(events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0));
+  assert.match(text(fake.summarizations()[0]), /SUMMARY-087-2/, "the stored summary seeds the next one");
+  assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 26), before);
+});
+
 test("an imported history larger than one summarization request is summarized in chunks", async t => {
   const fake = await provider(t);
   const supervisor = await fixture(t);
