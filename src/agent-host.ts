@@ -94,6 +94,15 @@ export function createAgentHost(hostIO: HostIO) {
   function index(final = false): Promise<void> {
     const history = io.history;
     if (!history || !transcript) return Promise.resolve();
+    /** Add chunks in order; false when the index took less than a chunk (another writer, a gap): the rest waits for the next pass. */
+    const write = async (chunks: HistoryChunk[]) => {
+      for (const chunk of chunks) {
+        const indexed = await history.write(chunk);
+        transcript.indexed(indexed);
+        if (indexed !== chunk.start + chunk.messages.length) return false;
+      }
+      return true;
+    };
     return indexing = indexing.then(async () => {
       const backlog = transcript.backlog;
       if (backlog && backlog.kept > backlog.from) {
@@ -104,21 +113,12 @@ export function createAgentHost(hostIO: HostIO) {
         // A turn cut off by the stop is settled at the next start, with its repairs; while the agent runs, its latest
         // message (which a retry may take back) waits, as it does in memory.
         const upto = final ? (transcript.active ? Math.min(backlog.kept, transcript.turnStart) : backlog.kept) : Math.min(backlog.kept, transcript.total - 1);
-        for (const chunk of chunksOf(past, Math.max(0, Math.min(upto - backlog.from, past.messages.length)))) {
-          const indexed = await history.write(chunk);
-          transcript.indexed(indexed);
-          if (indexed !== chunk.start + chunk.messages.length) return;
-        }
-        if (backlog.kept > backlog.from) return;
+        if (!await write(chunksOf(past, Math.max(0, Math.min(upto - backlog.from, past.messages.length)))) || backlog.kept > backlog.from) return;
       }
       if (!backlog?.messages.length || (!final && backlog.bytes < CHUNK_BYTES)) return;
       // A turn cut off by the stop is settled at the next start, with its repairs.
       const count = !final ? backlog.messages.length - 1 : transcript.active ? Math.max(0, transcript.turnStart - backlog.from) : backlog.messages.length;
-      for (const chunk of chunksOf(backlog, count)) {
-        const indexed = await history.write(chunk);
-        transcript.indexed(indexed);
-        if (indexed !== chunk.start + chunk.messages.length) return;
-      }
+      await write(chunksOf(backlog, count));
     }).catch(error => console.error(JSON.stringify({ type: "history_index_failed", agent: config.id, error: errorText(error) })));
   }
 
@@ -478,8 +478,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (typeof params.text !== "string" || !params.text.trim()) throw new Error("Prompt text is required");
     const files = params.files ?? [];
     if (!Array.isArray(files) || files.length > FILE_LIMITS.attachments || !files.every(validFileRef)) throw new Error("Invalid attached files");
-    // Images inline in `images` come only from runs queued before attachments were saved as files.
-    return stamp([{ role: "user", content: [{ type: "text", text: params.text }, ...files, ...(params.images ?? [])], timestamp: Date.now() } as AgentMessage], marks);
+    return stamp([{ role: "user", content: [{ type: "text", text: params.text }, ...files], timestamp: Date.now() } as AgentMessage], marks);
   }
 
   /**
