@@ -68,6 +68,33 @@ def database(statement):
                    env={"PATH": os.environ["PATH"], "URL": DATABASE_URL, "SQL": statement})
 
 
+def otlp_receiver(requests):
+    """An OTLP/HTTP traces receiver on localhost (send JSON to it): keeps each request's headers and decoded body."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            requests.append({"path": self.path, "headers": {key.lower(): value for key, value in self.headers.items()},
+                             "body": json.loads(body) if self.headers.get("Content-Type") == "application/json" else body})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def trace_ids(requests):
+    """Every span's (trace id, name) in the JSON exports received."""
+    return [(span["traceId"], span["name"]) for request in requests if isinstance(request["body"], dict)
+            for resource in request["body"]["resourceSpans"] for scope in resource["scopeSpans"] for span in scope["spans"]]
+
+
 class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="camelai-python-sdk-")
@@ -89,6 +116,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                  "AGENT_PROVIDER": "openrouter", "AGENT_MODEL": "openai/gpt-4o-mini", "AGENT_BASE_URL": f"http://127.0.0.1:{self.model.server_port}/v1",
                  # Providers of the tenant's own: sealed keys, and the fake model server reachable as one.
                  "AGENT_SECRETS_KEY": "ab" * 32, "AGENT_OUTBOUND_ALLOW_HTTP": "true", "AGENT_OUTBOUND_ALLOW_CIDRS": "127.0.0.1/32",
+                 # Trace export to a local OTLP receiver, flushed quickly.
+                 "AGENT_TELEMETRY_INTERVAL_MS": "100",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
         ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))
@@ -233,6 +262,53 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         durable = await self.runtime.create_agent(tools=[], idempotency_key="py-durable")
         self.assertIsNone(durable.session["expiresAt"])
         self.assertEqual(self.bodies[-1]["messages"][-1]["role"], "user")
+
+    async def test_telemetry_set_get_test_clear_and_a_traceparent_continues_the_callers_trace(self):
+        received = []
+        receiver = otlp_receiver(received)
+        self.addCleanup(receiver.server_close)
+        self.addCleanup(receiver.shutdown)
+        endpoint = f"http://127.0.0.1:{receiver.server_port}"
+        telemetry = self.agents.runtime.telemetry
+        self.assertIsNone(await telemetry.get())
+        self.assertEqual(await telemetry.clear(), {"deleted": False})
+
+        settings = await telemetry.set(endpoint, headers={"x-api-key": "otlp-python-secret"}, protocol="http/json", sample_rate=1, include_content=False)
+        self.assertEqual({**settings, "createdAt": 0, "updatedAt": 0}, {
+            "endpoint": f"{endpoint}/v1/traces", "protocol": "http/json", "sampleRate": 1, "include": {"content": False}, "headers": ["x-api-key"],
+            "createdAt": 0, "updatedAt": 0, "status": {"lastExportAt": None, "lastError": None, "lastErrorAt": None}})
+        shown = await telemetry.get()
+        self.assertEqual(shown["headers"], ["x-api-key"])
+        self.assertNotIn("otlp-python-secret", json.dumps([settings, shown]))
+
+        tested = await telemetry.test()
+        self.assertTrue(tested["ok"], tested)
+        for _ in range(100):
+            if any(trace == tested["traceId"] for trace, _ in trace_ids(received)):
+                break
+            await asyncio.sleep(0.05)
+        self.assertIn(tested["traceId"], [trace for trace, _ in trace_ids(received)])
+        self.assertEqual(received[0]["headers"]["x-api-key"], "otlp-python-secret")
+
+        # run(), stream() and the lower-level prompt() each send the caller's trace context.
+        agent = await self.make()
+        cases = [("a" * 31 + "1", lambda traceparent: agent.run("hi", traceparent=traceparent)),
+                 ("b" * 31 + "2", lambda traceparent: agent.stream("hi", traceparent=traceparent).result()),
+                 ("c" * 31 + "3", lambda traceparent: agent.client.prompt("hi", traceparent=traceparent, idempotency_key="low-level-traced"))]
+        for trace_id, send in cases:
+            result = await send(f"00-{trace_id}-00f067aa0ba902b7-01")
+            request_id = getattr(result, "id", "low-level-traced")
+            trace = (await agent.client.request_status(request_id))["trace"]
+            self.assertEqual({**trace, "spanId": ""}, {"traceId": trace_id, "spanId": "", "parentSpanId": "00f067aa0ba902b7", "sampled": True})
+        # A first prompt sent with the create continues the caller's trace too.
+        created = await self.runtime.upsert_agent("traced-create", prompt={"text": "hello", "requestId": "first-traced"},
+                                                  traceparent=f"00-{'d' * 31}4-00f067aa0ba902b7-01")
+        self.assertEqual(created["prompt"]["trace"]["traceId"], "d" * 31 + "4")
+
+        self.assertEqual(await telemetry.clear(), {"deleted": True})
+        self.assertIsNone(await telemetry.get())
+        after = await agent.run("after")
+        self.assertNotIn("trace", await agent.client.request_status(after.id))
 
     async def test_a_failed_run_raises_run_error_or_returns_it(self):
         agent = await self.make()

@@ -31,7 +31,7 @@ __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "RunStream", "StreamPart",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
-    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "DEFAULT_URL",
+    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "RuntimeTokenError", "TestRuntime",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
@@ -438,8 +438,10 @@ class AgentRuntime:
         self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
+        # The tenant's OpenTelemetry trace export: get, set, clear, test.
+        self.telemetry = Telemetry(self)
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, prompt=None, traceparent=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -449,12 +451,14 @@ class AgentRuntime:
         file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
         (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `run_limits`
         ({"maxResponses": n, "maxSeconds": n}) the most one run may take, within the runtime's maximums (1,000 responses and
-        2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call."""
+        2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call.
+        `prompt` (the prompt call's body) is sent once the agent is made; `traceparent` (a W3C trace context) makes its run continue that trace."""
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
-                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins)
+                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
+                             prompt=prompt)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
@@ -462,7 +466,7 @@ class AgentRuntime:
         elif idempotency_key is None:
             body["ttlSeconds"] = 86400
         session = await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", body,
-                              headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
+                              headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input)
 
     async def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
@@ -497,18 +501,19 @@ class AgentRuntime:
         configuration untouched. AgentError with status 404 when there is none."""
         return await _http(self.http, self.base, f"/v1/agents/{quote(key_or_id, safe='')}/credentials", self._operator())
 
-    async def upsert_agent(self, key, *, tools=(), **fields):
+    async def upsert_agent(self, key, *, tools=(), traceparent=None, **fields):
         """The agent for `key`: made if there is none, set to `fields` (create_agent's) if they differ. Returns its
         credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted.
         `prompt` (the prompt call's body, {"text", "requestId", ...}) is sent once the agent is made: the answer's "prompt" is
-        its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once."""
+        its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once.
+        `traceparent` (a W3C trace context) makes that first prompt's run continue the caller's trace."""
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md")
         import re
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
             raise AgentError(f"An agent's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
         # The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
-        return await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", _provisioning(tools, **fields), headers={"Idempotency-Key": key})
+        return await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", _provisioning(tools, **fields), headers={"Idempotency-Key": key, **_trace_header(traceparent)})
 
     async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True):
         """`on_event(event, request_id)` hears every event, for display (a run's result is the truth): a plain or async
@@ -627,6 +632,55 @@ class AgentRuntime:
 
     async def __aexit__(self, *_):
         await self.close()
+
+
+def _trace_header(traceparent):
+    """The W3C `traceparent` header, when there is one to send."""
+    return {"traceparent": traceparent} if traceparent else {}
+
+
+class Telemetry:
+    """The tenant's OpenTelemetry trace export (runtime.telemetry): each run is a trace, with spans for its model and tool
+    calls, POSTed to an OTLP/HTTP endpoint. Header values are stored encrypted and never returned: reads list their names."""
+
+    def __init__(self, runtime):
+        self._runtime = runtime
+
+    async def _call(self, method, path="/v1/telemetry", body=None, retry=True):
+        runtime = self._runtime
+        return await _http(runtime.http, runtime.base, path, runtime._operator(), method, body, retry=retry)
+
+    async def get(self):
+        """The settings ({"endpoint", "protocol", "sampleRate", "include", "headers": [names], "createdAt", "updatedAt",
+        "status": {"lastExportAt", "lastError", "lastErrorAt"}}), or None when none are set."""
+        try:
+            return await self._call("GET")
+        except AgentError as error:
+            if error.status == 404:
+                return None
+            raise
+
+    async def set(self, endpoint, *, headers=None, protocol=None, sample_rate=None, include_content=None):
+        """Export the tenant's runs to `endpoint` (the OTLP/HTTP traces URL; a collector's base URL gets /v1/traces).
+        `headers` are sent with each export (a backend's API key); left out, the stored ones stay while the endpoint keeps
+        its origin, and {} removes them. `protocol` is "http/protobuf" (default) or "http/json"; `sample_rate` the share of
+        runs traced, 0 to 1 (default 1); `include_content=True` exports prompts, replies, tool arguments and results."""
+        body = {"endpoint": endpoint, **({"headers": headers} if headers is not None else {}), **({"protocol": protocol} if protocol else {}),
+                **({"sampleRate": sample_rate} if sample_rate is not None else {}), **({"include": {"content": include_content}} if include_content is not None else {})}
+        return await self._call("PUT", body=body)
+
+    async def clear(self):
+        """Stop exporting: {"deleted": True}, or {"deleted": False} when nothing was set."""
+        try:
+            return await self._call("DELETE", retry=False)
+        except AgentError as error:
+            if error.status == 404:
+                return {"deleted": False}
+            raise
+
+    async def test(self):
+        """Send one test span now: {"ok", "status"?, "error"?, "traceId", "spanId"}; look the traceId up in your backend."""
+        return await self._call("POST", "/v1/telemetry/test", retry=False)
 
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
@@ -1074,9 +1128,10 @@ class AgentClient:
         finally:
             self.active.pop(key, None)
 
-    async def request(self, method, params=None, *, idempotency_key=None, timeout=None):
+    async def request(self, method, params=None, *, idempotency_key=None, timeout=None, traceparent=None):
         """Send a request and wait for its outcome, however long the run takes: `timeout` (seconds) only stops the
-        wait, as cancelling the task does; the request goes on."""
+        wait, as cancelling the task does; the request goes on. `traceparent` (a W3C trace context, sent as the
+        traceparent header) makes the run continue the caller's trace when the tenant exports telemetry."""
         if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
@@ -1085,7 +1140,8 @@ class AgentClient:
             raise AgentError(f"An idempotency key is 1 to 80 letters, digits, _ and -: {request_id!r} is not", 400)
         future = self._waiter(request_id)
         try:
-            record = await self._http("/requests", "POST", {"id": request_id, "method": method, "params": params or {}})
+            record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
+                                 {"id": request_id, "method": method, "params": params or {}}, headers=_trace_header(traceparent))
             if "outcome" in record:
                 self._settle(request_id, record["outcome"])
             return await asyncio.wait_for(self._outcome(request_id, future), timeout)
@@ -1161,7 +1217,8 @@ class AgentClient:
         its request carry it, with the request's id, in history, events and webhooks; the model never sees it. `while_running="steer"` hands
         the message to a running turn, and returns with that turn's outcome. `spend_limit` ({"usd": n}) is this run's own budget:
         it ends before its next model request once it has spent that; the agent's spend limit is unchanged. `output`
-        ({"schema": a JSON Schema for an object}) asks for structured output: the run ends with an answer that fits it, as "output"."""
+        ({"schema": a JSON Schema for an object}) asks for structured output: the run ends with an answer that fits it, as "output".
+        `traceparent` (a W3C trace context) makes the run continue the caller's trace when the tenant exports telemetry."""
         return await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
                                    extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
                                           **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
@@ -1563,7 +1620,7 @@ class Agent:
         return self.client.files
 
     async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-                  allow_disconnected=False, spend_limit=None, output=None):
+                  allow_disconnected=False, spend_limit=None, output=None, traceparent=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. There is no timeout
         unless `timeout` (seconds) says so, and that only stops the wait. `user` (your user id, or {"id", "name"?}) is
         who sent it: the model sees who, and tools get it as identity.user. A failed run raises RunError (with the run)
@@ -1571,24 +1628,26 @@ class Agent:
         tools and no process serving them refuses the run (AgentError, code APPLICATION_NOT_CONNECTED) unless allow_disconnected.
         `spend_limit` ({"usd": n}) is this run's own budget; the agent's spend limit is unchanged. `output` (a pydantic model class, or a
         JSON Schema dict for an object) asks for structured output: the agent ends the run with an answer that fits it, as run.output (an
-        instance of the model); a run that ends without one fails (code "output_missing"). Not with while_running="steer"."""
+        instance of the model); a run that ends without one fails (code "output_missing"). Not with while_running="steer".
+        `traceparent` (a W3C trace context, "00-<trace-id>-<span-id>-<flags>") makes the run's spans continue that trace
+        when the tenant exports telemetry (runtime.telemetry.set); it is not part of the run's idempotency."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
                                throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
-                               output=output)
+                               output=output, traceparent=traceparent)
 
     def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-               allow_disconnected=False, spend_limit=None, output=None):
+               allow_disconnected=False, spend_limit=None, output=None, traceparent=None):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
                                       "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected,
-                                      "spend_limit": spend_limit, "output": output})
+                                      "spend_limit": spend_limit, "output": output, "traceparent": traceparent})
 
     async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None,
-                   allow_disconnected=False, spend_limit=None, output=None):
+                   allow_disconnected=False, spend_limit=None, output=None, traceparent=None):
         pending = self.client.prompt(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=request_id,
                                      timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
-                                     output=_output_request(output))
+                                     output=_output_request(output), traceparent=traceparent)
         return await self._settle(request_id, pending, throw_on_error, output)
 
     async def _settle(self, request_id, pending, throw_on_error, output=None):
