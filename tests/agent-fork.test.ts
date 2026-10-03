@@ -73,6 +73,22 @@ test("a fork has the source's configuration, history and workspace, and from the
   assert.equal((await r.call(`/v1/volumes/${forkWorkspace}/files/notes.txt`)).text, "source notes");
 });
 
+test("a fork may act for someone else and carry its own prompt addition: what a create fixes, the fork's create sets", async t => {
+  const r = await runtime(t, answering(), roomy);
+  const source = (await r.call("/v1/agents", { body: { subject: "user-1", context: { thread: "a" }, systemPromptAppend: "Thread a" } })).json.id as string;
+  await r.prompt(source, "hello");
+  const made = await r.call(`/v1/agents/${source}/fork`, { body: { context: { thread: "b" }, systemPromptAppend: "Thread b" } });
+  assert.equal(made.status, 201, made.text);
+  const identity = async (id: string) => (await r.db.query("select header from agents where id = $1", [id])).rows[0].header.identity;
+  assert.deepEqual(await identity(made.json.id), { subject: "user-1", context: { thread: "b" } }, "the subject comes along; the context is the fork's");
+  assert.deepEqual(await identity(source), { subject: "user-1", context: { thread: "a" } });
+  assert.equal((await r.call(`/v1/agents/${made.json.id}`)).json.systemPromptAppend, "Thread b");
+  await r.prompt(made.json.id, "again");
+  const sent = JSON.stringify(r.model.bodies.at(-1).messages);
+  assert.ok(sent.includes("Thread b"), "the fork's model gets its own addition");
+  assert.equal((await r.call(`/v1/agents/${source}/fork`, { body: { context: "thread b" } })).status, 400);
+});
+
 test("a fork ends at a message: that message and the tool results answering it, or a request's whole turn", async t => {
   const r = await runtime(t, body => lastUser(body) === "use a tool" && !body.messages.some((message: any) => message.role === "tool")
     ? toolCall("js_exec", { code: "return 6 * 7" }) : answering()(body), roomy);

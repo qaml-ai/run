@@ -347,6 +347,9 @@ export const AgentForkInput = z.object({
   name: z.string().optional().openapi({ description: "Default: the source's name, with (fork)" }),
   atMessage: z.union([z.number().int(), z.string()]).optional().openapi({ description: "Where the fork's history ends. A history index: that message, and the tool results that answer it. A request id: the whole turn that request ran. Default: the last turn that ended, never one still running or waiting on input (409 FORK_POINT_RUNNING for a message in such a turn)" }),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "The fork's lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted with a key, 86400 without" }),
+  subject: z.string().optional().openapi({ description: "Who the fork acts for, instead of the source's subject (fixed once it is made, as at a create)" }),
+  context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Context for the fork's tool servers' identity tokens, instead of the source's (fixed once it is made, as at a create)" }),
+  systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "The fork's own text after the system prompt (e.g. its conversation's context), instead of the source's; \"\" removes it" }),
 }).openapi("AgentForkInput");
 export const AgentForked = z.object({
   id: z.string(),

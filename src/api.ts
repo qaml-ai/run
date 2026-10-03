@@ -24,6 +24,7 @@ import { definitionRoutes } from "./definitions-api.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
+import { identityInput } from "./identity.ts";
 import { declaredType, fileResponse, type FileLinks } from "./files.ts";
 import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
@@ -460,14 +461,15 @@ export function api(context: ApiContext) {
     request: { params: agentId, headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "The fork's key, when the body gives none" }) }), body: content(schema.AgentForkInput) },
     responses: { 201: reply("A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace", schema.AgentForked), 409: reply("FORK_POINT_RUNNING: atMessage is in a turn that has not ended; or the key names another agent", schema.ApiError) },
   }), async c => {
-    const { key: given, name, atMessage, ttlSeconds } = parse(schema.AgentForkInput, await readJson(c.req.raw.body, 64 * 1024, {}));
+    const { key: given, name, atMessage, ttlSeconds, subject, context: identityContext, systemPromptAppend } = parse(schema.AgentForkInput, await readJson(c.req.raw.body, 64 * 1024, {}));
+    const identity = identityInput({ subject, context: identityContext });
     const key = given ?? c.req.header("idempotency-key");
     validTtl(ttlSeconds);
     const tenant = c.var.principal.tenant;
     await context.rateLimits?.agentCreate(tenant);
     // Lives as long as a create's agent would: with a key until deleted, without one a day, unless it says.
     const ttlMs = ttlSeconds === undefined ? (key !== undefined ? null : undefined) : ttlSeconds === null ? null : ttlSeconds * 1000;
-    return json(c, 201, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs }));
+    return json(c, 201, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend }));
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/events",

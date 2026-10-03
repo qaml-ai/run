@@ -382,7 +382,8 @@ test("fork() makes a new agent from this one: its history, configuration and fil
   assert.equal((await r.call(`/v1/agents/${fork.id}`)).json.systemPrompt, "Be terse.");
   assert.equal((await source.fork({ key: "fork-of-source" })).id, fork.id, "the same key is the same fork");
   assert.equal((await agents.get("fork-of-source")).id, fork.id);
-  const early = await agents.fork(source.id, { atMessage: 0 });
+  const early = await agents.fork(source.id, { atMessage: 0, instructionsAppend: "EARLY-APPEND" });
+  assert.equal((await r.call(`/v1/agents/${early.id}`)).json.systemPromptAppend, "EARLY-APPEND");
   assert.equal((await early.history()).length, 1);
   assert.ok(early.session.expiresAt! - Date.now() > 86_000_000, "a fork without a key of the caller's lives a day");
   assert.equal((await fork.run("again")).text, "said: again");

@@ -253,8 +253,8 @@ export class Agents {
    * workspace, each its own from then on. Pass `tools` to serve them, as for `get`.
    */
   async fork(agentId: string, options: ForkOptions & Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
-    const { key, name, atMessage, ttlSeconds, ...config } = options;
-    const { session, forkedFrom } = await this.runtime.forkAgent(agentId, { key, name, atMessage, ttlSeconds });
+    const { key, name, atMessage, ttlSeconds, subject, context, instructionsAppend, ...config } = options;
+    const { session, forkedFrom } = await this.runtime.forkAgent(agentId, { key, name, atMessage, ttlSeconds, subject, context, instructionsAppend });
     const agent = await this.agent(session, config);
     agent.forkedFrom = forkedFrom;
     return agent;

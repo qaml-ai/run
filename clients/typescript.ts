@@ -418,7 +418,13 @@ export interface ForkedFrom { agentId: string; atMessage: number | null }
  * lifetime, as createAgent's). `atMessage`: where its history ends, a history index (that message, and the tool
  * results answering it) or a request id (that request's whole turn); default, the last turn that ended.
  */
-export interface ForkOptions { key?: string; name?: string; atMessage?: number | string; ttlSeconds?: number | null }
+export interface ForkOptions {
+  key?: string; name?: string; atMessage?: number | string; ttlSeconds?: number | null;
+  /** Who the fork acts for, and its tool servers' context, instead of the source's (fixed once it is made). */
+  subject?: string; context?: Record<string, unknown>;
+  /** The fork's own text after its instructions (systemPromptAppend), instead of the source's; "" removes it. */
+  instructionsAppend?: string;
+}
 export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
@@ -741,7 +747,10 @@ export class AgentRuntime {
     // As createAgent: a key the SDK makes up, only so a retried fork finds the same one, keeps a scratch agent's day.
     const ttlSeconds = options.ttlSeconds !== undefined ? options.ttlSeconds : options.key === undefined ? 86_400 : undefined;
     const answer = await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/fork`, this.operator(), "POST",
-      { key: options.key ?? globalThis.crypto.randomUUID(), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.atMessage !== undefined ? { atMessage: options.atMessage } : {}), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}) }, true);
+      {
+        key: options.key ?? globalThis.crypto.randomUUID(), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.atMessage !== undefined ? { atMessage: options.atMessage } : {}), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+        ...(options.subject !== undefined ? { subject: options.subject } : {}), ...(options.context !== undefined ? { context: options.context } : {}), ...(options.instructionsAppend !== undefined ? { systemPromptAppend: options.instructionsAppend } : {}),
+      }, true);
     return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, forkedFrom: answer.forkedFrom };
   }
   /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */

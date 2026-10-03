@@ -1690,10 +1690,11 @@ export class ClientSessions {
    * the node serving `source`. Its history is the source's transcript as its log holds it (every record a turn
    * committed, wherever the source runs) up to the fork point (see `forkCut`): records of its own, sharing nothing
    * mutable with the source, whose FileRefs are pinned to it. Its workspace volume is a fork of the source's, as it is
-   * now; other mounts are the same volumes. Not copied: schedules, channels, inputs, requests and spend so far. With a
-   * key, a retry returns the same fork; a key naming another agent is refused.
+   * now; other mounts are the same volumes. Not copied: schedules, channels, inputs, requests and spend so far. Who it
+   * acts for (`identity`) and its prompt addition may be its own. With a key, a retry returns the same fork; a key naming
+   * another agent is refused.
    */
-  async fork(sourceId: string, tenant: string, input: { key?: string; name?: string; atMessage?: number | string; ttlMs?: number | null }, steps = new Steps()) {
+  async fork(sourceId: string, tenant: string, input: { key?: string; name?: string; atMessage?: number | string; ttlMs?: number | null; identity?: AgentIdentity; systemPromptAppend?: string }, steps = new Steps()) {
     const source = this.sessions.get(sourceId)?.header ?? (await this.readHeader(sourceId))?.value;
     if (!source || source.tenant !== tenant || source.revoked || source.purged || expired(source.expiresAt)) throw new HttpError(404, "Unknown agent");
     const key = input.key ?? randomUUID();
@@ -1719,10 +1720,11 @@ export class ClientSessions {
       mounts = mounts.map(mount => mount.volumeId === workspace ? { ...mount, volumeId: into } : mount);
     }
     const spend = (await this.db.query("select usd from agent_spend_limits where agent = $1", [sourceId])).rows[0];
-    const { initialMessages: _initial, ...config } = source.config;
+    const { initialMessages: _initial, ...config } = { ...source.config, ...(input.systemPromptAppend !== undefined ? { systemPromptAppend: input.systemPromptAppend } : {}) };
+    const identity = input.identity ? { ...source.identity, ...input.identity } : source.identity;
     const name = input.name ?? (source.metadata?.name && `${source.metadata.name} (fork)`.slice(0, 120));
     const created = await this.create(source.definitions, config as Omit<AgentConfig, "id" | "directory" | "tools">, key, { ...source.metadata, ...(name ? { name } : {}) }, tenant, input.ttlMs, mounts,
-      source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, source.identity,
+      source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, identity,
       { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, builtins: source.definition ? undefined : source.sources?.builtins, fork: { id: made.id, from, records: cut.records } }, steps);
     // Made meanwhile by a retry: whatever it holds is the fork.
     if (created.reconfigure) return answer(this.sessions.get(created.id)?.header ?? (await this.readHeader(created.id))!.value);

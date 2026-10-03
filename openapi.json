@@ -2332,6 +2332,20 @@
               "null"
             ],
             "description": "The fork's lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted with a key, 86400 without"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who the fork acts for, instead of the source's subject (fixed once it is made, as at a create)"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Context for the fork's tool servers' identity tokens, instead of the source's (fixed once it is made, as at a create)"
+          },
+          "systemPromptAppend": {
+            "type": "string",
+            "maxLength": 32000,
+            "description": "The fork's own text after the system prompt (e.g. its conversation's context), instead of the source's; \"\" removes it"
           }
         }
       },
