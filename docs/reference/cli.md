@@ -95,6 +95,7 @@ its id (`def_…`).
 | `inputs [agent]` / `answer <agent> <inputId> <value>` | questions and approvals waiting on someone, and answering them |
 | `schedules list\|add\|delete <agent>` | wake-ups: `add --text t --in 3600 [--every 86400]` |
 | `definitions list\|get\|agents\|delete` | definitions, and the revision each agent has |
+| `telemetry get\|set\|test\|clear` | export each run as an OpenTelemetry trace to your OTLP/HTTP endpoint ([below](#telemetry)) |
 
 `run` waits for the run to end; `--wait 30` waits at most 30 seconds and
 `--no-wait` not at all, printing the request id to follow with `runs get`.
@@ -103,9 +104,32 @@ is going. An agent whose tools are attached by an application that is not
 connected refuses the run (`APPLICATION_NOT_CONNECTED`) unless you pass
 `--allow-disconnected`.
 
+`--traceparent 00-<trace-id>-<span-id>-01` makes the run continue that trace
+when the account exports telemetry.
+
 `answer` takes `true` or `false` for an approval, the chosen label or your own
 words for a question (`{"<question>": "<answer>"}` for several), the fields as
 JSON for a form, and `decline`.
+
+### Telemetry
+
+```sh
+camelrun telemetry set https://api.honeycomb.io/v1/traces --header x-honeycomb-team=$HONEYCOMB_KEY
+camelrun telemetry test          # one test span, sent now: what the endpoint answered, and its trace id
+camelrun telemetry get           # the endpoint, header names, and how the last export went
+camelrun telemetry clear         # stop exporting
+```
+
+`set <endpoint>` replaces the settings (`PUT /v1/telemetry`): options left out
+take their defaults, except the headers. `--header name=value` (repeat it for
+several) is sent with every export, stored encrypted, and never shown again:
+`get` prints header names only, and no command prints a value. A later `set`
+without `--header` keeps the stored headers while the endpoint stays on the same
+origin. `--protocol` is `http/protobuf` (default) or `http/json`,
+`--sample-rate` the share of runs traced (0 to 1, default 1), and `--content`
+also exports prompts, replies and tool arguments and results (default
+`--no-content`). `test` exits 1 when the endpoint refused the span or could not
+be reached.
 
 ### Output and exit codes
 

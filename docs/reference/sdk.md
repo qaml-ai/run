@@ -122,6 +122,7 @@ Run options (`run`, `stream`):
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](../guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
 | `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](../guides/structured-output.md) |
+| `traceparent` | `traceparent=` | a W3C trace context (`00-<trace-id>-<span-id>-<flags>`), sent as the `traceparent` header: when the tenant exports telemetry (`runtime.telemetry`), the run's spans continue your trace, under that span. Not part of the run's idempotency |
 
 ### `agent.fork(options)`
 
@@ -238,8 +239,9 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
+| `runtime.telemetry.set({ endpoint, headers, protocol, sampleRate, include: { content } })`, `get()`, `test()`, `clear()` | `await runtime.telemetry.set(endpoint, headers=, protocol=, sample_rate=, include_content=)`, `get()`, `test()`, `clear()` | export each run as an OpenTelemetry trace to your OTLP/HTTP endpoint (see [Telemetry](#telemetry)) |
 | `client.prompt(text, { from, actor, files, metadata, whileRunning, output, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, output, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error. `output` here is `{ schema }`, a JSON Schema |
-| `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`) |
+| `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`); `traceparent` (`traceparent=`) continues your trace |
 | `client.waitForRequest(id)` | `wait_for_request(id)` | wait for a request already sent, from any process |
 | `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |
 | `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
@@ -251,6 +253,41 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 `client.prompt()` resolves with the run's raw result, even when the model
 failed (`result.error`), and rejects only on a runtime error. Requests have no
 timeout unless you pass `timeoutMs` or `signal` (Python: `timeout`).
+
+### Telemetry
+
+`runtime.telemetry` (in the simple interface, `agents.runtime.telemetry`) is the
+tenant's trace export, `/v1/telemetry`: each run becomes an OpenTelemetry trace,
+with spans for its model calls and tool calls, sent to an OTLP/HTTP endpoint
+(LangSmith, Langfuse, Honeycomb, Datadog, Tempo, your own collector).
+
+```ts
+await agents.runtime.telemetry.set({ endpoint: "https://api.honeycomb.io/v1/traces", headers: { "x-honeycomb-team": key } });
+const { ok, traceId } = await agents.runtime.telemetry.test();   // one test span, sent now
+const run = await agent.run("Summarize ticket 123", { traceparent }); // continues your trace
+```
+
+```python
+await agents.runtime.telemetry.set("https://api.honeycomb.io/v1/traces", headers={"x-honeycomb-team": key})
+result = await agents.runtime.telemetry.test()
+run = await agent.run("Summarize ticket 123", traceparent=traceparent)
+```
+
+- `set` replaces the settings: options left out take their defaults, except
+  `headers`, which are stored encrypted and never returned:
+  `get()` lists their names. Left out of a later `set`, they stay while the
+  endpoint keeps its origin; `{}` removes them. `protocol` is `http/protobuf`
+  (default) or `http/json`, `sampleRate` (`sample_rate=`) the share of runs
+  traced (default 1), and `include: { content: true }` (`include_content=True`)
+  also exports prompts, replies and tool arguments and results.
+- `get()` is the settings with `status: { lastExportAt, lastError, lastErrorAt }`,
+  or `null` (`None`) when none are set. `clear()` stops export: `{ deleted }`,
+  false when nothing was set. `test()` is `{ ok, status?, error?, traceId, spanId }`.
+- `traceparent` is also taken by `client.prompt`, `client.request`, and
+  `createAgent` / `upsertAgent` (`create_agent` / `upsert_agent`) for their
+  first `prompt`. A run's record (`client.requestStatus(id)`, typed as
+  `RequestRecord`) carries `trace: { traceId, spanId, parentSpanId?, sampled }`
+  while the tenant exports telemetry.
 
 ### Events, reconnects and replay
 
@@ -323,7 +360,7 @@ stream's cursor in memory; a new one starts from a snapshot of the running turn.
 ### The wire
 
 `GET /clients/:id/events` streams SSE; `POST /clients/:id/requests` accepts
-idempotent requests; `POST /clients/:id/mcp` carries the application's MCP
+idempotent requests (with a W3C `traceparent` header, the run continues that trace); `POST /clients/:id/mcp` carries the application's MCP
 messages; all with the agent's token as `Authorization: Bearer`. `/clients/*`
 refuses requests with a browser `Origin`. Application code should use the SDK
 rather than speak this protocol.
@@ -336,6 +373,16 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`set_metadata(name=, type=)`). SDK-created agents appear in a local Studio
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
+
+## Unreleased
+
+- Telemetry: `runtime.telemetry.get()`, `set(…)`, `test()` and `clear()` manage the
+  tenant's OpenTelemetry trace export, and a `traceparent` option (Python
+  `traceparent=`) on `run`, `stream`, `prompt`, `request` and a create's first prompt
+  continues your trace. See [Telemetry](#telemetry). TypeScript exports
+  `RequestRecord`, `TelemetrySettings`, `TelemetryInput` and `TelemetryTestResult`;
+  Python's `create_agent` takes `prompt=`.
+- CLI: `camelrun telemetry get|set|test|clear`, and `run --traceparent`.
 
 ## 0.13.0 (TypeScript) / 0.9.0 (Python), 2026-10-03
 
