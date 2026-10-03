@@ -170,6 +170,14 @@ test("telemetry: set, get, test and clear from the CLI, never printing a header'
     printed.push(refused.err);
   }
 
+  // The secret from the environment, as the docs show first; a plain value works too.
+  const withKey = cli(r.base, dir, { OTLP_KEY: SECRET });
+  const missing = await withKey("telemetry", "set", receiver.url, "--header", "x-api-key=@env:NOT_SET");
+  assert.equal(missing.code, 1);
+  assert.match(missing.err, /NOT_SET is not set/);
+  const viaEnv = await withKey("telemetry", "set", receiver.url, "--header", "x-api-key=@env:OTLP_KEY", "--header", "x-team=t1", "--protocol", "http/json", "--sample-rate", "1", "--no-content");
+  printed.push(viaEnv.text, viaEnv.err);
+  assert.equal(viaEnv.code, 0, viaEnv.err);
   const set = await both("telemetry", "set", receiver.url, "--header", `x-api-key=${SECRET}`, "--header", "x-team=t1", "--protocol", "http/json", "--sample-rate", "1", "--no-content");
   assert.equal(set.json.code, 0, set.json.err);
   assert.deepEqual({ ...set.json.json, createdAt: 0, updatedAt: 0 }, {
@@ -187,9 +195,21 @@ test("telemetry: set, get, test and clear from the CLI, never printing a header'
   await until(() => receiver.requests.length >= 2, "both test spans");
   assert.equal(receiver.requests[0].headers["x-api-key"], SECRET, "the stored header goes to the endpoint");
 
-  // Content on: a later set without --header keeps the stored ones.
-  assert.deepEqual((await run("telemetry", "set", receiver.url, "--content")).json.include, { content: true });
-  assert.deepEqual((await run("telemetry", "get")).json.headers, ["x-api-key", "x-team"]);
+  // Content on: a later set without an endpoint or --header changes only that, keeping the rest.
+  const partial = (await run("telemetry", "set", "--content")).json;
+  assert.deepEqual([partial.include, partial.protocol, partial.headers], [{ content: true }, "http/json", ["x-api-key", "x-team"]]);
+
+  // A header from standard input.
+  const out: string[] = [], err: string[] = [];
+  const piped = await main(["telemetry", "set", "--header", "x-api-key=@stdin"], { out: text => out.push(text), err: text => err.push(text), tty: false, cwd: dir,
+    env: { CAMELAI_API_KEY: OPERATOR, CAMELAI_BASE_URL: r.base, CAMELRUN_CONFIG: join(dir, "credentials.json") }, stdin: async () => "stdin-secret-value\n" });
+  assert.equal(piped, 0, err.join("\n"));
+  printed.push(...out, ...err);
+  assert.deepEqual(JSON.parse(out.join("\n")).headers, ["x-api-key"]);
+  const before = receiver.requests.length;
+  assert.equal((await run("telemetry", "test")).json.ok, true);
+  await until(() => receiver.requests.length > before, "a test span with the piped header");
+  assert.equal(receiver.requests.at(-1)!.headers["x-api-key"], "stdin-secret-value", "the trailing newline is not part of it");
 
   // A run sent with --traceparent continues that trace.
   assert.equal((await run("agents", "create", "traced")).code, 0);
@@ -203,7 +223,7 @@ test("telemetry: set, get, test and clear from the CLI, never printing a header'
   assert.deepEqual(cleared.json, { deleted: true });
   assert.match((await human("telemetry", "clear")).text, /was not set/);
   assert.equal((await run("telemetry", "get")).json, null);
-  assert.ok(printed.every(text => !text.includes(SECRET)), "a header's value is never printed");
+  assert.ok(printed.every(text => !text.includes(SECRET) && !text.includes("stdin-secret-value")), "a header's value is never printed");
 });
 
 test("login saves a checked key readable only by its owner", async t => {
