@@ -93,6 +93,9 @@ const DOCUMENT = {
   info: { title: "camelRun API", version: "1.0.0" },
   security: [{ bearer: [] }, { console: [] }] as Record<string, string[]>[],
 };
+/** On GET /v1/models?available=true when the list is empty. */
+export const MODELS_HINT_HEADER = "X-Camelrun-Hint";
+const NO_MODELS_HINT = "No model is usable yet: no provider key is set for this account. Set one with PUT /v1/providers/<provider>/key (GET /v1/providers lists them), or on a self-hosted runtime in AGENT_TENANT_API_KEYS";
 const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });
 const content = (value: z.ZodType) => ({ content: { "application/json": { schema: value } } });
 const reply = (description: string, value: z.ZodType) => ({ description, ...content(value) });
@@ -389,7 +392,7 @@ export function api(context: ApiContext) {
 
   route(createRoute({
     method: "get", path: "/v1/models",
-    request: { query: z.object({ provider: z.string().optional(), available: z.enum(["true"]).optional().openapi({ description: "Only models this tenant has a key for" }), keyScope: z.string().optional().openapi({ description: "Include this key scope's own providers' models, as its agents see them" }) }) },
+    request: { query: z.object({ provider: z.string().optional(), available: z.enum(["true"]).optional().openapi({ description: "Only models this tenant has a key for. An empty list comes with an X-Camelrun-Hint header saying which key to set" }), keyScope: z.string().optional().openapi({ description: "Include this key scope's own providers' models, as its agents see them" }) }) },
     responses: { 200: reply("Models in the catalog", z.array(schema.Model)) },
   }), async c => {
     const available = c.req.query("available") === "true";
@@ -404,7 +407,10 @@ export function api(context: ApiContext) {
     const declared = Object.entries(custom).filter(([provider]) => [undefined, provider].includes(c.req.query("provider")))
       .flatMap(([provider, entry]) => entry.models.map(model => ({ ...modelInfo(resolveModel(`${provider}/${model.id}`, undefined, custom)), available: true })));
     const models = [...own, ...declared, ...listModels(c.req.query("provider")).map(model => ({ ...model, available: supported.has(model.provider) && keyed(model.provider) }))];
-    return json(c, 200, available ? models.filter(model => model.available) : models);
+    const shown = available ? models.filter(model => model.available) : models;
+    // No model usable: the list stays a list, and a header says why and what to do.
+    if (available && !shown.length) c.header(MODELS_HINT_HEADER, NO_MODELS_HINT);
+    return json(c, 200, shown);
   });
 
   route(createRoute({ method: "get", path: "/v1/agents", responses: { 200: reply("The tenant's agents", z.array(schema.AgentSummary)) } }),

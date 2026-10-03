@@ -7,7 +7,9 @@ Agents name a model as `provider/model-id` from the catalog: `GET /v1/models`
 **Models & keys**. For example `anthropic/claude-sonnet-5-5`,
 `openai/gpt-5.2`, `openrouter/anthropic/claude-sonnet-5`. Change an agent's model
 between runs with `upsert` (a changed `model`) or `agent.configure({ model })`;
-its history carries over.
+its history carries over. `?available=true` answers `[]` when your account has
+no key any model can use (a self-hosted runtime before its first key, say); that
+response's `X-Camelrun-Hint` header says how to set one.
 
 A model on a server of your own that speaks OpenAI's or Anthropic's API (vLLM,
 Ollama, a gateway, a hosted API the catalog lacks) is named the same way once

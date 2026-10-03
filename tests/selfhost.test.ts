@@ -45,6 +45,15 @@ test("a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves t
   assert.equal((await r.prompt(agent, "Hi", TOKEN)).outcome.result.reply, "Self-hosted.");
 });
 
+test("on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), { AGENT_TENANTS_FILE: "", AGENT_TENANT: "acme", AGENT_OPERATOR_TOKEN: TOKEN });
+  const agent = (await r.call("/v1/agents", { body: {}, token: TOKEN })).json.id;
+  const record = await r.prompt(agent, "Hi", TOKEN);
+  assert.equal(record.status, "failed");
+  assert.equal(record.outcome.result.code, "model_key_missing");
+  assert.match(record.error, /PUT \/v1\/providers\/\S+\/key.*AGENT_TENANT_API_KEYS in its environment/);
+});
+
 test("a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime", async t => {
   const hidden = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_BROWSER_URL: "" });
   const agent = (await hidden.call("/v1/agents", { body: {} })).json.id;

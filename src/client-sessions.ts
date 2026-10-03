@@ -305,6 +305,8 @@ const visible = ({ params: _params, announce: _announce, ...record }: RequestRec
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
+  /** Said after a run's `model_key_missing` error: where else this runtime takes keys (a self-host's environment). */
+  modelKeyHint?: string;
   /** The most a snapshot takes, one frame (default FRAME_BYTES); tests make it small. */
   snapshotBytes?: number;
   /** Read-only subscribers (watchers and waiting polls) one agent's event stream may have at once (default 32), a tenant's agents on this node (1024), and this node (4096). */
@@ -2657,6 +2659,8 @@ export class ClientSessions {
       if (RUN_METHODS.includes(record.method) && session.sourceErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, sourceErrors: session.sourceErrors } };
       // What its model responses used on this node (a turn resumed after its node was lost counts from the resume).
       if (RUN_METHODS.includes(record.method) && value.result && typeof value.result === "object") value = { result: { ...value.result, usage: session.usage?.get(record.id) ?? null } };
+      const failed = value.result as { code?: string; error?: string } | undefined;
+      if (failed?.code === "model_key_missing" && this.options.modelKeyHint) value = { result: { ...failed, error: `${failed.error} ${this.options.modelKeyHint}` } };
       // A suspended turn's outcome lists what it waits on.
       if ((value.result as { stopped?: string } | undefined)?.stopped === "input_required" && this.options.inputs) {
         const inputs = (await this.options.inputs.forRequest(session.header.id, record.id)).filter(row => row.state === "pending").map(inputView);

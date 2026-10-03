@@ -6781,10 +6781,10 @@
               "enum": [
                 "true"
               ],
-              "description": "Only models this tenant has a key for"
+              "description": "Only models this tenant has a key for. An empty list comes with an X-Camelrun-Hint header saying which key to set"
             },
             "required": false,
-            "description": "Only models this tenant has a key for",
+            "description": "Only models this tenant has a key for. An empty list comes with an X-Camelrun-Hint header saying which key to set",
             "name": "available",
             "in": "query"
           },

@@ -488,6 +488,8 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
   runEvents: tenant => subscribers.runs(tenant),
+  // A self-hosted runtime configured by its environment takes keys there too.
+  ...(process.env.AGENT_TENANT ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
   secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
     // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
     const { limit, source } = await accounts.billing.busyLimit(tenant);
