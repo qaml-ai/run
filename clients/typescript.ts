@@ -411,6 +411,14 @@ export interface ProviderSummary {
 /** An agent as GET /v1/agents lists it. */
 export interface AgentSummary { id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null }
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
+/** Where a fork came from: the agent, and the history index of its last message the fork began with (null: none). */
+export interface ForkedFrom { agentId: string; atMessage: number | null }
+/**
+ * A fork's options. `key`: the fork's own key, so a retry returns the same fork (default: one made up, and a day's
+ * lifetime, as createAgent's). `atMessage`: where its history ends, a history index (that message, and the tool
+ * results answering it) or a request id (that request's whole turn); default, the last turn that ended.
+ */
+export interface ForkOptions { key?: string; name?: string; atMessage?: number | string; ttlSeconds?: number | null }
 export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
@@ -724,6 +732,18 @@ export class AgentRuntime {
   /** Replace the fields given (null removes one); `apply: "all"` also reconfigures its live agents between their turns. */
   updateDefinition(id: string, input: Partial<DefinitionInput> & { revision?: number; apply?: "all" }): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "PATCH", input, false); }
   definition(id: string): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator()); }
+  /**
+   * A new agent with this one's configuration, a copy of its history (see ForkOptions.atMessage) and a fork of its
+   * workspace: its credentials, and where it came from. A retry with the same key returns the same fork.
+   */
+  async forkAgent(agentId: string, options: ForkOptions = {}): Promise<{ session: SessionCredentials; forkedFrom: ForkedFrom }> {
+    if (options.key !== undefined && !AGENT_KEY.test(options.key)) throw new AgentError(`A fork's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(options.key.slice(0, 100))} is not`);
+    // As createAgent: a key the SDK makes up, only so a retried fork finds the same one, keeps a scratch agent's day.
+    const ttlSeconds = options.ttlSeconds !== undefined ? options.ttlSeconds : options.key === undefined ? 86_400 : undefined;
+    const answer = await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/fork`, this.operator(), "POST",
+      { key: options.key ?? globalThis.crypto.randomUUID(), ...(options.name !== undefined ? { name: options.name } : {}), ...(options.atMessage !== undefined ? { atMessage: options.atMessage } : {}), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}) }, true);
+    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, forkedFrom: answer.forkedFrom };
+  }
   /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */
   agentCredentials(keyOrId: string): Promise<SessionCredentials> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
   definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }

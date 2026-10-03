@@ -160,6 +160,22 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             await self.agents.get("never-made")
         self.assertEqual(missing.exception.status, 404)
 
+    async def test_fork_copies_the_agent_and_a_key_returns_the_same_fork(self):
+        source = await self.agents.upsert("py-fork-source", instructions="Be terse.")
+        await source.run("hello")
+        fork = await source.fork(key="py-fork")
+        self.assertNotEqual(fork.id, source.id)
+        self.assertEqual(fork.forked_from, {"agentId": source.id, "atMessage": 1})
+        self.assertEqual([message["role"] for message in await fork.history()], ["user", "assistant"])
+        self.assertEqual((await source.fork(key="py-fork")).id, fork.id)
+        detail = (await self.runtime.http.get(f"{self.url}/v1/agents/{fork.id}", headers={"Authorization": f"Bearer {self.token}"})).json()
+        self.assertEqual((detail["systemPrompt"], detail["forkedFrom"]), ("Be terse.", {"agentId": source.id, "atMessage": 1}))
+        early = await self.agents.fork(source.id, at_message=0)
+        self.assertEqual(len(await early.history()), 1)
+        self.assertAlmostEqual(early.session["expiresAt"] / 1000 - __import__("time").time(), 86400, delta=60)
+        await fork.run("again")
+        self.assertEqual(len(await source.history()), 2)
+
     async def test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running(self):
         gate, started = asyncio.Event(), asyncio.Event()
 

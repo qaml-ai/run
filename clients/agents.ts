@@ -12,7 +12,7 @@
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type Builtin, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
-  type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile,
+  type ForkedFrom, type ForkOptions, type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
 import type { Static, TSchema } from "typebox";
@@ -248,6 +248,18 @@ export class Agents {
     return this.agent(await this.runtime.agentCredentials(keyOrId), config);
   }
 
+  /**
+   * A new agent forked from `agentId` (see `agent.fork`): its configuration, a copy of its history and a fork of its
+   * workspace, each its own from then on. Pass `tools` to serve them, as for `get`.
+   */
+  async fork(agentId: string, options: ForkOptions & Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
+    const { key, name, atMessage, ttlSeconds, ...config } = options;
+    const { session, forkedFrom } = await this.runtime.forkAgent(agentId, { key, name, atMessage, ttlSeconds });
+    const agent = await this.agent(session, config);
+    agent.forkedFrom = forkedFrom;
+    return agent;
+  }
+
   /** An agent you hold the credentials of (`agent.session` from another process, say). */
   async agent(session: SessionCredentials, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
     return this.connect(session, config, createOptions(config));
@@ -256,7 +268,7 @@ export class Agents {
   private async connect(session: SessionCredentials, config: AgentConfig, options: AgentOptions) {
     const attach = config.attach ?? (!!config.mcp || Object.keys(config.tools ?? {}).length > 0);
     const client = await this.runtime.connectAgent(session, { ...options, attach });
-    const agent = new Agent(client, () => this.open.delete(agent));
+    const agent = new Agent(client, () => this.open.delete(agent), this);
     this.open.add(agent);
     return agent;
   }
@@ -282,8 +294,11 @@ export class Agent {
   readonly id: string;
   /** The lower-level client: requests, schedules, execute, and everything else. */
   readonly client: AgentClient;
+  /** For an agent `fork` made: the agent and message it was forked from (GET /v1/agents/{id} has it for any fork). */
+  forkedFrom?: ForkedFrom;
   private readonly closed: () => void;
-  constructor(client: AgentClient, closed: () => void = () => {}) { this.client = client; this.id = client.id; this.closed = closed; }
+  private readonly agents?: Agents;
+  constructor(client: AgentClient, closed: () => void = () => {}, agents?: Agents) { this.client = client; this.id = client.id; this.closed = closed; this.agents = agents; }
 
   /** The agent's id and token (the token is secret, and left out of logs and JSON). */
   get session(): SessionCredentials { return this.client.session; }
@@ -426,6 +441,15 @@ export class Agent {
   }
   /** Stop the running turn. */
   abort() { return this.client.abort(); }
+  /**
+   * A new agent with this one's configuration, a copy of its history and a fork of its workspace, each its own from
+   * then on: try another direction without losing this one. By default the history ends with the last turn that ended
+   * (never mid-turn); `atMessage` ends it at a history index or a request's turn. The same `key` returns the same fork.
+   */
+  fork(options: ForkOptions & Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
+    if (!this.agents) throw new AgentError("fork needs the Agents this agent came from (agents.upsert, get or agent)");
+    return this.agents.fork(this.id, options);
+  }
   /** Wake the agent later with a message (`text`), or run `code`; `everySeconds` (at least 60) repeats it. */
   schedule(input: Parameters<AgentClient["schedule"]>[0]) { return this.client.schedule(input); }
   schedules() { return this.client.schedules(); }
