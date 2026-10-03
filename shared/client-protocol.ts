@@ -43,6 +43,11 @@ export type RequestRecord = {
   steeredInto?: string;
   /** The runtime's own: an ended run whose webhook event (`run.completed` or `run.failed`) is not written yet. */
   announce?: true;
+  /**
+   * A run's place in its trace, when its tenant exports telemetry: the trace, the run's own span, the span it continues
+   * (the caller's `traceparent`, or the run a `resume` continues), and whether the trace is sampled.
+   */
+  trace?: { traceId: string; spanId: string; parentSpanId?: string; sampled: boolean };
 };
 /**
  * Events on an agent's stream. `mcp` carries the runtime's JSON-RPC messages to the application's attached MCP server: live only, with no id, never replayed.

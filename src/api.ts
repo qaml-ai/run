@@ -20,6 +20,7 @@ import { validTtl, type Definitions } from "./definitions.ts";
 import { checkScope, scopeEntry, type KeyScopes } from "./key-scopes.ts";
 import { providerInput, type ModelProviders } from "./model-providers.ts";
 import type { Webhooks } from "./webhooks.ts";
+import type { Telemetry } from "./telemetry.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
@@ -48,6 +49,8 @@ export interface ApiContext {
   oauth?: OAuth;
   keyScopes?: KeyScopes;
   webhooks?: Webhooks;
+  /** Trace export to each tenant's OTLP endpoint (`/v1/telemetry`). */
+  telemetry?: Telemetry;
   /** Tenants' own OpenAI-compatible providers (`/v1/providers/{name}`). */
   modelProviders?: ModelProviders;
   /** The model an agent gets when it names none, as provider/model-id. */
@@ -375,6 +378,25 @@ export function api(context: ApiContext) {
     app.openAPIRegistry.registerWebhook({ method: "post", path: type, summary: type, request: { body: content(event) }, responses: { 200: { description: "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried" } } });
   }
 
+  // Trace export: the tenant's OTLP/HTTP endpoint for its agents' spans.
+  const telemetry = () => {
+    if (!context.telemetry) throw new HttpError(503, "This runtime does not export telemetry");
+    return context.telemetry;
+  };
+  route(createRoute({ method: "put", path: "/v1/telemetry", request: { body: content(schema.TelemetryInput) }, responses: { 200: reply("Where the tenant's traces go now; header values are never returned", schema.Telemetry) } }),
+    async c => json(c, 200, await telemetry().set(c.var.principal.tenant, parse(schema.TelemetryInput, await readJson(c.req.raw.body, 128 * 1024, {})))));
+  route(createRoute({ method: "get", path: "/v1/telemetry", responses: { 200: reply("Where the tenant's traces go, with header names only, and how the last export went", schema.Telemetry) } }), async c => {
+    const settings = await telemetry().get(c.var.principal.tenant);
+    if (!settings) throw new HttpError(404, "No telemetry is set");
+    return json(c, 200, settings);
+  });
+  route(createRoute({ method: "delete", path: "/v1/telemetry", responses: { 200: reply("Traces are no longer exported", schema.Deleted) } }), async c => {
+    if (!await telemetry().clear(c.var.principal.tenant)) throw new HttpError(404, "No telemetry is set");
+    return json(c, 200, { deleted: true });
+  });
+  route(createRoute({ method: "post", path: "/v1/telemetry/test", responses: { 200: reply("One test span, sent now: what the endpoint answered", schema.TelemetryTest) } }),
+    async c => json(c, 200, await telemetry().test(c.var.principal.tenant)));
+
   // The usage webhook, from before endpoints: one endpoint of its own that gets each response's usage in its original body.
   route(createRoute({ method: "put", path: "/v1/usage-webhook", request: { body: content(schema.UsageWebhookInput) }, responses: { 200: reply("The receiver; with its signing secret the first time only", schema.UsageWebhookSet) } }), async c => {
     const { url } = parse(schema.UsageWebhookInput, await readJson(c.req.raw.body, 16 * 1024, {}));
@@ -419,13 +441,13 @@ export function api(context: ApiContext) {
     async c => json(c, 200, await clients.list(c.var.principal.tenant)));
   route(createRoute({
     method: "post", path: "/v1/agents",
-    request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "Provisioning with the same key returns the same agent" }) }), body: content(schema.AgentInput) },
+    request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "Provisioning with the same key returns the same agent" }) }).extend(traceHeaders.shape), body: content(schema.AgentInput) },
     responses: { 201: reply("The agent and its scoped token", schema.AgentCreated) },
   }), async c => {
     const tenant = c.var.principal.tenant;
     const { prompt, ...params } = await readJson(c.req.raw.body, 18 * 1024 * 1024, {}) ?? {};
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
-    const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt));
+    const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt), undefined, c.req.header("traceparent"));
     await context.rateLimits?.agentCreate(tenant);
     const created = await context.createAgent(tenant, params, c.req.header("idempotency-key")) as { id: string };
     if (!first) return json(c, 201, created);
@@ -527,10 +549,10 @@ export function api(context: ApiContext) {
     await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, { aborted: true });
   });
-  route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, headers: traceHeaders, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
-    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key"))));
+    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key"), c.req.header("traceparent"))));
   });
   route(createRoute({
     method: "put", path: "/v1/agents/{id}/uploads/{requestId}/{name}", request: { params: agentId.extend({ requestId: z.string(), name: z.string() }), body: binary("The file's bytes, streamed") },
@@ -775,7 +797,7 @@ export function api(context: ApiContext) {
     return context.accountDeletions;
   };
   const exported = (tenant: string) => {
-    const options = { accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, webhooks: context.webhooks, oauth: context.oauth, historyPage: context.historyPage };
+    const options = { accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, webhooks: context.webhooks, telemetry: context.telemetry, oauth: context.oauth, historyPage: context.historyPage };
     // Past the first bytes the status is sent: a failure cuts the zip off before its directory, so no reader takes it as whole.
     const zip = (async function* () {
       try { yield* exportAccount(options, tenant); }
@@ -995,11 +1017,14 @@ export function api(context: ApiContext) {
 export const openapiDocument = () => api({} as ApiContext).getOpenAPI31Document(DOCUMENT);
 
 /** The prompt request a prompt's body makes (POST /v1/agents/{id}/prompt, or a create's first prompt). */
-function promptRequest(body: z.infer<typeof schema.PromptInput>, fallbackId?: string) {
+function promptRequest(body: z.infer<typeof schema.PromptInput>, fallbackId?: string, traceparent?: string) {
   const { requestId, text, whileRunning, ...rest } = body;
   const given = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
-  return { id: requestId ?? fallbackId ?? randomUUID(), method: "prompt", params: { text, ...given, ...(whileRunning === "steer" ? { whileRunning } : {}) } };
+  // The trace the run continues is not part of what it asks: a retry under another span is the same request.
+  return { id: requestId ?? fallbackId ?? randomUUID(), method: "prompt", params: { text, ...given, ...(whileRunning === "steer" ? { whileRunning } : {}), ...(traceparent ? { traceparent } : {}) } };
 }
+/** A W3C trace context: the run continues the caller's trace (exported when the tenant set PUT /v1/telemetry). */
+const traceHeaders = z.object({ traceparent: z.string().optional().openapi({ description: "W3C trace context (00-<trace-id>-<span-id>-<flags>): the run's spans continue this trace", example: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }) });
 
 /** Where this runtime is reached, for the next steps a 401 names. */
 const origin = (context: ApiContext) => context.links?.publicUrl ?? "https://run.camelai.com";

@@ -7,6 +7,7 @@ import { configuredModel, defaultModels } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
+import { Telemetry, TELEMETRY_CHANNEL } from "./telemetry.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
@@ -255,6 +256,12 @@ modelProviders.onDelete = (tenant, name) => keyScopes.forgetProvider(tenant, nam
 // Each model response's usage, POSTed to the tenant's receiver from a durable outbox any node sends from.
 // Which tenants have endpoints for run events: runs of the others write none.
 const subscribers = new Subscribers(db);
+const telemetry = new Telemetry({
+  db, accounts, outbound, service: process.env.AGENT_SERVICE_NAME,
+  ...(process.env.AGENT_TELEMETRY_INTERVAL_MS ? { intervalMs: Number(process.env.AGENT_TELEMETRY_INTERVAL_MS) } : {}),
+  ...(process.env.AGENT_TELEMETRY_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_TELEMETRY_RETRY_MS) } : {}),
+});
+telemetry.start();
 const webhooks = new Webhooks({ db, accounts, outbound, subscribers, ...(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS ? { retryBaseMs: Number(process.env.AGENT_USAGE_WEBHOOK_RETRY_MS) } : {}) });
 webhooks.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
 // Idempotency keys' answers are kept a day.
@@ -488,6 +495,7 @@ function forward(req: IncomingMessage, res: ServerResponse, owner: string, actor
 const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
 const clients = new ClientSessions(supervisor, {
   runEvents: tenant => subscribers.runs(tenant),
+  tracing: telemetry,
   // A self-hosted runtime configured by its environment takes keys there too.
   ...(process.env.AGENT_TENANT ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
   secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
@@ -547,6 +555,7 @@ const loads = await listenFromEnvironment({
     if (from !== node && agent) clients.loadedElsewhere(agent);
   },
   [ENDPOINTS_CHANNEL]: tenant => subscribers.forget(tenant),
+  [TELEMETRY_CHANNEL]: tenant => telemetry.forget(tenant),
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({
@@ -789,7 +798,7 @@ app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
 if (billingMailer) app.route("/", billingMailer.feedback());
-app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   rateLimits, clientAddress: c => requestClient(c).address,
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 app.get("/console", c => c.redirect("/console/", 302));
@@ -976,6 +985,8 @@ async function drain(signal: string) {
   while (clients.inFlight() && Date.now() < drainDeadline) await new Promise(resolve => setTimeout(resolve, 100));
   const unfinished = clients.inFlight();
   await step("agents", () => clients.close());
+  // The spans of the runs this node served or handed off, sent within a few seconds.
+  await step("telemetry", () => telemetry.close());
   await step("supervisor", () => supervisor.close());
   await step("volumes", () => volumes.close());
   await step("mcp", () => mcp.close());

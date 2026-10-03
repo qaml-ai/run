@@ -44,7 +44,7 @@ export interface AccountDeletionOptions {
 const TENANT_TABLES = [
   "discord_setup_attempts", "discord_server_bindings",
   "api_tokens", "oauth_grants", "provider_keys", "key_scope_providers", "model_providers", "definitions",
-  "webhook_deliveries", "webhook_endpoints", "usage_webhook_outbox", "usage_webhooks", "idempotency_keys",
+  "webhook_deliveries", "webhook_endpoints", "usage_webhook_outbox", "usage_webhooks", "telemetry_exporters", "idempotency_keys",
   "agent_inputs", "schedules", "channel_agents", "volume_watchers", "channels",
   "chunk_pins", "chunk_touches", "gc_candidates", "storage_gc",
   "billing_email_outbox", "billing_recipients", "billing_events", "billing_alert_settings", "billing_auto_settings", "help_requests",

@@ -115,6 +115,29 @@ export const WebhookEndpoint = z.object({ id: z.string(), url: z.string(), event
 const signingSecret = z.string().openapi({ description: "The Standard Webhooks signing secret (whsec_…); shown only this once" });
 export const WebhookEndpointCreated = WebhookEndpoint.extend({ secret: signingSecret }).openapi("WebhookEndpointCreated");
 export const WebhookSecret = z.object({ secret: signingSecret }).openapi("WebhookSecret");
+export const TelemetryInput = z.object({
+  endpoint: z.string().openapi({ description: "The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces)", example: "https://api.honeycomb.io/v1/traces" }),
+  headers: z.record(z.string(), z.string()).optional().openapi({ description: "Headers sent with each export (a collector's API key), stored encrypted and never shown again. Left out, the stored ones stay while the endpoint keeps its origin; {} removes them", example: { "x-honeycomb-team": "<key>" } }),
+  protocol: z.enum(["http/protobuf", "http/json"]).optional().openapi({ description: "OTLP's encoding. Default http/protobuf" }),
+  sampleRate: z.number().min(0).max(1).optional().openapi({ description: "The share of runs traced, from 0 to 1 (default 1). A run continuing a caller's traceparent follows its sampled flag instead" }),
+  include: z.strictObject({
+    content: z.boolean().optional().openapi({ description: "Export what people and models wrote: prompts, replies, tool arguments and results, inputs' questions, errors' messages. Default false" }),
+  }).optional(),
+}).strict().openapi("TelemetryInput");
+export const Telemetry = z.object({
+  endpoint: z.string(), protocol: z.enum(["http/protobuf", "http/json"]), sampleRate: z.number(), include: z.object({ content: z.boolean() }),
+  headers: z.array(z.string()).openapi({ description: "The names of the stored headers; their values are never returned" }),
+  createdAt: z.number(), updatedAt: z.number(),
+  status: z.object({
+    lastExportAt: z.number().nullable().openapi({ description: "When a node last exported spans here (recorded at most once a minute)" }),
+    lastError: z.string().nullable().openapi({ description: "Why the last export failed, since the last success: an HTTP status, or how the connection failed" }),
+    lastErrorAt: z.number().nullable(),
+  }),
+}).openapi("Telemetry");
+export const TelemetryTest = z.object({
+  ok: z.boolean(), status: z.number().optional().openapi({ description: "The endpoint's HTTP status" }), error: z.string().optional(),
+  traceId: z.string().openapi({ description: "The test span's trace, to look up in your backend" }), spanId: z.string(),
+}).openapi("TelemetryTest");
 export const UsageWebhookInput = z.object({ url: z.string().openapi({ description: "An HTTPS URL that receives each model response's usage", example: "https://example.com/hooks/agent-usage" }) }).strict().openapi("UsageWebhookInput");
 export const UsageWebhook = z.object({ url: z.string(), createdAt: z.number() }).openapi("UsageWebhook");
 export const UsageWebhookSet = z.object({ url: z.string(), secret: signingSecret.optional() }).openapi("UsageWebhookSet");
@@ -280,6 +303,11 @@ export const RequestRecord = z.object({
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
   status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
+  trace: z.object({
+    traceId: z.string(), spanId: z.string().openapi({ description: "The run's own span" }),
+    parentSpanId: z.string().optional().openapi({ description: "The span it continues: the caller's traceparent, or the run a resume continues" }),
+    sampled: z.boolean(),
+  }).optional().openapi({ description: "A run's place in its trace, when the tenant exports telemetry (PUT /v1/telemetry)" }),
 }).openapi("RequestRecord");
 export const AgentCredentials = z.object({
   id: z.string(),

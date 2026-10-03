@@ -40,6 +40,8 @@ import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./v
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
 import { recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
+import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
+import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -170,6 +172,12 @@ type Session = {
   retries?: Map<string, RetryPlan>;
   /** A channel's conversation: someone there answers the agent's inputs. */
   channel?: boolean;
+  /** The running run's spans, when its trace is exported (telemetry.ts). */
+  spans?: RunSpans;
+  /** A compaction between runs, when its tenant exports telemetry. */
+  background?: Promise<BackgroundSpans | undefined>;
+  /** Where each of the running agent's tools comes from, for its tool calls' spans. */
+  toolSources?: Map<string, ToolSource>;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -388,6 +396,8 @@ export interface ClientSessionOptions {
   rerankers?: Reranker[];
   /** Human input (questions, approvals, setup steps) that suspended turns wait on; without it, tools cannot ask. */
   inputs?: Inputs;
+  /** Trace export: runs of a tenant that has it set record their spans here. */
+  tracing?: Tracing;
   /** Submit a request to an agent on whichever node serves it (resuming a suspension that expired). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
 }
@@ -718,6 +728,7 @@ export class ClientSessions {
 
   private publish(session: Session, data: ClientEvent) {
     if (this.closed || session.fault) return;
+    if (data.type === "event" && (session.spans || this.options.tracing)) this.traceEvent(session, data.requestId, data.event);
     // A message_update is its delta alone; the runtime keeps the latest message it updates, for snapshots.
     if (data.type === "event") {
       const inner = data.event;
@@ -1271,6 +1282,9 @@ export class ClientSessions {
     session.servers = servers;
     // Sources that could not be listed (down, or refusing their credentials): the model has none of their tools, so each run's outcome says so.
     const views = (await Promise.all(servers.map(server => server.sources?.({ refresh: false }).catch(() => []) ?? []))).flat();
+    // Served tools are MCP sources the runtime calls with its identity tokens.
+    const served = new Set((("sources" in next ? next.sources : header.sources)?.mcpServers ?? []).filter(spec => spec.auth?.type === "runtime").map(spec => spec.name));
+    session.toolSources = new Map(views.flatMap(view => view.tools.map(tool => [tool.name, view.kind === "application" ? "attached" : view.kind === "mcp" && served.has(view.name) ? "served" : view.kind] as const)));
     session.sourceErrors = views.flatMap(view => view.status === "error" ? [{ kind: view.kind, source: view.name, message: view.error ?? "Could not be listed" }] : []);
     session.searchable = definitions.filter(tool => tool.exposure !== "direct");
     // Rerankers that index the catalog (embeddings) start now, so the first search need not wait; the agent's tenant pays for it at cost.
@@ -1300,14 +1314,19 @@ export class ClientSessions {
    */
   private async callTool(session: Session, call: ToolCall) {
     let code: ToolCallCode | undefined;
+    // A direct call's span is made from its events; a call from js_exec's code has one of its own, under js_exec's.
+    const spans = session.spans, started = Date.now();
+    const innerSpan = spans && call.innerCallId ? newSpanId() : undefined;
+    let answer: Awaited<ReturnType<ClientSessions["answerToolCall"]>> | undefined;
     try {
-      const answer = await this.answerToolCall(session, call);
+      answer = await this.answerToolCall(session, spans ? { ...call, traceparent: spans.traceparent(call.toolCallId, innerSpan) } : call);
       code = "inputRequired" in answer ? "input_required" : "isError" in answer && answer.isError ? "tool_error" : undefined;
       return answer;
     } catch (error) {
       code = call.signal.aborted ? "aborted" : error instanceof ToolFailure ? error.code : "failed";
       throw error;
     } finally {
+      if (innerSpan) spans!.innerCall(call, innerSpan, started, Date.now(), code, answer);
       // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
       const calls = session.toolCalls ??= [];
       if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}) });
@@ -2195,7 +2214,11 @@ export class ClientSessions {
       return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].map(visible) });
     });
     app.post(`${agent}/requests`, async c => {
-      const { status, record } = await this.accept(c.var.session, await readJson(body(c), FRAME_BYTES));
+      const request = await readJson(body(c), FRAME_BYTES);
+      // A W3C traceparent header: the run continues the caller's trace.
+      const traceparent = c.req.header("traceparent");
+      if (traceparent && request?.params && typeof request.params === "object" && request.params.traceparent === undefined) request.params.traceparent = traceparent;
+      const { status, record } = await this.accept(c.var.session, request);
       return json(c, status, record);
     });
     app.get(`${agent}/requests/:request`, c => this.settled(c, c.var.session, c.req.param("request")));
@@ -2260,7 +2283,8 @@ export class ClientSessions {
       if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
     // Whether a run may go ahead with no application connected is the caller's choice now, not part of what it asks.
-    const { allowDisconnected, ...asked } = body.params;
+    // So is the trace it continues: a retry from another span of the caller's is the same request.
+    const { allowDisconnected, traceparent, ...asked } = body.params;
     if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean") throw new HttpError(400, "allowDisconnected is true or false");
     body = { ...body, params: asked };
     const fingerprint = hash(canonical({ method: body.method, params: body.params }));
@@ -2305,6 +2329,7 @@ export class ClientSessions {
     if (isRun && body.method !== "resume") await this.options.runRate?.(session.header.tenant);
     const limited = body.method === "resume" ? undefined : await this.runLimit(session, body.method);
     if (limited) throw limited;
+    const trace = isRun ? await this.traceFor(session, traceparent, body.method === "resume" ? session.requests.get(params.suspension)?.trace : undefined) : undefined;
     // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held
     // until the agent has no run open. A resume continues a turn already accepted. Until the request is taken, the
     // slot is kept for it (`admitting`) even if the agent's other runs end meanwhile.
@@ -2347,7 +2372,7 @@ export class ClientSessions {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
         id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
-        ...(body.method === "resume" ? { suspension: params.suspension } : {}),
+        ...(body.method === "resume" ? { suspension: params.suspension } : {}), ...(trace ? { trace } : {}),
       });
       await this.commit(session, true);
       if (queued) this.enqueue(session, record, params);
@@ -2357,6 +2382,49 @@ export class ClientSessions {
     } finally {
       if (admitting) { session.admitting!--; this.releaseBusy(session); }
     }
+  }
+
+  /**
+   * A run's place in a trace, if its tenant exports telemetry: a `resume` continues the run it resumes; another run
+   * continues the caller's `traceparent` (sampled as the caller decided), or starts a trace sampled at the tenant's rate.
+   */
+  private async traceFor(session: Session, traceparent: unknown, continues?: RequestRecord["trace"]): Promise<RequestRecord["trace"]> {
+    const settings = await this.options.tracing?.settings(session.header.tenant).catch(() => undefined);
+    if (!settings) return undefined;
+    if (continues) return { traceId: continues.traceId, spanId: newSpanId(), parentSpanId: continues.spanId, sampled: continues.sampled };
+    const parent = parseTraceparent(traceparent);
+    const traceId = parent?.traceId ?? newTraceId();
+    return { traceId, spanId: newSpanId(), ...(parent ? { parentSpanId: parent.spanId } : {}), sampled: parent ? parent.sampled : sampledAt(traceId, settings.sampleRate) };
+  }
+
+  /** The spans of a run whose trace is sampled, while its tenant exports telemetry. */
+  private async spansFor(session: Session, record: RequestRecord): Promise<RunSpans | undefined> {
+    const tracing = this.options.tracing;
+    const settings = record.trace?.sampled ? await tracing?.settings(session.header.tenant).catch(() => undefined) : undefined;
+    if (!tracing || !settings || !record.trace) return undefined;
+    const { tenant, id, metadata } = session.header;
+    return new RunSpans({
+      tenant, agent: { id, ...(metadata?.name ? { name: metadata.name } : {}) }, request: record, trace: record.trace, content: settings.content,
+      model: () => session.header.config.model, toolSource: name => session.toolSources?.get(name) ?? "runtime",
+      record: span => tracing.record(tenant, span),
+    });
+  }
+
+  /** An event, to the spans of the run it belongs to, or of the compaction between runs it is part of. */
+  private traceEvent(session: Session, requestId: string, event: any) {
+    const at = Date.now();
+    if (event?.background === true) {
+      if (event.type === "compaction_start") session.background = this.options.tracing?.settings(session.header.tenant).then(settings => {
+        if (!settings || Math.random() >= settings.sampleRate) return undefined;
+        const tracing = this.options.tracing!, tenant = session.header.tenant;
+        return new BackgroundSpans({ tenant, agentId: session.header.id, content: settings.content, model: () => session.header.config.model, record: span => tracing.record(tenant, span) });
+      }, () => undefined);
+      void session.background?.then(spans => spans?.event(event, at));
+      if (event.type === "compaction_end") session.background = undefined;
+      return;
+    }
+    const spans = session.spans;
+    if (spans && (requestId === spans.requestId || requestId === "")) spans.event(event, at);
   }
 
   /**
@@ -2648,6 +2716,14 @@ export class ClientSessions {
     const inputs = this.options.inputs!;
     const rows = await inputs.forRequest(session.header.id, suspension);
     if (rows.some(row => row.state === "pending")) throw new Error("Inputs of this turn are still waiting for an answer");
+    // The waits, in the trace of the run that asked.
+    const asked = session.requests.get(suspension)?.trace;
+    if (asked?.sampled && this.options.tracing) {
+      const tracing = this.options.tracing, tenant = session.header.tenant;
+      void tracing.settings(tenant).then(settings => {
+        if (settings) for (const span of inputSpans(rows, { tenant, agentId: session.header.id, requestId: suspension, trace: asked, content: settings.content })) tracing.record(tenant, span);
+      }, () => {});
+    }
     // Inputs settled away from this node (expired, or answered in a channel) are announced here, on the agent's stream.
     for (const row of rows) if (row.state === "expired" || row.answer?.by.via === "channel") this.resolved(session, row);
     const onExpire = session.header.sources?.humanInput?.onExpire;
@@ -2725,6 +2801,7 @@ export class ClientSessions {
         if (record.method === "execute") session.beginning = {};
         else await this.commit(session, true);
         this.hook("runStarted", session, record);
+        session.spans = record.trace?.sampled ? await this.spansFor(session, record) : undefined;
         if (session.announcing) {
           session.started = enqueueEvents(this.db, [this.runEvent(session, record)])
             .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: safeError(error) })));
@@ -2787,6 +2864,12 @@ export class ClientSessions {
       session.lastActive = Date.now();
       this.publish(session, { type: "response", id: record.id, outcome: value });
       for (const id of steered) this.publish(session, { type: "response", id, outcome: value });
+      if (run && completed.trace?.sampled) {
+        // A run that never began (refused at a limit, or failed starting) has a span too.
+        const spans = session.spans?.requestId === record.id ? session.spans : await this.spansFor(session, completed);
+        if (session.spans === spans) session.spans = undefined;
+        spans?.end(value, completed);
+      }
     } finally { session.settling--; }
     await this.fold(session);
   }
@@ -3040,6 +3123,12 @@ export class ClientSessions {
       const { params: _params, ...rest } = request;
       this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: queued ? { error: reason } : { error: reason, uncertain: true } });
     }
+    // The running run's spans: ended here with it, or left for the node that takes its turn over (the run's own span is that node's).
+    const spans = session.spans;
+    session.spans = undefined;
+    const ended = spans && session.requests.get(spans.requestId);
+    if (ended?.state === "completed") spans!.end(ended.outcome, ended);
+    else spans?.abandon(reason);
     // Tool calls in flight end as unknown: the connection they were on is closed.
     this.closeAttached(session);
     await this.commit(session, true);
@@ -3234,6 +3323,8 @@ export class ClientSessions {
   private async lost(session: Session) {
     // Its busy row named the fenced session, so it no longer counts.
     session.busy = false;
+    session.spans?.abandon("This node lost ownership of the agent");
+    session.spans = undefined;
     this.fail(session, new Error("This node lost ownership of the agent"));
     this.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);

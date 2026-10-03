@@ -1247,6 +1247,163 @@
           "secret"
         ]
       },
+      "Telemetry": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "http/protobuf",
+              "http/json"
+            ]
+          },
+          "sampleRate": {
+            "type": "number"
+          },
+          "include": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "content"
+            ]
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the stored headers; their values are never returned"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          },
+          "status": {
+            "type": "object",
+            "properties": {
+              "lastExportAt": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "When a node last exported spans here (recorded at most once a minute)"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why the last export failed, since the last success: an HTTP status, or how the connection failed"
+              },
+              "lastErrorAt": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "lastExportAt",
+              "lastError",
+              "lastErrorAt"
+            ]
+          }
+        },
+        "required": [
+          "endpoint",
+          "protocol",
+          "sampleRate",
+          "include",
+          "headers",
+          "createdAt",
+          "updatedAt",
+          "status"
+        ]
+      },
+      "TelemetryInput": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "description": "The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces)",
+            "example": "https://api.honeycomb.io/v1/traces"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Headers sent with each export (a collector's API key), stored encrypted and never shown again. Left out, the stored ones stay while the endpoint keeps its origin; {} removes them",
+            "example": {
+              "x-honeycomb-team": "<key>"
+            }
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "http/protobuf",
+              "http/json"
+            ],
+            "description": "OTLP's encoding. Default http/protobuf"
+          },
+          "sampleRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "The share of runs traced, from 0 to 1 (default 1). A run continuing a caller's traceparent follows its sampled flag instead"
+          },
+          "include": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "boolean",
+                "description": "Export what people and models wrote: prompts, replies, tool arguments and results, inputs' questions, errors' messages. Default false"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "endpoint"
+        ],
+        "additionalProperties": false
+      },
+      "TelemetryTest": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "number",
+            "description": "The endpoint's HTTP status"
+          },
+          "error": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string",
+            "description": "The test span's trace, to look up in your backend"
+          },
+          "spanId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "traceId",
+          "spanId"
+        ]
+      },
       "UsageWebhookSet": {
         "type": "object",
         "properties": {
@@ -1588,6 +1745,31 @@
               "failed"
             ],
             "description": "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running"
+          },
+          "trace": {
+            "type": "object",
+            "properties": {
+              "traceId": {
+                "type": "string"
+              },
+              "spanId": {
+                "type": "string",
+                "description": "The run's own span"
+              },
+              "parentSpanId": {
+                "type": "string",
+                "description": "The span it continues: the caller's traceparent, or the run a resume continues"
+              },
+              "sampled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "traceId",
+              "spanId",
+              "sampled"
+            ],
+            "description": "A run's place in its trace, when the tenant exports telemetry (PUT /v1/telemetry)"
           }
         },
         "required": [
@@ -6750,6 +6932,139 @@
         }
       }
     },
+    "/v1/telemetry": {
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelemetryInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Where the tenant's traces go now; header values are never returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Telemetry"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Where the tenant's traces go, with header names only, and how the last export went",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Telemetry"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "Traces are no longer exported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/telemetry/test": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One test span, sent now: what the endpoint answered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryTest"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage-webhook": {
       "put": {
         "requestBody": {
@@ -6983,6 +7298,17 @@
             "required": false,
             "description": "Provisioning with the same key returns the same agent",
             "name": "idempotency-key",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "W3C trace context (00-<trace-id>-<span-id>-<flags>): the run's spans continue this trace",
+              "example": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+            },
+            "required": false,
+            "description": "W3C trace context (00-<trace-id>-<span-id>-<flags>): the run's spans continue this trace",
+            "name": "traceparent",
             "in": "header"
           }
         ],
@@ -7597,12 +7923,12 @@
           {
             "schema": {
               "type": "string",
-              "maxLength": 255,
-              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+              "description": "W3C trace context (00-<trace-id>-<span-id>-<flags>): the run's spans continue this trace",
+              "example": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
             },
             "required": false,
-            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
-            "name": "idempotency-key",
+            "description": "W3C trace context (00-<trace-id>-<span-id>-<flags>): the run's spans continue this trace",
+            "name": "traceparent",
             "in": "header"
           }
         ],
