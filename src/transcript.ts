@@ -224,31 +224,76 @@ export class Transcript {
     } else throw new Error(`Unknown transcript record: ${(record as { t: string }).t}`);
   }
 
-  private async write(record: TranscriptRecord) {
-    this.log.append(record);
-    this.apply(record);
-    await this.log.flush(true);
+  /** The commit line: one write at a time, in order. */
+  private line: Promise<unknown> = Promise.resolve();
+  /** Why a write failed. The log may hold part of what it wrote, so nothing more is written: only a reload knows what it holds. */
+  failed?: unknown;
+
+  /** Run `job` on the commit line, once every earlier commit has settled; none runs after a failed write. */
+  private enqueue<T>(job: () => Promise<T>): Promise<T> {
+    const run = this.line.then(() => {
+      if (this.failed !== undefined) throw this.failed;
+      return job();
+    });
+    this.line = run.catch(() => {});
+    return run;
   }
 
-  push(message: AgentMessage) { return this.write({ t: "message", message }); }
-  retract() { return this.write({ t: "retract" }); }
-  setActive(active: boolean) { return this.write({ t: "turn", active }); }
-  /** Leave tool calls open for a person's input, or (`released`) give them back to the turn. */
-  await(calls: string[], released = false) { return this.write({ t: "awaiting", calls, ...(released ? { released: true as const } : {}) }); }
-  compact(state: CompactionState, system?: SystemMessage) { return this.write({ t: "compaction", ...state, ...(system ? { system } : {}) }); }
-  /** Pin the leading system message, or (without `leading`) change the prompt or tools from here on. */
-  declareSystem(message: SystemMessage, leading = false) { return this.write({ t: "system", message, ...(leading ? { leading: true as const } : {}) }); }
+  /**
+   * Commit the records `change` gives as of every earlier commit: they are written durably, then applied, so memory
+   * (and what the agent acts on) never holds what the log may not. A failed write leaves memory as it was, and every
+   * later commit fails with it. `change` may give none, to write nothing.
+   */
+  commit(change: () => TranscriptRecord[]): Promise<void> {
+    return this.enqueue(async () => {
+      const records = change();
+      if (!records.length) return;
+      for (const record of records) this.log.append(record);
+      try { await this.log.flush(true); }
+      catch (error) { this.failed = error; throw error; }
+      for (const record of records) this.apply(record);
+    });
+  }
 
-  async append(messages: AgentMessage[]) {
-    for (const message of messages) { this.log.append({ t: "message", message }); this.apply({ t: "message", message }); }
-    await this.log.flush(true);
+  push(message: AgentMessage) { return this.append([message]); }
+  append(messages: AgentMessage[]) { return this.commit(() => messages.map(message => ({ t: "message" as const, message }))); }
+  retract() { return this.commit(() => [{ t: "retract" }]); }
+  setActive(active: boolean) { return this.commit(() => [{ t: "turn", active }]); }
+  /** Leave tool calls open for a person's input, or (`released`) give them back to the turn. */
+  await(calls: string[], released = false) { return this.commit(() => [{ t: "awaiting", calls, ...(released ? { released: true as const } : {}) }]); }
+  /**
+   * Change the prompt or tools from here on, after the leading system message, pinning `leading` as it first when
+   * nothing has been pinned yet: one commit, so a node reloading the agent rebuilds the same context.
+   */
+  declareSystem(message: SystemMessage, leading: SystemMessage) {
+    return this.commit(() => [...(this.system ? [] : [{ t: "system" as const, message: leading, leading: true as const }]), { t: "system", message }]);
+  }
+
+  /**
+   * Replace the messages before `state.cut` with its summary, only onto the working set it summarized: `previous` still
+   * the latest summary, and the cut within what history holds. System messages before the cut fold into the leading one
+   * (`fold`). Whether it was written, and the system messages it folded.
+   */
+  async compact(state: CompactionState, previous: CompactionState | undefined, fold: (changes: SystemMessage[]) => SystemMessage | undefined) {
+    let folded: SystemMessage[] | undefined;
+    await this.commit(() => {
+      if (this.compaction !== previous || state.cut < this.offset || state.cut > this.total) return [];
+      folded = this.updates.filter(update => update.at <= state.cut).map(update => update.message);
+      const system = folded.length ? fold(folded) : undefined;
+      return [{ t: "compaction", ...state, ...(system ? { system } : {}) }];
+    });
+    return folded;
   }
 
   /** Atomically replace the history (imports), folding the log to a single snapshot record. */
-  async replace(messages: AgentMessage[], active = this.active, compaction?: CompactionState) {
-    this.apply({ t: "reset", messages, ...(compaction ? { compaction } : {}) });
-    this.active = active;
-    await this.log.rewrite(() => [{ t: "reset", messages: [...messages], ...(compaction ? { compaction } : {}) }, ...(this.active ? [{ t: "turn" as const, active: true }] : [])]);
+  replace(messages: AgentMessage[], active = this.active, compaction?: CompactionState) {
+    return this.enqueue(async () => {
+      const reset = { t: "reset" as const, messages: [...messages], ...(compaction ? { compaction } : {}) };
+      try { await this.log.rewrite(() => [reset, ...(active ? [{ t: "turn" as const, active: true }] : [])]); }
+      catch (error) { this.failed = error; throw error; }
+      this.apply(reset);
+      this.active = active;
+    });
   }
 }
 

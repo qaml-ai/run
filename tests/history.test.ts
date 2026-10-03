@@ -54,8 +54,8 @@ test("system messages keep their place in the transcript across reloads, retract
 
   const transcript = await loaded();
   await transcript.append([user("u0"), user("u1")]);
-  await transcript.declareSystem(leading, true);
-  await transcript.declareSystem(change);
+  // The first change pins the leading message before it, in the same commit.
+  await transcript.declareSystem(change, leading);
   await transcript.push(user("u2"));
   await transcript.push(user("failed"));
   await transcript.retract();
@@ -68,13 +68,13 @@ test("system messages keep their place in the transcript across reloads, retract
   // A change at the end stays at the end when the message before it is retracted.
   await transcript.push(user("u3"));
   const late = system({ sections: { instructions: "newer" } });
-  await transcript.declareSystem(late);
+  await transcript.declareSystem(late, leading);
   await transcript.retract();
   assert.deepEqual(transcript.view().at(-1), late);
 
   // Compaction folds changes before its cut into the leading message and keeps later ones.
   const folded = system({ content: "base", sections: { instructions: "new" } });
-  await transcript.compact({ summary: "S", cut: 2, tokensBefore: 10, at: 3 }, folded);
+  assert.deepEqual(await transcript.compact({ summary: "S", cut: 2, tokensBefore: 10, at: 3 }, undefined, () => folded), [change]);
   assert.deepEqual(transcript.view().slice(1), [user("u2"), late]);
   assert.deepEqual(transcript.system, folded);
   const after = await loaded();

@@ -62,7 +62,6 @@ export function createAgentHost(hostIO: HostIO) {
   let transcript: Transcript;
   let busy = false;
   let active: AbortController | undefined;
-  let persistenceError: unknown;
   /** Why the current run ended early: a spend limit, or tool calls waiting on a person's input. */
   let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string } | undefined;
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
@@ -147,13 +146,9 @@ export function createAgentHost(hostIO: HostIO) {
     return [leading(), ...summaryView(), ...messages.filter((message, index) => !(index === 0 && message.role === "system") && message.role !== "compactionSummary" && !dropped.has(message))];
   }
 
-  /**
-   * Record a system message after the leading one, pinning that first so any node rebuilds the same
-   * context. Both appends happen before the first await, so a run cannot slip in between.
-   */
-  function declare(message: SystemMessage, current: SystemMessage): Promise<unknown> {
-    const writes = [...(transcript.system ? [] : [transcript.declareSystem(current, true)]), transcript.declareSystem(message)];
-    return Promise.all(writes).catch(error => { persistenceError = error; throw error; });
+  /** Record a system message after the leading one, pinning `current` as that first, in one commit (`Transcript.declareSystem`). */
+  function declare(message: SystemMessage, current: SystemMessage): Promise<void> {
+    return transcript.declareSystem(message, current);
   }
 
   /**
@@ -162,12 +157,12 @@ export function createAgentHost(hostIO: HostIO) {
    * appends the change even without history: a tool the configuration does not hold (final_output) is
    * declared only by the transcript, so another node continuing the turn finds it.
    */
-  function declareConfiguration(durable = false): Promise<unknown> {
+  async function declareConfiguration(durable = false): Promise<void> {
     const messages = agent!.state.messages;
     const tools = agent!.state.tools.map(toToolDeclaration);
     if (!durable && !transcript.total && !transcript.compaction) {
       agent!.state.messages = [leadingSystemMessage(config, tools), ...messages.filter(message => message.role !== "system")];
-      return Promise.resolve();
+      return;
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     const current = getCurrentSystemMessage(messages)?.sections ?? {};
@@ -176,14 +171,14 @@ export function createAgentHost(hostIO: HostIO) {
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
-    if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return Promise.resolve();
+    if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return;
     const change: SystemMessage = {
       role: "system", content: "", timestamp: Date.now(), ...(Object.keys(sections).length ? { sections } : {}),
       ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}),
     };
-    const written = declare(change, messages[0] as SystemMessage);
+    // Pi takes the change once it is written.
+    await declare(change, messages[0] as SystemMessage);
     agent!.state.messages = [...messages, change];
-    return written;
   }
 
   /** Whether each model call asks the supervisor for its credentials. */
@@ -214,7 +209,7 @@ export function createAgentHost(hostIO: HostIO) {
    * with the whole context meanwhile, and the summary takes over once it is written. `messages` are Pi's live state.
    */
   function compactInBackground(messages = agent?.state.messages) {
-    if (compacting || !messages || !config.apiKey || persistenceError || !measure(messages).need) return;
+    if (compacting || !messages || !config.apiKey || transcript.failed !== undefined || !measure(messages).need) return;
     startCompaction("threshold", true).done.catch(() => {});
   }
 
@@ -259,16 +254,12 @@ export function createAgentHost(hostIO: HostIO) {
         io.emit({ type: "compaction_end", reason, skipped: outcome.skipped, ...flag });
         return false;
       }
-      // Only onto the working set it summarized: never past what history holds now, nor over a newer summary.
-      if (transcript.compaction !== previous || outcome.state.cut < transcript.offset || outcome.state.cut > transcript.total) {
+      // Only onto the working set it summarized. System messages before the cut fold into the leading one: the summary starts a new prefix anyway.
+      const folded = await transcript.compact(outcome.state, previous, changes => getCurrentSystemMessage([leading(), ...changes]));
+      if (!folded) {
         io.emit({ type: "compaction_end", reason, skipped: "The working set changed while it was summarized", ...flag });
         return false;
       }
-      // System messages before the cut fold into the leading one: the summary starts a new prefix anyway.
-      const folded = transcript.updates.filter(update => update.at <= outcome.state.cut).map(update => update.message);
-      const system = folded.length ? getCurrentSystemMessage([leading(), ...folded]) : undefined;
-      try { await transcript.compact(outcome.state, system); }
-      catch (error) { persistenceError = error; throw error; }
       // A running turn leaves what the summary folded at its next request (liveView); between runs, Pi starts from the summary.
       for (const message of [...context.slice(0, outcome.state.cut - offset), ...folded]) dropped.add(message);
       if (!busy) { agent!.state.messages = stateMessages(); dropped = new WeakSet(); }
@@ -409,8 +400,7 @@ export function createAgentHost(hostIO: HostIO) {
           signal?.throwIfAborted();
           // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
           if (value?.inputRequired) {
-            try { await transcript.await([toolCallId]); }
-            catch (error) { persistenceError = error; throw error; }
+            await transcript.await([toolCallId]);
             return { content: value.content, details: { inputRequired: true } };
           }
           if (tool.resultFormat === "content") {
@@ -504,9 +494,8 @@ export function createAgentHost(hostIO: HostIO) {
     await transcript.retract();
     io.emit({ type: "message_retracted", index: transcript.total });
     const reminder: SystemMessage = { role: "system", content: "", sections: { [OUTPUT]: `${OUTPUT_INSTRUCTIONS}\n${OUTPUT_REMINDER}` }, timestamp: Date.now() };
-    const written = declare(reminder, agent!.state.messages[0] as SystemMessage);
+    await declare(reminder, agent!.state.messages[0] as SystemMessage);
     agent!.state.messages = [...agent!.state.messages.slice(0, -1), reminder];
-    await written;
     await agent!.continue();
     await recoverFailedResponses(signal);
   }
@@ -684,7 +673,7 @@ export function createAgentHost(hostIO: HostIO) {
         if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
           // One durable append per finished message. Streaming deltas are never persisted.
           try { await transcript.push(event.message); }
-          catch (error) { persistenceError = error; agent!.abort(); throw error; }
+          catch (error) { agent!.abort(); throw error; }
           void index();
         }
         io.emit(event);
@@ -736,7 +725,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (method === "abort") { active?.abort(); agent.abort(); return { aborted: true }; }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
-    if (persistenceError) throw new Error(`Session persistence failed: ${String(persistenceError)}`);
+    if (transcript.failed !== undefined) throw new Error(`Session persistence failed: ${String(transcript.failed)}`);
     // A prompt a turn took as a steer before the node running it stopped: it is in the history already, compacted or not.
     if (method === "prompt" && params.requestId && transcript.requests.has(params.requestId)) {
       return { messages: transcript.total, error: null, taken: true };
@@ -777,7 +766,7 @@ export function createAgentHost(hostIO: HostIO) {
       }
       await recoverFailedResponses(active.signal);
       await remindOfOutput(active.signal);
-      if (persistenceError) throw persistenceError;
+      if (transcript.failed !== undefined) throw transcript.failed;
       await transcript.setActive(false);
       // Set by finishTurn as the turn ran.
       const given = output as { value: unknown } | undefined;
@@ -801,7 +790,7 @@ export function createAgentHost(hostIO: HostIO) {
         for (const steer of steers) agent.steer(steer.message);
       }
       // Release what compaction folded away: the next run starts from summary + kept messages.
-      if (method !== "execute" && !persistenceError) {
+      if (method !== "execute" && transcript.failed === undefined) {
         agent.state.messages = stateMessages();
         dropped = new WeakSet();
       }
@@ -849,8 +838,7 @@ export function createAgentHost(hostIO: HostIO) {
       }
       io.emit({ type: "tool_execution_end", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", result, isError: !!result!.isError });
       const message = { role: "toolResult", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", content: result!.content, ...(result!.details !== undefined ? { details: result!.details } : {}), isError: !!result!.isError, timestamp: Date.now() } as AgentMessage;
-      try { await transcript.push(message); }
-      catch (error) { persistenceError = error; throw error; }
+      await transcript.push(message);
       io.emit({ type: "message_end", message });
     }
     return wanted.length;
