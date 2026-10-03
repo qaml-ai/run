@@ -1,6 +1,6 @@
 {
   "name": "@camelai/run-vue",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Vue bindings for chatting with agents on camelRun.",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@camelai/run": "0.12.0"
+    "@camelai/run": "0.13.0"
   },
   "peerDependencies": {
     "vue": "^3.3.0"

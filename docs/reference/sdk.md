@@ -294,6 +294,26 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.13.0 (TypeScript) / 0.9.0 (Python), 2026-10-03
+
+- Run limits: an agent or definition may set `runLimits: { maxResponses, maxSeconds }`
+  (Python `run_limits=`), at most the runtime's maximums. A run that reaches one ends
+  `stopped: "turn_limit"`; send another message to continue.
+- A run whose model has no key, or whose key the provider refused, is `failed` with
+  code `model_key_missing` / `model_key_invalid` and says what to do; `RunError`
+  carries both.
+- Compaction events may carry `background: true` (summaries now run in the
+  background before a conversation reaches its limit); `compaction_end.skipped` is a
+  string.
+- `createAgentHandler`'s waited `send` returns `status`.
+- The 409 for unconnected tools names each SDK's call (`connectAgent` /
+  `connect_agent`).
+- Python: `camelai-run[pydantic]` installs pydantic for output schemas, and
+  `camelai_run.__version__`.
+- CLI: reads the runtime's URL from `CAMELAI_BASE_URL` (as the SDKs do; `CAMELAI_URL`
+  still works). `create-run-app` has a real `--help` and takes the key from the
+  environment.
+
 ## 0.12.0 (TypeScript) / 0.8.0 (Python), 2026-10-01
 
 - Structured output: `run(text, { output })` (`run(text, output=)`) takes a
