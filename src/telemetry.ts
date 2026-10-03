@@ -409,6 +409,14 @@ function outputMessage(message: any, finishReason?: string) {
     : part?.type === "toolCall" ? [{ type: "tool_call", id: part.id, name: part.name, arguments: part.arguments }] : []);
   return json([{ role: "assistant", parts, ...(finishReason ? { finish_reason: finishReason } : {}) }]);
 }
+/**
+ * A tool call's arguments and result, as the GenAI conventions name them, and as `input.value` / `output.value`
+ * (OpenInference), which LangSmith and Langfuse show as a tool run's input and output.
+ */
+function toolContent(args: unknown, result: unknown): Attributes {
+  const output = result === undefined ? undefined : clip(textOf((result as { content?: unknown })?.content));
+  return { "gen_ai.tool.call.arguments": json(args), "input.value": json(args), ...(output !== undefined ? { "gen_ai.tool.call.result": output, "output.value": output } : {}) };
+}
 const FINISH: Record<string, string> = { stop: "stop", length: "length", toolUse: "tool_call", error: "error", aborted: "aborted" };
 
 /**
@@ -506,9 +514,9 @@ export class RunSpans {
           "gen_ai.response.finish_reasons": [FINISH[message.stopReason] ?? String(message.stopReason ?? "unknown")],
           "gen_ai.usage.input_tokens": usage.input ?? 0, "gen_ai.usage.output_tokens": usage.output ?? 0,
           "gen_ai.usage.cache_read.input_tokens": usage.cacheRead || undefined, "gen_ai.usage.cache_creation.input_tokens": usage.cacheWrite || undefined,
-          "camelrun.cost.usd": { double: Number(usage.cost?.total) || 0 },
+          "camelrun.cost.usd": { double: Number(usage.cost?.total) || 0 }, "gen_ai.usage.cost": { double: Number(usage.cost?.total) || 0 },
           ...(failed ? { "error.type": message.stopReason === "aborted" ? "aborted" : errorClass(message.errorMessage) } : {}),
-          ...(content ? { "gen_ai.output.messages": outputMessage(message, FINISH[message.stopReason]) } : {}),
+          ...(content ? { "gen_ai.output.messages": outputMessage(message, FINISH[message.stopReason]), "output.value": outputMessage(message, FINISH[message.stopReason]) } : {}),
         }, failed ? this.failure(message.errorMessage, message.stopReason === "aborted" ? "aborted" : undefined) : undefined, model.spanId);
         break;
       }
@@ -529,7 +537,7 @@ export class RunSpans {
           "camelrun.tool.source": this.options.toolSource(name),
           ...(waiting ? { "camelrun.tool.input_required": true } : {}),
           ...(event.isError ? { "error.type": "tool_error" } : {}),
-          ...(content ? { "gen_ai.tool.call.arguments": json(tool.args ?? event.args ?? {}), "gen_ai.tool.call.result": clip(textOf(event.result?.content)) } : {}),
+          ...(content ? toolContent(tool.args ?? event.args ?? {}, event.result) : {}),
         }, event.isError ? this.failure(textOf(event.result?.content), "tool_error") : undefined, tool.spanId);
         break;
       }
@@ -556,7 +564,7 @@ export class RunSpans {
       ...(call.toolCallId ? { "gen_ai.tool.call.id": call.toolCallId } : {}), ...(call.innerCallId ? { "camelrun.tool.inner_call.id": call.innerCallId } : {}),
       "camelrun.tool.source": this.options.toolSource(call.name),
       ...(code ? { "error.type": code } : {}),
-      ...(this.options.content ? { "gen_ai.tool.call.arguments": json(call.args ?? {}), ...(result !== undefined ? { "gen_ai.tool.call.result": clip(textOf((result as { content?: unknown })?.content)) } : {}) } : {}),
+      ...(this.options.content ? toolContent(call.args ?? {}, result) : {}),
     }, code ? { code: "error", message: code } : undefined, spanId, parent);
   }
 
@@ -592,12 +600,12 @@ export class RunSpans {
       attributes: {
         ...this.common(),
         "gen_ai.operation.name": execute ? "execute_code" : "invoke_agent",
-        "gen_ai.agent.id": agent.id, ...(agent.name ? { "gen_ai.agent.name": agent.name } : {}), "gen_ai.conversation.id": agent.id,
+        "gen_ai.agent.id": agent.id, ...(agent.name ? { "gen_ai.agent.name": agent.name } : {}), "gen_ai.conversation.id": agent.id, "session.id": agent.id,
         ...(execute ? {} : { "gen_ai.system": model.provider, "gen_ai.provider.name": model.provider, "gen_ai.request.model": model.id }),
         ...(usage ? {
           "gen_ai.usage.input_tokens": usage.input ?? 0, "gen_ai.usage.output_tokens": usage.output ?? 0,
           "gen_ai.usage.cache_read.input_tokens": usage.cacheRead || undefined, "gen_ai.usage.cache_creation.input_tokens": usage.cacheWrite || undefined,
-          "camelrun.cost.usd": { double: usage.costUsd ?? 0 }, "camelrun.run.model_responses": usage.responses ?? 0,
+          "camelrun.cost.usd": { double: usage.costUsd ?? 0 }, "gen_ai.usage.cost": { double: usage.costUsd ?? 0 }, "camelrun.run.model_responses": usage.responses ?? 0,
         } : {}),
         "camelrun.run.method": request.method, "camelrun.run.status": status,
         ...(result.stopped ? { "camelrun.run.stopped": String(result.stopped) } : {}),
@@ -606,11 +614,12 @@ export class RunSpans {
         ...(request.began !== undefined && request.startedAt !== undefined ? { "camelrun.run.queued_ms": Math.max(0, request.began - request.startedAt) } : {}),
         ...(request.resumes || this.handoffs ? { "camelrun.run.resumes": Math.max(request.resumes ?? 0, this.handoffs) } : {}),
         "camelrun.run.tool_calls": this.toolCalls, ...(Array.isArray(result.inputs) ? { "camelrun.run.inputs": result.inputs.length } : {}),
-        ...(request.actor ? { "camelrun.actor": request.actor } : {}),
+        ...(request.actor ? { "camelrun.actor": request.actor, "user.id": request.actor } : {}),
         ...(content ? {
-          ...(request.prompt !== undefined ? { "gen_ai.input.messages": json([{ role: "user", parts: [{ type: "text", content: request.prompt }] }]) } : {}),
+          ...(request.prompt !== undefined ? { "gen_ai.input.messages": json([{ role: "user", parts: [{ type: "text", content: request.prompt }] }]), "input.value": clip(request.prompt) } : {}),
+          ...(request.code !== undefined ? { "input.value": clip(request.code) } : {}),
           ...(request.code !== undefined ? { "camelrun.code": clip(request.code) } : {}),
-          ...(typeof result.reply === "string" ? { "gen_ai.output.messages": json([{ role: "assistant", parts: [{ type: "text", content: result.reply }] }]) } : {}),
+          ...(typeof result.reply === "string" ? { "gen_ai.output.messages": json([{ role: "assistant", parts: [{ type: "text", content: result.reply }] }]), "output.value": clip(result.reply) } : {}),
           ...(result.output !== undefined && !execute ? { "camelrun.output": json(result.output) } : {}),
           ...(execute && Array.isArray(result.output) ? { "camelrun.code.output": clip(result.output.join("\n")) } : {}),
           ...Object.fromEntries(Object.entries(request.metadata ?? {}).map(([key, value]) => [`camelrun.metadata.${key}`, value])),
@@ -630,7 +639,7 @@ function compactionAttributes(event: any, usage: any, reason: string | undefined
     attributes: {
       "gen_ai.operation.name": "chat", "camelrun.operation": "compaction", "gen_ai.system": provider, "gen_ai.provider.name": provider,
       "gen_ai.request.model": String(usage?.model ?? model.id),
-      ...(usage ? { "gen_ai.usage.input_tokens": tokens.input ?? 0, "gen_ai.usage.output_tokens": tokens.output ?? 0, "camelrun.cost.usd": { double: Number(tokens.cost?.total) || 0 } } : {}),
+      ...(usage ? { "gen_ai.usage.input_tokens": tokens.input ?? 0, "gen_ai.usage.output_tokens": tokens.output ?? 0, "camelrun.cost.usd": { double: Number(tokens.cost?.total) || 0 }, "gen_ai.usage.cost": { double: Number(tokens.cost?.total) || 0 } } : {}),
       ...(reason ? { "camelrun.compaction.reason": String(reason) } : {}), ...(event.background ? { "camelrun.compaction.background": true } : {}),
       ...(event.skipped ? { "camelrun.compaction.skipped": true } : {}),
       ...(typeof event.tokensBefore === "number" ? { "camelrun.compaction.tokens_before": event.tokensBefore } : {}),

@@ -8,7 +8,7 @@ import { attach, runtime, toolCall, until } from "./runtime-server.ts";
 import { decodeJson, decodeProtobuf, otlpReceiver, type ReceivedSpan } from "./otlp-receiver.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_TELEMETRY_INTERVAL_MS: "100", AGENT_TELEMETRY_RETRY_MS: "50" };
-const CONTENT_KEYS = ["gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.tool.call.arguments", "gen_ai.tool.call.result", "camelrun.code", "camelrun.input.message", "camelrun.output"];
+const CONTENT_KEYS = ["gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.tool.call.arguments", "gen_ai.tool.call.result", "input.value", "output.value", "camelrun.code", "camelrun.input.message", "camelrun.output"];
 
 const sample = (overrides: Partial<Span> = {}): Span => ({
   traceId: newTraceId(), spanId: newSpanId(), parentSpanId: newSpanId(), name: "chat gpt", kind: SpanKind.client, start: 1_727_000_000_123.456, end: 1_727_000_001_000,
@@ -144,7 +144,7 @@ test("run spans: built from the run's events, content only when asked", () => {
     "camelrun.tenant": "alice", "camelrun.agent.id": "client_x", "camelrun.request.id": "req-1",
     "gen_ai.operation.name": "chat", "gen_ai.system": "openrouter", "gen_ai.provider.name": "openrouter", "gen_ai.request.model": "openai/gpt-4o-mini", "gen_ai.response.model": "openai/gpt-4o-mini",
     "gen_ai.response.finish_reasons": ["tool_call"], "gen_ai.usage.input_tokens": 100, "gen_ai.usage.output_tokens": 7, "gen_ai.usage.cache_read.input_tokens": 30, "gen_ai.usage.cache_creation.input_tokens": undefined,
-    "camelrun.cost.usd": { double: 0.002 },
+    "camelrun.cost.usd": { double: 0.002 }, "gen_ai.usage.cost": { double: 0.002 },
   });
   assert.equal(tool.attributes["camelrun.tool.source"], "attached");
   assert.deepEqual(failed.status, { code: "error", message: "rate_limit" }, "an error's class, not its message");
@@ -163,6 +163,8 @@ test("run spans: built from the run's events, content only when asked", () => {
   assert.match(String(recorded[0].attributes["gen_ai.output.messages"]), /"tool_call".*secret argument/);
   assert.match(String(recorded[1].attributes["gen_ai.tool.call.arguments"]), /secret argument/);
   assert.equal(recorded[1].attributes["gen_ai.tool.call.result"], "secret result");
+  assert.equal(recorded[1].attributes["output.value"], "secret result", "as LangSmith and Langfuse read a tool's output");
+  assert.equal(recorded[2].attributes["input.value"], "secret prompt");
   assert.match(String(recorded[2].attributes["gen_ai.input.messages"]), /secret prompt/);
   assert.match(String(recorded[2].attributes["gen_ai.output.messages"]), /secret reply/);
 });
