@@ -724,6 +724,8 @@ export class AgentRuntime {
   /** Replace the fields given (null removes one); `apply: "all"` also reconfigures its live agents between their turns. */
   updateDefinition(id: string, input: Partial<DefinitionInput> & { revision?: number; apply?: "all" }): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "PATCH", input, false); }
   definition(id: string): Promise<Definition> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator()); }
+  /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */
+  agentCredentials(keyOrId: string): Promise<SessionCredentials> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
   definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }
   deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }

@@ -224,7 +224,8 @@ export function api(context: ApiContext) {
     await next();
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
-    if (!await clients.owns(c.req.param("id")!, c.var.principal.tenant)) throw new HttpError(404, "Unknown agent");
+    // credentials takes a key as well as an id, and looks it up within the tenant itself.
+    if (!c.req.path.endsWith("/credentials") && !await clients.owns(c.req.param("id")!, c.var.principal.tenant)) throw new HttpError(404, "Unknown agent");
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
@@ -446,6 +447,10 @@ export function api(context: ApiContext) {
     const detail = await clients.inspect(id, tenant);
     return json(c, 200, { ...detail, toolSources: await clients.toolSources(id, tenant, { schemas: c.req.query("schemas") === "true", refresh: c.req.query("refresh") === "true" }) });
   });
+  route(createRoute({
+    method: "get", path: "/v1/agents/{id}/credentials", request: { params: z.object({ id: z.string().openapi({ description: "The agent's id, or the key it was made with (Idempotency-Key, the SDKs' upsert key)" }) }) },
+    responses: { 200: reply("An existing agent's id and scoped token, its configuration untouched (the SDKs' agents.get). 404 when no live agent has this id or key; 409 AGENT_KEYLESS for one made without a key", schema.AgentCredentials) },
+  }), async c => json(c, 200, await clients.credentials(c.var.principal.tenant, c.req.param("id")!)));
   route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is deleted: it stops at once, and its stored data is purged shortly after", schema.Deleted) } }), async c => {
     await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, { deleted: true });

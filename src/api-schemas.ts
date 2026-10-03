@@ -13,6 +13,7 @@ export const ERROR_CODES = {
   APPLICATION_CONNECTED: "409: another connection serves this agent's tools; connect with ?takeover=true to replace it",
   APPLICATION_NOT_CONNECTED: "409: this agent's tools need its application, and none is connected; connect it, or send allowDisconnected: true",
   REPLAY_GAP: "409: the Last-Event-ID is behind the buffer; read state (or ask for a snapshot) and continue from its cursor",
+  AGENT_KEYLESS: "409: the agent was made without a key, so its credentials cannot be given again (GET /v1/agents/{id}/credentials)",
 } as const;
 export const ApiError = z.object({
   error: z.string().openapi({ description: "What went wrong, for people" }),
@@ -280,6 +281,11 @@ export const RequestRecord = z.object({
   stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
   status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
 }).openapi("RequestRecord");
+export const AgentCredentials = z.object({
+  id: z.string(),
+  token: z.string().openapi({ description: "The agent's scoped credential for /clients routes" }),
+  expiresAt: z.number().nullable(),
+}).openapi("AgentCredentials");
 export const AgentCreated = z.looseObject({
   id: z.string(),
   token: z.string().openapi({ description: "The agent's scoped credential for /clients routes" }),

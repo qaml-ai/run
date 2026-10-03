@@ -186,9 +186,10 @@ export interface RunOptions {
 export type StreamPart =
   /** Reply text as the model writes it; successive messages are separated by a blank line. */
   | { type: "text"; text: string; raw: AgentEvent }
-  | { type: "tool_call"; id: string; name: string; arguments: unknown; raw: AgentEvent }
+  /** `tool` and `toolCallId` are as `run.toolCalls` names them; `name` and `id` are the same values. */
+  | { type: "tool_call"; id: string; toolCallId: string; name: string; tool: string; arguments: unknown; raw: AgentEvent }
   /** `output`: the result's text. */
-  | { type: "tool_result"; id: string; name: string; output: string; isError: boolean; raw: AgentEvent }
+  | { type: "tool_result"; id: string; toolCallId: string; name: string; tool: string; output: string; isError: boolean; raw: AgentEvent }
   | { type: "input_required"; input: RunInput; raw: AgentEvent }
   /** Always last: the run as it ended. */
   | { type: "done"; run: Run };
@@ -236,6 +237,15 @@ export class Agents {
     const { session } = await this.runtime.upsertAgent(key, options);
     // The upsert declared these tools already (between the agent's turns, if it runs).
     return this.connect(session, config, { ...options, syncTools: false });
+  }
+
+  /**
+   * The existing agent with this key (or id), without changing it: `upsert` sets an agent to the config it is given,
+   * `get` takes it as it is. Throws an AgentError with status 404 when there is none. Pass `tools` to serve them too.
+   */
+  async get(keyOrId: string, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
+    if (!this.runtime.options.apiKey) throw new AgentError("No API key: set CAMELAI_API_KEY (or pass apiKey). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
+    return this.agent(await this.runtime.agentCredentials(keyOrId), config);
   }
 
   /** An agent you hold the credentials of (`agent.session` from another process, say). */
@@ -314,8 +324,8 @@ export class Agent {
           spoke = true; fresh = false;
           break;
         }
-        case "tool_execution_start": push({ type: "tool_call", id: event.toolCallId, name: event.toolName, arguments: event.args, raw: event }); break;
-        case "tool_execution_end": push({ type: "tool_result", id: event.toolCallId, name: event.toolName, output: textOf(event.result), isError: event.isError, raw: event }); break;
+        case "tool_execution_start": push({ type: "tool_call", id: event.toolCallId, toolCallId: event.toolCallId, name: event.toolName, tool: event.toolName, arguments: event.args, raw: event }); break;
+        case "tool_execution_end": push({ type: "tool_result", id: event.toolCallId, toolCallId: event.toolCallId, name: event.toolName, tool: event.toolName, output: textOf(event.result), isError: event.isError, raw: event }); break;
         case "input_required": push({ type: "input_required", input: this.input(event.input), raw: event }); break;
       }
     });

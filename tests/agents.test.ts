@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import { AgentRuntime, Agents, RunError, schema, tool, toolServer, type StreamPart } from "../clients/node.ts";
-import { OPERATOR, runtime, sleep, toolCall, toolResults, until } from "./runtime-server.ts";
+import { lastUser, OPERATOR, runtime, sleep, toolCall, toolResults, until } from "./runtime-server.ts";
 
 /** A runtime whose model answers with `respond`, and an Agents client for it. */
 async function setup(t: { after(fn: () => Promise<void> | void): void }, respond: Parameters<typeof runtime>[1], env: Record<string, string> = {}) {
@@ -70,11 +70,33 @@ test("stream() yields tool calls, results and text, then done with the run", asy
   assert.deepEqual(parts.map(part => part.type), ["tool_call", "tool_result", "text", "done"]);
   const [call, result, text, done] = parts as any[];
   assert.deepEqual([call.name, call.arguments], ["echo", { value: "ping" }]);
+  // The names run.toolCalls uses, beside name and id.
+  assert.deepEqual([call.tool, call.toolCallId, result.tool, result.toolCallId], ["echo", "call_echo", "echo", "call_echo"]);
+  assert.deepEqual(parts.at(-1)!.type === "done" && (parts.at(-1) as any).run.toolCalls.map((entry: any) => [entry.tool, entry.toolCallId]), [[call.tool, call.toolCallId]]);
   assert.equal(result.isError, false);
   assert.deepEqual(JSON.parse(result.output), { value: "ping" });
   assert.equal(text.text, "Echoed ping");
   assert.equal(done.run.text, "Echoed ping");
   assert.equal((await stream.result()).id, stream.id);
+});
+
+test("get() takes an existing agent by key or id without changing it; 404 for none, 409 for one made without a key", async t => {
+  const { r, agents } = await setup(t, body => ({ role: "assistant", content: `said: ${lastUser(body)}` }));
+  const made = await agents.upsert("kept", { instructions: "Be terse." });
+  const byKey = await agents.get("kept");
+  assert.equal(byKey.id, made.id);
+  assert.equal((await r.call(`/v1/agents/${made.id}`)).json.systemPrompt, "Be terse.", "the configuration is untouched");
+  assert.equal((await byKey.run("hello")).text, "said: hello");
+  assert.equal((await agents.get(made.id)).id, made.id, "by id too");
+  await assert.rejects(agents.get("never-made"), (error: any) => error.status === 404);
+  // A key's agent deleted and made again: get finds the new one.
+  await made.delete();
+  await assert.rejects(agents.get("kept"), (error: any) => error.status === 404);
+  const again = await agents.upsert("kept", {});
+  assert.notEqual(again.id, made.id);
+  assert.equal((await agents.get("kept")).id, again.id);
+  const keyless = (await r.call("/v1/agents", { body: {} })).json;
+  await assert.rejects(agents.get(keyless.id), (error: any) => error.status === 409 && error.code === "AGENT_KEYLESS");
 });
 
 test("a tool that returns nothing succeeds with null; its context has a stable idempotency key and reports progress", async t => {

@@ -149,6 +149,17 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             await crashed.close(drain=0)
             await restarted.close(drain=0)
 
+    async def test_get_takes_an_existing_agent_by_key_or_id_without_changing_it(self):
+        made = await self.agents.upsert("kept", instructions="Be terse.")
+        by_key = await self.agents.get("kept")
+        self.assertEqual(by_key.id, made.id)
+        self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{made.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["systemPrompt"], "Be terse.")
+        self.assertEqual((await by_key.run("hello")).text, "seen")
+        self.assertEqual((await self.agents.get(made.id)).id, made.id)
+        with self.assertRaises(AgentError) as missing:
+            await self.agents.get("never-made")
+        self.assertEqual(missing.exception.status, 404)
+
     async def test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running(self):
         gate, started = asyncio.Event(), asyncio.Event()
 
@@ -230,6 +241,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         parts = [part async for part in stream]
         self.assertEqual([part.type for part in parts], ["tool_call", "tool_result", "text", "done"])
         self.assertEqual((parts[0].name, parts[0].arguments), ("lookup", {"sku": "A1"}))
+        self.assertEqual((parts[0].tool, parts[0].tool_call_id, parts[1].tool), ("lookup", parts[0].id, "lookup"), "run.tool_calls' names")
         result = json.loads(parts[1].output)
         self.assertEqual(result["sku"], "A1")
         self.assertRegex(result["key"], r"^[0-9a-f]{32}$", "the runtime's key for this call")

@@ -465,6 +465,11 @@ class AgentRuntime:
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input)
 
+    async def agent_credentials(self, key_or_id):
+        """An existing agent's credentials ({"id", "token", "expiresAt"}), by its id or the key it was made with, its
+        configuration untouched. AgentError with status 404 when there is none."""
+        return await _http(self.http, self.base, f"/v1/agents/{quote(key_or_id, safe='')}/credentials", self._operator())
+
     async def upsert_agent(self, key, *, tools=(), **fields):
         """The agent for `key`: made if there is none, set to `fields` (create_agent's) if they differ. Returns its
         credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted.
@@ -1419,7 +1424,8 @@ def _answer_for(input, value):
 @dataclass
 class StreamPart:
     """What agent.stream() yields. type: "text" (text), "tool_call" (id, name, arguments), "tool_result" (id, name, output,
-    is_error), "input_required" (input) or, last, "done" (run). raw: the event it came from."""
+    is_error), "input_required" (input) or, last, "done" (run). raw: the event it came from. `tool` and `tool_call_id`
+    are `name` and `id` as run.tool_calls names them."""
     type: str
     text: str | None = None
     id: str | None = None
@@ -1430,6 +1436,14 @@ class StreamPart:
     input: RunInput | None = None
     run: Run | None = None
     raw: dict | None = field(default=None, repr=False)
+
+    @property
+    def tool(self):
+        return self.name
+
+    @property
+    def tool_call_id(self):
+        return self.id
 
 
 def _text_of(value):
@@ -1681,6 +1695,12 @@ class Agents:
                                                   model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, _sync=False)
+
+    async def get(self, key_or_id, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
+        """The existing agent with this key (or id), without changing it: upsert sets an agent to what it is given, get
+        takes it as it is. AgentError with status 404 when there is none. Pass `tools` to serve them too."""
+        session = await self.runtime.agent_credentials(key_or_id)
+        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
 
     async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, _sync=True):
         """An agent you hold the credentials of ({"id", "token"}, from another process say). Tools that differ from those

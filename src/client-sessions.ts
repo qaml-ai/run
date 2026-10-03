@@ -1729,6 +1729,39 @@ export class ClientSessions {
     return !!rowCount;
   }
 
+  /**
+   * An existing agent's credentials, by its id or the key it was made with, without touching its configuration (an
+   * upsert would set it to what the caller passes). The token is the one `create` gave: derived from the key and its
+   * generation, so only an agent made with a key has one to give again.
+   */
+  async credentials(tenant: string, ref: string): Promise<{ id: string; token: string; expiresAt: number | null }> {
+    // By id alone: a purged agent's tombstone keeps only its id, and still holds its key's generation.
+    const live = async (id: string) => (await this.db.query("select tenant, header->>'key' as key, expires_at, revoked from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; expires_at: number | null; revoked: boolean } | undefined;
+    const alive = (row: { tenant: string | null; expires_at: number | null; revoked: boolean }) => row.tenant === tenant && !row.revoked && !expired(row.expires_at === null ? null : Number(row.expires_at));
+    const found = (id: string, scoped: string, row: { expires_at: number | null }) =>
+      ({ id, token: createHmac("sha256", this.options.secret).update(`client-v2:${tenant}:${scoped}`).digest("hex"), expiresAt: row.expires_at === null ? null : Number(row.expires_at) });
+    if (validSessionId(ref)) {
+      const row = await live(ref);
+      if (row && alive(row)) {
+        if (!row.key) throw new HttpError(409, "AGENT_KEYLESS: this agent was made without a key, so its token is only what its create answered");
+        // Its generation: the key's agents before it were deleted or expired.
+        for (let generation = 0; generation < 10_000; generation++) {
+          const scoped = `${row.key}${generation ? `#${generation}` : ""}`;
+          if (this.agentId(tenant, scoped) === ref) return found(ref, scoped, row);
+        }
+      }
+    }
+    if (validId(ref)) {
+      for (let generation = 0; ; generation++) {
+        const scoped = `${ref}${generation ? `#${generation}` : ""}`, id = this.agentId(tenant, scoped);
+        const row = await live(id);
+        if (!row) break;
+        if (alive(row)) return found(id, scoped, row);
+      }
+    }
+    throw new HttpError(404, "No agent has this id or key");
+  }
+
   async inspect(id: string, tenant: string) {
     const metadata = (await this.owns(id, tenant)) ? (await this.list(tenant)).find(agent => agent.id === id) : undefined;
     const session = metadata && await this.load(id);

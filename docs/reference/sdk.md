@@ -72,6 +72,18 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `onInput(input)` | `on_input=` | each input as it is asked: return an answer, or nothing |
 | `onError(error)` | `on_error=` | errors from the connection and from `onEvent` |
 
+### `agents.get(keyOrId, { tools, … })`
+
+The existing agent with this key (or id), as it is: `upsert` sets an agent to
+the `config` it is given, `get` changes nothing. Use it where a process only
+runs or reads agents that another process configures. It throws an `AgentError`
+with `status` 404 when no live agent has the key or id, and 409
+`AGENT_KEYLESS` for an agent made without a key. It takes `tools`, `onEvent`,
+`onInput`, `onError`, `attach` and `takeover` as `upsert` does (Python:
+`await agents.get(key, tools=[…])`). REST: `GET /v1/agents/{keyOrId}/credentials`
+gives the agent's `{id, token, expiresAt}`. From `@camelai/run` 0.13.1 and
+`camelai-run` 0.9.1.
+
 `agents.agent(session, { tools, … })` connects to an agent you hold the
 credentials of (`{id, token}`) without changing it.
 
@@ -132,6 +144,11 @@ input](../guides/human-input.md#answering).
 | `text` | `text`: reply text as it is written (successive messages separated by a blank line) |
 | `tool_call` | `id`, `name`, `arguments` |
 | `tool_result` | `id`, `name`, `output` (the result's text), `isError` (`is_error`) |
+
+`run.toolCalls` names a call's tool `tool` and its id `toolCallId`; stream parts
+have the same values as `name` and `id`, and, from `@camelai/run` 0.13.1 and
+`camelai-run` 0.9.1, also as `tool` and `toolCallId` (`tool_call_id`), so code
+can use one name for both. `name` and `id` stay.
 | `input_required` | `input`, with `answer()` |
 | `done` | `run`: always last |
 
