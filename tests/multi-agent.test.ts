@@ -122,7 +122,8 @@ test("aborting a parent aborts the children it waits on; the stream shows them t
   const accepted = await r.call(`/v1/agents/${parent}/prompt`, { body: { text: "go" } });
   const start = await until(() => nested.frames.find(frame => frame.data.event?.type === "subagent_start"), "subagent_start");
   const child = start.data.event.agentId;
-  await until(async () => (await r.call(`/v1/agents/${child}`)).json.requests.some((request: any) => request.began), "the child's run began");
+  // The child's own events are relayed as it works.
+  await until(() => nested.frames.some(frame => frame.data.event?.type === "subagent_event" && frame.data.event.agentId === child && frame.data.event.event.type === "turn_opened"), "the child's run began, relayed");
   const aborted = Date.now();
   assert.equal((await r.call(`/v1/agents/${parent}/abort`, { method: "POST" })).status, 200);
   const childRun = await until(async () => (await r.call(`/v1/agents/${child}`)).json.requests.find((request: any) => request.method === "prompt" && request.state === "completed"), "the child's run ended");
@@ -130,7 +131,6 @@ test("aborting a parent aborts the children it waits on; the stream shows them t
   const parentRun = await until(async () => { const record = (await r.call(`/v1/agents/${parent}/requests/${accepted.json.id}`)).json; return record.state === "completed" && record; }, "the parent's run ended");
   assert.ok(parentRun.outcome, JSON.stringify(parentRun));
   await sleep(200);
-  assert.ok(nested.frames.some(frame => frame.data.event?.type === "subagent_event" && frame.data.event.agentId === child), `the child's events were relayed: ${JSON.stringify(nested.frames.map(frame => [frame.data.event?.type, frame.data.event?.event?.type]))}`);
   assert.ok(nested.frames.some(frame => frame.data.event?.type === "subagent_end" && frame.data.event.agentId === child));
   assert.ok(!plain.frames.some(frame => String(frame.data.event?.type).startsWith("subagent_")), "a subscriber that did not ask gets none");
 });

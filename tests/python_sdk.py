@@ -142,6 +142,22 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         """A scripted model turn that calls tool `name`."""
         self.script.append({"role": "assistant", "tool_calls": [{"index": 0, "id": call_id or f"call_{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]})
 
+    async def test_delegate_settings_bring_their_builtin_and_a_run_names_its_child_and_streams_it(self):
+        agent = await self.agents.upsert("coordinator", delegate={"instructions": True}, subagents=True)
+        detail = (await self.runtime.http.get(f"{self.url}/v1/agents/{agent.id}", headers={"Authorization": f"Bearer {self.token}"})).json()
+        self.assertEqual((detail["builtins"], detail["delegate"]), (["delegate"], {"instructions": True}))
+        # The parent delegates, its child answers, then the parent does.
+        self.call("delegate", {"instructions": "You help.", "task": "help"}, "call_delegate")
+        self.script.append({"role": "assistant", "content": "helped"})
+        self.script.append({"role": "assistant", "content": "done"})
+        parts = [part async for part in agent.stream("go")]
+        run = parts[-1].run
+        self.assertEqual(run.text, "done")
+        child = next(call for call in run.tool_calls if call["tool"] == "delegate")["agentId"]
+        self.assertTrue(child.startswith("client_"))
+        self.assertEqual([(part.type, part.agent_id) for part in parts if part.type.startswith("subagent_")], [("subagent_start", child), ("subagent_end", child)])
+        self.assertIn("helped", json.dumps(self.bodies[-1]))
+
     async def test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it(self):
         @tool
         async def slow(value: str) -> dict:
