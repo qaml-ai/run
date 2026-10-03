@@ -4,38 +4,20 @@ import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 const piModel = piGetModel as (provider: string, id: string) => Model<Api> | undefined;
 
 /**
- * Models Anthropic has released that Pi's catalog (0.87.1) does not list yet, each copied from the
- * entry of the model it succeeds, which it matches in API surface, context window, output limit and
- * price. Claude Sonnet 5.5 (2026-09-28): `claude-sonnet-5-5` on Anthropic,
- * `anthropic.claude-sonnet-5-5` (plus its inference profiles) on Bedrock,
- * `anthropic/claude-sonnet-5.5` on OpenRouter; $2 / $10 per MTok, cache reads $0.20, cache writes
- * $2.50, 1M context, 128K output, like Claude Sonnet 5. Unlike Sonnet 5 it always reasons: its APIs
- * refuse thinking turned off (Anthropic's and Bedrock's `thinking.type: disabled`, OpenRouter's
- * reasoning off), so its entries say off is not a level it has, as Pi's say of Opus 5. On Bedrock it
- * is served through the global inference profile only. A model Pi lists wins over its entry here,
- * so this can go once Pi publishes it.
+ * Where Pi's catalog (1.0.0) says more than a provider serves. Claude Sonnet 5.5 on Bedrock is served through
+ * the global inference profile only, and like everywhere else it always reasons: Bedrock refuses thinking
+ * turned off, so its entry says off is not a level it has, as Pi's Anthropic and OpenRouter entries do.
  */
-const SUCCESSORS: Array<{ provider: string; from: string; to: string; name: [string, string] }> = [
-  { provider: "anthropic", from: "claude-sonnet-5", to: "claude-sonnet-5-5", name: ["Claude Sonnet 5", "Claude Sonnet 5.5"] },
-  { provider: "openrouter", from: "anthropic/claude-sonnet-5", to: "anthropic/claude-sonnet-5.5", name: ["Claude Sonnet 5", "Claude Sonnet 5.5"] },
-  ...["global."].map(profile => ({
-    provider: "amazon-bedrock", from: `${profile}anthropic.claude-sonnet-5`, to: `${profile}anthropic.claude-sonnet-5-5`,
-    name: ["Claude Sonnet 5", "Claude Sonnet 5.5"] as [string, string],
-  })),
-];
+const HIDDEN = new Set(["amazon-bedrock/anthropic.claude-sonnet-5-5"]);
+const ALWAYS_REASONS = new Set(["amazon-bedrock/global.anthropic.claude-sonnet-5-5"]);
+const corrected = (model: Model<Api> | undefined): Model<Api> | undefined => {
+  if (!model || HIDDEN.has(`${model.provider}/${model.id}`)) return undefined;
+  return ALWAYS_REASONS.has(`${model.provider}/${model.id}`) ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: null } } : model;
+};
 
-const supplement = new Map<string, Model<Api>[]>();
-for (const { provider, from, to, name } of SUCCESSORS) {
-  const base = piModel(provider, from);
-  if (!base || piModel(provider, to)) continue;
-  supplement.set(provider, [...supplement.get(provider) ?? [], {
-    ...base, id: to, name: base.name.replace(name[0], name[1]), thinkingLevelMap: { ...base.thinkingLevelMap, off: null },
-  }]);
-}
-
-/** Pi's model, or one this runtime adds while Pi's catalog lacks it. */
+/** Pi's model, as this runtime corrects it. */
 export function getModel(provider: string, id: string): Model<Api> | undefined {
-  return piModel(provider, id) ?? supplement.get(provider)?.find(model => model.id === id);
+  return corrected(piModel(provider, id));
 }
 
 /**
@@ -50,7 +32,7 @@ export function reasoningFloor(model: Model<Api>): ThinkingLevel | undefined {
   return known.thinkingLevelMap?.minimal === null ? "low" : "minimal";
 }
 
-/** Pi's models for a provider, and the ones this runtime adds. */
+/** Pi's models for a provider, as this runtime corrects them. */
 export function getModels(provider: string): Model<Api>[] {
-  return [...piGetModels(provider as never) as Model<Api>[], ...supplement.get(provider) ?? []];
+  return (piGetModels(provider as never) as Model<Api>[]).flatMap(model => corrected(model) ?? []);
 }

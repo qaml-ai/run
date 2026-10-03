@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { createCompactionSummaryMessage, type AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import type { SystemMessage } from "@earendil-works/pi-ai";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 

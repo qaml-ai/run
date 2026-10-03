@@ -1,8 +1,6 @@
-import {
-  BACKGROUND_CONTEXT, compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact, withAbortSignal,
-  type AgentMessage, type CompactionSettings, type StreamFn,
-} from "@earendil-works/pi-agent-core";
-import { completeSimple, getProviders, streamSimple, type Api, type Model, type Models } from "@earendil-works/pi-ai/compat";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import { completeSimple, getProviders, streamSimple, type Api, type Model } from "@earendil-works/pi-ai/compat";
+import { compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact, type CompactionSettings, type Complete } from "./pi-harness/compaction.ts";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { CompactionState } from "./transcript.ts";
@@ -14,7 +12,8 @@ import { reasoningFloor } from "./pi-catalog.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 
 /**
- * Context compaction on top of pi-agent-core's compaction functions. Pi picks the
+ * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
+ * pi-harness/, as Pi 1.0 dropped them). Pi picks the
  * cut (never splitting a tool call from its result, summarizing a split turn's
  * prefix separately) and writes a structured summary that updates the previous
  * one. This module decides when to compact, adapts our flat working set to pi's
@@ -260,17 +259,15 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
  * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
 type ApiKey = string | (() => Promise<Credentials>);
-function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void, modelHeaders?: Record<string, string> | null): Models {
-  return {
-    completeSimple: async (model: Model<Api>, context: any, options: any) => {
-      const sink: { cost?: number; credits?: number } = {};
-      const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
-      const response = await completeSimple(target, context, callOptions);
-      if (sink.cost !== undefined) Object.assign(response.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
-      if (response.stopReason !== "error") onResponse?.(response);
-      return response;
-    },
-  } as unknown as Models;
+function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void, modelHeaders?: Record<string, string> | null): Complete {
+  return async (model, context, options) => {
+    const sink: { cost?: number; credits?: number } = {};
+    const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
+    const response = await completeSimple(target, context, callOptions);
+    if (sink.cost !== undefined) Object.assign(response.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
+    if (response.stopReason !== "error") onResponse?.(response);
+    return response;
+  };
 }
 
 /**
@@ -316,8 +313,7 @@ export async function runCompaction(options: {
   if (!prepared.ok) throw prepared.error;
   const preparation = prepared.value;
   if (!preparation) return { skipped: "Nothing before the recent context to summarize" };
-  const models = summarizer(apiKey, options.onResponse, options.modelHeaders);
-  const scope = signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT;
+  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders);
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
   let tokens = 0;
@@ -325,14 +321,14 @@ export async function runCompaction(options: {
   for (let index = 0; index < preparation.messagesToSummarize.length; index++) {
     tokens += estimateTokens(preparation.messagesToSummarize[index]);
     if (tokens <= chunkBudget || index === chunkStart) continue;
-    const summary = await generateSummary(preparation.messagesToSummarize.slice(chunkStart, index), models, model, settings.reserveTokens, undefined, preparation.previousSummary, undefined, undefined, undefined, scope);
+    const summary = await generateSummary(preparation.messagesToSummarize.slice(chunkStart, index), complete, { model, reserveTokens: settings.reserveTokens, previousSummary: preparation.previousSummary }, signal);
     if (!summary.ok) throw summary.error;
-    preparation.previousSummary = summary.value;
+    preparation.previousSummary = summary.value.text;
     chunkStart = index;
     tokens = estimateTokens(preparation.messagesToSummarize[index]);
   }
   preparation.messagesToSummarize = preparation.messagesToSummarize.slice(chunkStart);
-  const result = await compact(preparation, models, model, undefined, undefined, undefined, undefined, scope);
+  const result = await compact(preparation, complete, { model }, signal);
   if (!result.ok) throw result.error;
   // Pi returns the kept messages themselves; they are the working set's tail.
   const kept = result.value.retainedTail;

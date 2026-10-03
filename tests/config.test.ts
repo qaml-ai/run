@@ -126,7 +126,7 @@ test("a catalog model with a routing variant resolves like its base model and ke
   assert.throws(() => resolveModel("openrouter/nobody/no-such-model:nitro"), /Unknown model/);
 });
 
-test("Claude Sonnet 5.5 resolves on Anthropic, OpenRouter and Bedrock, and is listed, while Pi's catalog lacks it", () => {
+test("Claude Sonnet 5.5 resolves on Anthropic, OpenRouter and Bedrock (its global profile only), always reasoning, and is listed", () => {
   const price = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
   for (const [reference, id, api] of [
     ["anthropic/claude-sonnet-5-5", "claude-sonnet-5-5", "anthropic-messages"],

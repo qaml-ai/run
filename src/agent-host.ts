@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Agent, convertToLlm, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { convertToLlm } from "./pi-harness/messages.ts";
 import {
   getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall,

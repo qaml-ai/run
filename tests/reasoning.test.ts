@@ -5,6 +5,8 @@ import { anthropic, gateway } from "./provider-fixtures.ts";
 import { runtime } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
+/** The effort a request asks for: Pi gives a model with mid-conversation effort (Sonnet 5.5) its level as the latest system message's. */
+const effort = (body: any) => body.messages.findLast((message: any) => message.output_config)?.output_config.effort ?? body.output_config?.effort;
 
 test("a model that always reasons is called with its least reasoning when an agent asks for none, and as asked otherwise", async t => {
   // As Anthropic and OpenRouter answer Claude Sonnet 5.5: thinking turned off is refused.
@@ -20,20 +22,21 @@ test("a model that always reasons is called with its least reasoning when an age
     assert.equal(done.outcome.result.reply, "Reasoned.", model);
     assert.equal(done.error, undefined, "a run that answered has no error on top");
     const sent = provider.requests.at(-1)!.body;
-    assert.deepEqual([sent.thinking?.type, sent.output_config?.effort], ["adaptive", "low"], model);
+    assert.deepEqual([sent.thinking?.type, effort(sent)], ["adaptive", "low"], model);
   }
   const asked = (await r.call("/v1/agents", { body: { model: "anthropic/claude-sonnet-5-5", keyScope: "hosted", thinkingLevel: "high" } })).json.id;
   await r.prompt(asked, "Hi");
-  assert.equal(provider.requests.at(-1)!.body.output_config?.effort, "high");
+  assert.equal(effort(provider.requests.at(-1)!.body), "high");
 });
 
 test("which models always reason: Sonnet 5.5 everywhere, Sonnet 5 nowhere, and an agent's copy of a model before its entry said so", () => {
   assert.equal(reasoningFloor(getModel("openrouter", "anthropic/claude-sonnet-5.5")!), "low");
-  assert.equal(reasoningFloor(getModel("anthropic", "claude-sonnet-5-5")!), "minimal");
+  // Pi's Anthropic entry has no minimal level (Anthropic's efforts start at low).
+  assert.equal(reasoningFloor(getModel("anthropic", "claude-sonnet-5-5")!), "low");
   assert.equal(reasoningFloor(getModel("amazon-bedrock", "global.anthropic.claude-sonnet-5-5")!), "minimal");
   assert.equal(reasoningFloor(getModel("anthropic", "claude-sonnet-5")!), undefined);
   const { thinkingLevelMap: _map, ...older } = getModel("anthropic", "claude-sonnet-5-5")!;
-  assert.equal(reasoningFloor({ ...older, thinkingLevelMap: { xhigh: "xhigh" } } as never), "minimal");
+  assert.equal(reasoningFloor({ ...older, thinkingLevelMap: { xhigh: "xhigh" } } as never), "low");
 });
 
 test("a run whose first model call is refused fails with the provider's error, on every API, before its stream or in it", async t => {
