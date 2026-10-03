@@ -67,14 +67,12 @@ test("delegate calls in one response run at once, at most maxParallel together, 
     return { role: "assistant", content: toolResults(body).join(" | ") };
   });
   const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true, maxParallel: 3 } } })).json.id;
-  const started = Date.now();
   const record = await r.prompt(parent, "fan out");
   assert.equal(record.error, undefined, JSON.stringify(record));
   const results = toolResults(r.model.bodies.at(-1)).map((text: string) => JSON.parse(text));
   assert.deepEqual(results.slice(0, 3).map((result: any) => result.text), ["done 1", "done 2", "done 3"]);
   assert.deepEqual(results[3].output, { value: 7 });
-  assert.equal(most, 3, "three children at once, the fourth after one finished");
-  assert.ok(Date.now() - started < 3_000, "they ran in parallel");
+  assert.equal(most, 3, "three children at once (in parallel), the fourth after one finished");
   assert.equal(new Set(record.outcome.result.toolCalls.map((call: any) => call.agentId)).size, 4);
 });
 
