@@ -35,7 +35,7 @@ Agents (an agent is its key or its id, client_…)
                                    history at a message index or a request id (default: the last turn
                                    that ended). With --key it lives until deleted, without it a day
   agents delete <agent> --yes      Stop it and purge its history and files
-  run <agent> <message…> [--wait s] [--no-wait] [--from user] [--steer] [--allow-disconnected]
+  run <agent> <message…> [--wait s] [--no-wait] [--from user] [--steer] [--allow-disconnected] [--traceparent tp]
   runs get <agent> <requestId> [--wait s]
   history <agent> [--limit n]
   abort <agent>
@@ -50,6 +50,14 @@ Definitions (a definition is its key or its id, def_…)
   definitions get <definition>
   definitions agents <definition>  Its agents and the revision each has
   definitions delete <definition> --yes
+
+Telemetry (each run as an OpenTelemetry trace, sent to your OTLP/HTTP endpoint)
+  telemetry get                    Where traces go, header names, and how the last export went
+  telemetry set <endpoint> [--header name=value …] [--protocol http/protobuf|http/json]
+                [--sample-rate 0..1] [--content | --no-content]
+                                   Header values are stored encrypted and never shown again
+  telemetry test                   Send one test span now
+  telemetry clear                  Stop exporting
 
 MCP
   mcp                              Serve these commands as an MCP server over stdio
@@ -68,6 +76,8 @@ const OPTIONS = {
   model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, definition: { type: "string" },
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" },
+  traceparent: { type: "string" }, header: { type: "string", multiple: true }, protocol: { type: "string" }, "sample-rate": { type: "string" },
+  content: { type: "boolean" }, "no-content": { type: "boolean" },
 } as const;
 
 type Flags = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>["values"];
@@ -134,7 +144,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       case "run": {
         const [agent, ...words] = args;
         if (!agent || !words.length) throw new UsageError("Usage: camelrun run <agent> <message…>");
-        const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"] });
+        const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"], traceparent: flags.traceparent });
         return printRun(result, print, io);
       }
       case "runs": {
@@ -176,6 +186,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note), 0);
       }
       case "schedules": return await schedules(args, flags, api, print);
+      case "telemetry": return await telemetry(args, flags, api, print);
       default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);
     }
   } catch (error) {
@@ -298,6 +309,58 @@ async function schedules(args: string[], flags: Flags, api: () => Api, print: (v
       return 0;
     }
     default: throw new UsageError(`Unknown: schedules ${sub}. Run camelrun --help`);
+  }
+}
+
+async function telemetry(args: string[], flags: Flags, api: () => Api, print: (value: unknown, human?: () => string) => void) {
+  const [sub, endpoint] = args;
+  const client = api();
+  // The runtime returns header names only; nothing here ever prints a header's value.
+  const describe = (settings: any) => [
+    `Exporting to ${settings.endpoint} (${settings.protocol}, sample rate ${settings.sampleRate}, content ${settings.include.content ? "included" : "not included"})`,
+    `Headers: ${settings.headers.length ? settings.headers.join(", ") : "none"}`,
+    `Last export: ${settings.status.lastExportAt ? new Date(settings.status.lastExportAt).toISOString() : "none yet"}`,
+    ...(settings.status.lastError ? [`Last error: ${settings.status.lastError} at ${new Date(settings.status.lastErrorAt).toISOString()}`] : []),
+  ].join("\n");
+  switch (sub) {
+    case "get": case undefined: {
+      const settings = await client.get("/v1/telemetry").catch(error => { if (error instanceof ApiError && error.status === 404) return null; throw error; });
+      print(settings, () => settings ? describe(settings) : "Telemetry is off: camelrun telemetry set <endpoint>");
+      return 0;
+    }
+    case "set": {
+      if (!endpoint) throw new UsageError("Usage: camelrun telemetry set <endpoint> [--header name=value …] [--protocol http/protobuf|http/json] [--sample-rate n] [--content | --no-content]");
+      if (flags.content && flags["no-content"]) throw new UsageError("Pass --content or --no-content, not both");
+      const headers = flags.header?.map(header => {
+        const at = header.indexOf("=");
+        // The error never quotes the flag: it may be a secret.
+        if (at < 1) throw new UsageError("--header is name=value, e.g. --header x-api-key=$KEY");
+        return [header.slice(0, at).trim(), header.slice(at + 1)] as const;
+      });
+      if (flags.protocol !== undefined && flags.protocol !== "http/protobuf" && flags.protocol !== "http/json") throw new UsageError("--protocol is http/protobuf or http/json");
+      const sampleRate = flags["sample-rate"] === undefined ? undefined : Number(flags["sample-rate"]);
+      if (sampleRate !== undefined && !(sampleRate >= 0 && sampleRate <= 1)) throw new UsageError("--sample-rate is a number from 0 to 1");
+      const content = flags.content ? true : flags["no-content"] ? false : undefined;
+      const body = {
+        endpoint, ...(headers ? { headers: Object.fromEntries(headers) } : {}), ...(flags.protocol ? { protocol: flags.protocol } : {}),
+        ...(sampleRate !== undefined ? { sampleRate } : {}), ...(content !== undefined ? { include: { content } } : {}),
+      };
+      const settings = await client.call("PUT", "/v1/telemetry", body);
+      print(settings, () => `${describe(settings)}\nSend a test span: camelrun telemetry test`);
+      return 0;
+    }
+    case "test": {
+      const result = await client.call("POST", "/v1/telemetry/test");
+      print(result, () => result.ok ? `Sent: the endpoint answered ${result.status}. Find trace ${result.traceId} in your backend`
+        : `Failed: ${result.error ?? `the endpoint answered ${result.status}`} (trace ${result.traceId})`);
+      return result.ok ? 0 : 1;
+    }
+    case "clear": {
+      const cleared = await client.call("DELETE", "/v1/telemetry").catch(error => { if (error instanceof ApiError && error.status === 404) return { deleted: false }; throw error; });
+      print(cleared, () => cleared.deleted ? "Telemetry is off: traces are no longer exported" : "Telemetry was not set");
+      return 0;
+    }
+    default: throw new UsageError(`Unknown: telemetry ${sub}. Run camelrun --help`);
   }
 }
 

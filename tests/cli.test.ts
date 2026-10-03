@@ -11,6 +11,7 @@ import { resolve } from "../packages/cli/src/config.ts";
 import { loadManifests } from "../packages/cli/src/manifest-files.ts";
 import { createServer } from "../packages/cli/src/mcp.ts";
 import { OPERATOR, lastUser, runtime, toolResults, toolCall, until } from "./runtime-server.ts";
+import { otlpReceiver } from "./otlp-receiver.ts";
 
 /** The CLI run in-process against `base`, as a script would (JSON out); resolves with its exit code and output. */
 function cli(base: string, cwd: string, env: Record<string, string> = {}) {
@@ -136,6 +137,73 @@ test("a run waiting on a person exits 2 and resumes once answered", async t => {
   assert.equal(resumed.code, 0, resumed.err);
   assert.equal(resumed.json.status, "completed");
   assert.match(resumed.json.text, /^Deploying to .*EU/);
+});
+
+test("telemetry: set, get, test and clear from the CLI, never printing a header's value; run --traceparent continues the caller's trace", async t => {
+  const receiver = await otlpReceiver(t);
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_TELEMETRY_INTERVAL_MS: "100" });
+  const dir = mkdtempSync(join(tmpdir(), "camelrun-cli-"));
+  const run = cli(r.base, dir);
+  const SECRET = "otlp-cli-secret-value";
+  /** The same command as a person runs it, in a terminal: human output. */
+  const human = async (...argv: string[]) => {
+    const out: string[] = [], err: string[] = [];
+    const code = await main(argv, { out: text => out.push(text), err: text => err.push(text), tty: true, cwd: dir, env: { CAMELAI_API_KEY: OPERATOR, CAMELAI_BASE_URL: r.base, CAMELRUN_CONFIG: join(dir, "credentials.json") } });
+    return { code, text: out.join("\n"), err: err.join("\n") };
+  };
+  const printed: string[] = [];
+  const both = async (...argv: string[]) => {
+    const [json, text] = [await run(...argv), await human(...argv)];
+    printed.push(json.text, json.err, text.text, text.err);
+    return { json, text };
+  };
+
+  const off = await both("telemetry", "get");
+  assert.equal(off.json.code, 0, off.json.err);
+  assert.equal(off.json.json, null);
+  assert.match(off.text.text, /Telemetry is off/);
+
+  for (const [argv, why] of [[["--header", "no-equals-sign"], /name=value/], [["--protocol", "grpc"], /http\/protobuf or http\/json/], [["--sample-rate", "2"], /0 to 1/], [["--content", "--no-content"], /not both/]] as const) {
+    const refused = await human("telemetry", "set", receiver.url, ...argv);
+    assert.equal(refused.code, 1);
+    assert.match(refused.err, why);
+    printed.push(refused.err);
+  }
+
+  const set = await both("telemetry", "set", receiver.url, "--header", `x-api-key=${SECRET}`, "--header", "x-team=t1", "--protocol", "http/json", "--sample-rate", "1", "--no-content");
+  assert.equal(set.json.code, 0, set.json.err);
+  assert.deepEqual({ ...set.json.json, createdAt: 0, updatedAt: 0 }, {
+    endpoint: `${receiver.url}/v1/traces`, protocol: "http/json", sampleRate: 1, include: { content: false }, headers: ["x-api-key", "x-team"],
+    createdAt: 0, updatedAt: 0, status: { lastExportAt: null, lastError: null, lastErrorAt: null },
+  });
+  assert.match(set.text.text, /Exporting to .*\/v1\/traces \(http\/json, sample rate 1, content not included\)\nHeaders: x-api-key, x-team/);
+  assert.deepEqual((await run("telemetry", "get")).json.headers, ["x-api-key", "x-team"]);
+  assert.match((await both("telemetry", "get")).text.text, /Headers: x-api-key, x-team/);
+
+  const tested = await both("telemetry", "test");
+  assert.equal(tested.json.code, 0, tested.json.err);
+  assert.equal(tested.json.json.ok, true);
+  assert.match(tested.text.text, /^Sent: the endpoint answered 200\. Find trace [0-9a-f]{32}/);
+  await until(() => receiver.requests.length >= 2, "both test spans");
+  assert.equal(receiver.requests[0].headers["x-api-key"], SECRET, "the stored header goes to the endpoint");
+
+  // Content on: a later set without --header keeps the stored ones.
+  assert.deepEqual((await run("telemetry", "set", receiver.url, "--content")).json.include, { content: true });
+  assert.deepEqual((await run("telemetry", "get")).json.headers, ["x-api-key", "x-team"]);
+
+  // A run sent with --traceparent continues that trace.
+  assert.equal((await run("agents", "create", "traced")).code, 0);
+  const traceId = "e".repeat(31) + "5";
+  const traced = await run("run", "traced", "hi", "--traceparent", `00-${traceId}-00f067aa0ba902b7-01`);
+  assert.equal(traced.json.status, "completed", traced.text);
+  const agent = (await run("agents", "list")).json.find((item: any) => item.key === "traced").id;
+  assert.equal((await r.call(`/v1/agents/${agent}/requests/${traced.json.requestId}`)).json.trace.traceId, traceId);
+
+  const cleared = await run("telemetry", "clear");
+  assert.deepEqual(cleared.json, { deleted: true });
+  assert.match((await human("telemetry", "clear")).text, /was not set/);
+  assert.equal((await run("telemetry", "get")).json, null);
+  assert.ok(printed.every(text => !text.includes(SECRET)), "a header's value is never printed");
 });
 
 test("login saves a checked key readable only by its owner", async t => {

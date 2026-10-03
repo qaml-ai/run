@@ -102,12 +102,12 @@ export async function waitFor(api: Api, agentId: string, requestId: string, seco
 }
 
 /** Send an agent a message and wait up to `wait` seconds for its run. `requestId` makes a retry the same run. */
-export async function run(api: Api, agent: string, text: string, options: { wait?: number; requestId?: string; from?: string; steer?: boolean; allowDisconnected?: boolean; signal?: AbortSignal } = {}) {
+export async function run(api: Api, agent: string, text: string, options: { wait?: number; requestId?: string; from?: string; steer?: boolean; allowDisconnected?: boolean; traceparent?: string; signal?: AbortSignal } = {}) {
   const id = await api.agentId(agent);
   const record = await api.call("POST", `/v1/agents/${enc(id)}/prompt`, {
     text, requestId: options.requestId ?? `cli_${globalThis.crypto.randomUUID()}`, ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
     ...(options.from ? { from: { id: options.from } } : {}), ...(options.steer ? { whileRunning: "steer" } : {}),
-  });
+  }, options.traceparent ? { traceparent: options.traceparent } : {});
   return options.wait === 0 ? summarize(id, record) : waitFor(api, id, record.id, options.wait ?? Infinity, options.signal);
 }
 
