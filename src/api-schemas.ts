@@ -116,14 +116,14 @@ const signingSecret = z.string().openapi({ description: "The Standard Webhooks s
 export const WebhookEndpointCreated = WebhookEndpoint.extend({ secret: signingSecret }).openapi("WebhookEndpointCreated");
 export const WebhookSecret = z.object({ secret: signingSecret }).openapi("WebhookSecret");
 export const TelemetryInput = z.object({
-  endpoint: z.string().openapi({ description: "The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces)", example: "https://api.honeycomb.io/v1/traces" }),
+  endpoint: z.string().optional().openapi({ description: "The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces). Needed the first time", example: "https://api.honeycomb.io/v1/traces" }),
   headers: z.record(z.string(), z.string()).optional().openapi({ description: "Headers sent with each export (a collector's API key), stored encrypted and never shown again. Left out, the stored ones stay while the endpoint keeps its origin; {} removes them", example: { "x-honeycomb-team": "<key>" } }),
   protocol: z.enum(["http/protobuf", "http/json"]).optional().openapi({ description: "OTLP's encoding. Default http/protobuf" }),
   sampleRate: z.number().min(0).max(1).optional().openapi({ description: "The share of runs traced, from 0 to 1 (default 1). A run continuing a caller's traceparent follows its sampled flag instead" }),
   include: z.strictObject({
     content: z.boolean().optional().openapi({ description: "Export what people and models wrote: prompts, replies, tool arguments and results, inputs' questions, errors' messages. Default false" }),
   }).optional(),
-}).strict().openapi("TelemetryInput");
+}).strict().openapi("TelemetryInput", { description: "A field left out keeps its current value (its default the first time)" });
 export const Telemetry = z.object({
   endpoint: z.string(), protocol: z.enum(["http/protobuf", "http/json"]), sampleRate: z.number(), include: z.object({ content: z.boolean() }),
   headers: z.array(z.string()).openapi({ description: "The names of the stored headers; their values are never returned" }),

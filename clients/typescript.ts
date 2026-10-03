@@ -685,10 +685,10 @@ function provisioning(options: CreateAgentOptions) {
 const traceHeader = (traceparent?: string): Record<string, string> => traceparent ? { traceparent } : {};
 
 export type TelemetryProtocol = "http/protobuf" | "http/json";
-/** Where the tenant's traces go (`PUT /v1/telemetry`). */
+/** Where the tenant's traces go (`PUT /v1/telemetry`). A field left out keeps its current value (its default the first time). */
 export interface TelemetryInput {
-  /** The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces). */
-  endpoint: string;
+  /** The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces). Needed the first time. */
+  endpoint?: string;
   /**
    * Sent with each export (a backend's API key), stored encrypted and never shown again. Left out, the stored ones stay
    * while the endpoint keeps its origin; `{}` removes them.

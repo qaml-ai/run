@@ -383,7 +383,7 @@ export function api(context: ApiContext) {
     if (!context.telemetry) throw new HttpError(503, "This runtime does not export telemetry");
     return context.telemetry;
   };
-  route(createRoute({ method: "put", path: "/v1/telemetry", request: { body: content(schema.TelemetryInput) }, responses: { 200: reply("Where the tenant's traces go now; header values are never returned", schema.Telemetry) } }),
+  route(createRoute({ method: "put", path: "/v1/telemetry", request: { body: content(schema.TelemetryInput) }, responses: { 200: reply("Where the tenant's traces go now; header values are never returned. Fields left out keep their current values", schema.Telemetry) } }),
     async c => json(c, 200, await telemetry().set(c.var.principal.tenant, parse(schema.TelemetryInput, await readJson(c.req.raw.body, 128 * 1024, {})))));
   route(createRoute({ method: "get", path: "/v1/telemetry", responses: { 200: reply("Where the tenant's traces go, with header names only, and how the last export went", schema.Telemetry) } }), async c => {
     const settings = await telemetry().get(c.var.principal.tenant);

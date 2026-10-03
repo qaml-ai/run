@@ -660,12 +660,13 @@ class Telemetry:
                 return None
             raise
 
-    async def set(self, endpoint, *, headers=None, protocol=None, sample_rate=None, include_content=None):
-        """Export the tenant's runs to `endpoint` (the OTLP/HTTP traces URL; a collector's base URL gets /v1/traces).
+    async def set(self, endpoint=None, *, headers=None, protocol=None, sample_rate=None, include_content=None):
+        """Export the tenant's runs to `endpoint` (the OTLP/HTTP traces URL; a collector's base URL gets /v1/traces). What is
+        left out keeps its current value (its default the first time, when `endpoint` is needed).
         `headers` are sent with each export (a backend's API key); left out, the stored ones stay while the endpoint keeps
         its origin, and {} removes them. `protocol` is "http/protobuf" (default) or "http/json"; `sample_rate` the share of
         runs traced, 0 to 1 (default 1); `include_content=True` exports prompts, replies, tool arguments and results."""
-        body = {"endpoint": endpoint, **({"headers": headers} if headers is not None else {}), **({"protocol": protocol} if protocol else {}),
+        body = {**({"endpoint": endpoint} if endpoint is not None else {}), **({"headers": headers} if headers is not None else {}), **({"protocol": protocol} if protocol else {}),
                 **({"sampleRate": sample_rate} if sample_rate is not None else {}), **({"include": {"content": include_content}} if include_content is not None else {})}
         return await self._call("PUT", body=body)
 

@@ -158,31 +158,34 @@ export class Telemetry implements Tracing {
   }
 
   /**
-   * Set where the tenant's traces go. `headers` left out keeps the stored ones if the endpoint stays at the same
-   * origin, and drops them if it moves (credentials never follow an endpoint elsewhere); `{}` removes them.
+   * Set where the tenant's traces go, and how. A field left out keeps its current value (its default, the first time;
+   * `endpoint` is needed then). Stored `headers` stay while the endpoint keeps its origin and are dropped when it
+   * moves (credentials never follow an endpoint elsewhere); `{}` removes them.
    */
   async set(tenant: string, input: { endpoint?: unknown; headers?: unknown; protocol?: unknown; sampleRate?: unknown; include?: unknown }): Promise<TelemetryView> {
-    if (typeof input.endpoint !== "string" || !input.endpoint || input.endpoint.length > this.limits.endpointChars) throw new HttpError(400, `endpoint must be the URL of an OTLP/HTTP traces receiver, at most ${this.limits.endpointChars} characters`);
+    const current = (await this.db.query("select endpoint, origin, protocol, sample_rate, include_content from telemetry_exporters where tenant = $1", [tenant])).rows[0];
+    const given = input.endpoint ?? current?.endpoint;
+    if (typeof given !== "string" || !given || given.length > this.limits.endpointChars) throw new HttpError(400, `endpoint must be the URL of an OTLP/HTTP traces receiver, at most ${this.limits.endpointChars} characters`);
     let url: URL;
-    try { url = this.outbound.check(input.endpoint); } catch (error) { throw new HttpError(400, (error as Error).message); }
+    try { url = this.outbound.check(given); } catch (error) { throw new HttpError(400, (error as Error).message); }
     if (url.search || url.hash) throw new HttpError(400, "endpoint takes no query or fragment");
     // A collector's base URL (https://collector:4318) means its traces path, as OTEL_EXPORTER_OTLP_ENDPOINT does.
     if (url.pathname === "/") url.pathname = "/v1/traces";
     const endpoint = url.toString();
-    const protocol = input.protocol ?? "http/protobuf";
+    const protocol = input.protocol ?? current?.protocol ?? "http/protobuf";
     if (!PROTOCOLS.includes(protocol as Protocol)) throw new HttpError(400, `protocol is ${PROTOCOLS.join(" or ")}`);
-    const sampleRate = input.sampleRate ?? 1;
+    const sampleRate = input.sampleRate ?? (current ? Number(current.sample_rate) : 1);
     if (typeof sampleRate !== "number" || !Number.isFinite(sampleRate) || sampleRate < 0 || sampleRate > 1) throw new HttpError(400, "sampleRate is a number from 0 to 1");
     const include = input.include ?? {};
     if (!include || typeof include !== "object" || Array.isArray(include) || Object.keys(include).some(key => key !== "content") || ((include as { content?: unknown }).content !== undefined && typeof (include as { content?: unknown }).content !== "boolean")) {
       throw new HttpError(400, "include is { content: boolean }");
     }
-    const content = (include as { content?: boolean }).content === true;
+    const content = (include as { content?: boolean }).content ?? current?.include_content === true;
     const headers = input.headers === undefined ? undefined : headersInput(input.headers);
     if (!this.accounts.canStoreKeys && headers && Object.keys(headers).length) throw new HttpError(503, "This runtime is not configured to store secrets (AGENT_SECRETS_KEY), so it cannot keep telemetry headers");
     const now = Date.now();
     // Stored headers stay only for an endpoint at the origin they were given for.
-    const keep = headers === undefined && (await this.db.query("select origin from telemetry_exporters where tenant = $1", [tenant])).rows[0]?.origin === url.origin;
+    const keep = headers === undefined && current?.origin === url.origin;
     const sealed = headers && Object.keys(headers).length ? this.accounts.seal(aad(tenant), JSON.stringify(headers)) : null;
     const { rows } = await this.db.query(`
       insert into telemetry_exporters (tenant, endpoint, origin, protocol, sample_rate, include_content, headers, header_names, created_at, updated_at)

@@ -182,6 +182,7 @@ test("telemetry API: set, shown without header values, refused for internal addr
   ][index % 3], LOCAL);
 
   assert.equal((await r.call("/v1/telemetry")).status, 404);
+  assert.equal((await r.call("/v1/telemetry", { method: "PUT", body: { sampleRate: 0.5 } })).status, 400, "the first set needs an endpoint");
   for (const [body, why] of [
     [{ endpoint: "http://10.0.0.1:4318/v1/traces" }, "a private address"], [{ endpoint: "http://169.254.169.254/v1/traces" }, "the instance metadata address"],
     [{ endpoint: "http://[::1]:4318/v1/traces" }, "IPv6 loopback"], [{ endpoint: "ftp://collector.example.com/v1/traces" }, "not http(s)"],
@@ -256,6 +257,9 @@ test("telemetry API: set, shown without header values, refused for internal addr
   // Content, when the tenant includes it; the stored headers stay at the same origin.
   const including = await r.call("/v1/telemetry", { method: "PUT", body: { endpoint: receiver.endpoint, protocol: "http/json", include: { content: true } } });
   assert.deepEqual(including.json.headers, ["authorization", "x-team"]);
+  // A field left out keeps its value.
+  const partial = await r.call("/v1/telemetry", { method: "PUT", body: { sampleRate: 1 } });
+  assert.deepEqual([partial.json.endpoint, partial.json.protocol, partial.json.include, partial.json.headers], [receiver.endpoint, "http/json", { content: true }, ["authorization", "x-team"]]);
   const second = await r.prompt(created.id, "private prompt again", undefined, { requestId: "traced-2" });
   assert.equal(second.status, "completed");
   const secondRoot = await until(() => receiver.spans.find(span => span.attributes["camelrun.request.id"] === "traced-2" && span.name.startsWith("invoke_agent")), "the second run's span");

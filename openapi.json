@@ -1334,7 +1334,7 @@
         "properties": {
           "endpoint": {
             "type": "string",
-            "description": "The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces)",
+            "description": "The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces). Needed the first time",
             "example": "https://api.honeycomb.io/v1/traces"
           },
           "headers": {
@@ -1372,10 +1372,8 @@
             "additionalProperties": false
           }
         },
-        "required": [
-          "endpoint"
-        ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "A field left out keeps its current value (its default the first time)"
       },
       "TelemetryTest": {
         "type": "object",
@@ -6955,7 +6953,7 @@
         },
         "responses": {
           "200": {
-            "description": "Where the tenant's traces go now; header values are never returned",
+            "description": "Where the tenant's traces go now; header values are never returned. Fields left out keep their current values",
             "content": {
               "application/json": {
                 "schema": {
