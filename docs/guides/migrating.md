@@ -47,6 +47,49 @@ agent, with its history, from any process. `upsert` creates the agent the first
 time and later brings it to the configuration you pass. Nothing is stored on
 your side.
 
+> **Deploy topology: one process serves an agent's tools.** In the OpenAI Agents
+> SDK and LangGraph, every worker runs its own loop with its own tools. Here the
+> loop is in the runtime, and tools passed to `upsert(tools=…)` are served by
+> the **one** process holding the agent's connection. A straight port that
+> upserts with `tools` in every gunicorn or uvicorn worker, or every Celery
+> task, works with one worker and fails at two: `AgentError: Another process
+> serves this agent's tools…` (`APPLICATION_CONNECTED`). With several workers,
+> serve the tools over HTTPS instead, and make agents from a definition that
+> names the server, with no `tools`: then any worker can run any agent, and
+> deploys lose no call. See [Served tools](tools.md#served-tools-over-http-for-serverless-and-many-users).
+
+```python
+from camelai_run import serve_tools
+
+# In your web app (pip install "camelai-run[server]"): every worker serves the same tools.
+tools_app = serve_tools([lookup_order], runtime="https://run.camelai.com", tenant="acme")  # mount at /mcp
+
+# Once, at deploy time: a definition naming the server.
+definition = await agents.runtime.upsert_definition("support", name="Support", systemPrompt="You help with orders.",
+    mcpServers=[{"name": "shop", "url": "https://app.example.com/mcp", "auth": {"type": "runtime"}}])
+
+# In any worker or task: no tools here, so no worker holds them.
+agent = await agents.upsert("user-123", definition=definition["id"])
+run = await agent.run("Where is order 42?")
+```
+
+```ts
+import { serveTools } from "@camelai/run/server";
+
+// In your web app, on every instance: POST /mcp.
+export const POST = serveTools({ lookup_order }, { runtime: "https://run.camelai.com", tenant: "acme" });
+
+const definition = await agents.runtime.upsertDefinition("support", {
+  name: "Support", systemPrompt: "You help with orders.",
+  mcpServers: [{ name: "shop", url: "https://app.example.com/mcp", auth: { type: "runtime" } }],
+});
+const agent = await agents.upsert("user-123", { definition: definition.id });
+```
+
+`tenant` is your account's id (`GET /v1/me`). One long-lived process that holds
+the tools, with every other process upserting with `attach=False`, works too;
+see [Several processes, workers and deploys](tools.md#several-processes-workers-and-deploys).
+
 ## OpenAI Agents SDK
 
 | OpenAI Agents SDK | camelRun |
@@ -56,7 +99,7 @@ your side.
 | `Runner.run_streamed` | `agent.stream(text)`: text, tool calls and results as they happen, then `done` with the run |
 | `@function_tool` | `@tool` (TypeScript: `tool({ input, execute })`). Arguments are checked against the schema first. See [Tools](tools.md) |
 | Sessions (`SQLiteSession`, Redis…) | The agent's key. History is durable and compacted when it gets long; `agent.history()` reads it |
-| `output_type=Model` | `run(text, output=Model)`, `run.output`. See [Structured output](structured-output.md) |
+| `output_type=Model` | `run(text, output=Model)`, `run.output` (`pip install "camelai-run[pydantic]"`). See [Structured output](structured-output.md) |
 | Handoffs | No built-in handoff; see [Handoffs and multi-agent](#handoffs-and-multi-agent) |
 | `agent.as_tool()` | A tool that runs another agent; see below |
 | Input guardrails | Your code, before `run()`. With `createAgentHandler`, `onSend` can rewrite or refuse a message |
