@@ -65,12 +65,18 @@ See [SDKs](../reference/sdk.md#telemetry) and [CLI](../reference/cli.md#telemetr
 
 | Backend | `endpoint` | `headers` | Notes |
 | --- | --- | --- | --- |
-| LangSmith | `https://api.smith.langchain.com/otel/v1/traces` (EU: `https://eu.api.smith.langchain.com/otel/v1/traces`) | `x-api-key: <LangSmith API key>`, `Langsmith-Project: <project>` | Reads the GenAI attributes as LLM and tool runs; set `include.content` to see messages |
-| Langfuse | `https://cloud.langfuse.com/api/public/otel/v1/traces` (US: `https://us.cloud.langfuse.com/...`) | `Authorization: Basic <base64 of public-key:secret-key>` | Self-hosted Langfuse: your host, same path |
+| LangSmith | `https://api.smith.langchain.com/otel/v1/traces`; EU `https://eu.api.smith.langchain.com/otel/v1/traces`, APAC `https://apac.api.smith.langchain.com/otel/v1/traces`; self-hosted `https://<host>/api/v1/otel/v1/traces` | `x-api-key: <LangSmith API key>`; `Langsmith-Project: <project>` (optional; else the default project) | Reads the GenAI attributes: runs, model calls with tokens, tool calls; set `include.content` to see messages |
+| Langfuse | `https://cloud.langfuse.com/api/public/otel/v1/traces` (EU); US `https://us.cloud.langfuse.com/api/public/otel/v1/traces`, JP `https://jp.cloud.langfuse.com/...`, HIPAA `https://hipaa.cloud.langfuse.com/...`; self-hosted `https://<host>/api/public/otel/v1/traces` | `Authorization: Basic <base64 of public-key:secret-key>` | The run is an agent observation (with the run's `actor` as its user and the agent as its session), model calls are generations with tokens and cost, tool calls are tools; set `include.content` for inputs and outputs |
 | Honeycomb | `https://api.honeycomb.io/v1/traces` (EU: `https://api.eu1.honeycomb.io/v1/traces`) | `x-honeycomb-team: <API key>` | Traces land in the `camelrun` dataset (the service name) |
 | Datadog | `https://otlp.datadoghq.com/v1/traces` (or your site's, e.g. `otlp.datadoghq.eu`) | `dd-api-key: <API key>`; add `dd-otlp-source: llmobs` for LLM Observability instead of APM | `http/protobuf` |
 | Grafana Cloud (Tempo) | `https://otlp-gateway-<zone>.grafana.net/otlp/v1/traces` | `Authorization: Basic <base64 of instance-id:token>` | Self-managed Tempo: its OTLP/HTTP receiver, port 4318 |
 | Your own collector | `https://otel.example.com:4318/v1/traces` | whatever it checks | An OpenTelemetry Collector fans out to several backends, and can redact or sample further |
+
+We checked these against each backend's documented OTLP endpoint and headers.
+LangSmith and Langfuse Cloud, Honeycomb and Datadog answer the runtime's test span
+at the URLs above (with a 401 or 403 until the key is real), and a self-hosted
+Langfuse (4.50), an OpenTelemetry Collector and Jaeger received runs in both
+encodings, nested as below.
 
 ### A local collector or Jaeger
 
@@ -135,8 +141,8 @@ Each span has `camelrun.tenant`, `camelrun.agent.id` and `camelrun.request.id`.
 
 | Span | Attributes |
 | --- | --- |
-| `invoke_agent <agent name or id>` (`execute_code` for an `execute` request) | `gen_ai.operation.name`, `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.conversation.id` (the agent id), `gen_ai.system` / `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `camelrun.cost.usd`, `camelrun.run.method`, `camelrun.run.status` (`completed`, `input_required`, `failed`), `camelrun.run.stopped`, `camelrun.error.code`, `error.type`, `camelrun.run.uncertain`, `camelrun.run.model_responses`, `camelrun.run.tool_calls`, `camelrun.run.inputs`, `camelrun.run.queued_ms`, `camelrun.run.resumes`, `camelrun.actor` |
-| `chat <model>` | `gen_ai.operation.name: chat`, `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.response.finish_reasons`, the token counts, `camelrun.cost.usd`, `error.type` |
+| `invoke_agent <agent name or id>` (`execute_code` for an `execute` request) | `gen_ai.operation.name`, `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.conversation.id` and `session.id` (the agent id), `gen_ai.system` / `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `camelrun.cost.usd` and `gen_ai.usage.cost`, `camelrun.run.method`, `camelrun.run.status` (`completed`, `input_required`, `failed`), `camelrun.run.stopped`, `camelrun.error.code`, `error.type`, `camelrun.run.uncertain`, `camelrun.run.model_responses`, `camelrun.run.tool_calls`, `camelrun.run.inputs`, `camelrun.run.queued_ms`, `camelrun.run.resumes`, `camelrun.actor` and `user.id` (the run's `actor`) |
+| `chat <model>` | `gen_ai.operation.name: chat`, `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.response.finish_reasons`, the token counts, `camelrun.cost.usd` and `gen_ai.usage.cost`, `error.type` |
 | `execute_tool <tool>` | `gen_ai.operation.name: execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type`, `camelrun.tool.source` (`attached`, `served`, `mcp`, `openapi`, `builtin`, `files`, `channel`, `runtime`), `camelrun.tool.inner_call.id` (a call from code), `camelrun.tool.input_required`, `error.type` |
 | `compaction` | `camelrun.operation: compaction`, the model and token counts, `camelrun.cost.usd`, `camelrun.compaction.reason`, `.tokens_before`, `.summarized_messages`, `.kept_messages`, `.skipped`, `.background` |
 | `await_human_input` | `camelrun.input.id`, `camelrun.input.kind`, `camelrun.input.state`, `camelrun.input.via`, `gen_ai.tool.call.id` |
@@ -168,14 +174,19 @@ With `include: {content: true}` they also carry, each cut at 16,384 characters:
 
 | Attribute | On | Holds |
 | --- | --- | --- |
-| `gen_ai.input.messages` | the run | the prompt |
-| `gen_ai.output.messages` | the run; each `chat` | the reply; each response's text, reasoning and tool calls |
-| `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` | each `execute_tool` | the call's arguments and its result's text |
+| `gen_ai.input.messages`, `input.value` | the run | the prompt |
+| `gen_ai.output.messages`, `output.value` | the run; each `chat` | the reply; each response's text, reasoning and tool calls |
+| `gen_ai.tool.call.arguments` and `input.value`, `gen_ai.tool.call.result` and `output.value` | each `execute_tool` | the call's arguments and its result's text |
 | `camelrun.code`, `camelrun.code.output` | an `execute` run | its code and what it printed |
 | `camelrun.output` | the run | a structured answer |
 | `camelrun.input.message` | `await_human_input` | the question asked |
 | `camelrun.metadata.<key>` | the run | the message's `metadata` |
 | status messages | failed spans | the error's own message (a provider's error can quote a prompt) |
+
+`input.value` and `output.value` repeat the GenAI attributes in the form LangSmith
+and Langfuse show as an observation's input and output. A model call's input (the
+whole context it was sent) is not exported: its new messages are the prompt and
+the tool results before it.
 
 Content goes only to your endpoint; the runtime's own logs never hold it. Turn it
 on for development, or where your backend is allowed to keep your users' data.
