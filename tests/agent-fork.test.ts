@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { forkCut, Transcript, type TranscriptRecord } from "../src/transcript.ts";
+import { Agents } from "../clients/node.ts";
 import { lastUser, OPERATOR, OTHER_OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -265,4 +266,27 @@ test("a fork pins the files its history refers to: they stay stored after the so
   // And the fork's model still gets the file.
   await r.prompt(forked, "what did I attach?");
   assert.ok(JSON.stringify(r.model.bodies.at(-1).messages).includes("forked words"));
+});
+
+test("the SDK's fork() makes a new agent from this one: its history, configuration and files; a key returns the same fork", async t => {
+  const r = await runtime(t, body => ({ role: "assistant", content: `said: ${lastUser(body)}` }), roomy);
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(() => agents.close());
+  const source = await agents.upsert("fork-source", { instructions: "Be terse." });
+  await source.run("hello");
+  await source.files.upload("/workspace/notes.txt", "kept");
+  const fork = await source.fork({ key: "fork-of-source" });
+  assert.notEqual(fork.id, source.id);
+  assert.deepEqual(fork.forkedFrom, { agentId: source.id, atMessage: 1 });
+  assert.deepEqual((await fork.history()).map(message => message.role), ["user", "assistant"]);
+  assert.equal(new TextDecoder().decode((await fork.files.download("/workspace/notes.txt")).data), "kept");
+  assert.equal((await r.call(`/v1/agents/${fork.id}`)).json.systemPrompt, "Be terse.");
+  assert.equal((await source.fork({ key: "fork-of-source" })).id, fork.id, "the same key is the same fork");
+  assert.equal((await agents.get("fork-of-source")).id, fork.id);
+  const early = await agents.fork(source.id, { atMessage: 0, instructionsAppend: "EARLY-APPEND" });
+  assert.equal((await r.call(`/v1/agents/${early.id}`)).json.systemPromptAppend, "EARLY-APPEND");
+  assert.equal((await early.history()).length, 1);
+  assert.ok(early.session.expiresAt! - Date.now() > 86_000_000, "a fork without a key of the caller's lives a day");
+  assert.equal((await fork.run("again")).text, "said: again");
+  assert.equal((await source.history()).length, 2, "the source's history is its own");
 });

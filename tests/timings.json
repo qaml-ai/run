@@ -1,5 +1,6 @@
 {
   "process": {
+    "agent-fork.test.ts": 23.0,
     "agent-lifetime.test.ts": 9.7,
     "agent-links.test.ts": 1.4,
     "agent-mcp.test.ts": 8.5,
@@ -27,6 +28,7 @@
     "client-lifecycle.test.ts": 21.5,
     "clients.test.ts": 21,
     "cluster-drain.test.ts": 10.3,
+    "cluster-fork.test.ts": 6.1,
     "cluster-handoff.test.ts": 29.4,
     "cluster-orphans.test.ts": 23.1,
     "cluster-resume.test.ts": 14.1,
@@ -105,6 +107,7 @@
     "webmcp.test.ts": 3.1
   },
   "inline": {
+    "agent-fork.test.ts": 13.5,
     "agent-lifetime.test.ts": 7,
     "agent-links.test.ts": 1.1,
     "agent-mcp.test.ts": 7.3,
@@ -132,6 +135,7 @@
     "client-lifecycle.test.ts": 11.5,
     "clients.test.ts": 14.5,
     "cluster-drain.test.ts": 10.2,
+    "cluster-fork.test.ts": 5.0,
     "cluster-handoff.test.ts": 29.5,
     "cluster-orphans.test.ts": 23.3,
     "cluster-resume.test.ts": 14,
