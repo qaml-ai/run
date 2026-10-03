@@ -1,6 +1,24 @@
 # Release notes
 
-## Unreleased — background compaction, Pi 1.0
+Each runtime release is a `runtime-v<version>` tag, and the image `ghcr.io/qaml-ai/run:<version>`
+(`latest` is the newest). Upgrade a self-hosted runtime by changing `AGENT_RUNTIME_IMAGE` and running
+`docker compose up -d` (see [Self-hosting](self-host.md#upgrade)); read the notes for every version
+between yours and the new one first.
+
+## Unreleased
+
+Changes on main since the last tag.
+
+## 0.2.0 (runtime-v0.2.0, 2026-10-03)
+
+### Agents without a model key, and runs that say why they failed
+
+- Agents are made before any model key is set (0.1.0 refused with 400). A run without a key fails with
+  `model_key_missing`, and one whose key the provider refuses with `model_key_invalid`; both say what to set.
+- Request records carry `status` (`completed`, `input_required`, `failed`) beside `state`.
+- `/docs/operations/*` is served with the other docs.
+
+### Background compaction, Pi 1.0
 
 Compaction no longer holds up the next run. Once an agent's context comes within 32k tokens (15% of a
 smaller window) of its compaction threshold, the summary is made in the background, after a run or
@@ -19,7 +37,7 @@ The runtime runs on Pi 1.0 (`@earendil-works/pi-agent-core` and `pi-ai`). Transc
 earlier releases load unchanged. A tool result an MCP server or OpenAPI operation returns with
 `isError` keeps its content and structured content in history.
 
-## Unreleased — rate limits
+### Rate limits
 
 The API answers 429 `RATE_LIMITED` with `Retry-After` and the limit reached (`limit: {name, scope, max,
 windowSeconds}`) past a rate limit: per account, agent creates (60 a minute, 10 on free credit) and
@@ -32,7 +50,7 @@ tenants are exempt (their per-address /v1 traffic too) unless they set `maxAgent
 
 Migration 048 adds `rate_limits`. Nodes without this release count nothing, so limits hold fully once
 the rollout ends.
-## Unreleased — busy agents across the fleet, and usage tiers
+### Busy agents across the fleet, and usage tiers
 
 A tenant's busy-agent limit now holds across every node together, not per node: an agent is
 busy while it has a run open (running or queued), and a run past the limit gets 429
@@ -48,7 +66,7 @@ console's Billing page show the tier. `AGENT_FREE_MAX_AGENTS` is replaced by the
 Migration 045 adds `busy_agents`. During a rollout, older nodes neither write nor count rows,
 so a tenant's runs on them are limited per node as before.
 
-## Unreleased — structured output
+### Structured output
 
 A prompt takes `output: {schema}` (a JSON Schema for an object). The agent ends the run by calling a
 `final_output` tool with that schema, which a system prompt section tells it to call. The runtime
@@ -60,7 +78,7 @@ migration: the tool is declared in the agent's transcript. During a rollout, a s
 resumes on a node without this release loses the tool and ends as a plain run, without `output`. See
 [structured output](../guides/structured-output.md).
 
-## Unreleased — account export and deletion
+### Account export and deletion
 
 `GET /v1/account/export` streams a zip of everything an account stores, and the console's
 Account page offers it and **Delete account** (`DELETE /v1/account`, console sessions only).
@@ -75,7 +93,7 @@ and deletes email thread metadata left by agents and channels deleted before. Ol
 authenticate a tenant being deleted until they are replaced, and purge agents into the old,
 fuller tombstone: finish the rollout before acting on a deletion request.
 
-## Unreleased — public URL aliases
+### Public URL aliases
 
 `AGENT_PUBLIC_ALIASES` lists other origins the runtime answers at, such as an
 earlier domain kept working after `AGENT_PUBLIC_URL` moves, and `AGENT_ISSUER`
@@ -85,7 +103,9 @@ origin the client reached; the console, `/` and `/oauth/authorize` redirect to
 `AGENT_PUBLIC_URL`. Existing OAuth grants and tokens work at every origin. See
 [configuration](configuration.md).
 
-## Unreleased — usage and billing
+## 0.1.0 (runtime-v0.1.0, 2026-09-30)
+
+### Usage and billing
 
 GitHub starting-credit eligibility is decided once, at signup. Before deploying
 migration 031, set `AGENT_SIGNUP_MIN_ACCOUNT_DAYS` to the existing private policy

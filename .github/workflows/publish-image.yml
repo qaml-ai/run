@@ -2,6 +2,8 @@ name: Publish image
 # Push a tag like runtime-v1.2.0, on a commit already on main, to publish the runtime's image for
 # self-hosting to ghcr.io/qaml-ai/run:1.2.0 (and :latest), for linux/amd64 and linux/arm64.
 # See docs/operations/self-host.md. Production on ECS builds its own image (deploy.yml).
+# Before tagging: a "## <version> (runtime-v<version>, <date>)" heading in docs/operations/release-notes.md, and the
+# Compose default in deploy/selfhost/docker-compose.yml and self-host.md moved to it (tests/docs.test.ts checks).
 #
 # The package inherits this private repository's visibility. For installs that pull without a login,
 # an owner makes it public once: GitHub > qaml-ai > Packages > run > Package settings.

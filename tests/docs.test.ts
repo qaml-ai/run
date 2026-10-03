@@ -119,3 +119,13 @@ test("llms.txt and llms-full.txt are current (npm run docs), llms-full.txt's lin
   assert.match(full, /\]\(https:\/\/run\.camelai\.com\/docs\/operations\/self-host\.md#networking\)/);
   assert.deepEqual(brokenLinks(), []);
 });
+
+test("the self-host Compose file runs the newest release in the release notes, and self-host.md names it", async () => {
+  const read = (path: string) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
+  const newest = /^## (\d+\.\d+\.\d+) \(runtime-v\1, \d{4}-\d\d-\d\d\)$/m.exec(await read("docs/operations/release-notes.md"))?.[1];
+  assert.ok(newest, "release notes have version headings: ## <version> (runtime-v<version>, <date>)");
+  const images = [...(await read("deploy/selfhost/docker-compose.yml")).matchAll(/AGENT_RUNTIME_IMAGE:-ghcr\.io\/qaml-ai\/run:([^}]+)\}/g)].map(match => match[1]);
+  assert.deepEqual([...new Set(images)], [newest]);
+  assert.match(await read("docs/operations/self-host.md"), new RegExp(`ghcr\\.io/qaml-ai/run:${newest.replaceAll(".", "\\.")}\``));
+});
+

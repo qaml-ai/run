@@ -3,6 +3,8 @@
 #   docker compose up -d
 # With `--profile s3`, an S3-compatible service (SeaweedFS) holds the data instead (set the AGENT_S3_* lines in .env).
 # For local harnesses (evals, end-to-end tests): add -f compose.dev.yml. See docs/operations/self-host.md.
+# The image is pinned to a release (docs/operations/release-notes.md); upgrade by setting AGENT_RUNTIME_IMAGE in .env.
+# The project name, which its volumes are named after; COMPOSE_PROJECT_NAME in .env (or -p) overrides it.
 name: agent-runtime
 
 services:
@@ -22,7 +24,7 @@ services:
     restart: unless-stopped
 
   runtime:
-    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/run:latest}
+    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/run:0.2.0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,7 +66,7 @@ services:
   # Makes the bucket once, with the runtime image's own S3 client, before the runtime starts.
   s3-bucket:
     profiles: [s3]
-    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/run:latest}
+    image: ${AGENT_RUNTIME_IMAGE:-ghcr.io/qaml-ai/run:0.2.0}
     depends_on: [s3]
     env_file: .env
     entrypoint:

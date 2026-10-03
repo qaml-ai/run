@@ -32,16 +32,18 @@ environment:
 ```sh
 cd deploy/selfhost
 cp .env.example .env    # fill it in; secrets: openssl rand -hex 32
+for v in AGENT_OPERATOR_TOKEN AGENT_SESSION_SECRET AGENT_SECRETS_KEY POSTGRES_PASSWORD; do
+  sed -i.bak "s/^$v=$/$v=$(openssl rand -hex 32)/" .env; done; rm .env.bak   # or fill the secrets this way
 docker compose up -d
 curl -s localhost:8790/healthz
 ```
 
 The runtime listens on `127.0.0.1:8790` on the host. `AGENT_RUNTIME_PORT` and
 `AGENT_RUNTIME_BIND` in `.env` change the port and the address (`0.0.0.0` for
-every interface). The Compose project is named `agent-runtime`, and its
-volumes after it. To run a second copy beside another stack of that name, give
-it its own with `docker compose -p <name>` (or `COMPOSE_PROJECT_NAME`), the same
-one every time: a different name starts with empty volumes.
+every interface). The Compose project is `COMPOSE_PROJECT_NAME` in `.env`
+(`agent-runtime`), and its volumes are named after it. To run a second copy
+beside another stack of that name, give it its own name there, the same one
+every time: a different name starts with empty volumes.
 
 Then, with the operator token from `.env`:
 
@@ -77,10 +79,43 @@ api_key=…)`) does the same.
 --experimental-strip-types deploy/smoke.ts` checks the sandbox, a client tool
 and a real model turn end to end.
 
-Upgrade by changing `AGENT_RUNTIME_IMAGE` (or pulling `latest`) and `docker
-compose up -d`: the new container applies database migrations as it starts. On
-`docker compose stop` the runtime lets running turns finish (up to
-`AGENT_DRAIN_TIMEOUT_MS`, 100 s) before it exits.
+## Upgrade
+
+The Compose file runs a pinned release, `ghcr.io/qaml-ai/run:0.2.0`. Each
+release is a version in the [release notes](release-notes.md); read the notes
+of every version between yours and the new one, then set it in `.env` and
+restart:
+
+```sh
+echo 'AGENT_RUNTIME_IMAGE=ghcr.io/qaml-ai/run:<version>' >> .env
+docker compose up -d
+```
+
+The new container applies database migrations as it starts, and an older image
+does not undo them, so back up first (below). On `docker compose
+stop` the runtime lets running turns finish (up to `AGENT_DRAIN_TIMEOUT_MS`,
+100 s) before it exits.
+
+The SDKs (`@camelai/run`, `camelai-run`) are versioned apart from the runtime.
+A new SDK can call API your runtime does not have yet: upgrade the runtime when
+you upgrade the SDKs, or keep the SDK release from your runtime's date.
+
+## Backup
+
+Back up Postgres and the agents' data together (with `AGENT_STORAGE=s3`, the
+bucket instead of the volume):
+
+```sh
+docker compose exec -T postgres pg_dump -U agent_runtime agent_runtime | gzip > runtime-$(date +%F).sql.gz
+docker run --rm -v "${COMPOSE_PROJECT_NAME:-agent-runtime}_data:/data:ro" -v "$PWD:/out" alpine \
+  tar czf "/out/data-$(date +%F).tar.gz" -C /data .
+```
+
+Restore into a stopped stack: `gunzip -c runtime-….sql.gz | docker compose exec -T
+postgres psql -U agent_runtime agent_runtime` into an empty database, and the
+tarball back into the `data` volume. Keep `AGENT_SECRETS_KEY` and
+`AGENT_SESSION_SECRET` with the backup: stored keys cannot be read without the
+first.
 
 ## Configuration
 
