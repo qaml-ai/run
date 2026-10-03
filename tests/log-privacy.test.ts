@@ -13,7 +13,9 @@ const CALLS = /(?:console\.(?:log|error|warn|info|debug)|process\.std(?:out|err)
 
 /** Keys whose value is user content. */
 const FORBIDDEN = new Set(["text", "prompt", "content", "message", "messages", "arguments", "args", "input", "output", "result", "results",
-  "body", "subject", "from", "to", "cc", "email", "address", "recipient", "path", "file", "filename", "code", "query", "url", "reply", "answer", "html", "data"]);
+  "body", "subject", "from", "to", "cc", "email", "address", "recipient", "path", "file", "filename", "code", "query", "url", "reply", "answer", "html", "data",
+  // Credentials: an agent's token (as GET /v1/agents/{id}/credentials gives it), API and browser tokens, keys, secrets.
+  "token", "apiKey", "secret", "authorization", "password"]);
 
 /** Forbidden keys that are safe where they are, by file. */
 const ALLOWED_KEYS: Record<string, string[]> = {
@@ -87,6 +89,7 @@ test("the scan catches content fields and raw errors in new log lines", () => {
     `console.error(JSON.stringify({ type: "send_failed", error: errorText(error) }));`,
     `console.error(JSON.stringify({ type: "send_failed", error: (error as Error).message }));`,
     `emit("model_error", { dimensions: {}, rollups: [], metrics: {}, properties: { subject: mail.subject } });`,
+    `console.log(JSON.stringify({ type: "agent_credentials", agent: id, token: credentials.token }));`,
   ];
   for (const line of bad) assert.equal(logProblems("src/example.ts", line).length, 1, line);
   const good = `console.error(JSON.stringify({ type: "send_failed", item: item.id, bytes: body.length, messageId, error: safeError(error) }));`;

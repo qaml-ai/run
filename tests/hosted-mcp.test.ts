@@ -170,6 +170,10 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
   assert.equal((await mcp.call("create_agent", { key: "via-oauth", systemPrompt: "Hi." })).isError, false);
   assert.equal((await mcp.call("run_agent", { agent: "via-oauth", message: "hello" })).json.text, "echo: hello");
   assert.equal((await r.call("/v1/me", { token: tokens.access_token })).json.via, "oauth");
+  // An agent's credentials too, as an API token gets them: the grant acts for the account, and already gets an agent's token by creating it.
+  const credentials = await r.call("/v1/agents/via-oauth/credentials", { token: tokens.access_token });
+  assert.equal(credentials.status, 200);
+  assert.match(credentials.json.token, /^[0-9a-f]{64}$/);
   assert.equal((await r.call("/v1/tokens", { token: tokens.access_token, body: { name: "escape" } })).status, 403);
   for (const [path, method, body] of [
     ["/v1/billing/alerts", "PUT", { thresholdUsd: 5 }],

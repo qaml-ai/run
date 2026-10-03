@@ -81,7 +81,9 @@ with `status` 404 when no live agent has the key or id, and 409
 `AGENT_KEYLESS` for an agent made without a key. It takes `tools`, `onEvent`,
 `onInput`, `onError`, `attach` and `takeover` as `upsert` does (Python:
 `await agents.get(key, tools=[…])`). REST: `GET /v1/agents/{keyOrId}/credentials`
-gives the agent's `{id, token, expiresAt}`. From `@camelai/run` 0.13.1 and
+gives the agent's `{id, token, expiresAt}`, to the account's own credentials
+only (an API token, an OAuth grant, a console session): a browser token gets
+403 and an agent's token 401, and browsers get no CORS access to it. From `@camelai/run` 0.13.1 and
 `camelai-run` 0.9.1.
 
 `agents.agent(session, { tools, … })` connects to an agent you hold the

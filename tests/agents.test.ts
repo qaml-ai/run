@@ -99,6 +99,28 @@ test("get() takes an existing agent by key or id without changing it; 404 for no
   await assert.rejects(agents.get(keyless.id), (error: any) => error.status === 409 && error.code === "AGENT_KEYLESS");
 });
 
+test("an agent's credentials are for the account's own tokens: a browser token gets 403, an agent's token 401, and no browser origin is allowed", async t => {
+  const { r } = await setup(t, () => ({ role: "assistant", content: "ok" }));
+  const made = (await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "guarded" } })).json;
+  assert.equal((await r.call("/v1/agents/guarded/credentials")).json.token, made.token, "the API token gets the token its create gave");
+  const browser = (await r.call(`/v1/agents/${made.id}/browser-tokens`, { body: {} })).json.token;
+  for (const ref of [made.id, "guarded"]) {
+    const refused = await r.call(`/v1/agents/${ref}/credentials`, { token: browser });
+    assert.equal(refused.status, 403, ref);
+    assert.doesNotMatch(refused.text, /[0-9a-f]{64}/, "no token in the refusal");
+  }
+  const agentToken = await r.call(`/v1/agents/${made.id}/credentials`, { token: made.token });
+  assert.equal(agentToken.status, 401, "an agent's own token is not an account token");
+  // Not one of the browser reads: no CORS headers, even asked from a page, preflight or not.
+  const preflight = await fetch(`${r.base}/v1/agents/${made.id}/credentials`, { method: "OPTIONS", headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" } });
+  assert.equal(preflight.headers.get("access-control-allow-origin"), null);
+  const fromPage = await fetch(`${r.base}/v1/agents/${made.id}/credentials`, { headers: { Origin: "https://evil.example", Authorization: `Bearer ${browser}` } });
+  assert.equal(fromPage.headers.get("access-control-allow-origin"), null);
+  const withKey = await fetch(`${r.base}/v1/agents/${made.id}/credentials`, { headers: { Origin: "https://evil.example", Authorization: `Bearer ${OPERATOR}` } });
+  assert.equal(withKey.status, 200);
+  assert.equal(withKey.headers.get("access-control-allow-origin"), null);
+});
+
 test("a tool that returns nothing succeeds with null; its context has a stable idempotency key and reports progress", async t => {
   const { make, r } = await setup(t, (body, index) => index === 0 ? toolCall("save", { value: "x" }, "call_save") : { role: "assistant", content: "Saved." });
   const keys: string[] = [];
