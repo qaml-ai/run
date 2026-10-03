@@ -85,9 +85,9 @@ export class HistoryIndex {
     return (await this.db.query("select reported from agent_history_index where agent = $1", [agent])).rows[0]?.reported ?? 0;
   }
 
-  /** Start a new agent's index, empty. */
-  async begin(agent: string) {
-    await this.db.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);
+  /** Start a new agent's index, empty; `reported`: messages its history starts with (a fork's), which a page then finds in its log until they are indexed. */
+  async begin(agent: string, reported = 0) {
+    await this.db.query("insert into agent_history_index (agent, indexed, reported) values ($1, 0, $2) on conflict (agent) do nothing", [agent, reported]);
   }
 
   /** How many of the agent's messages the chunks cover; undefined for an agent whose index has not begun. */

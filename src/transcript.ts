@@ -297,6 +297,66 @@ export class Transcript {
   }
 }
 
+/** A fork's copy of a transcript: the records it starts from, and the history index of the last message they hold (null: none). */
+export interface ForkCut { records: TranscriptRecord[]; through: number | null }
+
+const forkRefused = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
+
+/**
+ * Where a fork of a transcript ends, and the records it starts from: the source's own up to there, so its compactions
+ * and system messages (the provider's cached prefix) come along. By default it ends with the last turn that ended,
+ * never in a turn still running or waiting on a person's input. `at` a history index keeps that message and the tool
+ * results that answer it; a request id keeps the turn that request ran, whole. A message of the running turn, or one
+ * whose tool calls have no results yet, is refused (409 FORK_POINT_RUNNING).
+ */
+export function forkCut(records: TranscriptRecord[], at?: number | string): ForkCut {
+  const replay = new Transcript(undefined as never);
+  // After each record: how many messages the history had, and whether no turn was running or waiting on input.
+  const states = records.map(record => { replay.apply(record); return { total: replay.total, settled: !replay.active && !replay.awaiting.length }; });
+  /** The record that brought the history to `count` messages for the last time: from there on it never has fewer. */
+  const crossing = (count: number) => states.findLastIndex((state, index) => state.total >= count && (index ? states[index - 1].total : 0) < count);
+  const whole = (end: number): ForkCut => ({ records: records.slice(0, end + 1), through: end >= 0 && states[end].total ? states[end].total - 1 : null });
+  if (at === undefined) return whole(states.findLastIndex(state => state.settled));
+  const messages = historyOf(records);
+  if (typeof at === "string") {
+    const index = messages.findLastIndex(message => requestOf(message) === at);
+    if (index < 0) throw forkRefused(400, "FORK_POINT_INVALID", `No message in this agent's history was sent by request ${at}`);
+    const from = crossing(index + 1);
+    const end = states.findIndex((state, position) => position >= from && state.settled);
+    if (end < 0) throw forkRefused(409, "FORK_POINT_RUNNING", `Request ${at}'s turn has not ended yet; fork once it has, or at an earlier message`);
+    return whole(end);
+  }
+  if (!Number.isSafeInteger(at) || at < 0 || at >= messages.length) throw forkRefused(400, "FORK_POINT_INVALID", `atMessage is a history index from 0 to ${messages.length - 1}, or a request id`);
+  let count = at + 1;
+  while (messages[count]?.role === "toolResult") count++;
+  // Calls the kept messages leave without results: their turn is running, or waits on a person.
+  const open = new Set<string>();
+  for (const message of messages.slice(0, count)) {
+    if (message.role === "assistant") { open.clear(); for (const id of callsOf(message)) open.add(id); }
+    else if (message.role === "toolResult") open.delete(message.toolCallId);
+    else if (message.role === "user") open.clear();
+  }
+  if (open.size || (replay.active && count > replay.turnStart)) throw forkRefused(409, "FORK_POINT_RUNNING", `Message ${at} is in a turn that has not ended yet; fork at an earlier message, or once it ends`);
+  const end = crossing(count);
+  const kept = records.slice(0, end + 1);
+  const last = kept[end];
+  // An import holding more messages than the fork keeps: only those, and its summary if it covers no more.
+  if (last?.t === "reset" && last.messages.length > count) {
+    kept[end] = { t: "reset", messages: last.messages.slice(0, count), ...(last.compaction && last.compaction.cut <= count ? { compaction: last.compaction } : {}) };
+  }
+  // The fork's transcript ends between turns, so it is never mid-turn when it loads.
+  const fork = new Transcript(undefined as never);
+  for (const record of kept) fork.apply(record);
+  if (fork.awaiting.length) kept.push({ t: "awaiting", calls: fork.awaiting, released: true });
+  if (fork.active) kept.push({ t: "turn", active: false });
+  return { records: kept, through: count - 1 };
+}
+
+/** Every message the records hold, in their own records or an import's. */
+export function recordedMessages(records: TranscriptRecord[]): AgentMessage[] {
+  return records.flatMap(record => record.t === "message" ? [record.message] : record.t === "reset" ? record.messages : []);
+}
+
 export function summaryMessage(state: CompactionState): AgentMessage {
   return createCompactionSummaryMessage(state.summary, state.tokensBefore, new Date(state.at).toISOString()) as AgentMessage;
 }

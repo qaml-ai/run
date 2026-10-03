@@ -2051,6 +2051,9 @@
                   }
                 ]
               },
+              "forkedFrom": {
+                "$ref": "#/components/schemas/ForkedFrom"
+              },
               "cursor": {
                 "type": "number"
               },
@@ -2230,6 +2233,27 @@
           "tools"
         ]
       },
+      "ForkedFrom": {
+        "type": "object",
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "description": "The agent it was forked from"
+          },
+          "atMessage": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "The history index of that agent's last message it began with; null: it began with none"
+          }
+        },
+        "required": [
+          "agentId",
+          "atMessage"
+        ],
+        "description": "For a fork (POST /v1/agents/{id}/fork): the agent and message it was forked from"
+      },
       "AgentCredentials": {
         "type": "object",
         "properties": {
@@ -2252,6 +2276,64 @@
           "token",
           "expiresAt"
         ]
+      },
+      "AgentForked": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string",
+            "description": "The fork's scoped credential for /clients routes"
+          },
+          "expiresAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "forkedFrom": {
+            "$ref": "#/components/schemas/ForkedFrom"
+          }
+        },
+        "required": [
+          "id",
+          "token",
+          "expiresAt",
+          "forkedFrom"
+        ]
+      },
+      "AgentForkInput": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The fork's own key, like a create's Idempotency-Key (that header is taken too): a retry with it returns the same fork, and agents.get finds it. Default: a new key, as a create without one"
+          },
+          "name": {
+            "type": "string",
+            "description": "Default: the source's name, with (fork)"
+          },
+          "atMessage": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Where the fork's history ends. A history index: that message, and the tool results that answer it. A request id: the whole turn that request ran. Default: the last turn that ended, never one still running or waiting on input (409 FORK_POINT_RUNNING for a message in such a turn)"
+          },
+          "ttlSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The fork's lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted with a key, 86400 without"
+          }
+        }
       },
       "EventPoll": {
         "type": "object",
@@ -7051,6 +7133,71 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentCredentials"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/fork": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The fork's key, when the body gives none"
+            },
+            "required": false,
+            "description": "The fork's key, when the body gives none",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentForkInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentForked"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "FORK_POINT_RUNNING: atMessage is in a turn that has not ended; or the key names another agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

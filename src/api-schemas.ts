@@ -338,6 +338,23 @@ export const ToolSource = z.object({
   })),
 }).openapi("ToolSource");
 
+export const ForkedFrom = z.object({
+  agentId: z.string().openapi({ description: "The agent it was forked from" }),
+  atMessage: z.number().nullable().openapi({ description: "The history index of that agent's last message it began with; null: it began with none" }),
+}).openapi("ForkedFrom");
+export const AgentForkInput = z.object({
+  key: z.string().optional().openapi({ description: "The fork's own key, like a create's Idempotency-Key (that header is taken too): a retry with it returns the same fork, and agents.get finds it. Default: a new key, as a create without one" }),
+  name: z.string().optional().openapi({ description: "Default: the source's name, with (fork)" }),
+  atMessage: z.union([z.number().int(), z.string()]).optional().openapi({ description: "Where the fork's history ends. A history index: that message, and the tool results that answer it. A request id: the whole turn that request ran. Default: the last turn that ended, never one still running or waiting on input (409 FORK_POINT_RUNNING for a message in such a turn)" }),
+  ttlSeconds: z.number().int().nullable().optional().openapi({ description: "The fork's lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted with a key, 86400 without" }),
+}).openapi("AgentForkInput");
+export const AgentForked = z.object({
+  id: z.string(),
+  token: z.string().openapi({ description: "The fork's scoped credential for /clients routes" }),
+  expiresAt: z.number().nullable(),
+  forkedFrom: ForkedFrom,
+}).openapi("AgentForked");
+
 export const AgentDetail = AgentSummary.extend({
   definition: z.object({ id: z.string(), revision: z.number() }).optional().openapi({ description: "The definition the agent was made from, and the revision it has" }),
   tools: z.array(ToolDefinition).openapi({ description: "The tools your application declared, which it answers" }),
@@ -351,6 +368,7 @@ export const AgentDetail = AgentSummary.extend({
   builtins: z.array(Builtin).openapi({ description: "The tools the runtime answers itself: its own, or its definition's" }),
   spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
   runLimits: RunLimits.nullable().openapi({ description: "Its own run limits, as set; null: the runtime's" }),
+  forkedFrom: ForkedFrom.optional().openapi({ description: "For a fork (POST /v1/agents/{id}/fork): the agent and message it was forked from" }),
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
   requests: z.array(RequestRecord),

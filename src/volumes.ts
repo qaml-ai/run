@@ -482,9 +482,17 @@ export class VolumeService {
       }
       const name = args.name === undefined ? `${volume.header.name} (fork)` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
+      // `into`: the id the fork takes (an agent fork's workspace, never a caller's), which a retry finds made already.
+      const into = args.into;
+      if (into !== undefined) {
+        if (!validVolumeId(into)) throw new HttpError(400, "into must be a volume id");
+        const made = await this.readHeader(into);
+        if (made && (made.tenant !== volume.header.tenant || made.origin?.volume !== id || made.deleted)) throw new HttpError(409, `Volume ${into} already exists`);
+        if (made) return this.summary(made);
+      }
       // The fork refers to every chunk it copies (a snapshot's included): a collection under way stands down.
       await this.touch(volume.header.tenant, files.flatMap(([, entry]) => entry.chunks));
-      const header: VolumeHeader = { version: 1, id: newId("vol", 12), tenant: volume.header.tenant, name: name.trim(), createdAt: Date.now(), origin: { volume: id, ...(args.snapshot ? { snapshot: args.snapshot } : {}), seq } };
+      const header: VolumeHeader = { version: 1, id: typeof into === "string" ? into : newId("vol", 12), tenant: volume.header.tenant, name: name.trim(), createdAt: Date.now(), origin: { volume: id, ...(args.snapshot ? { snapshot: args.snapshot } : {}), seq } };
       // The fork's tree starts as a folded copy of the source's metadata; chunks are shared. Written under
       // the new volume's own claim, which nothing else can hold yet.
       const ownership = this.options.ownership;
@@ -492,6 +500,9 @@ export class VolumeService {
       if (acquired && !("claim" in acquired)) throw new HttpError(503, "The fork's new volume is taken; retry");
       const claim = acquired?.claim;
       try {
+        // Made meanwhile by a retry that held the claim first: its files may have changed since, so they stay.
+        const made = into !== undefined && await this.readHeader(header.id);
+        if (made) return this.summary(made);
         const log = this.storage.log<TreeRecord>(treeKey(header.id), claim);
         await log.rewrite(() => [{ t: "base", seq }, ...files.map(([path, entry]) => ({ t: "put" as const, seq: entry.version, path, entry }))]);
         await log.close();

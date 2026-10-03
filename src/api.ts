@@ -16,7 +16,7 @@ import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
-import type { Definitions } from "./definitions.ts";
+import { validTtl, type Definitions } from "./definitions.ts";
 import { checkScope, scopeEntry, type KeyScopes } from "./key-scopes.ts";
 import { providerInput, type ModelProviders } from "./model-providers.ts";
 import type { Webhooks } from "./webhooks.ts";
@@ -231,7 +231,7 @@ export function api(context: ApiContext) {
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || /^\/v1\/agents\/[^/]+\/prompt$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens, signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -454,6 +454,20 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is deleted: it stops at once, and its stored data is purged shortly after", schema.Deleted) } }), async c => {
     await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, { deleted: true });
+  });
+  route(createRoute({
+    method: "post", path: "/v1/agents/{id}/fork",
+    request: { params: agentId, headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "The fork's key, when the body gives none" }) }), body: content(schema.AgentForkInput) },
+    responses: { 201: reply("A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace", schema.AgentForked), 409: reply("FORK_POINT_RUNNING: atMessage is in a turn that has not ended; or the key names another agent", schema.ApiError) },
+  }), async c => {
+    const { key: given, name, atMessage, ttlSeconds } = parse(schema.AgentForkInput, await readJson(c.req.raw.body, 64 * 1024, {}));
+    const key = given ?? c.req.header("idempotency-key");
+    validTtl(ttlSeconds);
+    const tenant = c.var.principal.tenant;
+    await context.rateLimits?.agentCreate(tenant);
+    // Lives as long as a create's agent would: with a key until deleted, without one a day, unless it says.
+    const ttlMs = ttlSeconds === undefined ? (key !== undefined ? null : undefined) : ttlSeconds === null ? null : ttlSeconds * 1000;
+    return json(c, 201, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs }));
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/events",

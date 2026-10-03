@@ -59,6 +59,19 @@ export class AgentSupervisor {
     return readTranscriptLog(this.options.storage.log(AgentSupervisor.transcriptKey(id)));
   }
 
+  /** An agent's transcript records as its log holds them, read beside a live owner without writing. */
+  async records(id: string): Promise<TranscriptRecord[]> {
+    return (this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))))).read();
+  }
+
+  /** Start a new agent's transcript as `records` (a fork's), under its owner's `claim`, before it is started. */
+  async seed(id: string, records: TranscriptRecord[], claim?: Claim) {
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
+    try { await log.rewrite(() => records); }
+    finally { await log.close(); }
+  }
+
   /** Delete a stopped agent's transcript and local directory. */
   async purge(id: string) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");

@@ -10,8 +10,8 @@ import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./web
 import { AgentSupervisor } from "./supervisor.ts";
 import { configurationUpdate, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
-import { validateUserMessages } from "./history.ts";
-import type { Backlog } from "./transcript.ts";
+import { importedHistory, validateUserMessages } from "./history.ts";
+import { forkCut, recordedMessages, type Backlog, type TranscriptRecord } from "./transcript.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
@@ -72,7 +72,10 @@ interface SessionHeader {
   key?: string;
   /** sha256 of the application's tools as it last declared them (its tools/list as JSON): its ready event tells it, so it reconfigures only on a change. */
   toolsHash?: string;
+  /** The agent it was forked from, and the index of the last message of that agent's history it began with (null: none). */
+  forkedFrom?: ForkedFrom;
 }
+export type ForkedFrom = { agentId: string; atMessage: number | null };
 /**
  * Upserts of request records, appended as their state changes, and ended runs whose webhook event (`run.completed` or
  * `run.failed`) is written (`announced`). Journals from before tool calls were MCP also hold call records, which are skipped.
@@ -1571,25 +1574,15 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[] } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] } } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
     const key = given ?? randomUUID();
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
-    // A key whose agent was deleted or expired makes a fresh one: the next generation of the key, with an id and token
-    // of its own, so the old agent's id is never reused and its token never works again.
-    let id: string, scoped: string, existing: { value: SessionHeader } | undefined;
-    for (let generation = 0; ; generation++) {
-      // Idempotency keys are per tenant.
-      scoped = `${tenant}:${key}${generation ? `#${generation}` : ""}`;
-      id = this.agentId(tenant, `${key}${generation ? `#${generation}` : ""}`);
-      // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
-      existing = this.sessions.has(id) ? undefined : await steps.time("lookup", this.readHeader(id));
-      const header = this.sessions.get(id)?.header ?? existing?.value;
-      if (!header || !(header.revoked || expired(header.expiresAt))) break;
-    }
-    const token = createHmac("sha256", this.options.secret).update(`client-v2:${scoped}`).digest("hex");
+    const { id, token, existing } = await steps.time("lookup", this.keyed(tenant, key));
+    // A fork's volume was made for the id its key had a moment ago: another generation now (it was deleted meanwhile) is a retry.
+    if (access.fork && access.fork.id !== id) throw new HttpError(503, "The fork's key changed agents while it was made; retry");
     const { apiKey: _key, ...safeConfig } = config;
     const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...(access.builtins?.length ? { builtins: access.builtins } : {}) }, ...(identity ? { identity } : {}) }));
     // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
@@ -1632,18 +1625,21 @@ export class ClientSessions {
           claim = acquired.claim;
         }
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
-        // FileRefs its initial messages carry (a clone of another agent's history) are its own now: their chunks are pinned
-        // to it before it exists, so there is never an agent without them (a pin left by a create that failed only keeps
-        // chunks stored).
-        const refs = (safeConfig.initialMessages ?? []).flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
+        // FileRefs its initial messages or a fork's history carry are its own now: their chunks are pinned to it before it
+        // exists, so there is never an agent without them (a pin left by a create that failed only keeps chunks stored).
+        const refs = [...safeConfig.initialMessages ?? [], ...access.fork ? recordedMessages(access.fork.records) : []].flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
         if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
+        // A fork's history is its transcript before it exists, written under its claim.
+        if (access.fork) await steps.time("history", this.supervisor.seed(id, access.fork.records, claim));
         // A conditional create: if a concurrent request made this agent first, retry as a load. A new agent's history is
-        // indexed from its first message; beginning its index is idempotent, so it goes alongside.
-        await Promise.all([steps.time("header", this.writeHeader(session)), steps.time("index", this.historyIndex.begin(id))]);
+        // indexed from its first message (a fork's copy, too, once it starts: until then a page reads its log); beginning
+        // its index is idempotent, so it goes alongside.
+        const seeded = access.fork?.from.atMessage == null ? 0 : access.fork.from.atMessage + 1;
+        await Promise.all([steps.time("header", this.writeHeader(session)), steps.time("index", this.historyIndex.begin(id, seeded))]);
         this.sessions.set(id, session);
         created = true;
         settle(session);
@@ -1670,6 +1666,67 @@ export class ClientSessions {
       if (!session.header.revoked) console.error(JSON.stringify({ type: "agent_start_failed", agent: id, tenant, error: safeError(error) }));
     });
     return { id, token, expiresAt: session.header.expiresAt, ...changed };
+  }
+
+  /**
+   * The agent a tenant's key names now: its id and token, and its stored header unless this node holds it. A key whose
+   * agent was deleted or expired names a fresh one: the next generation of the key, with an id and token of its own, so
+   * the old agent's id is never reused and its token never works again.
+   */
+  private async keyed(tenant: string, key: string): Promise<{ id: string; token: string; existing?: { value: SessionHeader } }> {
+    for (let generation = 0; ; generation++) {
+      // Idempotency keys are per tenant.
+      const scoped = `${key}${generation ? `#${generation}` : ""}`;
+      const id = this.agentId(tenant, scoped);
+      // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
+      const existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
+      const header = this.sessions.get(id)?.header ?? existing?.value;
+      if (!header || !(header.revoked || expired(header.expiresAt))) return { id, token: createHmac("sha256", this.options.secret).update(`client-v2:${tenant}:${scoped}`).digest("hex"), existing };
+    }
+  }
+
+  /**
+   * A new agent with `source`'s configuration and a copy of its history and workspace (POST /v1/agents/:id/fork), on
+   * the node serving `source`. Its history is the source's transcript as its log holds it (every record a turn
+   * committed, wherever the source runs) up to the fork point (see `forkCut`): records of its own, sharing nothing
+   * mutable with the source, whose FileRefs are pinned to it. Its workspace volume is a fork of the source's, as it is
+   * now; other mounts are the same volumes. Not copied: schedules, channels, inputs, requests and spend so far. With a
+   * key, a retry returns the same fork; a key naming another agent is refused.
+   */
+  async fork(sourceId: string, tenant: string, input: { key?: string; name?: string; atMessage?: number | string; ttlMs?: number | null }, steps = new Steps()) {
+    const source = this.sessions.get(sourceId)?.header ?? (await this.readHeader(sourceId))?.value;
+    if (!source || source.tenant !== tenant || source.revoked || source.purged || expired(source.expiresAt)) throw new HttpError(404, "Unknown agent");
+    const key = input.key ?? randomUUID();
+    if (!validId(key)) throw new HttpError(400, "Invalid fork key");
+    const made = await steps.time("lookup", this.keyed(tenant, key));
+    const found = this.sessions.get(made.id)?.header ?? made.existing?.value;
+    const answer = (header: SessionHeader) => {
+      if (header.tenant !== tenant || header.forkedFrom?.agentId !== sourceId) throw new HttpError(409, "This key names another agent, not a fork of this one; use another key");
+      return { id: header.id, token: made.token, expiresAt: header.expiresAt, forkedFrom: header.forkedFrom };
+    };
+    if (found) return answer(found);
+    let records = await steps.time("history", this.supervisor.records(sourceId));
+    // History given at create is imported when the agent first starts: one that has not yet holds it in its configuration.
+    if (!records.length && source.config.initialMessages?.length) records = [{ t: "reset", ...importedHistory(source.config.initialMessages) }];
+    const cut = forkCut(records, input.atMessage);
+    const from: ForkedFrom = { agentId: sourceId, atMessage: cut.through };
+    // The source's own workspace is forked for the fork, under the id its workspace has; shared volumes stay shared.
+    let mounts: Mount[] | undefined = source.mounts;
+    const workspace = VolumeService.workspaceOf(sourceId);
+    if (this.options.volumes && mounts?.some(mount => mount.volumeId === workspace)) {
+      const into = VolumeService.workspaceOf(made.id);
+      await steps.time("volume", this.options.volumes.call(workspace, tenant, "fork", { name: "workspace", into }));
+      mounts = mounts.map(mount => mount.volumeId === workspace ? { ...mount, volumeId: into } : mount);
+    }
+    const spend = (await this.db.query("select usd from agent_spend_limits where agent = $1", [sourceId])).rows[0];
+    const { initialMessages: _initial, ...config } = source.config;
+    const name = input.name ?? (source.metadata?.name && `${source.metadata.name} (fork)`.slice(0, 120));
+    const created = await this.create(source.definitions, config as Omit<AgentConfig, "id" | "directory" | "tools">, key, { ...source.metadata, ...(name ? { name } : {}) }, tenant, input.ttlMs, mounts,
+      source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, source.identity,
+      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, builtins: source.definition ? undefined : source.sources?.builtins, fork: { id: made.id, from, records: cut.records } }, steps);
+    // Made meanwhile by a retry: whatever it holds is the fork.
+    if (created.reconfigure) return answer(this.sessions.get(created.id)?.header ?? (await this.readHeader(created.id))!.value);
+    return { id: created.id, token: created.token, expiresAt: created.expiresAt, forkedFrom: from };
   }
 
   /**
@@ -1772,6 +1829,7 @@ export class ClientSessions {
       ...(session.header.config.fileTools === false ? { fileTools: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
       builtins: session.header.sources?.builtins ?? [],
       spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
+      ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
       cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
