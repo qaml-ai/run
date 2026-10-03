@@ -203,3 +203,12 @@ export interface AutoTopup {
   usedThisPeriod: number; held: number; resetsAt: number;
   attempt: { id: string; state: string; amount: number; fee: number; total: number; card: BillingCard | null; invoiceUrl: string | null; canRetry: boolean; submitted: boolean } | null;
 }
+
+export type TelemetryProtocol = "http/protobuf" | "http/json";
+/** Where the tenant's traces go (`GET /v1/telemetry`): header names only, their values are never returned. */
+export interface Telemetry {
+  endpoint: string; protocol: TelemetryProtocol; sampleRate: number; include: { content: boolean }; headers: string[];
+  createdAt: number; updatedAt: number;
+  status: { lastExportAt: number | null; lastError: string | null; lastErrorAt: number | null };
+}
+export interface TelemetryTest { ok: boolean; status?: number; error?: string; traceId: string; spanId: string }

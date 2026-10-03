@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useLayoutEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Bot, CircleUser, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
+import { Activity, BarChart3, Bot, CircleUser, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +29,7 @@ import { ChannelsPage } from "@/pages/channels";
 import { DefinitionsPage } from "@/pages/definitions";
 import { ModelsPage } from "@/pages/models";
 import { TokensPage } from "@/pages/tokens";
+import { TelemetryPage } from "@/pages/telemetry";
 import { UsagePage } from "@/pages/usage";
 import { BillingConfirmationPage } from "@/pages/billing-confirmation";
 import { BillingUnsubscribePage } from "@/pages/billing-unsubscribe";
@@ -52,6 +53,7 @@ const NAV = [
   { to: "models", label: "Models & keys", icon: Boxes },
   { to: "tokens", label: "API tokens", icon: KeyRound },
   { to: "usage", label: "Usage", icon: BarChart3 },
+  { to: "telemetry", label: "Telemetry", icon: Activity },
   { to: "billing", label: "Billing", icon: Wallet },
   { to: "account", label: "Account", icon: CircleUser },
   { to: "quickstart", label: "Quickstart", icon: Rocket },
@@ -87,6 +89,7 @@ function App() {
     : section === "models" ? <ModelsPage me={me.data} />
     : section === "tokens" ? <TokensPage tenant={me.data.tenant} />
     : section === "usage" ? <UsagePage />
+    : section === "telemetry" ? <TelemetryPage me={me.data} />
     : section === "billing" ? <BillingPage state={billingState} />
     : section === "account" ? <AccountPage me={me.data} />
     : section === "quickstart" ? <QuickstartPage />
