@@ -148,6 +148,11 @@ by it, and a call that runs twice acts once.
 | Another process took the agent's tools | `code: "APPLICATION_REPLACED"`, through `onError`; the client goes on without serving them | the same, through `on_error` |
 | A tool server's token check | `RuntimeTokenError` (`serveTools`, `verifyRuntimeToken`): the call gets 401 | `RuntimeTokenError` |
 
+A run's failure is not an HTTP response, so `RunError.status` is always 0, in
+both SDKs: it does not mean the network failed. Branch on `code`
+(`model_key_missing`, `spend_limit`, …: see [Run failures](#run-failures)). An
+`AgentError` with `status` 0 and no `code` is the connection's failure.
+
 Stopping a wait (`signal`, `timeoutMs`; Python `timeout`) throws the signal's
 reason (an `AbortError` or `TimeoutError`), or an `AgentError` saying the request may still be running:
 the run goes on in the runtime. Wait for it again with the same

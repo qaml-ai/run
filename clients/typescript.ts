@@ -480,7 +480,10 @@ export class AgentError extends Error {
   retryAfterMs?: number;
   constructor(message: string, status = 0, requestId?: string) { super(message); this.name = "AgentError"; this.status = status; this.requestId = requestId; }
 }
-/** A run that failed (`agent.run` throws it unless `throwOnError: false`): `run` is how it ended, `code` why. */
+/**
+ * A run that failed (`agent.run` throws it unless `throwOnError: false`): `run` is how it ended, `code` why. `status` is
+ * always 0: a run's failure is not an HTTP response, so branch on `code`.
+ */
 export class RunError extends AgentError {
   readonly run: Run;
   constructor(run: Run) {

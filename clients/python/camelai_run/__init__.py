@@ -64,7 +64,8 @@ class AgentError(RuntimeError):
 
 
 class RunError(AgentError):
-    """A run that failed (agent.run raises it unless throw_on_error=False): `run` is how it ended."""
+    """A run that failed (agent.run raises it unless throw_on_error=False): `run` is how it ended, `code` why.
+    `status` is always 0: a run's failure is not an HTTP response, so branch on `code`."""
 
     def __init__(self, run):
         super().__init__(run.error["message"] if run.error else "The run failed", request_id=run.id,
