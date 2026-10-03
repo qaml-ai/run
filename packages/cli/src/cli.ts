@@ -30,6 +30,10 @@ Agents (an agent is its key or its id, client_…)
   agents get <agent>               Configuration, definition revision and tool sources
   agents create <key> [--definition key|id] [--model m] [--prompt text] [--name n]
   agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]
+  agents fork <agent> [--key k] [--name n] [--at message]
+                                   A new agent with its configuration, history and files; --at ends the
+                                   history at a message index or a request id (default: the last turn
+                                   that ended). With --key it lives until deleted, without it a day
   agents delete <agent> --yes      Stop it and purge its history and files
   run <agent> <message…> [--wait s] [--no-wait] [--from user] [--steer] [--allow-disconnected]
   runs get <agent> <requestId> [--wait s]
@@ -63,7 +67,7 @@ const OPTIONS = {
   apply: { type: "boolean" }, "dry-run": { type: "boolean" }, available: { type: "boolean" }, force: { type: "boolean" }, yes: { type: "boolean", short: "y" },
   model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, definition: { type: "string" },
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
-  limit: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" },
+  limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" },
 } as const;
 
 type Flags = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>["values"];
@@ -224,6 +228,14 @@ async function agents(args: string[], flags: Flags, api: () => Api, print: (valu
       const result = await ops.configure(client, target, changes);
       print(result, () => result.status === "failed" ? `Failed: ${result.error?.message}` : result.status === "running" ? `Queued behind its current run (request ${result.requestId})` : `Configured ${target}`);
       return result.status === "failed" ? 1 : 0;
+    }
+    case "fork": {
+      if (!target) throw new UsageError("Usage: camelrun agents fork <agent> [--key k] [--name n] [--at message]");
+      const at = flags.at === undefined ? undefined : /^\d+$/.test(flags.at) ? Number(flags.at) : flags.at;
+      const forked = await client.call("POST", `/v1/agents/${enc(await client.agentId(target))}/fork`, { ...(flags.key ? { key: flags.key } : {}), ...(flags.name ? { name: flags.name } : {}), ...(at !== undefined ? { atMessage: at } : {}) });
+      const { token: _token, ...shown } = forked;
+      print(shown, () => `${flags.key ?? "Fork"}: ${forked.id} (from ${target}${forked.forkedFrom.atMessage === null ? ", no history" : ` through message ${forked.forkedFrom.atMessage}`})`);
+      return 0;
     }
     case "delete": {
       if (!target) throw new UsageError("Usage: camelrun agents delete <agent> --yes");

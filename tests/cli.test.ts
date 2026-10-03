@@ -96,6 +96,13 @@ test("the CLI deploys a manifest, runs its agent, and manages agents and definit
   assert.equal(queued.json.status, "running");
   assert.equal((await run("runs", "get", "scratch", queued.json.requestId, "--wait", "30")).json.text, "echo: hi");
 
+  const forked = await run("agents", "fork", "scratch", "--key", "scratch-fork", "--at", "1");
+  assert.equal(forked.code, 0, forked.err);
+  assert.equal(forked.json.forkedFrom.atMessage, 1);
+  assert.equal(forked.json.token, undefined, "the fork's token is not printed");
+  assert.equal((await run("history", "scratch-fork")).json.messages.length, 2);
+  assert.equal((await run("agents", "fork", "scratch", "--key", "scratch-fork")).json.id, forked.json.id, "the same key is the same fork");
+
   const refused = await run("agents", "delete", "scratch");
   assert.equal(refused.code, 1);
   assert.match(refused.err, /--yes/);
@@ -180,6 +187,11 @@ test("the MCP server deploys and runs agents for a coding agent", async t => {
   const missing = await call("get_agent", { agent: "nobody" });
   assert.equal(missing.isError, true);
   assert.match(missing.text, /^404: No agent with key "nobody"/);
+  const forked = await call("fork_agent", { agent: "helper-1", key: "helper-fork" });
+  assert.equal(forked.isError, false, forked.text);
+  assert.equal(forked.json.forkedFrom.atMessage, 3);
+  assert.equal(forked.json.token, undefined, "a tool result never carries the fork's token");
+  assert.equal((await call("agent_history", { agent: "helper-fork" })).json.messages.length, 4);
   assert.equal((await call("delete_agent", { agent: "helper-1" })).json.deleted, true);
 });
 

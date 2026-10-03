@@ -139,6 +139,19 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
     if (!Object.keys(given).length) throw new Error("Nothing to change");
     return ops.configure(api(), agent, given);
   }, destructive);
+  tool("fork_agent", "Fork agent",
+    "Make a new agent from an existing one: the same configuration, a copy of its conversation and a copy of its files, each its own from then on, so the copy can try another direction while the original stays as it was. By default the copy ends with the last turn that finished; atMessage ends it earlier. With a key it lives until deleted, and calling again with the same key returns the same fork.",
+    {
+      agent,
+      key: z.string().regex(/^[A-Za-z0-9_-]{1,80}$/).optional().describe("The fork's own key: 1 to 80 letters, digits, _ and -. Without one it is a scratch agent that lives a day"),
+      name: z.string().optional(),
+      atMessage: z.union([z.number().int().min(0), z.string()]).optional().describe("Where the copied conversation ends: a message's index in agent_history, or a run's requestId (its whole turn)"),
+    },
+    async ({ agent, ...options }) => {
+      const client = api();
+      const { token: _token, ...forked } = await client.call("POST", `/v1/agents/${enc(await client.agentId(agent))}/fork`, Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)));
+      return forked;
+    }, add);
   tool("delete_agent", "Delete agent", "Delete an agent: it stops at once, and its history and files are purged; this cannot be undone, so confirm with the person first. Its key makes a fresh agent next time.", { agent }, async ({ agent }) => {
     const client = api();
     return client.call("DELETE", `/v1/agents/${enc(await client.agentId(agent))}`);

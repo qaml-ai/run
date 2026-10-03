@@ -57,7 +57,7 @@ test("the hosted MCP endpoint runs the CLI's tools as the caller, and reads no f
   }
   const hints = (name: string) => listed.find(tool => tool.name === name)!.annotations!;
   for (const name of ["delete_agent", "delete_definition", "delete_schedule", "deploy", "configure_agent", "abort_agent", "answer_input", "create_agent"]) assert.equal(hints(name).destructiveHint, true, name);
-  for (const name of ["run_agent", "add_schedule"]) assert.equal(hints(name).destructiveHint, false, name);
+  for (const name of ["run_agent", "add_schedule", "fork_agent"]) assert.equal(hints(name).destructiveHint, false, name);
   for (const name of ["list_agents", "get_agent", "agent_history", "get_run", "read_docs", "whoami"]) assert.equal(hints(name).readOnlyHint, true, name);
   assert.deepEqual([hints("run_agent").readOnlyHint, hints("run_agent").openWorldHint], [false, true], "a run can reach the web and the agent's tool servers");
   assert.equal(hints("add_schedule").openWorldHint, true, "each wake-up is a run");
