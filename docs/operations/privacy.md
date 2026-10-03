@@ -12,7 +12,7 @@ or a file chunk in memory at a time:
 - `account.json`: the tenant id, the GitHub login or Google address it signs in with, when it was made
 - `agents/<id>/agent.json`: each live agent's configuration (as `GET /v1/agents/:id` shows it) and schedules
 - `agents/<id>/history/<index>.json`: its whole history, a page of whole turns per file, named by the page's first message index
-- `definitions.json`, `channels.json`, `webhooks.json`, `tokens.json`, `keys.json`, `oauth-grants.json`: as the API lists them,
+- `definitions.json`, `channels.json`, `webhooks.json`, `telemetry.json`, `tokens.json`, `keys.json`, `oauth-grants.json`: as the API lists them,
   so secrets, keys and tokens are left out (keys show their last four characters)
 - `discord.json`: managed server bindings, installation names and states, allowed channels, the Discord IDs of
   the administrators who added Camel, and pending setup expiry times; never OAuth tokens or session/state hashes
@@ -57,7 +57,7 @@ refused (409) while an automatic top-up payment is in flight.
    customer detaches its saved cards and cannot be undone; the charges, invoices and refunds stay in
    Stripe, where accounting needs them. That is simpler and more complete than detaching each card.
 5. The remaining rows go in one transaction: API tokens, OAuth grants and tokens, provider keys, key
-   scopes, custom providers, definitions, webhooks and their deliveries, idempotency answers, billing
+   scopes, custom providers, definitions, webhooks and their deliveries, trace export settings, idempotency answers, billing
    contacts, settings and events, Get Help requests, managed Discord bindings and setup attempts,
    storage and collection rows, and the tenant row. Platform Discord installation metadata remains independently
    of account deletion; it no longer names the deleted tenant or its administrator.
@@ -91,6 +91,21 @@ id), with no starting credit: its GitHub id's decision, or its card's check, is 
 | Other log groups, and the billing-email Worker's | see [infra/terraform/README.md](../../infra/terraform/README.md#log-retention) |
 | Rate limit counters (`rate_limits`: tenant ids, and client addresses as keyed hashes) | until their window (a minute, or a UTC day for sign-ups) ends, then swept within an hour; per-node request counts are in memory only |
 | Ledger, usage, payment and starting-credit records | kept after deletion, as above |
+| Trace export settings (`telemetry_exporters`: endpoint, sealed headers) | until the tenant clears them, or its account is deleted |
+| Spans waiting to be exported | in each node's memory only, seconds; dropped when they cannot be sent |
+
+## Trace export
+
+A tenant that sets `PUT /v1/telemetry` has its agents' runs sent as OpenTelemetry spans to the endpoint it
+chose (`src/telemetry.ts`; [Observability](../guides/observability.md)). By default spans carry ids, names,
+models, token counts, costs, durations and outcomes, with error *classes* rather than messages. Prompts,
+replies, tool arguments and results, input questions, metadata and error messages go only when the tenant
+sets `include.content: true`; `tests/telemetry.test.ts` checks both. The endpoint's headers (its API key)
+are sealed under `AGENT_SECRETS_KEY` like provider keys, are never returned by the API, the export or the
+logs, and are dropped when the endpoint moves to another origin. Exports go through the outbound guard
+(public addresses only). A failed export logs `telemetry_export_failed` with the tenant, a span count and
+`safeError` (class and status), never a span or header. The account export holds `telemetry.json`
+(header names only), and deletion removes the settings.
 
 ## Runbook: a deletion or export request by email
 

@@ -78,6 +78,9 @@ Before you ship an application on the runtime, check each of these.
 - [ ] You register a [webhook](guides/webhooks.md) endpoint for `run.failed` and
       `input.requested` (and `usage.recorded` to meter spend), verify signatures,
       dedupe by event `id`, and answer within 10 seconds.
+- [ ] To trace runs in your own backend, you set [trace export](guides/observability.md)
+      (`PUT /v1/telemetry`), pass `traceparent` from your request's span, send a
+      test span, and decide deliberately whether to include content.
 - [ ] You handle 429 and 503 by waiting `Retry-After` (the SDKs retry them),
       and know the [limits](reference/limits.md) your workload approaches.
 - [ ] Serverless: prefer served tools.

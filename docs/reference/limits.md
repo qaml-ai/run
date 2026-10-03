@@ -193,6 +193,16 @@ reading them and sending them input do not count; only runs do.
 | A webhook delivery | 10 s to answer; retried until delivered, for up to 3 days |
 | A rotated webhook secret | keeps signing beside the new one for 24 hours |
 
+## Trace export
+
+| Limit | Value |
+| --- | --- |
+| Endpoints per tenant | 1 (`PUT /v1/telemetry`), OTLP/HTTP only (protobuf or JSON) |
+| Headers | 16, each value at most 4,096 characters; endpoint at most 2,048 |
+| Spans waiting to be sent | 5,000 per tenant and 20,000 in all, per node; more are dropped |
+| An export request | at most 512 spans; 10 s to answer; 5 attempts, retrying 429, 502, 503, 504 and connection failures |
+| A content attribute (with `include.content`) | 16,384 characters, then cut |
+
 ## Spending
 
 | Limit | Value |

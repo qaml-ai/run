@@ -18,6 +18,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Files](guides/files.md): attachments, what the model sees, files out, volumes, signed links
    - [Agents for many users](guides/multi-user.md): per-user agents, identity, spend
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
+   - [Observability](guides/observability.md): OpenTelemetry traces in LangSmith, Langfuse, Honeycomb, Datadog or any OTLP backend
    - [Models and keys](guides/models-and-keys.md): the catalog, your own keys and endpoints, key scopes, spend limits
    - [Definitions](guides/definitions.md): reusable configurations and rolling out changes
    - [Channels](guides/channels.md): Slack, Telegram, Discord, GitHub, email and any service that sends webhooks

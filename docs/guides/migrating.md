@@ -110,7 +110,7 @@ see [Several processes, workers and deploys](tools.md#several-processes-workers-
 | `CodeInterpreterTool` | `js_exec`, always on: JavaScript in a sandbox that can call the agent's tools. It has no Python |
 | `FileSearchTool` (vector stores) | No equivalent. Agents have files and file tools, not vector search |
 | `MCPServerStreamableHttp` | `mcpServers` in a [definition](definitions.md): the runtime calls the server itself. A local MCP server object can be attached with `fromMcpServer` (TypeScript) |
-| Tracing (`trace()`, the traces dashboard) | The event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](webhooks.md), and `GET /v1/agents/:id/history`. No OpenTelemetry export |
+| Tracing (`trace()`, the traces dashboard) | OpenTelemetry trace export to your own backend (LangSmith, Langfuse, Honeycomb, Datadog, Tempo, any OTLP endpoint): a span per run, model call, tool call and wait, continuing your `traceparent`. See [Observability](observability.md). Also the event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](webhooks.md), and `GET /v1/agents/:id/history` |
 | `max_turns` | `run_limits={"maxResponses": n}` on the agent (at most 1,000 model responses and 2 hours a run by default); a run that reaches it stops with `stopped: "turn_limit"`. `spend_limit={"usd": …}` on a run, or on the agent, bounds what it spends |
 | `ModelSettings` (temperature, top_p) | Not settable. `thinking_level` is |
 
@@ -129,7 +129,7 @@ see [Several processes, workers and deploys](tools.md#several-processes-workers-
 | `Send` (map-reduce) | `asyncio.gather` over runs of several agents |
 | Long-term memory (`Store`) | Files. Mount a shared [volume](files.md#volumes) in several agents |
 | Time travel (`get_state_history`, replay from a checkpoint) | Not supported. A conversation cannot be forked or rewound |
-| LangSmith | No integration; see the tracing row above |
+| LangSmith | Export traces to LangSmith's OTLP endpoint (`PUT /v1/telemetry`, [preset](observability.md#presets)); include content to see messages |
 
 ## Handoffs and multi-agent
 
