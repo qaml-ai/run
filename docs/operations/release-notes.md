@@ -9,6 +9,20 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+## 0.4.0 (runtime-v0.4.0, 2026-10-03)
+
+### Sub-agents
+
+- The `delegate` built-in (`builtins: ["delegate"]`, `delegate: { agents, instructions?, maxDepth?, maxParallel? }`):
+  an agent starts a sub-agent from an allowlisted definition or agent (or inline instructions, if allowed),
+  gives it a task and gets its answer back, structured with an `output` schema if asked. Sub-agents are
+  keyed by the parent's tool call, so a parent resumed on another node collects the answer instead of running
+  the task twice. Depth (default 2), calls in flight per run (default 4), busy-agent slots and spend limits
+  apply; a sub-agent's spend is charged back to its parent (`usage.subagentCostUsd`). Aborting the parent
+  aborts its sub-agents, and a sub-agent's run joins the parent's trace. Opt-in `subagent_*` events on
+  streams; `run.toolCalls[].agentId` names the sub-agent. See [Multi-agent](../guides/multi-agent.md).
+- An abort that reached a run before its model loop began is no longer lost.
+
 ## 0.3.0 (runtime-v0.3.0, 2026-10-03)
 
 ### Forking, OpenTelemetry export, agent credentials

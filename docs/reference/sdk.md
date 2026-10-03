@@ -392,6 +392,16 @@ application keeps serving its tools.
   Python's `create_agent` takes `prompt=`.
 - CLI: `camelrun telemetry get|set|test|clear`, and `run --traceparent`.
 
+## 0.15.0 (TypeScript) / 0.11.0 (Python), 2026-10-03
+
+Needs runtime 0.4.0 or later (run.camelai.com has it).
+
+- Sub-agents: `delegate` settings on `upsert` / definitions (`delegate: { agents, instructions?, maxDepth?,
+  maxParallel? }`, Python `delegate=`) turn on the `delegate` built-in. `subagents: true` on `stream` / `watch`
+  (Python `subagents=True`) relays `subagent_start` / `subagent_event` / `subagent_end`; `run.toolCalls[].agentId`
+  names the sub-agent, and `run.usage.subagentCostUsd` its spend. `@camelai/run-react`'s chat shows a sub-agent's
+  transcript under its delegate call (`watch: { subagents: true }`). CLI manifests take `delegate`.
+
 ## 0.14.0 (TypeScript) / 0.10.0 (Python), 2026-10-03
 
 Needs runtime 0.3.0 or later (run.camelai.com has it).
