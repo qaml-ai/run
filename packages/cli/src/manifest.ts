@@ -70,6 +70,10 @@ export function parseManifest(document: unknown, file: string, where = file, sou
       return { ...rest, spec: /\.json$/i.test(specFile) ? JSON.parse(text) : parseYaml(text) };
     });
   }
+  // delegate and handoff settings bring their builtins, as in the SDKs.
+  for (const name of ["delegate", "handoff"]) {
+    if (definition[name] && !(Array.isArray(definition.builtins) && definition.builtins.includes(name))) definition.builtins = [...Array.isArray(definition.builtins) ? definition.builtins : [], name];
+  }
   if (!Array.isArray(agents)) throw new Error(`${where}: agents is a list of { key, … }`);
   for (const agent of agents) {
     if (!agent || typeof agent !== "object" || typeof agent.key !== "string" || !KEY.test(agent.key)) throw new Error(`${where}: each agent needs a key, 1 to 80 letters, digits, _ and -`);
