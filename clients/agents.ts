@@ -180,6 +180,11 @@ export interface RunOptions {
    * that fits it, as `run.output`; a run that ends without one fails (code output_missing). Not with whileRunning: "steer".
    */
   output?: OutputSchema;
+  /**
+   * A W3C trace context (`00-<trace-id>-<span-id>-<flags>`) to continue: when the tenant exports telemetry
+   * (`agents.runtime.telemetry.set`), the run's spans join this trace under that span. Not part of the run's idempotency.
+   */
+  traceparent?: string;
 }
 
 /** What `agent.stream()` yields. `raw` is the event it came from. */
@@ -471,7 +476,7 @@ function promptOptions(id: string, options: RunOptions) {
     ...messageOptions(options), idempotencyKey: id,
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
-    ...(options.output ? { output: outputRequest(options.output) } : {}),
+    ...(options.output ? { output: outputRequest(options.output) } : {}), ...(options.traceparent ? { traceparent: options.traceparent } : {}),
   };
 }
 
