@@ -236,3 +236,19 @@ test("a handoff recorded during a turn applies before its next model request: pr
   assert.ok(marked > view.findIndex(message => message.role === "toolResult"), "after the handoff call's result");
   assert.match(JSON.stringify(view[marked]), /You are BILLING/);
 });
+
+test("an abort that reaches a run before its model loop starts ends it, rather than finding nothing to stop", async t => {
+  const fake = await setup(t);
+  let asked = 0;
+  fake.respond(() => { asked++; return answer("Too late."); });
+  const { host } = await fake.start();
+  // The abort arrives while the prompt is still being set up (its first await), before Pi's loop exists.
+  const run = host.handle("prompt", { text: "go" });
+  await host.handle("abort", {});
+  const result = await run;
+  assert.equal(result.error, "The run was aborted");
+  assert.equal(asked, 0, "the model was never asked");
+  assert.equal((await fake.history()).active, false);
+  fake.respond(answer("Next."));
+  assert.equal((await host.handle("prompt", { text: "again" })).reply, "Next.");
+});

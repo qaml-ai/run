@@ -847,12 +847,14 @@ export function createAgentHost(hostIO: HostIO) {
           return { messages: transcript.total, error: null, ...(transcript.awaiting.length ? { stopped: "input_required" } : {}) };
         }
         agent.state.messages = stateMessages();
+        if (active.signal.aborted) return await abortedBeforeLoop();
         await agent.continue();
       } else if (method === "continue") {
         if (rerun.length) {
           await rerunOpenCalls(active.signal);
           agent.state.messages = stateMessages();
         }
+        if (active.signal.aborted) return await abortedBeforeLoop();
         await agent.continue();
       }
       else {
@@ -861,6 +863,7 @@ export function createAgentHost(hostIO: HostIO) {
           await settle(transcript.awaiting.map(toolCallId => ({ toolCallId, result: { content: [{ type: "text", text: "Not answered: the user sent a new message instead (next)." }], isError: true } })), active.signal);
           agent.state.messages = stateMessages();
         }
+        if (active.signal.aborted) return await abortedBeforeLoop();
         await agent.prompt(promptMessages!);
       }
       await recoverFailedResponses(active.signal);
@@ -902,6 +905,15 @@ export function createAgentHost(hostIO: HostIO) {
         compactInBackground();
       }
     }
+  }
+
+  /**
+   * An abort that came after the run began but before Pi's loop did: Pi's own abort found no loop to stop, so the run ends
+   * here, checked in the same tick as each loop starts.
+   */
+  async function abortedBeforeLoop() {
+    await transcript.setActive(false);
+    return { messages: transcript.total, error: "The run was aborted" };
   }
 
   type Settled = { content: unknown[]; isError?: boolean; details?: unknown };
