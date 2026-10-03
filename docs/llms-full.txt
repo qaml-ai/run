@@ -3637,6 +3637,22 @@ application keeps serving its tools.
   Python's `create_agent` takes `prompt=`.
 - CLI: `camelrun telemetry get|set|test|clear`, and `run --traceparent`.
 
+## 0.14.0 (TypeScript) / 0.10.0 (Python), 2026-10-03
+
+Needs runtime 0.3.0 or later (run.camelai.com has it).
+
+- Forking: `agent.fork({ key?, name?, atMessage? })` (Python `fork(...)`), `agents.fork(...)` and
+  `runtime.forkAgent(...)` (`fork_agent`) copy an agent's configuration, committed history and workspace
+  into a new agent; the result carries `forkedFrom` (`forked_from`). CLI `camelrun agents fork`.
+- `agents.get(keyOrId, { tools, ... })` returns an existing agent's handle without changing its configuration
+  (`runtime.agentCredentials()` / `agent_credentials()`).
+- OpenTelemetry: `runtime.telemetry.get / set / clear / test` configures trace export, and a `traceparent`
+  option on `run`, `stream`, `prompt`, `request` and create continues your trace. CLI `camelrun telemetry`
+  (header values from `@env:VAR` or `@stdin`) and `run --traceparent`.
+- Stream `tool_call` / `tool_result` parts also carry `tool` and `toolCallId` (`tool_call_id`), the names
+  `run.toolCalls` uses; `name` and `id` stay.
+- `RunError.status` is documented as 0 for run failures: branch on `code`.
+
 ## 0.13.0 (TypeScript) / 0.9.0 (Python), 2026-10-03
 
 - Run limits: an agent or definition may set `runLimits: { maxResponses, maxSeconds }`

@@ -9,6 +9,24 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+## 0.3.0 (runtime-v0.3.0, 2026-10-03)
+
+### Forking, OpenTelemetry export, agent credentials
+
+- `POST /v1/agents/{id}/fork`: a new agent with the source's configuration, its committed history up to a
+  turn boundary (`atMessage`), and a fork of its workspace volume. Files the copied history refers to stay
+  pinned for the fork. See [Concepts](../concepts.md).
+- OpenTelemetry trace export per tenant (`/v1/telemetry`): run, model, tool, compaction and human-input spans
+  over OTLP/HTTP (protobuf or JSON), GenAI attributes, content off unless `include.content`. Inbound W3C
+  `traceparent` continues a caller's trace. A self-hosted runtime sending to a private collector needs it in
+  `AGENT_OUTBOUND_ALLOW_ORIGINS`. See [Observability](../guides/observability.md).
+- `GET /v1/agents/{keyOrId}/credentials`, behind the SDKs' `agents.get()`.
+- `GET /v1/models?available=true` sends an `X-Camelrun-Hint` header when it is empty, and a self-hosted
+  runtime's `model_key_missing` names `AGENT_TENANT_API_KEYS`.
+- Account exports read each agent's history from the node that serves it and fail rather than leave one out;
+  agents a crashed node held read their whole history.
+- Migrations 045-048 run on start (busy agents, tenant limits, dropping a retired Discord table, rate limits).
+
 ## 0.2.0 (runtime-v0.2.0, 2026-10-03)
 
 ### Agents without a model key, and runs that say why they failed
