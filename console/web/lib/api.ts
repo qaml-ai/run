@@ -87,6 +87,8 @@ export interface ToolSource {
 export interface AgentDetail extends AgentSummary {
   definition?: { id: string; revision: number };
   tools: { name: string; description: string }[]; toolSources: ToolSource[]; systemPrompt: string; requests: RequestRecord[]; mounts?: Mount[];
+  /** For a fork: the agent it was forked from, and the index of that agent's last message it began with. */
+  forkedFrom?: { agentId: string; atMessage: number | null };
 }
 export interface ApiToken { id: string; name: string; prefix: string; createdAt: number }
 export interface OAuthGrant { id: string; clientName: string; login: string | null; scope: string; createdAt: number; usedAt: number | null }

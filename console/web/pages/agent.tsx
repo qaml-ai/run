@@ -1,8 +1,11 @@
 import { useRef, useState, type FormEvent } from "react";
-import { ArrowLeft, Braces, Loader2, Paperclip, RefreshCw, Send, Square, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, Braces, GitFork, Loader2, Paperclip, RefreshCw, Send, Square, Trash2, Wrench, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -35,7 +38,7 @@ function RefCard({ mounts, file, caption }: { mounts?: Mount[]; file: Pick<FileR
 const files = (content: Message["content"]) => parts(content).filter(part => part.type === "file") as unknown as FileRef[];
 const json = (value: string) => { try { return JSON.parse(value); } catch { return undefined; } };
 
-function Conversation({ messages, mounts }: { messages: Message[]; mounts?: Mount[] }) {
+function Conversation({ messages, mounts, onFork }: { messages: Message[]; mounts?: Mount[]; onFork?: (index: number) => void }) {
   if (!messages.length) return <EmptyState icon={<Send />} title="No messages yet">Prompts sent by your app, or from the “Try it” tab, appear here.</EmptyState>;
   // present_file's result names the file's type and size; its call has the caption.
   const presented = new Map(messages.filter(message => message.role === "toolResult" && message.toolName === "present_file" && !message.isError)
@@ -72,6 +75,9 @@ function Conversation({ messages, mounts }: { messages: Message[]; mounts?: Moun
                 </div>
               ) : null)}
             {message.stopReason === "error" && <ErrorAlert error={message.errorMessage ?? "The model call failed"} title="Model error" />}
+            {onFork && message.stopReason !== "error" && text(message.content) && (
+              <Button variant="ghost" size="xs" className="text-muted-foreground self-start" onClick={() => onFork(index)}><GitFork />Fork from here</Button>
+            )}
           </div>
         );
       })}
@@ -276,10 +282,50 @@ function Files({ mounts = [] }: { mounts?: Mount[] }) {
   );
 }
 
+/**
+ * Fork the agent: a new agent with its configuration, a copy of its conversation (through `atMessage`, else the last
+ * finished turn) and of its files. The key is made once per dialog, so sending again returns the same fork.
+ */
+export function ForkDialog({ agent, atMessage, onClose }: { agent: AgentDetail; atMessage?: number; onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [key] = useState(() => `fork-${crypto.randomUUID()}`);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(undefined);
+    try {
+      const forked = await api<{ id: string }>(`/v1/agents/${agent.id}/fork`, { body: { key, ...(name.trim() ? { name: name.trim() } : {}), ...(atMessage !== undefined ? { atMessage } : {}) } });
+      onClose();
+      navigate(`agents/${forked.id}`);
+    } catch (caught) { setError((caught as Error).message); }
+    finally { setBusy(false); }
+  }
+  return (
+    <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
+      <DialogContent>
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          <DialogHeader>
+            <DialogTitle>Fork {agent.name}</DialogTitle>
+            <DialogDescription>
+              A new agent with the same configuration, a copy of its files, and its conversation {atMessage !== undefined ? `through message ${atMessage}` : "through its last finished turn"}. From then on each goes its own way.
+            </DialogDescription>
+          </DialogHeader>
+          <ErrorAlert error={error} />
+          <div className="flex flex-col gap-2"><Label htmlFor="fork-name">Name (optional)</Label><Input id="fork-name" placeholder={`${agent.name} (fork)`} value={name} onChange={event => setName(event.target.value)} autoFocus /></div>
+          <DialogFooter><Button type="submit" disabled={busy}>{busy ? <Loader2 className="animate-spin" /> : <GitFork />}Fork</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function AgentPage({ id }: { id: string }) {
   const agent = useApi<AgentDetail>(`/v1/agents/${id}`, 5_000);
   const history = useApi<{ messages: Message[] }>(`/v1/agents/${id}/history`, agent.data?.running ? 3_000 : undefined);
   const [error, setError] = useState<string>();
+  /** The fork dialog, open: from the last finished turn, or from a message. */
+  const [forking, setForking] = useState<{ atMessage?: number }>();
   if (agent.error?.status === 404) return <StatusPanel code="404" label="Not found" detail="This agent does not exist or belongs to another tenant."
     action={<Button variant="outline" asChild><Link to="agents"><ArrowLeft />Agents</Link></Button>} />;
   if (!agent.data) return <><ErrorAlert error={agent.error} /><Skeleton className="h-64 w-full" /></>;
@@ -289,8 +335,9 @@ export function AgentPage({ id }: { id: string }) {
       <Link to="agents" className="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"><ArrowLeft className="size-4" />Agents</Link>
       <PageHeader
         title={data.name}
-        description={<span className="inline-flex flex-wrap items-center gap-2"><AgentStatus agent={data} /><span className="font-mono text-xs">{data.model}</span><span>· {data.type}</span>{data.definition && <Link to="definitions" className="underline">· definition revision {data.definition.revision}</Link>}</span>}
+        description={<span className="inline-flex flex-wrap items-center gap-2"><AgentStatus agent={data} /><span className="font-mono text-xs">{data.model}</span><span>· {data.type}</span>{data.definition && <Link to="definitions" className="underline">· definition revision {data.definition.revision}</Link>}{data.forkedFrom && <Link to={`agents/${data.forkedFrom.agentId}`} className="underline">· forked from {data.forkedFrom.agentId}{data.forkedFrom.atMessage !== null ? ` at message ${data.forkedFrom.atMessage}` : ""}</Link>}</span>}
         actions={<>
+          <Button variant="outline" size="sm" onClick={() => setForking({})}><GitFork />Fork</Button>
           <ConfirmButton label="Abort" icon={<Square />} title="Abort the running turn?" description="The current model turn stops. Tool calls already started in your application may still complete." confirm="Abort"
             onConfirm={async () => { try { await api(`/v1/agents/${id}/abort`, { body: {} }); await agent.reload(); } catch (caught) { setError((caught as Error).message); } }} />
           <ConfirmButton label="Delete" icon={<Trash2 />} variant="destructive" title={`Delete ${data.name}?`} description="Its session token stops working and it disappears from your tenant. This cannot be undone." confirm="Delete agent"
@@ -298,6 +345,7 @@ export function AgentPage({ id }: { id: string }) {
         </>}
       />
       <ErrorAlert error={error} />
+      {forking && <ForkDialog agent={data} atMessage={forking.atMessage} onClose={() => setForking(undefined)} />}
       <Tabs defaultValue="conversation">
         <TabsList>
           <TabsTrigger value="conversation">Conversation</TabsTrigger>
@@ -306,7 +354,7 @@ export function AgentPage({ id }: { id: string }) {
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="config">Configuration</TabsTrigger>
         </TabsList>
-        <TabsContent value="conversation" className="pt-4"><ErrorAlert error={history.error} />{history.data ? <Conversation messages={history.data.messages} mounts={data.mounts} /> : <Skeleton className="h-40 w-full" />}</TabsContent>
+        <TabsContent value="conversation" className="pt-4"><ErrorAlert error={history.error} />{history.data ? <Conversation messages={history.data.messages} mounts={data.mounts} onFork={atMessage => setForking({ atMessage })} /> : <Skeleton className="h-40 w-full" />}</TabsContent>
         <TabsContent value="requests" className="pt-4"><Requests requests={data.requests} mounts={data.mounts} /></TabsContent>
         <TabsContent value="try" className="pt-4"><TryIt agentId={id} onDone={() => { void history.reload(); void agent.reload(); }} /></TabsContent>
         <TabsContent value="files" className="pt-4"><Files mounts={data.mounts} /></TabsContent>
