@@ -23,6 +23,12 @@ Any token of the tenant can export (not a browser token). Entries are deflated a
 ZIP64 only when it needs it (over 65,535 files or 4 GiB). A platform operator exports any tenant with
 `GET /v1/tenants/{id}/export`.
 
+An export is whole or it fails. Each agent's history is read from the node that serves it (only that
+node holds its newest turns), and an agent's pages must add up to its message count. A history that
+cannot be read (its node unreachable, a chunk missing) ends the export with the zip cut off before its
+central directory, so no zip reader takes it as complete; the node logs `account_export_failed`. Retry
+the export.
+
 ## Deletion
 
 A signed-in person deletes their account from the console (**Account → Delete account**, typing

@@ -2,6 +2,7 @@ import type { Accounts } from "./accounts.ts";
 import type { ClientSessions } from "./client-sessions.ts";
 import type { Channels } from "./channels.ts";
 import type { Definitions } from "./definitions.ts";
+import type { HistoryPage } from "./history-pages.ts";
 import { HttpError } from "./http.ts";
 import type { OAuth } from "./oauth.ts";
 import type { VolumeService } from "./volumes.ts";
@@ -22,6 +23,11 @@ export interface ExportOptions {
   channels?: Channels;
   webhooks?: Webhooks;
   oauth?: OAuth;
+  /**
+   * A page of an agent's history from the node that serves it (another node's agent has turns only it holds yet);
+   * by default this node's view, which is whole only when no other node serves the agent.
+   */
+  historyPage?: (id: string, tenant: string, query: { before?: string; limit?: string }) => Promise<HistoryPage>;
 }
 
 const README = `This archive holds everything camelRun stores for your account, as of the time it was made.
@@ -46,6 +52,7 @@ const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
 export async function* exportAccount(options: ExportOptions, tenant: string): AsyncGenerator<Uint8Array> {
   const { accounts, clients } = options;
+  const historyPage = options.historyPage ?? ((id: string, tenant: string, query: { before?: string; limit?: string }) => clients.historyPageFor(id, tenant, query));
   const zip = new ZipWriter();
   const created = (await accounts.db.query("select created_at from tenants where id = $1", [tenant])).rows[0]?.created_at;
   yield* zip.file("README.txt", README);
@@ -59,17 +66,22 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
       const schedules = (await accounts.db.query("select id, text, code, due_at, every_seconds, created_at from schedules where agent = $1 order by created_at, id", [id])).rows
         .map(row => ({ id: row.id, ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}), dueAt: Number(row.due_at), everySeconds: row.every_seconds, createdAt: Number(row.created_at) }));
       yield* zip.file(`agents/${id}/agent.json`, json({ ...agentView(header), schedules }));
+      // Every message from the newest back to the first, or the export fails: a history cut short is never exported as whole.
+      let total: number | undefined, read = 0, deleted = false;
       for (let before: string | undefined; ;) {
-        const page = await clients.historyPageFor(id, tenant, { limit: "500", ...(before !== undefined ? { before } : {}) }).catch(error => {
+        const page = await historyPage(id, tenant, { limit: "500", ...(before !== undefined ? { before } : {}) }).catch(error => {
           // Deleted while the export ran: it has no history left to give.
           if ((error as HttpError).status === 404) return undefined;
           throw error;
         });
-        if (!page) break;
+        if (!page) { deleted = true; break; }
+        total ??= page.total;
+        read += page.entries.length;
         if (page.entries.length) yield* zip.file(`agents/${id}/history/${String(page.entries[0].index).padStart(9, "0")}.json`, json(page.entries));
         if (page.next === null) break;
         before = String(page.next);
       }
+      if (!deleted && read !== total) throw new Error(`Agent ${id}'s history read ${read} of its ${total} messages; the export is incomplete`);
     }
     if (rows.length < 100) break;
     after = rows.at(-1)!.id;
