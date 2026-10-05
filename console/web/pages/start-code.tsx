@@ -215,7 +215,7 @@ export function CodePath({ onboarding, billing }: { onboarding: ReturnType<typeo
   const [key, setKey] = useState<string>();
   const url = location.origin;
   const code = snippets(url, key);
-  const [agentStep, runStep] = [onboarding.code[1], onboarding.code[2]];
+  const [agentStep, runStep, keyStep] = onboarding.code;
   // Step 3 is done once an agent of the user's own code (not the playground's) exists.
   const ownAgent = !!onboarding.agents.data?.some(agent => agent.key !== PLAYGROUND_KEY);
   const reload = () => { void onboarding.agents.reload(); void onboarding.usage.reload(); };
@@ -226,7 +226,7 @@ export function CodePath({ onboarding, billing }: { onboarding: ReturnType<typeo
         description={<>No code: this makes an agent called Playground on your account's default model and runs your prompt. It has no tools, and it bills like any run.{billing?.billing === "none" && <> Runs use your <Link className="underline underline-offset-4" to="models">model keys</Link>.</>}</>}>
         <Playground agents={onboarding.agents.data} onRan={reload} />
       </StepCard>
-      <StepCard n={2} title="Create an API key" done={!!key || onboarding.code[0].done}
+      <StepCard n={2} title="Create an API key" done={!!key || keyStep.done}
         description={<>Your application uses it to create and run agents. <LearnMore page="authentication" /></>}>
         <CreateKey count={onboarding.tokens.data?.length ?? 0} created={key} onCreated={token => { setKey(token); void onboarding.tokens.reload(); }} />
       </StepCard>

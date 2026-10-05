@@ -45,7 +45,8 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe("checklists", () => {
   it("tick the code path off from tokens, agents and usage", () => {
     expect(codeSteps({}).map(step => step.done)).toEqual([false, false, false]);
-    expect(codeSteps({ tokens: [token], agents: [], usage: usage(0) }).map(step => step.done)).toEqual([true, false, false]);
+    expect(codeSteps({ tokens: [token], agents: [], usage: usage(0) }).map(step => step.done)).toEqual([false, false, true]);
+    expect(codeSteps({ agents: [agent()], usage: usage(1) }).map(step => step.label)).toEqual(["Create your first agent", "Complete a run", "Create an API key"]);
     expect(codeSteps({ tokens: [token], agents: [agent()], usage: usage(2) }).map(step => step.done)).toEqual([true, true, true]);
   });
 

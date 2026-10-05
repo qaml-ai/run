@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PixelButton } from "@/components/ui/pixel-button";
 import { ErrorAlert, LearnMore } from "@/components/common";
@@ -30,7 +31,7 @@ Open at the Sunken Observatory, a lighthouse beneath a lake that has lit up for 
 Keep replies under 180 words and 1,900 characters, in short paragraphs, with at most one emoji. Be playful and welcoming; keep danger cinematic, not graphic. Tie each character to the member who plays them. Never choose a player's action. Track health (start at 10), inventory (one item tied to their talent) and discoveries; never silently restore or invent them. When chance matters, ask the player to roll a d20 and report it. Answer "join", "recap", "inventory" and "status" as plain messages. End each action reply with a decision or question. Players must mention you on every turn.`,
   },
   {
-    id: "blank", name: "Start blank", blurb: "A plain helpful assistant: write its personality yourself in step 5.", builtins: [],
+    id: "blank", name: "Start blank", blurb: "A plain helpful assistant: write its personality yourself, below.", builtins: [],
     prompt: "You are Camel, a helpful assistant in this Discord server. Keep replies short: always under 1,900 characters. Members must mention you on every turn.",
   },
 ] as const;
@@ -121,13 +122,16 @@ export function DiscordPath({ onboarding, config }: { onboarding: ReturnType<typ
           </div>
         </div>}
       </StepCard>
-      <StepCard n={5} title="Tune its personality and tools" done={false}
-        description="Its prompt, model and tools are a definition: edit it and every conversation in the server takes the change between turns.">
-        <div className="flex flex-wrap gap-2">
+      <Card>
+        <CardHeader>
+          <CardTitle>Then: tune its personality and tools</CardTitle>
+          <CardDescription>Its prompt, model and tools are a definition: edit it and every conversation in the server takes the change between turns.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-2">
           <Button variant="outline" disabled={!starter} onClick={() => setEditing(starter)}>Edit personality and tools</Button>
-          <Button variant="outline" asChild><Link to="channels">Server settings</Link></Button>
-        </div>
-      </StepCard>
+          {ready && <Button variant="outline" asChild><Link to="channels">Server settings</Link></Button>}
+        </CardContent>
+      </Card>
       <NextSteps>
         <li><LearnMore page="channels">Your own Discord bot</LearnMore>: your bot's name and avatar, under Channels</li>
         <li><LearnMore page="limits">Limits</LearnMore>: servers, turns and rates</li>
