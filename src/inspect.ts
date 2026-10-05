@@ -18,8 +18,11 @@ import type { FileEntry, VolumeService } from "./volumes.ts";
  * image is decoded only to scale it down for a model request (`fitImage`).
  */
 export type Inspection = { media: Media; text?: string; truncated?: boolean };
-/** An image as a model request carries it: the bytes given, or scaled down; or why it cannot be shown. */
-export type Fitted = { data: Buffer; mimeType: string; width: number; height: number } | { omitted: string };
+/**
+ * An image as a model request carries it: the bytes given, or scaled down; or why it cannot be shown,
+ * `transient` when another try may do (a deadline, memory ceiling or crash, which load can cause).
+ */
+export type Fitted = { data: Buffer; mimeType: string; width: number; height: number } | { omitted: string; transient?: true };
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const none = (reason: string): Inspection => ({ media: { kind: "none", reason } });
@@ -34,7 +37,8 @@ export function inspectHere(bytes: Uint8Array, text: boolean, fit = false): Prom
     resourceLimits: { maxOldGenerationSizeMb: FILE_LIMITS.inspectHeapMb, maxYoungGenerationSizeMb: 32 },
   });
   const done = Promise.withResolvers<unknown>();
-  const stop = (reason: string) => { done.resolve(none(`could not be read (${reason})`)); void worker.terminate(); };
+  // Stopped from outside, not by what the file holds: the caller may try again (`fitImage`).
+  const stop = (reason: string) => { done.resolve({ ...none(`could not be read (${reason})`), transient: true }); void worker.terminate(); };
   const baseline = process.memoryUsage.rss();
   const watchdog = setInterval(() => { if (process.memoryUsage.rss() - baseline > FILE_LIMITS.inspectMemoryBytes) stop("it needs too much memory"); }, 20);
   const timer = setTimeout(() => stop("it took too long"), FILE_LIMITS.inspectMs);
@@ -84,13 +88,13 @@ export async function fitImage(bytes: Buffer): Promise<Fitted> {
   const processes = sandboxProcesses();
   let answer: any;
   try { answer = await (processes ? processes.pick().inspect(bytes, false, true) : inspectHere(bytes, false, true)); }
-  catch (error) { return { omitted: `${size}, could not be resized (${errorText(error)})` }; }
+  catch (error) { return { omitted: `${size}, could not be resized (${errorText(error)})`, transient: true }; }
   // As untrusted as any answer: the bytes must be an image a model takes, as large as they say and within the caps.
   const data = answer?.data instanceof Uint8Array ? Buffer.from(answer.data.buffer, answer.data.byteOffset, answer.data.byteLength) : undefined;
   const scaled = data && imageHeader(data);
   if (!data || !scaled || !["image/png", "image/jpeg"].includes(scaled.mimeType) || !fits(scaled.width, scaled.height, data.length) || scaled.mimeType !== answer.media?.mimeType) {
     const reason = typeof answer?.media?.reason === "string" ? answer.media.reason.slice(0, 200) : undefined;
-    return { omitted: `${size}, could not be resized${reason ? ` (${reason})` : ""}` };
+    return { omitted: `${size}, could not be resized${reason ? ` (${reason})` : ""}`, ...(answer?.transient === true ? { transient: true as const } : {}) };
   }
   return { data, ...scaled };
 }

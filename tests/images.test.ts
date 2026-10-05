@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { connect, createServer } from "node:net";
+import { fileURLToPath } from "node:url";
+import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
 import sharp from "sharp";
 import { FILE_LIMITS } from "../src/limits.ts";
@@ -179,4 +184,47 @@ test("inline images enter the transcript scaled down: a user message's, and an M
   assert.deepEqual([result.mimeType, ...sides(Buffer.from(result.data, "base64"))], ["image/png", 1568, 882]);
   // And the model got them as stored.
   assert.ok(JSON.stringify(sent.at(-1)).includes(result.data));
+});
+
+test("an image whose scaling failed for now (its sandbox process crashed) is tried again on the next request, not held as omitted", async t => {
+  // A real sandbox process behind a proxy that drops the first request to scale an image, as a crash would.
+  const directory = await mkdtemp(join(tmpdir(), "sbx-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const real = join(directory, "real.sock"), proxied = join(directory, "proxy.sock");
+  const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/sandbox-server.ts", import.meta.url)), `--socket=${real}`, "--workers-min=1", "--workers-max=2"], { stdio: ["ignore", "inherit", "inherit"] });
+  t.after(() => { child.kill("SIGKILL"); });
+  let dropped = 0;
+  const proxy = createServer(client => {
+    client.on("error", () => {});
+    let head = Buffer.alloc(0);
+    const first = (chunk: Buffer) => {
+      head = Buffer.concat([head, chunk]);
+      if (head.length < 4 || head.length < 4 + head.readUInt32BE(0)) return;
+      client.off("data", first);
+      if (head.subarray(4, 4 + head.readUInt32BE(0)).toString().includes('"fit":true') && !dropped++) return void client.destroy();
+      const upstream = connect(real);
+      upstream.on("error", () => client.destroy());
+      client.on("close", () => upstream.destroy());
+      upstream.write(head);
+      client.pipe(upstream).pipe(client);
+    };
+    client.on("data", first);
+  });
+  proxy.listen(proxied);
+  await once(proxy, "listening");
+  t.after(() => new Promise(resolve => proxy.close(resolve)));
+  for (let i = 0; i < 200 && !(await new Promise(resolve => { const probe = connect(real); probe.once("connect", () => { probe.destroy(); resolve(true); }); probe.once("error", () => resolve(false)); })); i++) await sleep(25);
+
+  const server = await runtime(t, () => ({ role: "assistant", content: "seen" }), { AGENT_SANDBOX_SOCKETS: proxied });
+  const agent = (await server.call("/v1/agents", { body: { name: "retry" } })).json.id;
+  const uploaded = await (await fetch(`${server.base}/v1/agents/${agent}/uploads/turn-1/shot.png`, { method: "PUT", body: await picture(2400, 1800), headers: { Authorization: `Bearer ${OPERATOR}` } })).json();
+  const sent = await server.call(`/v1/agents/${agent}/prompt`, { body: { text: "Look", requestId: "turn-1", files: [{ path: uploaded.path }] } });
+  assert.equal(sent.status, 202, sent.text);
+  await until(async () => (await server.call(`/v1/agents/${agent}/requests/turn-1`)).json.state === "completed", "the turn");
+  const shown = () => server.model.bodies.at(-1).messages.flatMap((message: any) => Array.isArray(message.content) ? message.content : []);
+  assert.equal(dropped, 1);
+  assert.ok(shown().some((part: any) => /image omitted: 2400×1800 px, could not be resized/.test(part.text ?? "")), "the first request names it instead");
+  await server.prompt(agent, "Again");
+  const images = shown().filter((part: any) => part.type === "image_url").map((part: any) => sides(Buffer.from(part.image_url.url.split(",")[1], "base64")));
+  assert.deepEqual(images, [[1568, 1176]], "the next request scales it");
 });

@@ -33,7 +33,7 @@ const FIT_CONCURRENCY = 2;
 /** A file as requests carry it: its bytes (base64; an image's type if it was scaled down), or why an image is omitted. */
 type Hydrated = { data: string; mimeType?: string } | { omitted: string };
 const hydratedSize = (value: Hydrated) => "data" in value ? value.data.length : value.omitted.length;
-const hydratedImage = (fitted: Fitted): Hydrated => "omitted" in fitted ? fitted : { data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
+const hydratedImage = (fitted: Fitted): Hydrated => "omitted" in fitted ? { omitted: fitted.omitted } : { data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
 
 /** How a host talks to its supervisor: over IPC in its own process, or directly when inline. */
 export interface HostIO {
@@ -488,7 +488,10 @@ export function createAgentHost(hostIO: HostIO) {
     else {
       const read = await io.file(ref);
       const media = ref.media;
-      data = media?.kind === "image" && !fits(media.width, media.height, ref.size) ? hydratedImage(await scaled(Buffer.from(read, "base64"))) : { data: read };
+      const fitted = media?.kind === "image" && !fits(media.width, media.height, ref.size) ? await scaled(Buffer.from(read, "base64")) : undefined;
+      // Kept only when the next request would get the same: one that failed for now tries again then.
+      if (fitted && "omitted" in fitted && fitted.transient) return fitted;
+      data = fitted ? hydratedImage(fitted) : { data: read };
       hydratedBytes += hydratedSize(data);
       for (const [old, value] of hydrated) {
         if (hydratedBytes <= FILE_LIMITS.hydratedBytes) break;
@@ -511,22 +514,24 @@ export function createAgentHost(hostIO: HostIO) {
   /**
    * An image block as a request may carry it: as it is when its header is within `fits`, else scaled down,
    * or a placeholder in its place when it cannot be. The transcript is not changed: it heals in the request.
+   * Written to the transcript (`writing`), an image that failed only for now stays as it is, for requests to try again.
    */
-  async function fittedBlock(block: { type: "image"; data: string; mimeType: string }): Promise<{ type: "image"; data: string; mimeType: string } | { type: "text"; text: string }> {
+  async function fittedBlock(block: { type: "image"; data: string; mimeType: string }, writing: boolean): Promise<{ type: "image"; data: string; mimeType: string } | { type: "text"; text: string }> {
     if (block.mimeType === "application/pdf") return block;
     // The header is near the start: a JPEG's may follow its metadata, so the whole image is decoded only when the start lacks it.
     const header = imageHeader(Buffer.from(block.data.slice(0, 64 * 1024), "base64")) ?? (block.data.length > 64 * 1024 ? imageHeader(Buffer.from(block.data, "base64")) : undefined);
     if (header && fits(header.width, header.height, Math.floor(block.data.length * 3 / 4))) return block;
     const fitted = await scaled(Buffer.from(block.data, "base64"));
+    if (writing && "omitted" in fitted && fitted.transient) return block;
     return "omitted" in fitted ? { type: "text", text: `[image omitted: ${fitted.omitted}]` } : { type: "image", data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
   }
 
   /** Messages with their image blocks as a request may carry them (`fittedBlock`); the same messages when none needs it. */
-  async function fittedImages<T extends object>(messages: T[]): Promise<T[]> {
+  async function fittedImages<T extends object>(messages: T[], writing = true): Promise<T[]> {
     return Promise.all(messages.map(async message => {
       const content = (message as { content?: unknown }).content;
       if (!Array.isArray(content) || !content.some(block => block?.type === "image")) return message;
-      const fitted = await Promise.all(content.map(block => block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? fittedBlock(block) : block));
+      const fitted = await Promise.all(content.map(block => block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? fittedBlock(block, writing) : block));
       return fitted.every((block, index) => block === content[index]) ? message : { ...message, content: fitted };
     }));
   }
@@ -552,7 +557,7 @@ export function createAgentHost(hostIO: HostIO) {
         bytes += ref.size;
       }
     }
-    return Promise.all((await fittedImages(messages)).map(async message => {
+    return Promise.all((await fittedImages(messages, false)).map(async message => {
       if (!Array.isArray(message.content) || !message.content.some(block => (block.type as string) === "file")) return message;
       const content: unknown[] = [];
       for (const block of message.content as unknown as (FileRef | { type: string })[]) {
