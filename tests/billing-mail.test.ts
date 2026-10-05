@@ -176,6 +176,10 @@ test("only signed, configured and correlated SES feedback suppresses a billing r
   assert.equal((await send({...message(event),Signature:"bad"})).status,401);
   assert.equal((await send(message({...event,bounce:{...event.bounce,bounceType:"Transient"}}))).status,200);
   assert.equal((await alerts.get("alice")).recipients[0].status,"pending");
+  // Account mail and Get Help share the configuration set and topic: their events never suppress a billing contact.
+  const accountMail = { ...event, mail: { source: `camelRun <accounts@mail.example.test>`, destination: [recipient.email], tags: { product: ["camelrun-account"] } } };
+  assert.equal((await send(message(accountMail))).status,200);
+  assert.equal((await alerts.get("alice")).recipients[0].status,"pending");
   assert.equal((await send(message(event))).status,200);
   assert.equal((await alerts.get("alice")).recipients[0].status,"bounced");
   assert.deepEqual(await alerts.inspectConfirmation(delivery.token!),{status:"unavailable"});

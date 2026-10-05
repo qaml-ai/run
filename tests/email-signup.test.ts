@@ -13,7 +13,7 @@ const BROWSER = { "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin
 const PASSWORD = "a long and unusual passphrase";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
-type Mail = { to: string; from: string; subject: string; text: string; html: string; tags: Record<string, string>; link?: { page: string; token: string } };
+type Mail = { to: string; from: string; subject: string; text: string; html: string; tags: Record<string, string>; configurationSet?: string; link?: { page: string; token: string } };
 
 /** An SES v2 SendEmail endpoint that keeps each message. */
 async function fakeSes(t: T) {
@@ -27,6 +27,7 @@ async function fakeSes(t: T) {
     const plain = simple.Body.Text.Data as string;
     const found = /https:\/\/agents\.example\.test\/console\/(verify|reset)#([A-Za-z0-9_-]{43})/.exec(plain);
     mails.push({ to: body.Destination.ToAddresses.join(","), from: body.FromEmailAddress, subject: simple.Subject.Data, text: plain, html: simple.Body.Html.Data,
+      configurationSet: body.ConfigurationSetName,
       tags: Object.fromEntries((body.EmailTags ?? []).map((tag: { Name: string; Value: string }) => [tag.Name, tag.Value])),
       ...(found ? { link: { page: found[1], token: found[2] } } : {}) });
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ MessageId: `m-${mails.length}` }));
@@ -37,7 +38,7 @@ async function fakeSes(t: T) {
 async function emailRuntime(t: T, env: Record<string, string> = {}) {
   const ses = await fakeSes(t);
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), {
-    AGENT_ACCOUNT_EMAIL_FROM: "accounts@mail.example.test", AGENT_OPEN_SIGNUP: "true",
+    AGENT_ACCOUNT_EMAIL_FROM: "accounts@mail.example.test", AGENT_ACCOUNT_EMAIL_CONFIGURATION_SET: "camelai-agent-runtime-mail", AGENT_OPEN_SIGNUP: "true",
     AWS_ENDPOINT_URL_SESV2: ses.url, AWS_REGION: "us-west-2", AWS_ACCESS_KEY_ID: "fixture-access-key", AWS_SECRET_ACCESS_KEY: "fixture-secret-key", ...env,
   });
   /** A browser's request: JSON in, the body and the session cookie it set out. */
@@ -72,6 +73,7 @@ test("email sign-up: a link to finish it with the chosen password makes the tena
   assert.match(mail.from, /<accounts@mail\.example\.test>$/);
   assert.equal(mail.subject, "Confirm your email for camelRun");
   assert.deepEqual(mail.tags, { product: "camelrun-account", kind: "verify" });
+  assert.equal(mail.configurationSet, "camelai-agent-runtime-mail", "through the configuration set that publishes bounces and complaints");
   assert.equal(mail.link?.page, "verify");
   assert.ok(mail.html.includes(`${PUBLIC}/console/verify#${mail.link!.token}`));
   const token = mail.link!.token;

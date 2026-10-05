@@ -7,7 +7,7 @@ import { PublicOrigins } from "../src/origins.ts";
 const BASE = "https://run.example.test";
 const oauth = (signedIn = true) => new OAuth({
   db: {} as never, accounts: {} as never, secret: "fixture-server-secret", origins: new PublicOrigins(BASE), github: false,
-  consoleAuth: { principal: async () => signedIn ? { tenant: "acme", via: "console", login: "alice" } : undefined } as never,
+  consoleAuth: { principal: async () => signedIn ? { tenant: "acme", via: "console", login: "alice" } : undefined, options: {} } as never,
 });
 const register = async (server: OAuth, body: object) => (await server.app.request("/oauth/register", { method: "POST", body: JSON.stringify(body) })).json() as Promise<any>;
 const authorize = (server: OAuth, clientId: string, redirectUri: string) => server.app.request(`/oauth/authorize?${new URLSearchParams({
