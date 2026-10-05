@@ -9,14 +9,14 @@ import { formatCost, formatMicros, formatNumber, formatTime, useApi, type AdminS
 
 const percent = (part: number, whole: number) => whole ? `${Math.round(part / whole * 100)}%` : "—";
 
-/** The platform operator's view of every tenant: sign-ups, how far they got, and usage. Shown only to billing admins (/v1/me `admin`). */
+/** The team's view of every tenant: sign-ups, how far they got, and usage (the admin site, src/admin-site.ts). */
 export function AdminPage() {
   const [days, setDays] = useState("14");
-  const stats = useApi<AdminStats>(`/v1/admin/stats?days=${days}`, 60_000);
+  const stats = useApi<AdminStats>(`/api/stats?days=${days}`, 60_000);
   const data = stats.data;
   return (
     <>
-      <PageHeader title="Admin" description="Every tenant on this runtime. Sign-ups are self-serve accounts; days are UTC."
+      <PageHeader title="Admin" description={<>Every tenant on this runtime. Sign-ups are self-serve accounts; days are UTC.{data && <> Signed in as {data.viewer}.</>}</>}
         actions={
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>

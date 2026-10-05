@@ -7,7 +7,6 @@ import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import { answerList, type ClientSessions } from "./client-sessions.ts";
 import { personal, type ConsoleAuth } from "./console-auth.ts";
-import { adminStats } from "./admin-stats.ts";
 import { checkPassword, normalizeEmail } from "./passwords.ts";
 import type { OAuth } from "./oauth.ts";
 import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
@@ -263,14 +262,11 @@ export function api(context: ApiContext) {
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
-  /** A billing admin's operator token, or a person signed in to the console as one: never an API, OAuth or browser token. */
-  const isPlatformAdmin = (principal: Caller) => (principal.via === "operator" || principal.via === "console") && !!context.billingAdmins?.includes(principal.tenant);
-
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {
     const principal = c.var.principal;
     // A console session names the person; a token names its tenant's, looked up here.
     const login = "login" in principal ? principal.login as string | undefined : await accounts.identity(principal.tenant);
-    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...(login ? { login } : {}), ...("name" in principal && principal.name ? { name: principal.name } : {}), ...("signIn" in principal ? { signIn: principal.signIn } : {}), ...(isPlatformAdmin(principal) ? { admin: true } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
+    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...(login ? { login } : {}), ...("name" in principal && principal.name ? { name: principal.name } : {}), ...("signIn" in principal ? { signIn: principal.signIn } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
   });
 
   // Get Help is the console's, so it is not part of the documented API: a script has no one to reply to.
@@ -839,15 +835,6 @@ export function api(context: ApiContext) {
     const row = (await accounts.db.query("select id, tenant, kind, amount, metadata, created_at from credit_ledger where idempotency_key = $1", [key])).rows[0];
     if (row.tenant !== body.tenant || row.amount !== body.amount) throw new HttpError(409, "Idempotency key reused with a different adjustment");
     return json(c, 201, { id: row.id, kind: row.kind, amount: row.amount, metadata: row.metadata, createdAt: row.created_at });
-  });
-
-  // The platform operator's dashboard (the console's Admin page): read-only, so a billing admin's console session may see it too.
-  // Not in the documented API, like Get Help.
-  app.get("/v1/admin/stats", async c => {
-    if (!isPlatformAdmin(c.var.principal)) throw new HttpError(403, "Only the platform operator can see platform stats");
-    const days = Number(c.req.query("days") ?? 30);
-    if (!Number.isInteger(days) || days < 1 || days > 365) invalid("days must be a whole number from 1 to 365");
-    return json(c, 200, await adminStats(accounts.db, { days, recent: 50 }));
   });
 
   // Export and deletion: the tenant's own, and the platform operator's for any tenant (requests by email).

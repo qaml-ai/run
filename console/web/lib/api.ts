@@ -63,10 +63,11 @@ export function useApi<T>(path: string | undefined, intervalMs?: number) {
 }
 
 /** `login` (Google or sign-in address, or GitHub login) and `name` are the person; `tenant` is the account's id, for the API and support only. */
-export interface Me { tenant: string; via: "operator" | "token" | "console" | "oauth"; login?: string; name?: string; signIn?: "github" | "google" | "password"; admin?: boolean; canStoreKeys: boolean }
+export interface Me { tenant: string; via: "operator" | "token" | "console" | "oauth"; login?: string; name?: string; signIn?: "github" | "google" | "password"; canStoreKeys: boolean }
 /** How to name an account on pages that only have its id: sign-in ids (`u-…`) mean nothing to people. */
-/** GET /v1/admin/stats (src/admin-stats.ts): the platform operator's view. Amounts are micro-USD, costs USD. */
+/** The admin site's GET /api/stats (src/admin-site.ts): every tenant, for the team. Amounts are micro-USD, costs USD. */
 export interface AdminStats {
+  viewer: string;
   days: number;
   signups: { total: number; last24h: number; last7d: number; last30d: number; deleted: number; github: number; google: number; operator: number };
   activation: { tenants: number; withToken: number; withAgent: number; withUsage: number; purchased: number };

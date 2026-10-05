@@ -21,7 +21,7 @@ export interface AdminStats {
 const DAY_MS = 86_400_000;
 
 /**
- * The platform operator's view of every tenant (GET /v1/admin/stats): sign-ups (self-serve tenants, the `tenants`
+ * Every tenant, for the team's admin site (src/admin-site.ts, GET /api/stats): sign-ups (self-serve tenants, the `tenants`
  * table; admin tenants live in the tenants file), how far they got, and model usage across all tenants, per UTC day
  * as `usage` keeps it. Read-only.
  */

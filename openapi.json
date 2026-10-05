@@ -689,10 +689,6 @@
             ],
             "description": "How a console session was signed in"
           },
-          "admin": {
-            "type": "boolean",
-            "description": "True for the platform operator (AGENT_BILLING_ADMINS), whose console shows the Admin page"
-          },
           "canStoreKeys": {
             "type": "boolean"
           },
