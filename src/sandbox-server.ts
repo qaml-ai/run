@@ -1,7 +1,7 @@
 import { createServer, type Socket } from "node:net";
 import { parseArgs } from "node:util";
 import { availableParallelism } from "node:os";
-import { CodePool, defaultCodeWorkers, localGuest, type Guest } from "./codemode.ts";
+import { CodePool, codeWorkers, localGuest, type Guest } from "./codemode.ts";
 import { frames } from "./sandbox-wire.ts";
 import { inspectHere } from "./inspect.ts";
 import { FILE_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
@@ -28,7 +28,7 @@ const processes = Number(args.processes);
 const share = (total: number) => Math.ceil(total / processes);
 const pool = new CodePool({
   min: share(args["workers-min"] === undefined ? Math.min(4, availableParallelism()) : Number(args["workers-min"])),
-  max: share(args["workers-max"] === undefined ? defaultCodeWorkers() : Number(args["workers-max"])),
+  max: share(args["workers-max"] === undefined ? codeWorkers() : Number(args["workers-max"])),
 });
 
 function serve(socket: Socket) {

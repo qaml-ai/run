@@ -35,7 +35,7 @@ import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts"
 import { metadataInput, senderInput } from "./sender.ts";
 import { callMeta, compose, jsonResult, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
-import { CodeGate, codeWorkers, type CodeLimits } from "./codemode.ts";
+import { CodeGate, codeCapacity, type CodeLimits } from "./codemode.ts";
 import { CODE_LIMITS } from "./limits.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
@@ -417,7 +417,7 @@ export interface ClientSessionOptions {
   runLimitsFor?: (tenant: string) => Promise<Required<RunLimits>>;
   /** A tenant's js_exec limits: CPU per execution, the longest timeoutMs, and executions at once on this node. Default `CODE_LIMITS`. */
   codeLimitsFor?: (tenant: string) => Promise<CodeLimits>;
-  /** js_exec executions this node runs at once, every tenant's together; default its sandbox workers (`codeWorkers`). */
+  /** js_exec executions this node runs at once for tenants with a concurrency limit, together; default what its memory affords (`codeCapacity`). */
   codeCapacity?: number;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
@@ -532,7 +532,7 @@ export class ClientSessions {
     this.db = options.db;
     this.storage = options.storage ?? fileStorage(options.root!);
     this.historyIndex = new HistoryIndex(this.db, this.storage);
-    this.codeGate = new CodeGate(options.codeCapacity ?? codeWorkers());
+    this.codeGate = new CodeGate(options.codeCapacity ?? codeCapacity());
     this.heartbeat = setInterval(() => this.tick(), Math.min(5000, Math.max(50, Math.floor((options.idleMs ?? 5 * 60_000) / 2))));
     this.heartbeat.unref();
     options.ownership?.onFence(() => { for (const session of [...this.sessions.values()]) void this.lost(session); });

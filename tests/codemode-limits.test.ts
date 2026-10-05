@@ -117,6 +117,12 @@ test("the gate admits each tenant up to its own limit, and waiting tenants in tu
   assert.deepEqual(order, ["a3", "b2", "c1"]);
   for (const release of await Promise.all([a3, b2, c1])) release();
   assert.equal(gate.running, 0);
+  // A tenant without a limit (an admin tenant) is admitted at once even when the node is full, and takes no slot.
+  const full = await Promise.all([gate.acquire("b", 3, never), gate.acquire("b", 3, never), gate.acquire("b", 3, never)]);
+  const admin = await Promise.all(Array.from({ length: 12 }, () => gate.acquire("chiridion", Infinity, never)));
+  assert.equal(gate.running, 3);
+  for (const release of [...full, ...admin]) release();
+  assert.equal(gate.running, 0);
   assert.equal(gate.count("a"), 0);
 });
 
@@ -137,7 +143,8 @@ test("one tenant saturating its executions on a node does not stop another's", {
   assert.equal(gate.running, 0);
 });
 
-test("the pool is sized from memory, so a full pool cannot run a task out of it", () => {
+test("tenants with a limit share what the node's memory affords; the pool itself keeps its old ceiling for admin tenants", () => {
+  assert.equal(new CodePool({ min: 0 }).max, 32);
   assert.equal(defaultCodeWorkers(2 * 1024 ** 3), 6);
   assert.equal(defaultCodeWorkers(512 * 1024 ** 2), 2);
   assert.equal(defaultCodeWorkers(64 * 1024 ** 3), 32);
@@ -228,4 +235,20 @@ test("each execution writes a metric line with its duration, CPU and timeoutMs, 
     ["Codemode worker exited", "worker_exited"],
     ["Error: file not found: /workspace/x.csv", "guest_error"],
   ]) assert.equal(codeErrorClass(message), expected, message);
+});
+
+test("an admin tenant's executions waiting on slow tools are not held to the node's memory-sized capacity", { timeout: 30_000 }, async t => {
+  const pool = new CodePool({ min: 0, max: 16 });
+  t.after(() => pool.close());
+  const gate = new CodeGate(2);
+  const release = Promise.withResolvers<void>();
+  let waiting = 0;
+  const all = Promise.withResolvers<void>();
+  const slow: ToolBridge = { definitions: [{ name: "analysis", description: "Slow", parameters: { type: "object" } }], call: () => { if (++waiting === 12) all.resolve(); return release.promise.then(() => "done"); } };
+  const runs = Array.from({ length: 12 }, () => executeCode({ code: "return await tools.analysis({})", bridge: slow, pool, timeoutMs: 20_000, admit: signal => gate.acquire("chiridion-prod", Infinity, signal) }));
+  // All twelve wait on their tool at once, each holding a worker; a capped tenant still gets the gate's slots.
+  await all.promise;
+  assert.deepEqual((await executeCode({ code: "return 3", bridge: slow, pool, admit: signal => gate.acquire("acme", 4, signal) })).output, ["3"]);
+  release.resolve();
+  assert.equal((await Promise.all(runs)).length, 12);
 });

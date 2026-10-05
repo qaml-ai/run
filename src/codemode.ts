@@ -18,16 +18,19 @@ const CPU_GRACE_MS = 250;
 type Slot = { worker: Worker; state: "starting" | "idle" | "busy"; dispatched: number; idle?: (clean: boolean) => void; reaper?: NodeJS.Timeout; watchdog?: NodeJS.Timeout };
 
 /**
- * Workers a pool may run by default: what a fraction of the memory this process may use
- * (its cgroup's limit in a container) affords at a worker's typical peak, so a full pool
- * cannot take a task's memory. A worker holds QuickJS's 32 MiB of WASM memory, a V8 heap
- * capped at 128 MiB and Node's own, about 100 MB resident once busy.
+ * Executions a node runs at once for tenants with a concurrency limit (`CodeGate`): what a
+ * fraction of the memory this process may use (its cgroup's limit in a container) affords at a
+ * worker's typical peak, so their executions cannot take a task's memory. A worker holds QuickJS's
+ * 32 MiB of WASM memory, a V8 heap capped at 128 MiB and Node's own: 85-100 MB resident even
+ * while its guest only waits on a tool, since a waiting guest keeps its worker.
  */
 export function defaultCodeWorkers(memory = Math.min(process.constrainedMemory?.() || Infinity, totalmem())) {
   return Math.max(2, Math.min(32, Math.floor(memory * CODE_MEMORY_SHARE / CODE_WORKER_BYTES)));
 }
 const CODE_MEMORY_SHARE = 0.4;
 const CODE_WORKER_BYTES = 128 * 1024 * 1024;
+/** Workers a pool runs at most by default: what admin tenants, which `CodeGate` does not hold to the memory-sized capacity, may use. */
+const MAX_CODE_WORKERS = 32;
 
 /**
  * Warm worker threads, each running QuickJS/WASM. A worker is resource control (a
@@ -48,7 +51,7 @@ export class CodePool {
   private readonly waiters: { resolve: (slot: Slot) => void; reject: (error: Error) => void }[] = [];
 
   constructor(options: { min?: number; max?: number; idleMs?: number; maxDying?: number } = {}) {
-    this.max = options.max ?? defaultCodeWorkers();
+    this.max = options.max ?? MAX_CODE_WORKERS;
     this.min = Math.min(options.min ?? Math.min(4, availableParallelism()), this.max);
     this.idleMs = options.idleMs ?? 30_000;
     this.maxDying = options.maxDying ?? 8;
@@ -325,9 +328,14 @@ export class SandboxProcesses {
 /** Why an execution was stopped by its worker's CPU watchdog. */
 export const cpuExceeded = (cpuMs: number) => `Codemode CPU limit exceeded: the execution kept its thread busy for over ${cpuMs} ms`;
 
-/** How many js_exec workers this node runs in all: AGENT_CODE_WORKERS_MAX, else what its memory affords. */
+/** How many js_exec workers this node may run in all: AGENT_CODE_WORKERS_MAX, else 32. */
 export function codeWorkers() {
-  return process.env.AGENT_CODE_WORKERS_MAX ? Number(process.env.AGENT_CODE_WORKERS_MAX) : defaultCodeWorkers();
+  return process.env.AGENT_CODE_WORKERS_MAX ? Number(process.env.AGENT_CODE_WORKERS_MAX) : MAX_CODE_WORKERS;
+}
+
+/** How many of them tenants with a concurrency limit may use together (`CodeGate`): what the node's memory affords, within `codeWorkers`. */
+export function codeCapacity() {
+  return Math.min(defaultCodeWorkers(), codeWorkers());
 }
 
 let shared: CodePool | undefined;
@@ -422,9 +430,12 @@ async function hostCall(bridge: ToolBridge, name: string, args: unknown) {
 export type CodeLimits = { cpuMs: number; maxTimeoutMs: number; concurrent: number };
 
 /**
- * Admits js_exec executions on a node: at most `capacity` at once (its sandbox workers), and at
- * most `limit` of them for any one tenant. Executions waiting are admitted a tenant at a time, in
- * turn, so a tenant that keeps every slot it may have busy cannot hold back another's.
+ * Admits js_exec executions on a node: at most `capacity` at once (what its memory affords), and
+ * at most `limit` of them for any one tenant. Executions waiting are admitted a tenant at a time,
+ * in turn, so a tenant that keeps every slot it may have busy cannot hold back another's. A tenant
+ * without a limit (an admin tenant's, Infinity) is admitted at once and not counted: only the
+ * pool's workers bound it, as before the gate, so the runtime's own heavy users never queue
+ * behind the memory-sized capacity.
  */
 export class CodeGate {
   readonly capacity: number;
@@ -443,6 +454,7 @@ export class CodeGate {
   /** Wait for a turn to run one of `tenant`'s executions, until `signal` aborts. Resolves with the function that gives it back. */
   acquire(tenant: string, limit: number, signal: AbortSignal): Promise<() => void> {
     signal.throwIfAborted();
+    if (limit === Infinity) return Promise.resolve(() => {});
     if (!this.queues.has(tenant) && this.free(tenant, limit)) return Promise.resolve(this.take(tenant));
     const waiter = Promise.withResolvers<() => void>();
     const entry = { limit, admit: () => { signal.removeEventListener("abort", abort); waiter.resolve(this.take(tenant)); } };

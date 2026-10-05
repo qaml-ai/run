@@ -30,13 +30,15 @@ regular expressions, which could backtrack for hours; the tool checks those
 itself. A failed check of arguments over 16 KiB names no fields. `tools.search`
 reads at most 500 characters and 32 words of a query.
 
-**Fairness.** A node runs at most as many executions at once as it has sandbox
-workers. By default that is what 40% of the task's memory affords at 128 MiB a
-worker, at least 2 and at most 32: 6 on a 2 GB task. `AGENT_CODE_WORKERS_MAX`
-sets it. Each tenant may run 4 of them at once (2 on free credit; admin tenants
-are not limited unless their entry sets it; `codeConcurrency` per tenant).
-Executions beyond that wait for a turn, tenant by tenant in rotation, within
-their own `timeoutMs`. A busy tenant therefore delays only its own executions.
+**Fairness.** An execution keeps its worker, about 85-100 MB resident, while it
+waits on tools. Tenants with a concurrency limit therefore share what 40% of the
+task's memory affords at 128 MiB a worker, at least 2 and at most 32: 6 on a
+2 GB task. Each such tenant may run 4 at once (2 on free credit; `codeConcurrency`
+per tenant). Executions beyond that wait for a turn, tenant by tenant in
+rotation, within their own `timeoutMs`, so a busy tenant delays only its own.
+Admin tenants have no limit unless their entry sets one: they are admitted at
+once and bounded only by the pool's workers (at most 32 a node,
+`AGENT_CODE_WORKERS_MAX`), as before. Their memory is the operator's to plan for.
 
 **Stuck agents.** Under `process` hosting the supervisor pings each agent
 process every 5 s and kills one that leaves a ping unanswered for 30 s. A run
