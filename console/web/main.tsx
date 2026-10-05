@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, BarChart3, Bot, CircleUser, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
+import { Activity, BarChart3, ShieldCheck, Bot, CircleUser, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { FullLogo } from "@/components/ui/logo";
@@ -20,6 +20,7 @@ import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { consoleLoginUrl, discordInstallNext } from "@/lib/discord-setup";
 import { AccountPage } from "@/pages/account";
+import { AdminPage } from "@/pages/admin";
 import { AgentsPage } from "@/pages/agents";
 import { AgentPage } from "@/pages/agent";
 import { ChannelsPage } from "@/pages/channels";
@@ -91,6 +92,7 @@ function App() {
     : section === "billing" ? <BillingPage state={billingState} />
     : section === "account" ? <AccountPage me={me.data} />
     : section === "quickstart" ? <QuickstartPage />
+    : section === "admin" && me.data.admin ? <AdminPage />
     : <AgentsPage agents={agents} billing={billing} />;
   const active = section || "agents";
   // The shell stays quiet: ground-colored, split from the page by a rule, no art or display type.
@@ -105,7 +107,7 @@ function App() {
           <div className="flex items-center gap-4 md:hidden"><BillingBalance state={billingState} mobile /><SignOut /></div>
         </div>
         <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-col md:gap-0.5 md:overflow-visible">
-          {NAV.map(({ to, label, icon: Icon }) => (
+          {[...NAV, ...(me.data.admin ? [{ to: "admin", label: "Admin", icon: ShieldCheck }] : [])].map(({ to, label, icon: Icon }) => (
             <Link key={to} to={to} aria-current={active === to ? "page" : undefined} className={cn(
               "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex shrink-0 items-center gap-2 px-2.5 py-1.5 text-sm transition-colors",
               active === to ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium" : "text-muted-foreground",

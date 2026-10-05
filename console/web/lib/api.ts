@@ -63,8 +63,21 @@ export function useApi<T>(path: string | undefined, intervalMs?: number) {
 }
 
 /** `login` (Google or sign-in address, or GitHub login) and `name` are the person; `tenant` is the account's id, for the API and support only. */
-export interface Me { tenant: string; via: "operator" | "token" | "console" | "oauth"; login?: string; name?: string; signIn?: "github" | "google" | "password"; canStoreKeys: boolean }
+export interface Me { tenant: string; via: "operator" | "token" | "console" | "oauth"; login?: string; name?: string; signIn?: "github" | "google" | "password"; admin?: boolean; canStoreKeys: boolean }
 /** How to name an account on pages that only have its id: sign-in ids (`u-…`) mean nothing to people. */
+/** GET /v1/admin/stats (src/admin-stats.ts): the platform operator's view. Amounts are micro-USD, costs USD. */
+export interface AdminStats {
+  days: number;
+  signups: { total: number; last24h: number; last7d: number; last30d: number; deleted: number; github: number; google: number; operator: number };
+  activation: { tenants: number; withToken: number; withAgent: number; withUsage: number; purchased: number };
+  agents: { live: number; tenants: number };
+  purchases: { count: number; buyers: number; amount: number };
+  daily: { day: string; signups: number; activeTenants: number; responses: number; cost: number; platformCost: number }[];
+  recent: {
+    tenant: string; github: string | null; googleEmail: string | null; signIn: "github" | "google" | "operator" | null;
+    createdAt: number; deleted: boolean; tokens: number; agents: number; responses: number; cost: number; balance: number; purchased: number;
+  }[];
+}
 export const accountLabel = (tenant: string) => /^u-[0-9a-f]{16,32}$/.test(tenant) ? undefined : tenant;
 export interface KeyStatus { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number }
 export interface Provider { id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
