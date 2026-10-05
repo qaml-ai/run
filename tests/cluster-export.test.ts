@@ -10,8 +10,10 @@ test("an export from any node holds every agent's whole history: agents loaded o
     return { role: "assistant", content: `answer to ${/say-(\w+)/.exec(said)?.[1]}` };
   });
   const c = await cluster(t);
-  // Idle agents unload after a second (the shortest allowed), so one can be left loaded nowhere.
-  const a = await c.start("a", { ...model.env, AGENT_IDLE_MS: "1000", AGENT_BILLING_ADMINS: "alice" });
+  // Agents on node z unload after a second (the shortest allowed), so one can be left loaded nowhere. A and B keep
+  // theirs loaded: a short idle on A let its agent unload before the owners were checked on a slow runner.
+  const z = await c.start("z", { ...model.env, AGENT_IDLE_MS: "1000", AGENT_BILLING_ADMINS: "alice" });
+  const a = await c.start("a", { ...model.env, AGENT_BILLING_ADMINS: "alice" });
   const b = await c.start("b", { ...model.env, AGENT_BILLING_ADMINS: "alice" });
   const call = async (node: { url: string }, path: string, body?: unknown, headers: Record<string, string> = {}) => {
     const response = await fetch(`${node.url}${path}`, {
@@ -36,8 +38,10 @@ test("an export from any node holds every agent's whole history: agents loaded o
     user: (id: string) => `0 user ${JSON.stringify([{ type: "text", text: `say-${keys.get(id)}` }])}`,
     assistant: (id: string) => `1 assistant ${JSON.stringify([{ type: "text", text: `answer to ${keys.get(id)}` }])}`,
   };
-  const idle = await create(a, "idle");
+  const idle = await create(z, "idle");
   await until(async () => !await c.owner(idle), "the idle agent to unload", 30_000);
+  z.child.kill("SIGKILL");
+  await once(z.child, "close");
   const onA = await create(a, "ona");
   const onB = await create(b, "onb");
   assert.deepEqual([await c.owner(onA), await c.owner(onB)], [a.url, b.url]);
