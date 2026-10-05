@@ -39,10 +39,10 @@ test("per-address limits count an IPv6 /64 as one client, Workers by their zone,
 test("rate limits are configured from the environment, each 0 for none", () => {
   const defaults = rateLimitConfig({ AGENT_TRUST_CF_CONNECTING_IP: "true" });
   assert.deepEqual({ ...defaults, exempt: [...defaults.exempt] }, {
-    cloudflare: true, apiPerIp: 600, authPerIp: 20, signupsPerIp: 5, passwordFailuresPerIp: 20, passwordFailuresPerEmail: 10, agentCreates: 60, freeAgentCreates: 10, runs: 600, freeRuns: 60, exempt: [],
+    cloudflare: true, apiPerIp: 600, authPerIp: 20, signupsPerIp: 5, passwordFailuresPerIp: 20, passwordFailuresPerEmail: 10, emailRequestsPerIp: 10, emailsPerAddress: 5, agentCreates: 60, freeAgentCreates: 10, runs: 600, freeRuns: 60, exempt: [],
   });
   // Without Cloudflare, the address may be a shared proxy's: per-address limits are the operator's to set. Failures per email address stay.
-  assert.deepEqual(rateLimitConfig({}), { ...defaults, cloudflare: false, apiPerIp: 0, authPerIp: 0, signupsPerIp: 0, passwordFailuresPerIp: 0 });
+  assert.deepEqual(rateLimitConfig({}), { ...defaults, cloudflare: false, apiPerIp: 0, authPerIp: 0, signupsPerIp: 0, passwordFailuresPerIp: 0, emailRequestsPerIp: 0 });
   assert.equal(rateLimitConfig({ AGENT_RATE_LIMIT_AUTH_PER_IP: "30" }).authPerIp, 30);
   const set = rateLimitConfig({ AGENT_TRUST_CF_CONNECTING_IP: "true", AGENT_RATE_LIMIT_API_PER_IP: "0", AGENT_RATE_LIMIT_FREE_RUNS: "5", AGENT_RATE_LIMIT_EXEMPT: " worker:Chiridion.Example , 203.0.113.5" });
   assert.equal(set.cloudflare, true);

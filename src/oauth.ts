@@ -6,6 +6,8 @@ import type { Db } from "./db.ts";
 import { readText } from "./http.ts";
 import type { PublicOrigins } from "./origins.ts";
 import { RateLimited } from "./rate-limits.ts";
+import { HttpError } from "./http.ts";
+import { checkNewPassword, MIN_PASSWORD, normalizeEmail } from "./passwords.ts";
 
 /**
  * The runtime as an OAuth 2.1 authorization server for its hosted MCP endpoints (/mcp, and each agent's), as MCP's authorization spec
@@ -390,20 +392,59 @@ export class OAuth {
       c.header("Set-Cookie", session.cookie);
       return c.redirect(next, 303);
     });
+
+    // Sign up with an email address and password (where the console offers it): the link mailed finishes it and comes
+    // back here, signed in, to consent. The answer is the same whether or not the address has an account.
+    app.post("/oauth/signup", async c => {
+      if (!sameOrigin(c)) return page(c, 403, "Forbidden", "<h1>Forbidden</h1><p>This form must be sent from this site.</p>");
+      const accounts = this.options.consoleAuth.options.email;
+      const form = new URLSearchParams(await readText(c.req.raw.body, 16 * 1024));
+      const next = form.get("next") ?? "";
+      let request;
+      try { if (!accounts?.signup || !next.startsWith("/oauth/authorize?")) throw new Error(); request = this.authorization(new URLSearchParams(next.slice("/oauth/authorize?".length))); }
+      catch { return page(c, 400, "Cannot sign up", "<h1>Cannot sign up</h1><p>Start again from the application.</p>"); }
+      const raw = form.get("email") ?? "";
+      const email = normalizeEmail(raw);
+      if (!email) return this.signInPage(c, request, next, undefined, "", 400, { error: "Enter a valid email address", email: raw });
+      try {
+        checkNewPassword(form.get("password"), email);
+        await this.options.consoleAuth.options.emailLimit?.(c, email);
+        await accounts.signUp(email, form.get("password"), next);
+      } catch (error) {
+        if (error instanceof RateLimited) c.header("Retry-After", String(error.retryAfter));
+        else if (!(error instanceof HttpError) || error.status !== 400) throw error;
+        return this.signInPage(c, request, next, undefined, "", error.status === 429 ? 429 : 400, { error: error.message, email });
+      }
+      return page(c, 200, "Check your email", `<h1>Check your email</h1>
+<p>If <strong>${escape(email)}</strong> can sign up, we sent it a link. Open it and enter the password you chose to finish; you come back here, signed in, to connect the application.</p>
+<p class="muted">The link expires in 24 hours. Nothing there? Check spam, or <a href="${escape(next)}">start again</a>.</p>`);
+    });
     return app;
   }
 
-  /** The sign-in page before consent: GitHub and Google where configured, and an email and password; `error` says why the last try failed. */
-  private signInPage(c: Context, request: ReturnType<OAuth["authorization"]>, here: string, error?: string, email = "", status: 200 | 401 | 429 = 200) {
+  /**
+   * The sign-in page before consent: GitHub and Google where configured, and an email and password; `error` says why the
+   * last try failed. Where account mail is configured, a link to reset a password, and with open sign-up a form to sign
+   * up (`signup` is its last try).
+   */
+  private signInPage(c: Context, request: ReturnType<OAuth["authorization"]>, here: string, error?: string, email = "", status: 200 | 400 | 401 | 429 = 200, signup?: { error: string; email: string }) {
     const providers = [this.options.github && `<a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a>`,
       this.options.google && `<a class="button" href="/console/auth/google?next=${encodeURIComponent(here)}">Sign in with Google</a>`].filter(Boolean);
+    const accounts = this.options.consoleAuth.options.email;
     return c.html(PAGE("Sign in", `<h1>Sign in to camelRun</h1>
 <p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(unverified)</span>, at <code>${escape(destinationOf(request.redirectUri))}</code>, wants to connect to your camelRun account. Sign in first.</p>
 ${providers.length ? `<p>${providers.join(" ")}</p><p class="muted or">or with your email and password</p>` : ""}${error ? `<p class="error" role="alert">${escape(error)}</p>` : ""}
 <form method="post" action="/oauth/password"><input type="hidden" name="next" value="${escape(here)}">
 <label>Email <input type="email" name="email" value="${escape(email)}" autocomplete="username" required></label>
 <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
-<button type="submit"${providers.length ? " class=\"secondary\"" : ""}>Sign in</button></form>`), status, PAGE_HEADERS);
+<button type="submit"${providers.length ? " class=\"secondary\"" : ""}>Sign in</button></form>${accounts ? `
+<p class="muted"><a href="/console/reset?next=${encodeURIComponent(here)}">Forgot your password?</a></p>` : ""}${accounts?.signup ? `
+<h2 class="or">New to camelRun?</h2>${signup ? `<p class="error" role="alert">${escape(signup.error)}</p>` : ""}
+<form method="post" action="/oauth/signup"><input type="hidden" name="next" value="${escape(here)}">
+<label>Email <input type="email" name="email" value="${escape(signup?.email ?? "")}" autocomplete="email" required></label>
+<label>Password <input type="password" name="password" autocomplete="new-password" minlength="${MIN_PASSWORD}" required></label>
+<p class="muted">At least ${MIN_PASSWORD} characters. We email you a link to finish.</p>
+<button type="submit" class="secondary">Create account</button></form>` : ""}`), status, PAGE_HEADERS);
   }
 }
 
@@ -451,4 +492,4 @@ main{max-width:440px;width:100%;background:var(--card);border:1px solid var(--li
 h1{font-size:20px;margin:0 0 12px}.muted{color:var(--muted);font-size:13px}code{font-size:13px}
 button,.button{display:inline-block;border:1px solid var(--accent);background:var(--accent);color:var(--on);border-radius:8px;padding:8px 16px;font:inherit;cursor:pointer;text-decoration:none}
 .secondary{background:transparent;color:var(--fg)}label{display:block;font-size:13px}input[type=password],input[type=email]{display:block;width:100%;box-sizing:border-box;margin:4px 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
-.error{color:#dc2626}.or{margin-top:20px}.brand{font-weight:600;margin-bottom:16px}.destination{border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all}.destination code{font-size:15px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;
+.error{color:#dc2626}.or{margin-top:20px}h2{font-size:16px;margin:24px 0 8px}.brand{font-weight:600;margin-bottom:16px}.destination{border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all}.destination code{font-size:15px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;

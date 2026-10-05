@@ -855,5 +855,6 @@ export const TenantLookup = z.object({
   tenant: z.string(),
   github: z.string().nullable(),
   googleEmail: z.string().nullable(),
+  email: z.string().nullable().openapi({ description: "The address it signs in with a password, if any" }),
   createdAt: z.number(),
 }).openapi("TenantLookup");

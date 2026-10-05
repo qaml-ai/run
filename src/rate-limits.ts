@@ -14,7 +14,7 @@ const MAX_BUCKETS = 100_000;
 const WORKERS_ADDRESS = "2a06:98c0:3600::103";
 
 export interface RateLimit {
-  /** Which limit: `api_requests`, `auth_requests`, `signups`, `password_failures`, `agent_creates` or `runs`. */
+  /** Which limit: `api_requests`, `auth_requests`, `signups`, `password_failures`, `email_requests`, `emails`, `agent_creates` or `runs`. */
   name: string;
   scope: "ip" | "tenant" | "email";
   max: number;
@@ -48,6 +48,9 @@ export interface RateLimitConfig {
   /** Failed password sign-ins per client address, and per email address, in PASSWORD_WINDOW_SECONDS. */
   passwordFailuresPerIp: number;
   passwordFailuresPerEmail: number;
+  /** Requests that mail a link (sign-up, a password reset, adding an address) per client address an hour, and mails per email address a day. */
+  emailRequestsPerIp: number;
+  emailsPerAddress: number;
   /** Agents a tenant may create a minute (POST /v1/agents), and on free credit. */
   agentCreates: number;
   freeAgentCreates: number;
@@ -80,6 +83,8 @@ export function rateLimitConfig(env: NodeJS.ProcessEnv = process.env): RateLimit
     passwordFailuresPerIp: count("AGENT_RATE_LIMIT_PASSWORD_FAILURES_PER_IP", perAddress ? 20 : 0),
     // An email address is no network's, so this one is on everywhere.
     passwordFailuresPerEmail: count("AGENT_RATE_LIMIT_PASSWORD_FAILURES_PER_EMAIL", 10),
+    emailRequestsPerIp: count("AGENT_RATE_LIMIT_EMAIL_REQUESTS_PER_IP", perAddress ? 10 : 0),
+    emailsPerAddress: count("AGENT_RATE_LIMIT_EMAILS_PER_ADDRESS", 5),
     agentCreates: count("AGENT_RATE_LIMIT_AGENT_CREATES", 60),
     freeAgentCreates: count("AGENT_RATE_LIMIT_FREE_AGENT_CREATES", 10),
     runs: count("AGENT_RATE_LIMIT_RUNS", 600),
@@ -224,6 +229,22 @@ export class RateLimits {
       limits.push({ key: `password-email:${this.hashed(`email:${email}`)}`, name: "password_failures", scope: "email", max: this.config.passwordFailuresPerEmail, windowSeconds: PASSWORD_WINDOW_SECONDS });
     }
     return limits;
+  }
+
+  /**
+   * Count a request that mails a link to `email` from `key` (sign-up, password reset, adding an address), refused past
+   * the source's hourly limit or the address's daily one. Every such request counts, whether or not the address has an
+   * account, so a refusal says nothing about one.
+   */
+  async emailRequest(key: string | undefined, email: string) {
+    if (key && !this.config.exempt.has(key) && this.config.emailRequestsPerIp) {
+      await this.counted(this.options.db, `email-ip:${this.hashed(key)}`, { name: "email_requests", scope: "ip", max: this.config.emailRequestsPerIp, windowSeconds: 3600 },
+        `Too many requests from this address: at most ${this.config.emailRequestsPerIp} an hour; try again later`);
+    }
+    if (this.config.emailsPerAddress) {
+      await this.counted(this.options.db, `email-to:${this.hashed(`email:${email}`)}`, { name: "emails", scope: "email", max: this.config.emailsPerAddress, windowSeconds: DAY / 1000 },
+        `Too many emails to this address today (at most ${this.config.emailsPerAddress}); try again tomorrow`);
+    }
   }
 
   /** Count an agent create by `tenant` (POST /v1/agents). */

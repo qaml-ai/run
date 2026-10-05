@@ -27,6 +27,8 @@ import { Help, helpConfig } from "./help.ts";
 import { MailTransport } from "./mail-transport.ts";
 import { ConsoleAuth } from "./console-auth.ts";
 import { Passwords } from "./passwords.ts";
+import { AccountMail, accountMailConfig } from "./account-mail.ts";
+import { EmailAccounts } from "./email-accounts.ts";
 import { OAuth } from "./oauth.ts";
 import { hostedMcp } from "./hosted-mcp.ts";
 import { agentMcp } from "./agent-mcp.ts";
@@ -200,8 +202,14 @@ const rateLimits = new RateLimits({
 rateLimits.start();
 /** Who sent a request: its address and the key per-address limits count it under (none for the runtime's own calls). */
 const requestClient = (c: Context) => rateLimits.client(name => c.req.header(name), (c.env as HttpBindings | undefined)?.incoming?.socket?.remoteAddress);
+// Sign-up, password reset and adding a password by email, when AGENT_ACCOUNT_EMAIL_FROM configures account mail
+// (sign-up only with open sign-up). Without it none of them is offered.
+const accountMailSettings = accountMailConfig(process.env, publicUrl, openSignup);
+const accountMail = accountMailSettings && new AccountMail(accountMailSettings);
 const consoleAuth = new ConsoleAuth({
   accounts, publicUrl, github, google, passwords: new Passwords(db),
+  email: accountMail ? new EmailAccounts({ accounts, mail: accountMail, openSignup }) : undefined,
+  emailLimit: (c, email) => rateLimits.emailRequest(requestClient(c).key, email),
   admitSignup: c => { const { key } = requestClient(c); return sql => rateLimits.signup(sql, key); },
   passwordLimits: { allowed: (c, email) => rateLimits.passwordAllowed(requestClient(c).key, email), failed: (c, email) => rateLimits.passwordFailed(requestClient(c).key, email) },
 });
@@ -898,7 +906,7 @@ server.on("request", (req: IncomingMessage) => {
 server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
   if (!process.env.AGENT_PUBLIC_URL) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+  console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
 });
 // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
 const reloadTenants = (announce: boolean) => tenants.reload().then(
@@ -1046,7 +1054,7 @@ async function drain(signal: string) {
   await step("mcp", () => mcp.close());
   await step("usage", () => accounts.flushUsage());
   await step("auto top-up", async () => { await accounts.billing.autoTopup?.stop(); });
-  await step("billing email", async () => { await billingMailer?.stop(); supportMail?.destroy(); });
+  await step("billing email", async () => { await billingMailer?.stop(); supportMail?.destroy(); await accountMail?.stop(); });
   await step("storage usage", () => storageUsage.flush());
   await step("listen", () => loads.close());
   await step("heartbeat", () => ownership.close());

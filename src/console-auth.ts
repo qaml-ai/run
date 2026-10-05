@@ -4,7 +4,8 @@ import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 import type { Accounts, Principal } from "./accounts.ts";
 import { readText } from "./http.ts";
 import type { Sql } from "./db.ts";
-import { MAX_PASSWORD, normalizeEmail, type Passwords } from "./passwords.ts";
+import { checkNewPassword, MAX_PASSWORD, normalizeEmail, type Passwords } from "./passwords.ts";
+import { LINK_GONE, type EmailAccounts } from "./email-accounts.ts";
 
 /**
  * Console sign-in. Sessions live in Postgres (`console_sessions`); the cookie (HttpOnly, Secure, SameSite=Lax)
@@ -29,8 +30,12 @@ export interface ConsoleAuthOptions {
   sessionHours?: number;
   /** What a sign-in that makes a new account must pass, in the transaction that makes it: the sign-up rate limit for the request's source. */
   admitSignup?: (c: Context) => ((sql: Sql) => Promise<void>) | undefined;
-  /** Email and password sign-in: operator-set passwords (src/passwords.ts). */
+  /** Email and password sign-in (src/passwords.ts). */
   passwords: Passwords;
+  /** Sign-up, password reset and adding a password by email, where account mail is configured (src/email-accounts.ts). */
+  email?: EmailAccounts;
+  /** Requests that mail a link, counted per source and per address: RateLimited past either. */
+  emailLimit?: (c: Context, email: string) => Promise<void>;
   /** Failed password sign-ins per source and per address: `allowed` refuses (RateLimited) once either has failed too often, `failed` counts one. */
   passwordLimits?: { allowed(c: Context, email: string): Promise<void>; failed(c: Context, email: string): Promise<void> };
 }
@@ -137,7 +142,7 @@ export class ConsoleAuth {
   }
 
   /** `login` (Google or sign-in address, or GitHub login) and `name` show who is signed in; the tenant id is only for the API. */
-  private async startSession(session: { tenant: string; method: SignIn; login?: string; name?: string }) {
+  async startSession(session: { tenant: string; method: SignIn; login?: string; name?: string }) {
     const hours = this.options.sessionHours ?? 12;
     const id = randomBytes(32).toString("base64url"), now = Date.now();
     await this.db.query("insert into console_sessions (sha256, tenant, login, name, method, created_at, expires_at) values ($1, $2, $3, $4, $5, $6, $7)",
@@ -174,8 +179,11 @@ export class ConsoleAuth {
 
     app.get("/console/auth/methods", c => {
       const github = this.options.github;
-      // Any runtime takes a password an operator set, beside GitHub and Google where they are configured.
-      return json(c, 200, { github: !!github, google: !!this.options.google, password: true, ...(github?.open ? { open: true } : { org: github?.org }) });
+      // Any runtime takes a password, beside GitHub and Google where they are configured. Sign-up and reset by email only
+      // where account mail is configured (sign-up, also only with open sign-up), and otherwise go unmentioned.
+      const email = this.options.email;
+      return json(c, 200, { github: !!github, google: !!this.options.google, password: true, ...(github?.open ? { open: true } : { org: github?.org }),
+        ...(email?.signup ? { signup: true } : {}), ...(email ? { reset: true } : {}) });
     });
     app.get("/console/auth/github", c => {
       const github = this.options.github;
@@ -299,6 +307,72 @@ export class ConsoleAuth {
       const session = await this.passwordSession(c, body?.email, body?.password);
       if ("error" in session) return json(c, 401, { error: session.error });
       return json(c, 200, { tenant: session.tenant, ...(next ? { next } : {}) }, [session.cookie]);
+    });
+    // Sign-up, reset and adding a password by email (src/email-accounts.ts). Requests that mail a link answer the same
+    // whether or not the address has an account.
+    const body = async (c: Context) => {
+      try { const value = JSON.parse(await readText(c.req.raw.body, 4096)); if (value && typeof value === "object") return value as Record<string, unknown>; }
+      catch { /* answered below */ }
+      return undefined;
+    };
+    const address = (value: unknown) => normalizeEmail(value);
+    app.post("/console/auth/signup", async c => {
+      if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
+      const email = this.options.email;
+      if (!email?.signup) return json(c, 404, { error: "Sign-up is not open on this runtime" });
+      const input = await body(c);
+      const to = address(input?.email);
+      if (!to) return json(c, 400, { error: "Enter a valid email address" });
+      // A password refused costs nothing against the address's mails for the day.
+      checkNewPassword(input!.password, to);
+      await this.options.emailLimit?.(c, to);
+      await email.signUp(to, input!.password, typeof input!.next === "string" ? nextPath(input!.next) : undefined);
+      return c.json({ sent: true }, 202);
+    });
+    app.post("/console/auth/link", async c => {
+      if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
+      const link = await this.options.email?.inspect((await body(c))?.token);
+      return link ? json(c, 200, link) : json(c, 404, { error: LINK_GONE });
+    });
+    app.post("/console/auth/verify", async c => {
+      if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
+      const email = this.options.email;
+      if (!email) return json(c, 404, { error: LINK_GONE });
+      const input = await body(c);
+      const link = await email.inspect(input?.token);
+      if (!link || link.purpose === "reset") return json(c, 400, { error: LINK_GONE });
+      // Wrong passwords count as failed sign-ins for the address.
+      await this.options.passwordLimits?.allowed(c, link.email);
+      if (typeof input!.password === "string" && input!.password.length > MAX_PASSWORD) return json(c, 401, { error: "That is not the password you chose" });
+      const done = await email.complete(input!.token, input!.password, this.options.admitSignup?.(c));
+      if ("wrong" in done) {
+        await this.options.passwordLimits?.failed(c, done.email);
+        return json(c, 401, { error: "That is not the password you chose" });
+      }
+      console.log(JSON.stringify({ type: link.purpose === "verify" ? "email_signup_verified" : "password_added", tenant: done.tenant }));
+      const next = done.next && nextPath(done.next);
+      return json(c, 200, { tenant: done.tenant, ...(next ? { next } : {}) }, [await this.startSession({ tenant: done.tenant, method: "password", login: done.email })]);
+    });
+    app.post("/console/auth/reset/request", async c => {
+      if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
+      const email = this.options.email;
+      if (!email) return json(c, 404, { error: "Password reset by email is not available on this runtime" });
+      const input = await body(c);
+      const to = address(input?.email);
+      if (!to) return json(c, 400, { error: "Enter a valid email address" });
+      await this.options.emailLimit?.(c, to);
+      await email.requestReset(to, typeof input!.next === "string" ? nextPath(input!.next) : undefined);
+      return c.json({ sent: true }, 202);
+    });
+    app.post("/console/auth/reset", async c => {
+      if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
+      const email = this.options.email;
+      if (!email) return json(c, 404, { error: LINK_GONE });
+      const input = await body(c);
+      const done = await email.reset(input?.token, input?.password);
+      console.log(JSON.stringify({ type: "password_reset", tenant: done.tenant, signedOut: done.signedOut }));
+      const next = done.next && nextPath(done.next);
+      return json(c, 200, { tenant: done.tenant, signedOut: done.signedOut, ...(next ? { next } : {}) }, [await this.startSession({ tenant: done.tenant, method: "password", login: done.email })]);
     });
     app.post("/console/auth/logout", async c => {
       if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });

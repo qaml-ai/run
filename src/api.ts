@@ -7,7 +7,7 @@ import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import { answerList, type ClientSessions } from "./client-sessions.ts";
 import { personal, type ConsoleAuth } from "./console-auth.ts";
-import { checkPassword, normalizeEmail } from "./passwords.ts";
+import { checkNewPassword, checkPassword, normalizeEmail } from "./passwords.ts";
 import type { OAuth } from "./oauth.ts";
 import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
 import { modelHeadersInput, resolveModel } from "./session-config.ts";
@@ -666,19 +666,40 @@ export function api(context: ApiContext) {
   });
   route(createRoute({ method: "delete", path: "/v1/sessions", responses: { 200: reply("Signed out everywhere: every console session of the account ends now, this one too", schema.SignedOut) } }),
     async c => json(c, 200, { signedOut: await context.consoleAuth.endSessions(c.var.principal.tenant) }));
-  // The console's Account page: the address the account signs in with, if an operator gave it a password, and changing
-  // that password. Not part of the documented API: only a person signed in to the console changes it.
+  // The console's Account page: the address the account signs in with, if it has a password, and changing it; or, where
+  // account mail is configured, adding one (src/email-accounts.ts). Not part of the documented API: only a person signed
+  // in to the console changes them.
   const passwords = () => context.consoleAuth.options.passwords;
-  app.get("/v1/account/password", async c => json(c, 200, { email: await passwords().email(c.var.principal.tenant) ?? null }));
+  const googleEmail = async (tenant: string) => (await accounts.db.query("select google_email from tenants where id = $1", [tenant])).rows[0]?.google_email as string | undefined ?? undefined;
+  app.get("/v1/account/password", async c => {
+    const tenant = c.var.principal.tenant;
+    const email = await passwords().email(tenant) ?? null;
+    return json(c, 200, { email, googleEmail: await googleEmail(tenant) ?? null, canAdd: !email && !!context.consoleAuth.options.email });
+  });
   app.put("/v1/account/password", async c => {
     const principal = c.var.principal;
     if (!personal(principal)) throw new HttpError(403, "A password is changed from the console, signed in");
     const body = await readJson(c.req.raw.body, 4096, {});
     if (typeof body.currentPassword !== "string") throw new HttpError(400, "currentPassword is required");
     // Every other session signed in with the old password ends; this one stays.
-    const signedOut = await passwords().change(principal.tenant, body.currentPassword, checkPassword(body.newPassword), principal.session);
+    const signedOut = await passwords().change(principal.tenant, body.currentPassword, checkNewPassword(body.newPassword, await passwords().email(principal.tenant)), principal.session);
     console.log(JSON.stringify({ type: "password_changed", tenant: principal.tenant, signedOut }));
     return json(c, 200, { changed: true, signedOut });
+  });
+  // An account without a password adds an address and one: its own Google address at once, any other once confirmed
+  // through a link mailed to it. As with changing one, only from the console, signed in.
+  app.post("/v1/account/password", async c => {
+    const principal = c.var.principal;
+    if (!personal(principal)) throw new HttpError(403, "A password is added from the console, signed in");
+    const email = context.consoleAuth.options.email;
+    if (!email) throw new HttpError(404, "Adding a password needs account email, which this runtime does not have");
+    const body = await readJson(c.req.raw.body, 4096, {});
+    const address = normalizeEmail(body.email) ?? invalid("Enter a valid email address");
+    checkNewPassword(body.password, address);
+    await context.consoleAuth.options.emailLimit?.(c, address);
+    const added = await email.add(principal.tenant, address, body.password, await googleEmail(principal.tenant));
+    if ("set" in added) console.log(JSON.stringify({ type: "password_added", tenant: principal.tenant }));
+    return json(c, "set" in added ? 200 : 202, added);
   });
   const oauth = () => {
     if (!context.oauth) throw new HttpError(404, "OAuth is not enabled on this runtime");
@@ -875,14 +896,15 @@ export function api(context: ApiContext) {
     return json(c, 202, await deletions().request(principal.tenant, "self"));
   });
   route(createRoute({
-    method: "get", path: "/v1/tenants", request: { query: z.object({ login: z.string().openapi({ description: "A tenant id, GitHub login or Google address" }) }) },
+    method: "get", path: "/v1/tenants", request: { query: z.object({ login: z.string().openapi({ description: "A tenant id, GitHub login, Google address or password sign-in address" }) }) },
     responses: { 200: reply("Tenants signed in to with that login (platform operator only)", z.array(schema.TenantLookup)) },
   }), async c => {
     operatorOnly(c);
     const login = c.req.query("login") ?? invalid("login is required");
     const { rows } = await accounts.db.query(`
-      select id, github, google_email, created_at from tenants where id = lower($1) or lower(github) = lower($1) or lower(google_email) = lower($1) order by created_at`, [login]);
-    return json(c, 200, rows.map(row => ({ tenant: row.id, github: row.github, googleEmail: row.google_email, createdAt: Number(row.created_at) })));
+      select t.id, t.github, t.google_email, p.email, t.created_at from tenants t left join tenant_passwords p on p.tenant = t.id
+      where t.id = lower($1) or lower(t.github) = lower($1) or lower(t.google_email) = lower($1) or p.email = lower(trim($1)) order by t.created_at`, [login]);
+    return json(c, 200, rows.map(row => ({ tenant: row.id, github: row.github, googleEmail: row.google_email, email: row.email, createdAt: Number(row.created_at) })));
   });
   route(createRoute({
     method: "post", path: "/v1/tenants", request: { body: content(schema.TenantInput) },

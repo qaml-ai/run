@@ -4119,6 +4119,13 @@
               "null"
             ]
           },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address it signs in with a password, if any"
+          },
           "createdAt": {
             "type": "number"
           }
@@ -4127,6 +4134,7 @@
           "tenant",
           "github",
           "googleEmail",
+          "email",
           "createdAt"
         ]
       },
@@ -11393,10 +11401,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "A tenant id, GitHub login or Google address"
+              "description": "A tenant id, GitHub login, Google address or password sign-in address"
             },
             "required": true,
-            "description": "A tenant id, GitHub login or Google address",
+            "description": "A tenant id, GitHub login, Google address or password sign-in address",
             "name": "login",
             "in": "query"
           }

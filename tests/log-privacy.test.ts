@@ -15,13 +15,18 @@ const CALLS = /(?:console\.(?:log|error|warn|info|debug)|process\.std(?:out|err)
 const FORBIDDEN = new Set(["text", "prompt", "content", "message", "messages", "arguments", "args", "input", "output", "result", "results",
   "body", "subject", "from", "to", "cc", "email", "address", "recipient", "path", "file", "filename", "code", "query", "url", "reply", "answer", "html", "data",
   // Credentials: an agent's token (as GET /v1/agents/{id}/credentials gives it), API and browser tokens, keys, secrets.
-  "token", "apiKey", "secret", "authorization", "password"]);
+  "token", "apiKey", "secret", "authorization", "password",
+  // A mailed link carries a sign-up or reset token.
+  "link"]);
 
 /** Forbidden keys that are safe where they are, by file. */
 const ALLOWED_KEYS: Record<string, string[]> = {
   "src/server.ts": ["address"], // The listening line: the server's own listen address.
   "src/auto-topup.ts": ["code"], // Stripe's error code, an identifier.
   "src/channels-discord.ts": ["code"], // The gateway WebSocket's close code, a number.
+  // The `log` account mail provider writes each link and its address for the operator to pass on: only where no one
+  // else may sign up (accountMailConfig refuses it with open sign-up on a public URL).
+  "src/account-mail.ts": ["to", "link"],
 };
 
 /**

@@ -1,10 +1,12 @@
 import { randomBytes, scrypt, timingSafeEqual, type ScryptOptions } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { Db } from "./db.ts";
 import { HttpError } from "./http.ts";
 
 /**
- * Email and password sign-in. A tenant has a password only when an operator sets one (`PUT /v1/tenants/{id}/password`,
- * `infra/tenant.sh set-password`); there is no sign-up, verification or reset by email. Passwords are hashed with
+ * Email and password sign-in. A tenant has a password when an operator sets one (`PUT /v1/tenants/{id}/password`,
+ * `infra/tenant.sh set-password`), or, where account mail is configured, when someone signs up, adds one on the
+ * Account page or resets it through a link mailed to the address (src/email-accounts.ts). Passwords are hashed with
  * scrypt, a random salt each, and the parameters are kept with the hash, so they can be raised later without
  * invalidating what is stored.
  */
@@ -39,6 +41,20 @@ export async function verifyPassword(password: string, stored: string) {
 export function normalizeEmail(value: unknown) {
   const email = typeof value === "string" ? value.trim().toLowerCase() : "";
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : undefined;
+}
+
+/** Common passwords long enough to pass the length check, lowercased (src/common-passwords.txt says where they are from). */
+const COMMON = new Set(readFileSync(new URL("./common-passwords.txt", import.meta.url), "utf8").split("\n").filter(line => line && !line.startsWith("#")));
+
+/**
+ * A password someone chooses for themselves: the length `checkPassword` asks for, not one of the most common passwords
+ * nor the address it is for. No rules on what characters it has.
+ */
+export function checkNewPassword(value: unknown, email?: string): string {
+  const password = checkPassword(value);
+  const lower = password.normalize("NFC").toLowerCase();
+  if (COMMON.has(lower) || (email && lower === email)) throw new HttpError(400, "That password is too common; choose another");
+  return password;
 }
 
 export function checkPassword(value: unknown): string {
