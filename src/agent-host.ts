@@ -473,7 +473,7 @@ export function createAgentHost(hostIO: HostIO) {
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
             // A failed call (an MCP tool's isError, an OpenAPI operation's HTTP error) is an error result that keeps its content and details.
-            return { ...value, content: await capped(toolCallId, value.content), isError: value.isError === true };
+            return { ...value, content: await capped(toolCallId, (await fittedImages([value]))[0].content), isError: value.isError === true };
           }
           return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]), details: value };
         },
@@ -819,7 +819,7 @@ export function createAgentHost(hostIO: HostIO) {
       return backlog && backlog.kept === backlog.from ? { from: backlog.from, messages: backlog.messages, turns: backlog.turns } : null;
     }
     if (method === "steer") {
-      const messages = userMessages(params);
+      const messages = await fittedImages(userMessages(params));
       // A prompt sent `whileRunning: "steer"`: only for the running turn, and only while it can still take it.
       if (params.whileRunning === "steer" && !steerable) return { steered: false };
       // Pi queues the rest whether or not a run is active; an idle queue drains into the next run.
@@ -878,7 +878,8 @@ export function createAgentHost(hostIO: HostIO) {
           agent.state.messages = stateMessages();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
-        await agent.prompt(promptMessages!);
+        // Images enter the transcript as requests carry them: scaled down once here, not on every request after.
+        await agent.prompt(await fittedImages(promptMessages!));
       }
       await recoverFailedResponses(active.signal);
       await remindOfOutput(active.signal);
