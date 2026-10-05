@@ -141,3 +141,13 @@ test("the pricing page states the runtime's default prices", async () => {
   assert.ok(page.includes(`×${p.openrouterCreditMultiplier}`));
   assert.ok(page.includes(`${p.free.maxStorageBytes / 1e9} GB stored`) && page.includes(`${p.maxStorageBytes / 1e9} GB stored`));
 });
+
+test("verifying an identity token by hand checks its tenant, as the SDKs do", async () => {
+  // A token any tenant's agent can get passes the signature, issuer and audience checks: only `tenant` says it is yours.
+  for (const file of ["../docs/guides/tools.md", "../docs/llms-full.txt"]) {
+    const text = await readFile(fileURLToPath(new URL(file, import.meta.url)), "utf8");
+    const example = /const \{ payload \} = await jwtVerify\([^\n]*\n([^`]*)```/.exec(text);
+    assert.ok(example, `${file} shows hand verification`);
+    assert.match(example![1], /payload\.tenant !==/, `${file}'s hand verification checks the tenant`);
+  }
+});

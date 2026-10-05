@@ -809,8 +809,13 @@ The token itself (for servers that verify it by hand, e.g. with `jose`):
 ```ts
 const jwks = createRemoteJWKSet(new URL("https://run.camelai.com/.well-known/jwks.json"));
 const { payload } = await jwtVerify(token, jwks, { issuer: "https://agents.camelai.dev", audience: "https://tools.example.com/mcp", algorithms: ["EdDSA"] });
+// Any tenant's agent can get a token for your server's URL: accept only your own tenant's.
+if (payload.tenant !== "acme") throw new Error("Not our tenant's agent");
 ```
 
+- `tenant` must be your own (your tenant id, as `GET /v1/me` shows it): the
+  signature, issuer and audience prove only that the runtime issued the token
+  to some agent for your server's URL, and anyone can make an agent.
 - `iss` is the hosted runtime's first address, `https://agents.camelai.dev`,
   at either of its URLs (a self-hosted runtime's is its `AGENT_ISSUER`, else its
   `AGENT_PUBLIC_URL`). The SDKs expect it for either hosted URL.
