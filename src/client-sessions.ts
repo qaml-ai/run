@@ -203,6 +203,8 @@ type Session = {
   delegating?: { active: number; waiting: (() => void)[] };
   /** What each running run's children spent, which its own spend limit counts. */
   childSpend?: Map<string, number>;
+  /** What each running run's children in flight may still spend, held for them (`delegate`), and how many hold it. */
+  childHeld?: Map<string, { usd: number; holders: number }>;
   /** Listeners on this agent's stream on this node: a parent relaying its child's events to its own (`subagent_event`). */
   taps?: Set<(data: ClientEvent) => void>;
   /** Runs an abort reached after they began but before the agent had them: they end without running (see `markAborted`). */
@@ -1513,6 +1515,7 @@ export class ClientSessions {
     await this.delegationSlot(session, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel, call.signal);
     let untap: (() => void) | undefined;
     let child: Child | undefined;
+    let held: number | undefined;
     try {
       const key = `delegate-${call.idempotencyKey}`;
       const requestId = `delegate_${call.idempotencyKey}`;
@@ -1548,7 +1551,8 @@ export class ClientSessions {
       untap = this.relay(session, run.id, at);
       if (!record) {
         try {
-          const budget = await this.budgetLeft(session, run.id);
+          const budget = await this.holdBudget(session, run.id);
+          held = budget;
           if (budget !== undefined && budget <= 0) throw new Error("This run has no budget left for a sub-agent: its spend limit is reached");
           record = await submit(agent, tenant, { id: requestId, method: "prompt", params: {
             text: task, ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
@@ -1586,8 +1590,32 @@ export class ClientSessions {
       return { ...jsonResult(value), ...(status === "completed" ? {} : { isError: true }) };
     } finally {
       untap?.();
+      // What the child spent is in `childSpend` by now: its hold goes.
+      if (held !== undefined) this.releaseBudget(session, run.id, held);
       this.releaseDelegation(session);
     }
+  }
+
+  /**
+   * The spend limit a delegate call's child gets, held for it until it ends (`releaseBudget`): an even share of what the
+   * run may still spend that no other child in flight holds, split among this run's calls in flight that hold none yet.
+   * So parallel children together never get more than the parent has left. Undefined when the run has no limit.
+   */
+  private async holdBudget(session: Session, runId: string) {
+    const left = await this.budgetLeft(session, runId);
+    if (left === undefined) return undefined;
+    const held = (session.childHeld ??= new Map()).get(runId) ?? { usd: 0, holders: 0 };
+    const sharing = Math.max(1, (session.delegating?.active ?? 1) - held.holders);
+    const share = Math.max(0, left - held.usd) / sharing;
+    session.childHeld.set(runId, { usd: held.usd + share, holders: held.holders + 1 });
+    return share;
+  }
+
+  private releaseBudget(session: Session, runId: string, usd: number) {
+    const held = session.childHeld?.get(runId);
+    if (!held) return;
+    if (held.holders <= 1) session.childHeld!.delete(runId);
+    else session.childHeld!.set(runId, { usd: Math.max(0, held.usd - usd), holders: held.holders - 1 });
   }
 
   /**

@@ -109,6 +109,27 @@ test("delegation stops at its depth limit, and a run's spend limit bounds its ch
   assert.equal(limited.outcome.result.stopped, "spend_limit", "the children's spend counts against the parent run's limit");
 });
 
+test("parallel children share what their parent's run has left, rather than each getting all of it", async t => {
+  // Each response costs $0.15 (5000 input tokens of openai/gpt-5.5-pro). A WORKER keeps working until its spend limit stops it.
+  let n = 0;
+  const r = await runtime(t, body => {
+    const usage = { prompt_tokens: 5000, completion_tokens: 0 };
+    if (systemText(body).includes("WORKER")) return { ...toolCall("missing_tool", {}, `call_w${++n}`), usage };
+    if (!toolResults(body).length) return { ...toolCalls(["delegate", { instructions: "You are a WORKER.", task: "work 1" }, "p1"], ["delegate", { instructions: "You are a WORKER.", task: "work 2" }, "p2"]), usage };
+    return { role: "assistant", content: "done", usage };
+  }, { AGENT_MODEL: "openai/gpt-5.5-pro" });
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true } } })).json.id;
+  // $0.40 for the run: $0.25 is left after the parent's first response, for both children together.
+  const record = await r.prompt(parent, "fan out", undefined, { spendLimit: { usd: 0.4 } });
+  assert.ok(record.outcome, JSON.stringify(record));
+  const children = await Promise.all(record.outcome.result.toolCalls.filter((call: any) => call.tool === "delegate").map(async (call: any) =>
+    (await r.call(`/v1/agents/${call.agentId}`)).json.requests.find((request: any) => request.method === "prompt")));
+  assert.equal(children.length, 2);
+  for (const run of children) assert.equal(run.outcome.result.stopped, "spend_limit");
+  // Each child's limit is its share ($0.125), so each stops after one response; with all of it each would make two.
+  assert.equal(record.outcome.result.usage.subagentCostUsd.toFixed(2), "0.30");
+});
+
 test("a caller cannot move a run's place in the delegation chain with prompt metadata", async t => {
   const r = await runtime(t, body => toolResults(body).length || body.messages.at(-1).role === "tool"
     ? { role: "assistant", content: `got: ${toolResults(body).at(-1)}` }
