@@ -28,16 +28,23 @@ locals {
     AGENT_STRIPE_PORTAL_CONFIGURATION = var.billing_stripe_portal_configuration
     }, var.signup_min_account_days == null ? {} : {
     AGENT_SIGNUP_MIN_ACCOUNT_DAYS = tostring(var.signup_min_account_days)
-    }, var.billing_email_worker_url == "" ? {} : {
+    # Billing mail through SES once ses-mail.tf's identity is verified and ses_mail_enabled is set; until then the Worker.
+    }, local.ses_mail_live ? {
+    AGENT_BILLING_EMAIL_PROVIDER          = "ses"
+    AGENT_BILLING_EMAIL_FROM              = local.ses_mail_from.billing
+    AGENT_BILLING_EMAIL_NAME              = "camelRun Billing"
+    AGENT_BILLING_EMAIL_CONFIGURATION_SET = aws_sesv2_configuration_set.mail[0].configuration_set_name
+    AGENT_BILLING_EMAIL_SNS_TOPICS        = aws_sns_topic.mail_feedback[0].arn
+    } : var.billing_email_worker_url == "" ? {} : {
     AGENT_BILLING_EMAIL_PROVIDER   = "cloudflare"
     AGENT_BILLING_EMAIL_FROM       = "billing@mail.camelai.com"
     AGENT_BILLING_EMAIL_NAME       = "camelRun Billing"
     AGENT_BILLING_EMAIL_URL        = var.billing_email_worker_url
     AGENT_BILLING_EMAIL_SECRET_ARN = aws_secretsmanager_secret.runtime["billing-email"].arn
-    }, var.support_email == "" || var.billing_email_worker_url == "" ? {} : {
-    # Get Help sends through the same Worker, as its SUPPORT_FROM, to its SUPPORT_TO (this inbox).
+    }, var.support_email == "" || (var.billing_email_worker_url == "" && !local.ses_mail_live) ? {} : {
+    # Get Help sends the way billing mail does (SES, or the Worker as its SUPPORT_FROM to its SUPPORT_TO), to this inbox.
     AGENT_SUPPORT_EMAIL      = var.support_email
-    AGENT_SUPPORT_EMAIL_FROM = "no-reply@mail.camelai.com"
+    AGENT_SUPPORT_EMAIL_FROM = local.ses_mail_live ? local.ses_mail_from.support : "no-reply@mail.camelai.com"
     AGENT_SUPPORT_EMAIL_NAME = "camelRun"
     AGENT_SUPPORT_LOG_GROUP  = aws_cloudwatch_log_group.runtime.name
     AGENT_RELEASE            = var.runtime_image_tag

@@ -45,6 +45,9 @@ Off unless account mail is configured (`AGENT_ACCOUNT_EMAIL_FROM`); without it n
   5, always on).
 - Mail goes through Amazon SES (`AGENT_ACCOUNT_EMAIL_PROVIDER=ses`, the default) with the runtime's AWS
   credentials, or for a runtime of one's own to the log (`log`, refused with open sign-up on a public URL).
+- Account mail can send through an SES configuration set (`AGENT_ACCOUNT_EMAIL_CONFIGURATION_SET`); with billing's
+  (`AGENT_BILLING_EMAIL_PROVIDER=ses`) sharing it and its SNS topic, account mail's and Get Help's bounce events
+  are ignored by billing's feedback route, which suppresses only billing contacts.
 - `GET /v1/tenants?login=` also finds a tenant by its password address (`email` in the result), and the
   account export's `account.json` has it.
 

@@ -38,7 +38,7 @@ went to, the SHA-256 of the link's token (never the token) and, for a sign-up or
 password's scrypt hash (`account_email_links`); a link lasts a day (a reset link an hour) and is deleted when
 used, replaced or swept after it expires. An address that never verifies leaves nothing else behind.
 
-Account mail goes through Amazon SES (camelRun's AWS account, us-west-2): the address, the subject and the
+Account mail (and, once `ses_mail_enabled` is on, billing and Get Help mail) goes through Amazon SES (camelRun's AWS account, us-west-2): the address, the subject and the
 link travel to SES, which keeps its own sending records and, for addresses that bounce or complain, the
 account-level suppression list. The runtime sends only what a person asked for (a sign-up, a reset, adding a
 password, or a note that the address already has an account); no marketing. Logs name the tenant and the

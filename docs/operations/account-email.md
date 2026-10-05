@@ -60,31 +60,58 @@ the operator's to set (`PUT /v1/tenants/{id}/password`, `infra/tenant.sh set-pas
   `AGENT_PUBLIC_URL` is a loopback address, so a public runtime never logs a sign-up link. With sign-up
   closed it is a way to hand out password resets.
 
-## Runbook: turning it on for camelRun
+## Runbook: all camelRun mail through SES
 
-The account is out of the SES sandbox in us-west-2 (production access granted; 50,000 a day, 14 a second,
-checked 2026-10-05). Mail goes from `accounts@mail.camelai.com`, through the SES domain identity
-`mail.camelai.com`, which `infra/terraform/account-email.tf` makes. The billing and support mail sent through
-Cloudflare's Worker from the same domain is unaffected: SES signs with its own DKIM selectors, and its MAIL
-FROM is `bounce.mail.camelai.com`.
+camelRun sends all its mail through Amazon SES in us-west-2, where the account is out of the sandbox (production
+access; 50,000 a day, 14 a second, checked 2026-10-05): billing (`billing@mail.camelai.com`), Get Help
+(`no-reply@mail.camelai.com`) and account mail (`accounts@mail.camelai.com`), from the SES domain identity
+`mail.camelai.com` that `infra/terraform/ses-mail.tf` makes, through one configuration set
+(`camelai-agent-runtime-mail`) whose bounces and complaints go to an SNS topic subscribed to the runtime's
+`/v1/billing/email/feedback` (each message's signature checked with `verifySns`): billing contacts that bounce or
+complain are suppressed, and SES's account-level suppression list keeps every sender off them. Until stage 3,
+billing and Get Help mail keep going through the Cloudflare Worker (`infra/billing-email`), and no sign-up is
+offered. The guarded script `apply-ses-mail.sh` runs each stage, allowing only its own changes.
 
-1. **Identity.** Set `account_email_domain = "mail.camelai.com"` and `account_email_from =
-   "accounts@mail.camelai.com"` in `prod.tfvars` and apply: the identity, its MAIL FROM and the task role's
-   `ses:SendEmail` (only as that sender). The runtime is unchanged.
-2. **DNS** (by hand, Cloudflare zone `camelai.com`, DNS only): `tofu output account_email_dns_records` lists
-   them: three DKIM CNAMEs `<token>._domainkey.mail.camelai.com` → `<token>.dkim.amazonses.com`, and for
-   `bounce.mail.camelai.com` an MX `10 feedback-smtp.us-west-2.amazonses.com` and a TXT
-   `v=spf1 include:amazonses.com ~all`. `_dmarc.mail.camelai.com` (`p=reject`) stays as it is: SES's DKIM
-   aligns with it.
-3. **Wait** until `aws sesv2 get-email-identity --email-identity mail.camelai.com` shows
-   `VerifiedForSendingStatus: true`, DKIM `SUCCESS` and MAIL FROM `SUCCESS` (usually minutes).
-4. **Enable.** Set `account_email_enabled = true` and apply: the task gets `AGENT_ACCOUNT_EMAIL_FROM` and
-   `AGENT_ACCOUNT_EMAIL_NAME`, and after a deploy `/console/auth/methods` says `signup: true, reset: true`.
-5. **Check**: sign up at `/console/signup` with an address you read, follow the link, and sign in; then reset
-   that password.
+1. **SES resources** (`ses_mail_domain = "mail.camelai.com"`): identity with Easy DKIM, MAIL FROM
+   `bounce.mail.camelai.com`, configuration set, topic and its policy, the bounce/complaint event destination, and
+   the task role's `ses:SendEmail` on the identity and configuration set, only as those three senders. The
+   runtime's environment does not change.
+2. **DNS**, by hand in Cloudflare, zone `camelai.com`, DNS only (grey cloud): three DKIM CNAMEs
+   `<token>._domainkey.mail.camelai.com` → `<token>.dkim.amazonses.com` (`tofu output ses_mail_dns_records`
+   has the tokens), and for `bounce.mail.camelai.com` an MX `10 feedback-smtp.us-west-2.amazonses.com` and a TXT
+   `v=spf1 include:amazonses.com ~all`. `_dmarc.mail.camelai.com` (`p=reject`) stays: SES's DKIM aligns with it;
+   Cloudflare's own records for the domain stay too. Wait until `aws sesv2 get-email-identity --email-identity
+   mail.camelai.com` shows `VerifiedForSendingStatus: true`, DKIM `SUCCESS` and MAIL FROM `SUCCESS`.
+3. **Switch** (`ses_mail_enabled = true`, refused by the script until step 2 verified): the task gets
+   `AGENT_BILLING_EMAIL_PROVIDER=ses` with the configuration set and topic, Get Help's sender, and
+   `AGENT_ACCOUNT_EMAIL_FROM`; deploy. Billing, Get Help and account mail now go through SES, and
+   `/console/auth/methods` says `signup: true, reset: true`.
+4. **Feedback** (`ses_mail_feedback = true`): the topic's HTTPS subscription, which the runtime confirms.
+5. **Check**: from a test account, add a billing contact (Billing → alerts) with an address you read, and confirm it
+   from the mail; sign up at `/console/signup`, follow the link, sign in, and reset that password; send a Get Help
+   request. Then retire the Worker (below).
 
-To turn it off, set `account_email_enabled = false` and apply: the forms disappear on the next deploy; links
-already mailed stop working.
+Back out of stage 3 by setting `ses_mail_enabled = false` and applying: billing returns to the Worker, and sign-up
+and reset disappear on the next deploy (links already mailed stop working).
+
+### Retiring the Cloudflare billing Worker, once SES mail is live
+
+Nothing in the runtime calls the Worker once stage 3 is deployed. Then, with an authorized Cloudflare login, from
+`infra/billing-email`:
+
+```sh
+npx --yes wrangler@4.144.0 queues subscription list camelrun-billing-email-feedback   # its id
+npx --yes wrangler@4.144.0 queues subscription delete camelrun-billing-email-feedback --id <subscription id>
+npx --yes wrangler@4.144.0 delete --name camelrun-billing-email
+npx --yes wrangler@4.144.0 queues delete camelrun-billing-email-feedback
+npx --yes wrangler@4.144.0 queues delete camelrun-billing-email-feedback-dlq   # once nothing in it needs review
+aws secretsmanager delete-secret --region us-west-2 --secret-id camelai/agent-runtime/billing-email --recovery-window-in-days 7
+```
+
+Before deleting the secret, remove `billing-email` from `infra/terraform/secrets.tf` (and the task policy's read of it)
+with the code change that drops the `cloudflare` billing provider, `billing_email_worker_url` and
+`infra/billing-email/`, so Terraform does not recreate it. Leave `mail.camelai.com` enabled for Email Sending in
+Cloudflare if camelStream still sends from it.
 
 ## Runbook: self-hosted
 

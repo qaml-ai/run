@@ -378,7 +378,11 @@ or resending recipients returns 503; balance events and threshold editing still
 work. Both providers use the same confirmed recipients, durable outbox, templates,
 and one-click unsubscribe controls.
 
-Production uses Cloudflare Email Sending, following camelStream's native email
+**Moving to SES.** camelRun's billing and Get Help mail moves to Amazon SES with account mail
+(`infra/terraform/ses-mail.tf`, `ses_mail_enabled`; runbook in [Account email](account-email.md#runbook-all-camelrun-mail-through-ses)):
+`AGENT_BILLING_EMAIL_PROVIDER=ses` with the shared configuration set and its bounce and complaint topic, as below.
+Until then, and while that switch is off,
+production uses Cloudflare Email Sending, following camelStream's native email
 binding. Deploy `infra/billing-email/wrangler.toml` in the camelAI Cloudflare
 account; its sender is restricted to `billing@mail.camelai.com` on the existing
 verified `mail.camelai.com` domain. The runtime authenticates to this small mail

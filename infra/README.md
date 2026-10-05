@@ -87,9 +87,9 @@ or `PASSWORD_FILE`) and never prints it; `set-password <tenant> --clear` removes
 it. Either ends the tenant's password sessions. It calls
 `PUT /v1/tenants/{id}/password` with the operator token of `ADMIN_TENANT`
 (default `miguel`, in `AGENT_BILLING_ADMINS`). Sign-up and reset by email come
-with account mail (`terraform/account-email.tf`; the runbook is
+with mail through SES (`terraform/ses-mail.tf`; the runbook is
 [docs/operations/account-email.md](../docs/operations/account-email.md)), off until
-`account_email_enabled` is set. Tokens never sign in to the console.
+`ses_mail_enabled` is set. Tokens never sign in to the console.
 
 To enable GitHub sign-in, an org owner creates an OAuth app at
 https://github.com/organizations/qaml-ai/settings/applications/new with:

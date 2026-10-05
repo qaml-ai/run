@@ -1,5 +1,10 @@
 # Billing email deployment
 
+**Being retired.** camelRun moves all its mail to Amazon SES (`infra/terraform/ses-mail.tf`); once that is live, the
+runtime no longer calls this Worker. The runbook, and the commands that remove the Worker, its queues, its event
+subscription and its secret afterwards, are in
+[docs/operations/account-email.md](../../docs/operations/account-email.md#retiring-the-cloudflare-billing-worker-once-ses-mail-is-live).
+
 This Worker uses the same native Cloudflare Email Sending binding as camelStream.
 It is a narrow authenticated adapter for the Node runtime, which runs on AWS.
 It only sends as `billing@mail.camelai.com`. It accepts one recipient, HTML and
