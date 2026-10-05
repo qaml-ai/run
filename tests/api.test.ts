@@ -261,7 +261,11 @@ test("console sessions require same-origin mutations; an email and password an o
   assert.equal(signIn.status, 200, "addresses compare without case");
   const setupNext = "/console/discord/install?guild_id=123456789012345678";
   assert.equal((await call("/console/auth/password", { body: { ...credentials, next: setupNext }, headers: browser })).json.next, setupNext);
-  for (const next of ["//evil.example/", "/console/discord/install?guild_id=1&next=https://evil.example", "/console/discord/install?guild_id=abc", "/console/channels?discord_setup=123"]) {
+  for (const start of ["/console/?start=discord", "/console/?start=code"]) {
+    assert.equal((await call("/console/auth/password", { body: { ...credentials, next: start }, headers: browser })).json.next, start, "a use-case start survives sign-in");
+  }
+  for (const next of ["//evil.example/", "/console/discord/install?guild_id=1&next=https://evil.example", "/console/discord/install?guild_id=abc", "/console/channels?discord_setup=123",
+    "/console/?start=evil", "/console/?start=discord&next=https://evil.example", "/console/agents?start=discord"]) {
     assert.equal((await call("/console/auth/password", { body: { ...credentials, next }, headers: browser })).json.next, undefined);
   }
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0];

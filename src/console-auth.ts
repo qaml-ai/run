@@ -54,6 +54,8 @@ const nextPath = (value: string | undefined) => {
   if (/^\/oauth\/authorize\?[^\s]*$/.test(value)) return value;
   // Adding Camel to Discord (its Install Link) resumes after sign-in; never arbitrary redirects.
   if (/^\/console\/discord\/install(\?guild_id=\d{1,20})?$/.test(value)) return value;
+  // A use-case start the console opens after sign-in (a landing page's deep link): two fixed values.
+  if (/^\/console\/\?start=(discord|code)$/.test(value)) return value;
   return undefined;
 };
 

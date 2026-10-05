@@ -460,14 +460,16 @@ export class ManagedDiscord {
     // One Discord authorization adds the bot and proves the user manages the server. The state is single use and bound to this console session.
     app.get("/console/discord/install", async c => {
       const guild = c.req.query("guild_id");
-      const state = randomBytes(32).toString("base64url"); const now = Date.now();
+      // Started from Get started's Discord path, the state says so (`~start`, under its hash like the rest), and Discord returns there.
+      const state = randomBytes(32).toString("base64url") + (c.req.query("from") === "start" ? "~start" : ""); const now = Date.now();
       await this.options.db.query("delete from discord_setup_attempts where expires_at<$1", [now]);
       await this.options.db.query("insert into discord_setup_attempts (state_hash,tenant,session_hash,guild_id,expires_at) values ($1,$2,$3,$4,$5)", [hash(state), tenant(c), this.session(c.req.raw), guild && ID.test(guild) ? guild : null, now + 10 * 60_000]);
       return c.redirect(this.installUrl(state, guild && ID.test(guild) ? guild : undefined));
     });
     app.get("/console/discord/callback", async c => {
       const state = c.req.query("state") ?? "";
-      const done = new URL("/console/channels", this.options.publicUrl);
+      const done = new URL(state.endsWith("~start") ? "/console/" : "/console/channels", this.options.publicUrl);
+      if (state.endsWith("~start")) done.searchParams.set("start", "discord");
       // What a failed install saw, for the log: never a token or code.
       const seen: Record<string, unknown> = { hint: ID.test(c.req.query("guild_id") ?? "") };
       try {

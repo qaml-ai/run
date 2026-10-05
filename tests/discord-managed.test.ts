@@ -134,6 +134,22 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
   return { db, managed, state, request, bind, install, ready, message, received, sent, saved, left, auth, base, options, ownership, binding };
 }
 
+test("adding Camel from Get started's Discord path returns there, with the server or the error", async t => {
+  const f = await fixture(t);
+  const begin = async () => new URL((await f.request(`/console/discord/install?from=start`)).headers.get("location")!).searchParams.get("state")!;
+  const state = await begin();
+  assert.match(state, /~start$/);
+  const back = new URL((await f.request(`/console/discord/callback?code=${guildA}&state=${state}&guild_id=${guildA}`)).headers.get("location")!);
+  assert.equal(back.pathname, "/console/");
+  assert.equal(back.searchParams.get("start"), "discord");
+  assert.equal(back.searchParams.get("discord_server"), guildA, back.searchParams.get("discord_error") ?? "");
+  const cancelled = new URL((await f.request(`/console/discord/callback?error=access_denied&state=${await begin()}`)).headers.get("location")!);
+  assert.equal(cancelled.pathname + cancelled.searchParams.get("start"), "/console/discord");
+  assert.equal(cancelled.searchParams.get("discord_error"), "Discord authorization was cancelled");
+  // Without it, Discord returns to Channels as before.
+  assert.equal((await f.install(guildB)).location.pathname, "/console/channels");
+});
+
 test("adding Camel starts one Discord authorization: bot and identity only, message permissions only, and a single-use state", async t => {
   const f = await fixture(t);
   const started = await f.request("/console/discord/install?guild_id=101");
