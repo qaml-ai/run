@@ -179,6 +179,8 @@ type Session = {
   lastActive: number;
   /** Whether the agent's current model key is the platform's, not the tenant's own. */
   platformKey?: boolean;
+  /** Whether the tenant pays for responses on the platform's keys (prepaid): they are priced from the catalog (`billable`). */
+  catalogPriced?: boolean;
   /** Its spend limit and what it has spent since it was set (`agent_spend_limits`); null when it has none, undefined until read. */
   spend?: SpendLimit | null;
   /** Since when a run's active time has not been reported (`onActive`). */
@@ -374,6 +376,8 @@ export interface ClientSessionOptions {
    * One model call's credentials for an agent with a key scope, or on the tenant's own provider: the scope's entry, else
    * the provider's own, else the tenant's key, else (prepaid) the platform's.
    */
+  /** Whether `tenant` pays for responses on the platform's keys, priced from the catalog; an unbilled tenant's are as reported. */
+  catalogPriced?: (tenant: string) => Promise<boolean>;
   scopedKey?: (tenant: string, keyScope: string | undefined, provider: string) => Promise<(Credentials & { platform: boolean }) | undefined>;
   /** The tenant's own model endpoints (tenants file), which its agents' models may name. */
   modelEndpoints?: (tenant: string) => ModelEndpoints;
@@ -1229,8 +1233,9 @@ export class ClientSessions {
       await steps.time("room", this.makeRoom(id, session.header.tenant));
       // Read before any response is counted against it.
       await steps.time("spend", this.spendOf(session));
-      const { key: apiKey, platform } = await steps.time("key", this.apiKey(session, session.header.config.model.provider, session.header.keyScope));
+      const [{ key: apiKey, platform }, priced] = await steps.time("key", Promise.all([this.apiKey(session, session.header.config.model.provider, session.header.keyScope), this.options.catalogPriced?.(session.header.tenant)]));
       session.platformKey = platform;
+      session.catalogPriced = !!priced;
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       const definitions = await steps.time("tools", this.toolset(session));
       const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
@@ -3241,11 +3246,12 @@ export class ClientSessions {
   }
 
   /**
-   * A response's usage as it is billed: on a platform key, priced from the runtime's catalog, never from the agent's
-   * stored model; one that reported no usage is charged an estimate, and logged.
+   * A response's usage as it is billed: on a platform key of a tenant that pays for it, priced from the runtime's catalog,
+   * never from the agent's stored model; one that reported no usage is charged an estimate, and logged. An unbilled
+   * tenant's (an admin tenant's) is as the provider reported it, as its usage events say.
    */
   private billable(session: Session, usage: any, provider: string, model: string, abortedChars?: number) {
-    if (!session.platformKey) return usage;
+    if (!session.platformKey || !session.catalogPriced) return usage;
     const priced = platformUsage(usage, provider, model, abortedChars === undefined ? undefined : { chars: abortedChars });
     if (priced.estimated || !priced.known) {
       console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: abortedChars !== undefined, usd: priced.usage.cost.total }));

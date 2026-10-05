@@ -83,6 +83,19 @@ test("on a platform key a response is billed at the catalog's price, whatever th
   assert.equal((await r.call(`/v1/agents/${agent.id}/prompt`, { body: { text: "more" }, token: PAYG })).status, 402, "and the account is out of credit");
 });
 
+test("an unbilled admin tenant's responses on platform or admin keys are as the provider reported them, never estimated", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "done" }), env, tenantsFile);
+  const agent = (await r.call("/v1/agents", { body: {}, token: OPS })).json;
+  assert.equal((await r.prompt(agent.id, "go", OPS)).outcome.result.reply, "done");
+  assert.equal((await r.prompt(agent.id, "again", OPS)).outcome.result.reply, "done", "not stopped by an estimate");
+  const usage = await until(async () => {
+    const totals = (await r.call("/v1/usage", { token: OPS })).json.totals;
+    return totals.responses === 2 && totals;
+  }, "the usage");
+  assert.equal(usage.cost, 0);
+  assert.ok(!r.logs.some(line => line.includes('"platform_usage_untrusted"')));
+});
+
 test("platform pricing reads the catalog: variants at their base's price, unknown models at the provider's dearest", () => {
   const usage = { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   const expected = (1000 * catalog.cost.input + 100 * catalog.cost.output) / 1e6;

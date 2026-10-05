@@ -540,6 +540,7 @@ const clients = new ClientSessions(supervisor, {
     const resolved = await accounts.providerKey(tenant, provider);
     return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
   },
+  catalogPriced: async tenant => await accounts.billing.mode(tenant) === "prepaid",
   scopedKey: async (tenant, keyScope, provider) => {
     const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
     // The key scope's or the tenant's own provider: the scope's key or address where it gives one, else the provider's; never the platform's.
